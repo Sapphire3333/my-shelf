@@ -224,7 +224,31 @@
   .ovh{display:flex;align-items:center;gap:8px;margin:0 0 8px}
   #edPage.tagmode [contenteditable]{cursor:crosshair}
   .sm.tag-on{background:#fbbf24;border-color:#f59e0b;color:#78350f;font-weight:700}
+
+  /* auth + sync */
+  .authwrap{max-width:400px;margin:60px auto 0;padding:0 20px}
+  .authcard{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:26px 24px;box-shadow:0 6px 24px rgba(0,0,0,.06)}
+  .authcard h1{font-size:34px;text-align:center;margin:0}
+  .authcard .tag{color:var(--mut);font-size:13px;text-align:center;margin:5px 0 20px}
+  .authcard label{display:block;font-size:12px;color:var(--faint);margin:12px 0 3px}
+  .authcard input{width:100%;border:1px solid var(--line);border-radius:10px;background:#fff;padding:11px 13px}
+  .authcard .go{width:100%;background:var(--teal);color:#fff;border-radius:10px;padding:12px;font-weight:600;margin-top:18px}
+  .authcard .go:hover{background:var(--teal-d)}
+  .authcard .go:disabled{opacity:.5;cursor:default}
+  .authcard .alt{display:flex;justify-content:space-between;gap:8px;margin-top:14px;font-size:13px}
+  .authcard .alt button{color:var(--teal)}
+  .authcard .alt button:hover{text-decoration:underline}
+  .authmsg{font-size:13px;margin-top:14px;text-align:center;min-height:18px;line-height:1.35}
+  .authmsg.err{color:var(--rose)}.authmsg.ok{color:#059669}
+  .acct{display:flex;align-items:center;gap:10px;margin-top:7px;font-size:12px;flex-wrap:wrap}
+  .acct .who{color:var(--faint)}
+  .acct .out{color:var(--teal)}
+  .acct .out:hover{text-decoration:underline}
+  .syncstat{font-size:12px}
+  .syncstat.ok{color:#059669}.syncstat.no{color:var(--faint)}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -299,6 +323,232 @@ let view="library",sortBy="newest",layout="list",statusFilter="all";
 let cur=null,curCover=null,curImgs={},arrange=false,saveTimer=null,isNew=false;
 const coverCache=new Map();
 const S={q:"",scopes:["title"],authorQ:"",filter:null,multi:[],pickGenre:"any",pickWant:true,picked:null};
+let deletions={};
+
+/* =============== sync (Supabase — optional, offline-first) =============== */
+const CFG=window.SHELF_CONFIG||{};
+const SYNC={supa:null,user:null,on:false,queue:[],flushing:false,pulling:false,status:"local",triedCover:new Set()};
+
+function syncConfigured(){
+  return !!(CFG.url&&CFG.anonKey&&!/YOUR_/.test(String(CFG.url)+String(CFG.anonKey))
+    &&window.supabase&&typeof window.supabase.createClient==="function");
+}
+function setSync(s){SYNC.status=s;updateSyncUI();}
+function updateSyncUI(){
+  const el=q("#syncStat");if(!el)return;
+  const map={synced:["Synced ✓","ok"],syncing:["Syncing…","no"],offline:["Offline — will sync","no"],error:["Sync paused — will retry","no"],local:["",""]};
+  const [t,c]=map[SYNC.status]||["",""];
+  el.textContent=t;el.className="syncstat "+c;
+}
+function dataURLtoBlob(dataURL){
+  const [head,b64]=String(dataURL).split(",");
+  const mime=(head.match(/:(.*?);/)||[])[1]||"image/jpeg";
+  const bin=atob(b64||""),len=bin.length,arr=new Uint8Array(len);
+  for(let i=0;i<len;i++)arr[i]=bin.charCodeAt(i);
+  return new Blob([arr],{type:mime});
+}
+function blobToDataURL(blob){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(blob);});}
+const coverPath=id=>`${SYNC.user.id}/covers/${id}.jpg`;
+const imgPath=key=>`${SYNC.user.id}/images/${String(key).replace("|","__")}.jpg`;
+
+async function loadSyncLocal(){
+  const dq=await dbGet("meta","syncQueue");SYNC.queue=dq&&Array.isArray(dq.v)?dq.v:[];
+  const dd=await dbGet("meta","deletions");deletions=dd&&dd.v?dd.v:{};
+}
+function saveQueue(){dbPut("meta",{k:"syncQueue",v:SYNC.queue});}
+const opKey=o=>o.kind+":"+(o.id||o.key||"");
+function enqueue(op){
+  if(!SYNC.on)return;
+  SYNC.queue=SYNC.queue.filter(o=>opKey(o)!==opKey(op));
+  SYNC.queue.push(op);saveQueue();flushQueue();
+}
+function saveDeletions(){dbPut("meta",{k:"deletions",v:deletions});enqueue({kind:"meta",key:"deletions"});}
+
+async function flushQueue(){
+  if(!SYNC.on||!SYNC.user||SYNC.flushing)return;
+  if(!navigator.onLine){setSync("offline");return;}
+  if(!SYNC.queue.length){setSync("synced");return;}
+  SYNC.flushing=true;setSync("syncing");
+  try{
+    while(SYNC.queue.length){
+      await runOp(SYNC.queue[0]);
+      SYNC.queue.shift();saveQueue();
+    }
+    setSync("synced");
+  }catch(e){
+    console.warn("[shelf] sync paused:",e&&e.message||e);
+    setSync(navigator.onLine?"error":"offline");
+  }finally{SYNC.flushing=false;}
+}
+async function runOp(op){
+  const s=SYNC.supa,uid=SYNC.user.id;
+  if(op.kind==="book"){
+    const b=await dbGet("books",op.id);if(!b)return;
+    const {error}=await s.from("books").upsert({user_id:uid,id:b.id,data:b,modified:b.modified||b.created||0});
+    if(error)throw error;
+  }else if(op.kind==="bookDel"){
+    const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
+    if(error)throw error;
+  }else if(op.kind==="meta"){
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:null;
+    if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
+    const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
+    if(error)throw error;
+  }else if(op.kind==="cover"){
+    const c=await dbGet("covers",op.id);
+    if(c&&c.data){const {error}=await s.storage.from("shelf").upload(coverPath(op.id),dataURLtoBlob(c.data),{upsert:true,contentType:"image/jpeg"});if(error)throw error;}
+  }else if(op.kind==="coverDel"){
+    await s.storage.from("shelf").remove([coverPath(op.id)]);
+  }else if(op.kind==="img"){
+    const im=await dbGet("images",op.key);
+    if(im&&im.data){const {error}=await s.storage.from("shelf").upload(imgPath(op.key),dataURLtoBlob(im.data),{upsert:true,contentType:"image/jpeg"});if(error)throw error;}
+  }else if(op.kind==="imgDel"){
+    await s.storage.from("shelf").remove([imgPath(op.key)]);
+  }
+}
+
+async function pullAll(){
+  if(!SYNC.on||!SYNC.user||SYNC.pulling)return;
+  if(!navigator.onLine){setSync("offline");return;}
+  SYNC.pulling=true;setSync("syncing");
+  try{
+    const s=SYNC.supa,uid=SYNC.user.id;
+    // meta first (additive merge, local edits win)
+    try{
+      const {data:metaRows,error:me}=await s.from("meta").select("key,value").eq("user_id",uid);
+      if(!me&&metaRows){
+        for(const row of metaRows){
+          if(row.key==="genres")genres=Object.assign({},row.value||{},genres);
+          else if(row.key==="dnfReasons")dnfCustom=[...new Set([...(row.value||[]),...dnfCustom])];
+          else if(row.key==="audiences")audCustom=[...new Set([...(row.value||[]),...audCustom])];
+          else if(row.key==="deletions"){const rv=row.value||{};for(const k in rv)deletions[k]=Math.max(deletions[k]||0,rv[k]);}
+        }
+        metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
+        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});
+      }
+    }catch(e){console.warn("[shelf] meta pull",e);}
+    // books (per-book last-write-wins by `modified`)
+    const {data:rows,error}=await s.from("books").select("id,data,modified").eq("user_id",uid);
+    if(error){setSync(navigator.onLine?"error":"offline");return;}
+    const localMap=new Map(books.map(b=>[b.id,b]));
+    const remoteIds=new Set();
+    for(const row of rows||[]){
+      remoteIds.add(row.id);
+      const rb=row.data||{};rb.id=row.id;rb.modified=row.modified||rb.modified||rb.created||0;
+      const tomb=deletions[row.id]||0;
+      if(tomb&&tomb>=(rb.modified||0))continue;
+      const lb=localMap.get(row.id);
+      if(!lb||(rb.modified||0)>(lb.modified||0)){
+        await dbPut("books",rb);
+        const i=books.findIndex(b=>b.id===row.id);
+        if(i>=0)books[i]=rb;else books.push(rb);
+        coverCache.delete(row.id);SYNC.triedCover.delete(row.id);
+        await syncBookAssets(rb);
+      }
+    }
+    // apply remote deletions locally
+    for(const id of Object.keys(deletions)){
+      const lb=books.find(b=>b.id===id);
+      if(lb&&deletions[id]>=(lb.modified||0)){await dbDel("books",id);books=books.filter(b=>b.id!==id);}
+    }
+    // push up any local-only books the cloud hasn't seen yet (e.g. made offline or before first sync)
+    for(const b of books){
+      if(!remoteIds.has(b.id)&&!(deletions[b.id]>=(b.modified||0))){
+        enqueue({kind:"book",id:b.id});enqueue({kind:"cover",id:b.id});
+        (b.images||[]).forEach(im=>enqueue({kind:"img",key:b.id+"|"+im.id}));
+      }
+    }
+    setSync("synced");
+    if(view!=="book")render();
+  }catch(e){
+    console.warn("[shelf] pull failed",e);setSync(navigator.onLine?"error":"offline");
+  }finally{SYNC.pulling=false;}
+}
+async function syncBookAssets(b){
+  const s=SYNC.supa;
+  try{
+    const {data,error}=await s.storage.from("shelf").download(coverPath(b.id));
+    if(!error&&data){const durl=await blobToDataURL(data);await dbPut("covers",{id:b.id,data:durl});coverCache.set(b.id,durl);}
+    else{await dbDel("covers",b.id);coverCache.set(b.id,null);}
+  }catch(e){}
+  for(const im of b.images||[]){
+    const key=b.id+"|"+im.id;
+    if(!(await dbGet("images",key))){
+      try{const {data,error}=await s.storage.from("shelf").download(imgPath(key));
+        if(!error&&data)await dbPut("images",{key,data:await blobToDataURL(data)});}catch(e){}
+    }
+  }
+}
+
+/* ---- auth screen ---- */
+function renderLogin(msg){
+  q("#app").innerHTML=`
+  <div class="authwrap"><div class="authcard">
+    <h1 class="serif">My Shelf</h1>
+    <div class="tag">Sign in to reach your library on any device.</div>
+    <label>Email</label>
+    <input id="auEmail" type="email" autocomplete="username" placeholder="you@example.com">
+    <label>Password</label>
+    <input id="auPass" type="password" autocomplete="current-password" placeholder="Your password">
+    <button class="go" id="auGo">Sign in</button>
+    <div class="alt">
+      <button id="auSignup">Create an account</button>
+      <button id="auMagic">Email me a link instead</button>
+    </div>
+    <div class="authmsg ${msg&&msg.err?"err":"ok"}" id="auMsg">${msg?esc(msg.text):""}</div>
+  </div></div>`;
+  const email=()=>q("#auEmail").value.trim(),pass=()=>q("#auPass").value;
+  const setMsg=(text,err)=>{const el=q("#auMsg");el.textContent=text;el.className="authmsg "+(err?"err":"ok");};
+  let mode="in";
+  const busy=on=>{const g=q("#auGo");g.disabled=on;g.textContent=on?"…":(mode==="up"?"Create account":"Sign in");};
+  q("#auGo").onclick=async()=>{
+    if(!email()){setMsg("Enter your email.",true);return;}
+    busy(true);
+    try{
+      if(mode==="up"){
+        const {error}=await SYNC.supa.auth.signUp({email:email(),password:pass()});
+        if(error)throw error;
+        setMsg("Account created. If asked, confirm via the email we just sent, then sign in.",false);
+        mode="in";
+      }else{
+        const {error}=await SYNC.supa.auth.signInWithPassword({email:email(),password:pass()});
+        if(error)throw error; // onAuthStateChange takes over on success
+      }
+    }catch(e){setMsg(e.message||"That didn't work.",true);}
+    busy(false);
+  };
+  q("#auSignup").onclick=()=>{mode="up";q("#auGo").textContent="Create account";setMsg("Pick a password (6+ characters), then press Create account.",false);};
+  q("#auMagic").onclick=async()=>{
+    if(!email()){setMsg("Enter your email first.",true);return;}
+    try{const {error}=await SYNC.supa.auth.signInWithOtp({email:email()});if(error)throw error;
+      setMsg("Check your email for a one-tap sign-in link.",false);}catch(e){setMsg(e.message||"Couldn't send the link.",true);}
+  };
+  q("#auEmail").addEventListener("keydown",e=>{if(e.key==="Enter")q("#auPass").focus();});
+  q("#auPass").addEventListener("keydown",e=>{if(e.key==="Enter")q("#auGo").click();});
+}
+async function signOut(){try{await SYNC.supa.auth.signOut();}catch(e){}SYNC.user=null;SYNC.queue=[];renderLogin({text:"Signed out.",err:false});}
+
+async function initSync(){
+  if(!syncConfigured()){SYNC.on=false;render();return;}
+  try{SYNC.supa=window.supabase.createClient(CFG.url,CFG.anonKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});}
+  catch(e){console.warn("[shelf] supabase init failed",e);SYNC.on=false;render();return;}
+  SYNC.on=true;
+  window.addEventListener("online",()=>{setSync("syncing");flushQueue().then(pullAll);});
+  window.addEventListener("offline",()=>setSync("offline"));
+  SYNC.supa.auth.onAuthStateChange((event,session)=>{
+    if(event==="SIGNED_IN"&&session&&session.user){
+      if(!SYNC.user){SYNC.user=session.user;render();flushQueue().then(pullAll);}
+      else SYNC.user=session.user;
+    }else if(event==="SIGNED_OUT"){SYNC.user=null;SYNC.queue=[];renderLogin();}
+    else if(session&&session.user){SYNC.user=session.user;}
+  });
+  const {data}=await SYNC.supa.auth.getSession();
+  if(data&&data.session&&data.session.user){
+    SYNC.user=data.session.user;render();flushQueue().then(pullAll);
+  }else{
+    renderLogin();
+  }
+}
 
 /* =============== boot =============== */
 (async function init(){
@@ -316,7 +566,8 @@ const S={q:"",scopes:["title"],authorQ:"",filter:null,multi:[],pickGenre:"any",p
     for(const k of await dbAllKeys("covers"))if(!live.has(k))await dbDel("covers",k);
     for(const k of await dbAllKeys("images"))if(!validImg.has(k))await dbDel("images",k);
   }catch(e){}
-  render();
+  await loadSyncLocal();
+  initSync();
 })();
 
 let metaSnap=null;
@@ -327,6 +578,7 @@ function saveMeta(){
   }
   metaSnap=nowS;
   dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});
+  enqueue({kind:"meta",key:"genres"});enqueue({kind:"meta",key:"dnfReasons"});enqueue({kind:"meta",key:"audiences"});
 }
 
 /* =============== undo / redo =============== */
@@ -341,14 +593,17 @@ async function applyOp(op,inv){
   if(op.t==="book"||op.t==="del"){
     const body=op.t==="del"?(inv?op.body:null):(inv?op.before:op.after);
     const id=op.t==="del"?op.body.id:op.id;
+    const knownImgs=((op.t==="del"?op.body:op.after)||{}).images||[];
     if(body){
       const clone=JSON.parse(JSON.stringify(body));
       await dbPut("books",clone);
       const i=books.findIndex(x=>x.id===id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
+      if(SYNC.on){if(deletions[id]){delete deletions[id];saveDeletions();}enqueue({kind:"book",id});enqueue({kind:"cover",id});(clone.images||[]).forEach(im=>enqueue({kind:"img",key:id+"|"+im.id}));}
     }else{
       await dbDel("books",id);
       books=books.filter(x=>x.id!==id);
+      if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});knownImgs.forEach(im=>enqueue({kind:"imgDel",key:id+"|"+im.id}));}
     }
     if(view==="book"&&cur&&cur.id===id){
       if(!body){view="library";render();}else{openBook(id,false);}
@@ -361,6 +616,7 @@ async function applyOp(op,inv){
     dnfCustom=[...v.dnfCustom];audCustom=[...v.audCustom];
     metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
     dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});
+    enqueue({kind:"meta",key:"genres"});enqueue({kind:"meta",key:"dnfReasons"});enqueue({kind:"meta",key:"audiences"});
     if(view==="book"&&cur){openBook(cur.id,false);refreshHistBtns();return;}
   }
   render();refreshHistBtns();
@@ -394,16 +650,19 @@ function render(){
         <button id="uBtn" disabled>↶ Undo</button>
         <button id="rBtn" disabled>↷ Redo</button>
         <span id="busyMsg" class="busy"></span>
+        <span id="syncStat" class="syncstat"></span>
       </div>
+      ${SYNC.on&&SYNC.user?`<div class="acct"><span class="who">Signed in as ${esc(SYNC.user.email||"")}</span><button class="out" id="signOut">Sign out</button></div>`:""}
     </header>
     <main id="main"></main>
-    <div class="foot">Everything is saved in this browser on this PC. Export a backup now and then — it's your safety net.</div>
+    <div class="foot">${SYNC.on?"Your library syncs to your own private cloud and is kept on this device too.":"Everything is saved in this browser on this PC."} Export a backup now and then — it's your safety net.</div>
   </div>`;
   q("#addBook").onclick=()=>openBook(uid(),true);
   qa(".tab").forEach(t=>t.onclick=()=>{view=t.dataset.v;render();});
   q("#expBtn").onclick=exportBackup;
   q("#impBtn").onclick=()=>q("#importFile").click();
   q("#uBtn").onclick=doUndo;q("#rBtn").onclick=doRedo;refreshHistBtns();
+  const so=q("#signOut");if(so)so.onclick=signOut;updateSyncUI();
   if(view==="library")renderLibrary();else if(view==="overview")renderOverview();else if(view==="history")renderHistory();else renderSearchView();
 }
 
@@ -441,6 +700,11 @@ async function hydrateCovers(root){
     const id=el.dataset.cover;
     let src=coverCache.get(id);
     if(src===undefined){const r=await dbGet("covers",id);src=r?r.data:null;coverCache.set(id,src);}
+    if(src==null&&SYNC.on&&SYNC.user&&navigator.onLine&&!SYNC.triedCover.has(id)){
+      SYNC.triedCover.add(id);
+      try{const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(id));
+        if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);}}catch(e){}
+    }
     if(src){const overlays=[...el.children].map(c=>c.outerHTML).join("");el.innerHTML=`<img src="${src}">`+overlays;}
   }
 }
@@ -491,6 +755,7 @@ async function deleteBookById(id){
   if(b)pushOp({t:"del",body:JSON.parse(JSON.stringify(b))});
   await dbDel("books",id);
   books=books.filter(x=>x.id!==id);
+  if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});((b&&b.images)||[]).forEach(im=>enqueue({kind:"imgDel",key:id+"|"+im.id}));}
   if(view==="book"){view="library";}
   render();
 }
@@ -720,7 +985,14 @@ async function openBook(id,fresh){
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
   const c=await dbGet("covers",id);curCover=c?c.data:null;
   curImgs={};
-  for(const im of cur.images||[]){const r=await dbGet("images",id+"|"+im.id);if(r)curImgs[im.id]=r.data;}
+  for(const im of cur.images||[]){
+    const key=id+"|"+im.id;let r=await dbGet("images",key);
+    if(!r&&SYNC.on&&SYNC.user&&navigator.onLine){
+      try{const {data,error}=await SYNC.supa.storage.from("shelf").download(imgPath(key));
+        if(!error&&data){const durl=await blobToDataURL(data);await dbPut("images",{key,data:durl});r={data:durl};}}catch(e){}
+    }
+    if(r)curImgs[im.id]=r.data;
+  }
   arrange=false;view="book";renderEditor();
 }
 
@@ -735,6 +1007,7 @@ async function commitCur(){
   pushOp({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))});
   await dbPut("books",after);
   if(i>=0)books[i]=after;else books.unshift(after);
+  if(SYNC.on){if(deletions[cur.id]){delete deletions[cur.id];saveDeletions();}enqueue({kind:"book",id:cur.id});}
   isNew=false;setSaved(true);
 }
 function scheduleSave(){
@@ -1021,9 +1294,10 @@ function renderEditor(){
     const f=e.target.files[0];e.target.value="";if(!f)return;
     curCover=await compressImage(f,600,.85);
     await dbPut("covers",{id:cur.id,data:curCover});
-    coverCache.set(cur.id,curCover);
+    coverCache.set(cur.id,curCover);SYNC.triedCover.delete(cur.id);
     q("#coverBox").innerHTML=`<img src="${curCover}">`;
-    if(isNew)scheduleSave();
+    if(SYNC.on)enqueue({kind:"cover",id:cur.id});
+    cur.coverV=Date.now();scheduleSave();
   };
 
   /* pictures */
@@ -1040,6 +1314,7 @@ function renderEditor(){
     const im={id:uid(),x:30+(cur.images.length*26)%180,y:baseY+(cur.images.length*18)%90,w:240,behind:false};
     try{await dbPut("images",{key:cur.id+"|"+im.id,data});}catch(err){alert("That image couldn't be saved.");return;}
     curImgs[im.id]=data;cur.images.push(im);
+    if(SYNC.on)enqueue({kind:"img",key:cur.id+"|"+im.id});
     if(!arrange){arrange=true;page.classList.add("arr");const btn=q("#edArr");btn.classList.add("on");btn.innerHTML="✥ Done arranging";}
     renderImages();scheduleSave();
   }
@@ -1064,6 +1339,7 @@ function renderEditor(){
       q(".sfade",el).onclick=e=>{e.stopPropagation();im.behind=!im.behind;renderImages();scheduleSave();};
       q(".sdel",el).onclick=e=>{e.stopPropagation();
         delete curImgs[im.id];
+        if(SYNC.on)enqueue({kind:"imgDel",key:cur.id+"|"+im.id});
         cur.images=cur.images.filter(i=>i.id!==im.id);renderImages();scheduleSave();};
       const startDrag=(e,mode)=>{
         if(!arrange)return;
@@ -1125,8 +1401,14 @@ q("#importFile").addEventListener("change",async e=>{
     genres=Object.assign({},data.genres||{},genres);
     dnfCustom=[...new Set([...dnfCustom,...(data.dnfReasons||[])])];
     saveMeta();
+    if(SYNC.on){
+      for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
+      for(const id of Object.keys(data.covers||{}))enqueue({kind:"cover",id});
+      for(const k of Object.keys(data.images||{}))enqueue({kind:"img",key:k});
+      saveDeletions();flushQueue();
+    }
     render();
-    alert(`Restored ${data.books.length} book${data.books.length===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.`);
+    alert(`Restored ${data.books.length} book${data.books.length===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`);
   }catch(err){alert("That file couldn't be read as a shelf backup.");}
   if(q("#busyMsg"))q("#busyMsg").textContent="";
 });
