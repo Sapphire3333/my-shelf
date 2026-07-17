@@ -246,6 +246,30 @@
   .acct .out:hover{text-decoration:underline}
   .syncstat{font-size:12px}
   .syncstat.ok{color:#059669}.syncstat.no{color:var(--faint)}
+
+  /* overview hub */
+  .hcard{border:1px solid var(--line);background:var(--card);border-radius:14px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .hrow2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .bar{height:9px;border-radius:999px;background:#e7e5e4;overflow:hidden;margin:9px 0 7px}
+  .bar i{display:block;height:100%;background:var(--teal);border-radius:999px;transition:width .3s}
+  .bar i.warn{background:var(--amber)}
+  .bar i.full{background:var(--rose)}
+  .bignum{font-family:Georgia,serif;font-size:21px;font-weight:700}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:10px;padding:8px 13px;font-size:13px;color:var(--ink);font-weight:500}
+  .btn:hover{border-color:#2dd4bf;background:#f0fdfa}
+  .btn.pri{background:var(--teal);border-color:var(--teal);color:#fff}
+  .btn.pri:hover{background:var(--teal-d)}
+  .btn:disabled{opacity:.45;cursor:default}
+  .btn.danger:hover{border-color:#fda4af;background:#fff1f2;color:var(--rose)}
+  .snap{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:8px 11px;margin-top:6px;font-size:13px;background:#fff}
+  .snap .when{font-weight:600}
+  .snap .meta{color:var(--faint);font-size:12px}
+  .snap .sp{margin-left:auto;display:flex;gap:6px}
+  .tagx{font-size:10px;font-weight:700;border-radius:4px;padding:1px 5px;background:#ccfbf1;color:#0f766e}
+  .tagx.man{background:#fef3c7;color:#b45309}
+  .grouphead{display:flex;align-items:center;gap:8px;margin:20px 0 8px}
+  .grouphead .n{color:var(--faint);font-size:13px}
+  .ghline{flex:1;height:1px;background:var(--line)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
@@ -302,12 +326,13 @@ function compressImage(file,maxDim=1000,quality=.82){
 /* =============== IndexedDB =============== */
 let db;
 function openDb(){return new Promise((res,rej)=>{
-  const r=indexedDB.open("myShelf",1);
+  const r=indexedDB.open("myShelf",2);
   r.onupgradeneeded=()=>{const d=r.result;
-    d.createObjectStore("books",{keyPath:"id"});
-    d.createObjectStore("covers",{keyPath:"id"});
-    d.createObjectStore("images",{keyPath:"key"});
-    d.createObjectStore("meta",{keyPath:"k"});};
+    if(!d.objectStoreNames.contains("books"))d.createObjectStore("books",{keyPath:"id"});
+    if(!d.objectStoreNames.contains("covers"))d.createObjectStore("covers",{keyPath:"id"});
+    if(!d.objectStoreNames.contains("images"))d.createObjectStore("images",{keyPath:"key"});
+    if(!d.objectStoreNames.contains("meta"))d.createObjectStore("meta",{keyPath:"k"});
+    if(!d.objectStoreNames.contains("snapshots"))d.createObjectStore("snapshots",{keyPath:"id"});};
   r.onsuccess=()=>res(r.result);
   r.onerror=()=>rej(r.error);});}
 const st=(s,m)=>db.transaction(s,m).objectStore(s);
@@ -319,7 +344,8 @@ const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.ons
 
 /* =============== state =============== */
 let books=[],genres={},dnfCustom=[],audCustom=[];
-let view="library",sortBy="newest",layout="list",statusFilter="all";
+let settings={autoBackup:true,keepAuto:3};
+let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="none";
 let cur=null,curCover=null,curImgs={},arrange=false,saveTimer=null,isNew=false;
 const coverCache=new Map();
 const S={q:"",scopes:["title"],authorQ:"",filter:null,multi:[],pickGenre:"any",pickWant:true,picked:null};
@@ -559,6 +585,7 @@ async function initSync(){
   const g=await dbGet("meta","genres");genres=g?g.v:{};
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
+  const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   try{
     const live=new Set(books.map(b=>b.id));
@@ -568,6 +595,7 @@ async function initSync(){
   }catch(e){}
   await loadSyncLocal();
   initSync();
+  maybeAutoBackup();
 })();
 
 let metaSnap=null;
@@ -639,14 +667,12 @@ function render(){
         <button class="addbtn" id="addBook">+ Add book</button>
       </div>
       <div class="tabs">
-        <button class="tab ${view==="library"?"on":""}" data-v="library">📚 Library</button>
         <button class="tab ${view==="overview"?"on":""}" data-v="overview">🗂 Overview</button>
+        <button class="tab ${view==="library"?"on":""}" data-v="library">📚 Library</button>
         <button class="tab ${view==="history"?"on":""}" data-v="history">🕘 History</button>
         <button class="tab ${view==="search"?"on":""}" data-v="search">🔍 Search &amp; stats</button>
       </div>
       <div class="bkrow">
-        <button id="expBtn" ${books.length?"":"disabled"}>⭳ Export backup</button>
-        <button id="impBtn">⭱ Import backup</button>
         <button id="uBtn" disabled>↶ Undo</button>
         <button id="rBtn" disabled>↷ Redo</button>
         <span id="busyMsg" class="busy"></span>
@@ -659,11 +685,9 @@ function render(){
   </div>`;
   q("#addBook").onclick=()=>openBook(uid(),true);
   qa(".tab").forEach(t=>t.onclick=()=>{view=t.dataset.v;render();});
-  q("#expBtn").onclick=exportBackup;
-  q("#impBtn").onclick=()=>q("#importFile").click();
   q("#uBtn").onclick=doUndo;q("#rBtn").onclick=doRedo;refreshHistBtns();
   const so=q("#signOut");if(so)so.onclick=signOut;updateSyncUI();
-  if(view==="library")renderLibrary();else if(view==="overview")renderOverview();else if(view==="history")renderHistory();else renderSearchView();
+  if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else renderSearchView();
 }
 
 /* =============== shared row / card html =============== */
@@ -718,32 +742,70 @@ function wireOpen(root,withDel){
 }
 
 /* =============== library =============== */
+const GROUPS=[["none","none"],["genre","genre"],["author","author"],["series","series"],["status","status"]];
+function sortCmp(a,b){
+  if(sortBy==="newest")return(b.created||0)-(a.created||0);
+  if(sortBy==="rating")return(b.rating??-1)-(a.rating??-1);
+  if(sortBy==="title")return(a.title||"").localeCompare(b.title||"");
+  if(sortBy==="author")return(a.author||"").localeCompare(b.author||"");
+  if(sortBy==="status"){const rk=x=>x.dnf?1:statusOf(x)==="finished"?0:statusOf(x)==="want"?2:3;
+    return rk(a)-rk(b)||(a.title||"").localeCompare(b.title||"");}
+  if(sortBy==="genre"){const g=x=>((x.genres||[])[0]||"").toLowerCase();const ga=g(a),gb=g(b);
+    if(ga&&!gb)return -1;if(!ga&&gb)return 1;
+    return ga.localeCompare(gb)||(a.title||"").localeCompare(b.title||"");}
+  return 0;
+}
+/* -> [{label,color?,items[]}] in display order */
+function groupsFor(list){
+  const out=[];
+  if(groupBy==="genre"){
+    const map={},none=[];
+    list.forEach(b=>{const gs=b.genres||[];if(!gs.length)none.push(b);gs.forEach(g=>(map[g]=map[g]||[]).push(b));});
+    Object.keys(map).sort((a,b)=>a.localeCompare(b)).forEach(k=>out.push({label:k,color:genres[k]||"#78716c",items:map[k]}));
+    if(none.length)out.push({label:"No genre yet",color:"#a8a29e",items:none});
+  }else if(groupBy==="author"){
+    const map={};
+    list.forEach(b=>{const a=(b.author||"").trim()||"Unknown author";(map[a]=map[a]||[]).push(b);});
+    Object.keys(map).sort((a,b)=>lastName(a).localeCompare(lastName(b))||a.localeCompare(b)).forEach(k=>out.push({label:k,items:map[k]}));
+  }else if(groupBy==="series"){
+    const map={},none=[];
+    list.forEach(b=>{const s=(b.series||"").trim();if(s)(map[s]=map[s]||[]).push(b);else none.push(b);});
+    Object.keys(map).sort((a,b)=>a.localeCompare(b)).forEach(k=>out.push({label:k,
+      items:map[k].slice().sort((x,y)=>(parseFloat(x.seriesNum)||0)-(parseFloat(y.seriesNum)||0))}));
+    if(none.length)out.push({label:"Not in a series",items:none});
+  }else if(groupBy==="status"){
+    STATUSES.forEach(([k,l])=>{const items=list.filter(b=>statusOf(b)===k);if(items.length)out.push({label:l,items});});
+  }
+  return out;
+}
+function booksHtml(list,withDel){
+  return layout==="list"?list.map(b=>rowHtml(b,withDel)).join(""):`<div class="grid">${list.map(gridHtml).join("")}</div>`;
+}
 function renderLibrary(){
   const m=q("#main");
   const counts={all:books.length,finished:books.filter(b=>statusOf(b)==="finished").length,reading:books.filter(b=>statusOf(b)==="reading").length,want:books.filter(b=>statusOf(b)==="want").length};
-  const list=books.filter(b=>statusFilter==="all"||statusOf(b)===statusFilter).sort((a,b)=>{
-    if(sortBy==="newest")return(b.created||0)-(a.created||0);
-    if(sortBy==="rating")return(b.rating??-1)-(a.rating??-1);
-    if(sortBy==="title")return(a.title||"").localeCompare(b.title||"");
-    if(sortBy==="author")return(a.author||"").localeCompare(b.author||"");
-    if(sortBy==="status"){const rk=x=>x.dnf?1:statusOf(x)==="finished"?0:statusOf(x)==="want"?2:3;
-      return rk(a)-rk(b)||(a.title||"").localeCompare(b.title||"");}
-    if(sortBy==="genre"){const g=x=>((x.genres||[])[0]||"").toLowerCase();const ga=g(a),gb=g(b);
-      if(ga&&!gb)return -1;if(!ga&&gb)return 1;
-      return ga.localeCompare(gb)||(a.title||"").localeCompare(b.title||"");}
-    return 0;});
+  const list=books.filter(b=>statusFilter==="all"||statusOf(b)===statusFilter).sort(sortCmp);
   let html="";
   if(books.length){
     html+=`<div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading"],["want","Want to read"]].map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}">${l} <b>${counts[id]}</b></button>`).join("")}</div>`;
     html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","title","author","status","genre"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}">${s}</button>`).join("")}
       <button class="laybtn" id="layTog">${layout==="list"?"▦ Grid":"☰ List"}</button></div>`;
+    html+=`<div class="pills"><span class="lbl">Group under headings:</span>${GROUPS.map(([id,l])=>`<button class="pill ${groupBy===id?"on":""}" data-gb="${id}">${l}</button>`).join("")}</div>`;
   }
   if(!books.length)html+='<div class="empty">📖<br>Your shelf is empty. Add your first book to start.</div>';
   else if(!list.length)html+='<div class="none" style="text-align:center;padding:40px 0">No books with this status yet.</div>';
-  else html+=layout==="list"?list.map(b=>rowHtml(b,true)).join(""):`<div class="grid">${list.map(gridHtml).join("")}</div>`;
+  else if(groupBy==="none")html+=booksHtml(list,true);
+  else{
+    const gs=groupsFor(list);
+    html+=gs.map(g=>`<div class="grouphead">${g.color
+        ?`<span class="chip big" style="background:${g.color}">${esc(g.label)}</span>`
+        :`<h2 class="serif" style="margin:0;font-size:17px">${esc(g.label)}</h2>`}
+      <span class="n">${g.items.length}</span><span class="ghline"></span></div>${booksHtml(g.items,true)}`).join("");
+  }
   m.innerHTML=html;
   qa("[data-sf]",m).forEach(b=>b.onclick=()=>{statusFilter=b.dataset.sf;renderLibrary();});
   qa("[data-sort]",m).forEach(b=>b.onclick=()=>{sortBy=b.dataset.sort;renderLibrary();});
+  qa("[data-gb]",m).forEach(b=>b.onclick=()=>{groupBy=b.dataset.gb;renderLibrary();});
   const lt=q("#layTog",m);if(lt)lt.onclick=()=>{layout=layout==="list"?"grid":"list";renderLibrary();};
   wireOpen(m,true);
   hydrateCovers(m);
@@ -771,20 +833,123 @@ function renderHistory(){
   hydrateCovers(m);
 }
 
-/* =============== overview =============== */
-function renderOverview(){
+/* =============== overview hub =============== */
+async function renderHub(){
   const m=q("#main");
-  if(!books.length){m.innerHTML='<div class="empty">📖<br>Your shelf is empty. Add your first book to start.</div>';return;}
-  const groups={},none=[];
-  books.forEach(b=>{const gs=b.genres||[];if(!gs.length)none.push(b);gs.forEach(g=>(groups[g]=groups[g]||[]).push(b));});
-  const byR=(a,b)=>(b.rating??-1)-(a.rating??-1);
-  let html="";
-  Object.keys(groups).sort((a,b)=>a.localeCompare(b)).forEach(g=>{
-    html+=`<div class="sec"><div class="ovh"><span class="chip big" style="background:${genres[g]||"#78716c"}">${esc(g)}</span><span class="none">${groups[g].length} book${groups[g].length===1?"":"s"}</span></div>${groups[g].slice().sort(byR).map(b=>rowHtml(b,false)).join("")}</div>`;});
-  if(none.length)html+=`<div class="sec"><div class="ovh"><span class="chip big" style="background:#a8a29e">No genre yet</span><span class="none">${none.length}</span></div>${none.slice().sort(byR).map(b=>rowHtml(b,false)).join("")}</div>`;
-  m.innerHTML=html;
-  wireOpen(m,false);
-  hydrateCovers(m);
+  m.innerHTML=`
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Storage</h2></div>
+      <div class="hcard" id="stoCard"><span class="none">Checking…</span></div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Saving</h2></div>
+      <div class="hcard">
+        <div class="hrow2"><button class="btn pri" id="saveNow">Save now</button><span id="hubSave" class="none"></span></div>
+        <div class="hint" style="margin:9px 0 0">Everything saves by itself a moment after you stop typing${SYNC.on?", then syncs to your cloud":""}. Use this if you want to be certain before closing the tab.</div>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Backups</h2><span class="n" id="snapN"></span></div>
+      <div class="hcard">
+        <div class="hrow2">
+          <button class="btn pri" id="bkNow" ${books.length?"":"disabled"}>＋ Back up now</button>
+          <label class="hrow2" style="font-size:13px;gap:6px"><input type="checkbox" id="autoBk" ${settings.autoBackup?"checked":""}> Automatic daily backup</label>
+          <label class="hrow2" style="font-size:13px;gap:6px;color:var(--mut)">keep last
+            <select id="keepN" class="btn" style="padding:4px 8px">${[1,2,3,5,10].map(n=>`<option value="${n}" ${settings.keepAuto===n?"selected":""}>${n}</option>`).join("")}</select>
+          </label>
+        </div>
+        <div class="hint" style="margin:9px 0 0">Backups live inside this browser. Restoring merges one back in — books you've added since are kept. For a copy you can keep somewhere safe, use Export below.</div>
+        <div id="snapList"></div>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Export &amp; import</h2></div>
+      <div class="hcard">
+        <div class="hrow2">
+          <button class="btn" id="expBtn" ${books.length?"":"disabled"}>⭳ Export backup file</button>
+          <button class="btn" id="impBtn">⭱ Import backup file</button>
+        </div>
+        <div class="hint" style="margin:9px 0 0">Export downloads a single .json holding every book, cover and picture — your safety net, and how you move your shelf onto another device or back into the old offline file.</div>
+      </div>
+    </div>`;
+
+  q("#expBtn").onclick=exportBackup;
+  q("#impBtn").onclick=()=>q("#importFile").click();
+  q("#autoBk").onchange=e=>{settings.autoBackup=e.target.checked;saveSettings();};
+  q("#keepN").onchange=async e=>{settings.keepAuto=+e.target.value;saveSettings();await pruneSnapshots();refreshSnaps();};
+  q("#saveNow").onclick=async()=>{
+    const el=q("#hubSave");el.textContent="Saving…";
+    clearTimeout(saveTimer);
+    if(cur)await commitCur();
+    if(SYNC.on)await flushQueue();
+    if(!q("#hubSave"))return;
+    q("#hubSave").textContent=!SYNC.on?"All saved ✓":SYNC.status==="synced"?"All saved and synced ✓":"Saved here — sync will catch up";
+    setTimeout(()=>{const e2=q("#hubSave");if(e2)e2.textContent="";},4000);
+  };
+  q("#bkNow").onclick=async()=>{
+    const b=q("#bkNow");b.disabled=true;b.textContent="Backing up…";
+    try{await makeSnapshot(false);}catch(e){alert("Couldn't make a backup — storage may be full.");}
+    if(q("#bkNow")){q("#bkNow").disabled=false;q("#bkNow").textContent="＋ Back up now";}
+    refreshSnaps();refreshStorage();
+  };
+  refreshSnaps();refreshStorage();
+}
+
+async function refreshStorage(){
+  const card=q("#stoCard");if(!card)return;
+  const si=await storageInfo();
+  const snaps=await dbAll("snapshots");
+  const snapBytes=snaps.reduce((s,x)=>s+(x.size||0),0);
+  const nCov=(await dbAllKeys("covers")).length,nImg=(await dbAllKeys("images")).length;
+  const counts=`${books.length} book${books.length===1?"":"s"} · ${nCov} cover${nCov===1?"":"s"} · ${nImg} picture${nImg===1?"":"s"} · ${snaps.length} backup${snaps.length===1?"":"s"} (${fmtBytes(snapBytes)})`;
+  if(!q("#stoCard"))return;
+  if(si&&si.quota){
+    const pct=si.usage/si.quota*100;
+    q("#stoCard").innerHTML=`
+      <div class="hrow2"><span class="bignum">${fmtBytes(si.usage)}</span><span class="none">used of ${fmtBytes(si.quota)} available on this device</span></div>
+      <div class="bar"><i class="${pct>90?"full":pct>70?"warn":""}" style="width:${Math.max(1,Math.min(100,pct))}%"></i></div>
+      <div class="none">${counts}</div>
+      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}`;
+  }else{
+    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>`;
+  }
+}
+async function refreshSnaps(){
+  const box=q("#snapList");if(!box)return;
+  const list=(await dbAll("snapshots")).sort((a,b)=>b.at-a.at);
+  if(!q("#snapList"))return;
+  const n=q("#snapN");if(n)n.textContent=list.length?`(${list.length})`:"";
+  q("#snapList").innerHTML=list.length?list.map(s=>`
+    <div class="snap">
+      <div><div class="when">${fmtWhen(s.at)}</div><div class="meta">${s.nbooks} book${s.nbooks===1?"":"s"} · ${fmtBytes(s.size)}</div></div>
+      <span class="tagx ${s.auto?"":"man"}">${s.auto?"AUTO":"SAVED"}</span>
+      <div class="sp">
+        <button class="btn" data-sr="${s.id}">Restore</button>
+        <button class="btn" data-sd="${s.id}" title="Download as a file">⭳</button>
+        <button class="btn danger" data-sx="${s.id}" title="Delete this backup">✕</button>
+      </div>
+    </div>`).join(""):'<div class="none" style="margin-top:9px">No backups yet.</div>';
+  qa("[data-sr]",box).forEach(b=>b.onclick=async()=>{
+    const s=await dbGet("snapshots",b.dataset.sr);if(!s)return;
+    if(!confirm(`Restore the backup from ${fmtWhen(s.at)}?\n\nIt holds ${s.nbooks} book${s.nbooks===1?"":"s"}. Books you've added since are kept; any book also in the backup goes back to its backed-up version.\n\nA backup of right now is taken first, so you can undo this.`))return;
+    const msg=q("#busyMsg");if(msg)msg.textContent="Restoring…";
+    try{
+      await makeSnapshot(true);
+      const cnt=await applyBackup(JSON.parse(s.data));
+      render();
+      alert(`Restored ${cnt} book${cnt===1?"":"s"} from ${fmtWhen(s.at)}.`);
+    }catch(e){alert("That backup couldn't be restored.");}
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+  });
+  qa("[data-sd]",box).forEach(b=>b.onclick=async()=>{
+    const s=await dbGet("snapshots",b.dataset.sd);if(!s)return;
+    downloadJson(s.data,`my-shelf-backup-${new Date(s.at).toISOString().slice(0,10)}.json`);
+  });
+  qa("[data-sx]",box).forEach(b=>b.onclick=async()=>{
+    const s=await dbGet("snapshots",b.dataset.sx);if(!s)return;
+    if(!confirm(`Delete the backup from ${fmtWhen(s.at)}? This can't be undone.`))return;
+    await dbDel("snapshots",s.id);refreshSnaps();refreshStorage();
+  });
 }
 
 /* =============== search & stats =============== */
@@ -1025,6 +1190,7 @@ function renderEditor(){
         <button class="backbtn" id="uBtn" title="Undo" disabled>↶</button>
         <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
         <span class="savemsg ok" id="saveMsg">Saved</span>
+        <button class="sm" id="edSave" title="Save this book right now">✓ Save now</button>
         <button class="delbtn" id="edDel">🗑</button>
       </div>
       <div class="r2" id="tbar">
@@ -1114,6 +1280,14 @@ function renderEditor(){
   q("#uBtn").onclick=()=>finishSaveThen(doUndo);
   q("#rBtn").onclick=()=>finishSaveThen(doRedo);
   refreshHistBtns();
+  q("#edSave").onclick=async()=>{
+    clearTimeout(saveTimer);
+    await commitCur();
+    if(SYNC.on)flushQueue();
+    const el=q("#saveMsg");
+    if(el){el.textContent="Saved ✓";el.className="savemsg ok";
+      setTimeout(()=>{const e2=q("#saveMsg");if(e2&&e2.textContent==="Saved ✓")e2.textContent="Saved";},2000);}
+  };
   q("#edDel").onclick=()=>deleteBookById(cur.id);
   q("#edImg").onclick=()=>q("#imgFile").click();
   let tagMode=false;
@@ -1368,47 +1542,88 @@ function finishSaveThen(fn){
   }else fn();
 }
 
-/* =============== backup =============== */
+/* =============== backup, snapshots & storage =============== */
+const fmtBytes=n=>{if(n==null)return "–";const u=["B","KB","MB","GB"];let i=0,v=n;
+  while(v>=1024&&i<u.length-1){v/=1024;i++;}
+  return (i===0||v>=10?Math.round(v):v.toFixed(1))+" "+u[i];};
+const fmtWhen=t=>new Date(t).toLocaleString(undefined,{day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"});
+
+async function storageInfo(){
+  try{if(navigator.storage&&navigator.storage.estimate){const e=await navigator.storage.estimate();
+    return {usage:e.usage||0,quota:e.quota||0};}}catch(e){}
+  return null;
+}
+function saveSettings(){dbPut("meta",{k:"settings",v:settings});}
+
+/* one shared shape for export, snapshots and import — keeps the old file compatible */
+async function buildBackup(){
+  const covers={};(await dbAll("covers")).forEach(c=>covers[c.id]=c.data);
+  const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
+  return {app:"my-shelf",version:1,exported:new Date().toISOString(),
+    index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,covers,images};
+}
+function downloadJson(json,name){
+  const blob=new Blob([json],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download=name;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
 async function exportBackup(){
-  const msg=q("#busyMsg");msg.textContent="Packing your shelf…";
+  const msg=q("#busyMsg");if(msg)msg.textContent="Packing your shelf…";
   try{
-    const covers={};(await dbAll("covers")).forEach(c=>covers[c.id]=c.data);
-    const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
-    const data={app:"my-shelf",version:1,exported:new Date().toISOString(),
-      index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,covers,images};
-    const blob=new Blob([JSON.stringify(data)],{type:"application/json"});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");
-    a.href=url;a.download=`my-shelf-backup-${new Date().toISOString().slice(0,10)}.json`;
-    document.body.appendChild(a);a.click();a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),4000);
+    downloadJson(JSON.stringify(await buildBackup()),`my-shelf-backup-${new Date().toISOString().slice(0,10)}.json`);
   }catch(e){alert("Export ran into a problem — try again.");}
-  msg.textContent="";
+  if(q("#busyMsg"))q("#busyMsg").textContent="";
+}
+/* merges a backup in: existing books kept, matching ones updated */
+async function applyBackup(data){
+  if(!data||data.app!=="my-shelf"||!Array.isArray(data.books))throw new Error("not a shelf backup");
+  for(const b of data.books)await dbPut("books",b);
+  for(const[id,c]of Object.entries(data.covers||{})){await dbPut("covers",{id,data:c});coverCache.delete(id);SYNC.triedCover.delete(id);}
+  for(const[k,d]of Object.entries(data.images||{}))await dbPut("images",{key:k,data:d});
+  const map=new Map(books.map(b=>[b.id,b]));
+  for(const b of data.books)map.set(b.id,b);
+  books=[...map.values()];
+  genres=Object.assign({},data.genres||{},genres);
+  dnfCustom=[...new Set([...dnfCustom,...(data.dnfReasons||[])])];
+  audCustom=[...new Set([...audCustom,...(data.audiences||[])])];
+  saveMeta();
+  if(SYNC.on){
+    for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
+    for(const id of Object.keys(data.covers||{}))enqueue({kind:"cover",id});
+    for(const k of Object.keys(data.images||{}))enqueue({kind:"img",key:k});
+    saveDeletions();flushQueue();
+  }
+  return data.books.length;
+}
+
+async function makeSnapshot(auto){
+  const json=JSON.stringify(await buildBackup());
+  const snap={id:uid(),at:Date.now(),auto:!!auto,size:json.length,nbooks:books.length,data:json};
+  await dbPut("snapshots",snap);
+  await pruneSnapshots();
+  return snap;
+}
+async function pruneSnapshots(){
+  const autos=(await dbAll("snapshots")).filter(s=>s.auto).sort((a,b)=>b.at-a.at);
+  for(const s of autos.slice(Math.max(1,settings.keepAuto|0)))await dbDel("snapshots",s.id);
+}
+async function maybeAutoBackup(){
+  if(!settings.autoBackup||!books.length)return;
+  const last=(await dbAll("snapshots")).filter(s=>s.auto).sort((a,b)=>b.at-a.at)[0];
+  if(last&&Date.now()-last.at<24*3600*1000)return;
+  try{await makeSnapshot(true);}catch(e){console.warn("[shelf] auto-backup skipped",e);}
 }
 
 q("#importFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
   const msg=q("#busyMsg");if(msg)msg.textContent="Restoring from backup…";
   try{
-    const data=JSON.parse(await f.text());
-    if(!data||data.app!=="my-shelf"||!Array.isArray(data.books))throw 0;
-    for(const b of data.books)await dbPut("books",b);
-    for(const[id,c]of Object.entries(data.covers||{})){await dbPut("covers",{id,data:c});coverCache.delete(id);}
-    for(const[k,d]of Object.entries(data.images||{}))await dbPut("images",{key:k,data:d});
-    const map=new Map(books.map(b=>[b.id,b]));
-    for(const b of data.books)map.set(b.id,b);
-    books=[...map.values()];
-    genres=Object.assign({},data.genres||{},genres);
-    dnfCustom=[...new Set([...dnfCustom,...(data.dnfReasons||[])])];
-    saveMeta();
-    if(SYNC.on){
-      for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
-      for(const id of Object.keys(data.covers||{}))enqueue({kind:"cover",id});
-      for(const k of Object.keys(data.images||{}))enqueue({kind:"img",key:k});
-      saveDeletions();flushQueue();
-    }
+    const n=await applyBackup(JSON.parse(await f.text()));
     render();
-    alert(`Restored ${data.books.length} book${data.books.length===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`);
+    alert(`Restored ${n} book${n===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`);
   }catch(err){alert("That file couldn't be read as a shelf backup.");}
   if(q("#busyMsg"))q("#busyMsg").textContent="";
 });
