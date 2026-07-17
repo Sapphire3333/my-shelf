@@ -165,7 +165,7 @@
   .scrap{position:absolute;z-index:30;pointer-events:none;user-select:none}
   .scrap img{width:100%;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,.18);display:block}
   .scrap.bh{opacity:.4}
-  #edPage.arr .scrap{pointer-events:auto;z-index:40;cursor:move}
+  #edPage.arr .scrap{pointer-events:auto;cursor:move}
   #edPage.arr .scrap.bh{opacity:.6}
   #edPage.arr .scrap img{outline:2px solid #2dd4bf;box-shadow:0 6px 16px rgba(0,0,0,.25)}
   .sbar{position:absolute;top:-32px;left:0;display:none;gap:3px;background:#292524;border-radius:7px;padding:3px 5px}
@@ -312,7 +312,7 @@
   .padshape.shaped{border-radius:0;box-shadow:none}
   .padtext{outline:none;font-size:14px;height:100%;overflow:auto}
   .padtext:empty:before{content:attr(data-ph);color:rgba(0,0,0,.28)}
-  #edPage.arr .pad{cursor:move;z-index:45;outline:2px solid #2dd4bf;box-shadow:0 6px 16px rgba(0,0,0,.25)}
+  #edPage.arr .pad{cursor:move;outline:2px solid #2dd4bf}
   #edPage.arr .padtext{pointer-events:none;user-select:none}
   .pbar{position:absolute;top:-30px;left:0;display:none;gap:3px;background:#292524;border-radius:7px;padding:3px 5px;z-index:2}
   #edPage.arr .pad .pbar{display:flex}
@@ -1555,6 +1555,19 @@ function renderSearchBody(){
 }
 
 /* =============== editor =============== */
+/* The colour wheel opens a dialog, which drops focus and clears the text selection.
+   Track the last selection inside an editable so we can put it back. */
+let savedRange=null,savedEd=null;
+function saveSel(){
+  const s=window.getSelection();
+  if(!s||!s.rangeCount)return;
+  const n=s.getRangeAt(0).commonAncestorContainer;
+  const el=n.nodeType===1?n:n.parentElement;
+  const ed=el&&el.closest&&el.closest('[contenteditable="true"]');
+  if(ed){savedRange=s.getRangeAt(0).cloneRange();savedEd=ed;}
+}
+document.addEventListener("selectionchange",saveSel);
+
 async function openBook(id,fresh){
   const found=books.find(b=>b.id===id);
   isNew=!found;
@@ -1605,7 +1618,8 @@ function renderEditor(){
         <button class="tbtn i" data-cmd="italic">I</button>
         <button class="tbtn u" data-cmd="underline">U</button>
         <span class="vline"></span>
-        ${TEXT_COLORS.map(c=>`<button class="cdot" data-col="${c}" style="background:${c}" title="Text color"></button>`).join("")}
+        ${TEXT_COLORS.map(c=>`<button class="cdot" data-col="${c}" style="background:${c}" title="Text colour"></button>`).join("")}
+        <input type="color" id="tcol" value="#44403c" title="Any text colour you like">
         <span class="vline"></span>
         <button class="sm" id="edImg">🖼 Image</button>
         <button class="sm" id="edPad" title="Add a notepad page you can write on and drag anywhere">🗒 Note</button>
@@ -1699,6 +1713,16 @@ function renderEditor(){
   tbar.addEventListener("mousedown",e=>{if(e.target.closest("[data-cmd],[data-col],#edTag"))e.preventDefault();});
   qa("[data-cmd]",tbar).forEach(x=>x.onclick=()=>{document.execCommand("styleWithCSS",false,true);document.execCommand(x.dataset.cmd);});
   qa("[data-col]",tbar).forEach(x=>x.onclick=()=>{document.execCommand("styleWithCSS",false,true);document.execCommand("foreColor",false,x.dataset.col);});
+  const tcol=q("#tcol");
+  tcol.addEventListener("pointerdown",saveSel);
+  tcol.addEventListener("input",e=>{
+    if(!savedRange||!savedEd)return;
+    savedEd.focus();
+    const s=window.getSelection();s.removeAllRanges();s.addRange(savedRange);
+    document.execCommand("styleWithCSS",false,true);
+    document.execCommand("foreColor",false,e.target.value);
+    saveSel();
+  });
 
   q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view="library";render();});};
   q("#uBtn").onclick=()=>finishSaveThen(doUndo);
@@ -2144,6 +2168,15 @@ function renderEditor(){
   };
   setDrawUI();
 
+  /* ---- stacking: pictures and notes share one order, so either can sit on top ---- */
+  const zOf=o=>o.z||0;
+  const allItems=()=>[...(cur.images||[]),...(cur.pads||[])];
+  function normZ(){
+    allItems().sort((a,b)=>zOf(a)-zOf(b)).forEach((o,i)=>o.z=i);
+  }
+  function toFront(o){o.z=1e6;normZ();renderImages();renderPads();scheduleSave();}
+  function toBack(o){o.z=-1e6;normZ();renderImages();renderPads();scheduleSave();}
+
   /* drag the amber handle to tilt; double-click it to straighten. Shift snaps to 15°. */
   function startRot(handle,el,obj){
     if(!handle)return;
@@ -2183,7 +2216,7 @@ function renderEditor(){
     const layer=q("#padLayer");
     layer.innerHTML=cur.pads.map(p=>{
       const sh=shapeOf(p);
-      return `<div class="pad" data-pad="${p.id}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;transform:${xform(p)}">
+      return `<div class="pad" data-pad="${p.id}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;transform:${xform(p)};z-index:${10+Math.min(34,zOf(p))}">
         <div class="padshape ${sh!=="none"?"shaped":""}" style="${padStyle(p.skin)}${sh!=="none"?`;clip-path:url(#pc-${sh})`:""}">
           <div class="padtext" contenteditable="${arrange?"false":"true"}" data-ph="Write a note…" style="padding:${shapeInset(sh)}%"></div>
           <svg class="dsvg" preserveAspectRatio="none"></svg>
@@ -2192,6 +2225,8 @@ function renderEditor(){
           <button class="pskin" title="Change its look and shape">🎨</button>
           <button class="pflh" title="Flip across">⇄</button>
           <button class="pflv" title="Flip upside down">⇅</button>
+          <button class="pfront" title="Bring to front">⬆</button>
+          <button class="pback" title="Send to back">⬇</button>
           <button class="pdel" title="Delete this note">✕</button>
         </div>
         <div class="rot" title="Drag to tilt · double-click to straighten"></div>
@@ -2206,6 +2241,8 @@ function renderEditor(){
         cur.pads=cur.pads.filter(x=>x.id!==p.id);renderPads();pageMin();scheduleSave();};
       q(".pflh",el).onclick=e=>{e.stopPropagation();p.flipH=!p.flipH;el.style.transform=xform(p);scheduleSave();};
       q(".pflv",el).onclick=e=>{e.stopPropagation();p.flipV=!p.flipV;el.style.transform=xform(p);scheduleSave();};
+      q(".pfront",el).onclick=e=>{e.stopPropagation();toFront(p);};
+      q(".pback",el).onclick=e=>{e.stopPropagation();toBack(p);};
       q(".pskin",el).onclick=e=>{e.stopPropagation();
         const box=q("#padPanel");box.hidden=false;
         drawPadPicker(box,p,()=>{settings.lastPadSkin=p.skin;settings.lastPadShape=p.shape;saveSettings();renderPads();scheduleSave();});
@@ -2234,13 +2271,15 @@ function renderEditor(){
   function renderImages(){
     const layer=q("#imgLayer");
     layer.innerHTML=cur.images.map(im=>curImgs[im.id]?`
-      <div class="scrap ${im.behind?"bh":""}" data-im="${im.id}" style="left:${im.x}px;top:${im.y}px;width:${im.w}px;transform:${xform(im)}">
+      <div class="scrap ${im.behind?"bh":""}" data-im="${im.id}" style="left:${im.x}px;top:${im.y}px;width:${im.w}px;transform:${xform(im)};z-index:${10+Math.min(34,zOf(im))}">
         <img src="${curImgs[im.id]}" draggable="false">
         <svg class="dsvg" preserveAspectRatio="none"></svg>
         <div class="sbar">
           <button class="sfade ${im.behind?"on":""}" title="${im.behind?"Make fully visible":"Fade so text shows through"}">◐</button>
           <button class="sflh" title="Flip across">⇄</button>
           <button class="sflv" title="Flip upside down">⇅</button>
+          <button class="sfront" title="Bring to front">⬆</button>
+          <button class="sback" title="Send to back">⬇</button>
           <button class="sdel" title="Delete image">✕</button>
         </div>
         <div class="rot" title="Drag to tilt · double-click to straighten"></div>
@@ -2251,6 +2290,8 @@ function renderEditor(){
       q(".sfade",el).onclick=e=>{e.stopPropagation();im.behind=!im.behind;renderImages();scheduleSave();};
       q(".sflh",el).onclick=e=>{e.stopPropagation();im.flipH=!im.flipH;el.style.transform=xform(im);scheduleSave();};
       q(".sflv",el).onclick=e=>{e.stopPropagation();im.flipV=!im.flipV;el.style.transform=xform(im);scheduleSave();};
+      q(".sfront",el).onclick=e=>{e.stopPropagation();toFront(im);};
+      q(".sback",el).onclick=e=>{e.stopPropagation();toBack(im);};
       startRot(q(".rot",el),el,im);
       q(".sdel",el).onclick=e=>{e.stopPropagation();
         delete curImgs[im.id];
