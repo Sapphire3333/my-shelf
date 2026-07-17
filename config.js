@@ -1,21 +1,24 @@
 /* ============================================================
    My Shelf — Supabase connection settings
    ------------------------------------------------------------
-   Paste your project's two values below. Find them in the
-   Supabase dashboard:  Project Settings → API
-     • url      = "https://ckomxkieiypfznyfagpc.supabase.co/rest/v1/"        (looks like https://abcd1234.supabase.co)
-     • anonKey  = "sb_publishable_n6ma7ssOgVU2wG5XFjXPHA_5B4XhiGQ    (a long token starting with "eyJ...")
+   The two values live in the settings block at the BOTTOM of this
+   file. Find them in the Supabase dashboard: Project Settings → API
+     • url      = your "Project URL" — the bare address only,
+                  e.g. https://abcd1234.supabase.co
+                  (no /rest/v1/ on the end — supabase-js adds that)
+     • anonKey  = your "anon public" key, or on newer projects the
+                  "Publishable key" (sb_publishable_…). Either works.
 
    These two values are PUBLIC by design — it is safe for them to
    live in this file and on GitHub. Your data is protected by
    Row Level Security (see schema.sql): every row and every image
    is locked to the signed-in user who owns it.
 
-   Until you replace the YOUR_… placeholders, the app simply runs
-   in local-only mode (exactly like the old offline file) — no
-   login, no sync. Fill these in to switch cloud sync on.
+   If these are left as YOUR_… placeholders, the app just runs in
+   local-only mode (exactly like the old offline file) — no login,
+   no sync.
    ============================================================ */
 window.SHELF_CONFIG = {
-  url: "https://YOUR_PROJECT_REF.supabase.co",
-  anonKey: "YOUR_ANON_PUBLIC_KEY"
+  url: "https://ckomxkieiypfznyfagpc.supabase.co",
+  anonKey: "sb_publishable_n6ma7ssOgVU2wG5XFjXPHA_5B4XhiGQ"
 };

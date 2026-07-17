@@ -305,6 +305,35 @@
   .bgdrop:hover,.bgdrop.over{border-color:#2dd4bf;background:#f0fdfa}
   .opac{display:flex;align-items:center;gap:9px;margin-top:11px;font-size:13px;color:var(--mut)}
   .opac input[type=range]{flex:1;accent-color:var(--teal)}
+
+  /* notepad pages */
+  .pad{position:absolute;z-index:35;border-radius:10px;box-shadow:0 3px 10px rgba(0,0,0,.15);padding:13px;overflow:hidden;background-size:cover;background-position:center}
+  .padtext{outline:none;font-size:14px;height:100%;overflow:auto}
+  .padtext:empty:before{content:attr(data-ph);color:rgba(0,0,0,.28)}
+  #edPage.arr .pad{cursor:move;z-index:45;outline:2px solid #2dd4bf;box-shadow:0 6px 16px rgba(0,0,0,.25)}
+  #edPage.arr .padtext{pointer-events:none;user-select:none}
+  .pbar{position:absolute;top:-30px;left:0;display:none;gap:3px;background:#292524;border-radius:7px;padding:3px 5px;z-index:2}
+  #edPage.arr .pad .pbar{display:flex}
+  .pbar button{color:#fff;border-radius:5px;padding:2px 6px;font-size:13px}
+  .pbar button:hover{background:#57534e}
+  .pbar .pdel:hover{background:var(--rose)}
+  .prs{position:absolute;right:-6px;bottom:-6px;width:15px;height:15px;background:#14b8a6;border-radius:4px;cursor:nwse-resize;display:none;box-shadow:0 1px 3px rgba(0,0,0,.3);z-index:2}
+  #edPage.arr .prs{display:block}
+
+  /* draw mode */
+  #drawLayer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:46;overflow:visible}
+  .dsvg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible}
+  #edPage.draw{cursor:crosshair}
+  #edPage.draw .scrap,#edPage.draw .pad{pointer-events:auto}
+  #edPage.draw .padtext,#edPage.draw .rich,#edPage.draw .edhead,#edPage.draw .lists,
+  #edPage.draw .lbox,#edPage.draw #entWrap,#edPage.draw .cap2,#edPage.draw .hint{pointer-events:none}
+  #edPage.draw .scrap{opacity:1!important}
+  .dbar{display:flex;align-items:center;gap:6px;padding:6px 0;border-top:1px solid #e7e5e4aa;flex-wrap:wrap}
+  .dtool.on{background:var(--teal);border-color:var(--teal);color:#fff}
+  #dcol{width:30px;height:26px;border:1px solid var(--line);border-radius:7px;background:#fff;padding:1px;cursor:pointer}
+  #dw{width:88px;accent-color:var(--teal)}
+  .dsw{width:16px;height:16px;border-radius:50%;padding:0;border:1px solid rgba(0,0,0,.15)}
+  .dsw:hover{transform:scale(1.2)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
@@ -337,6 +366,64 @@ const BG_PRESETS=[
   {id:"lavender",name:"Lavender",css:"background-image:linear-gradient(160deg,#f6f3ff,#ece7fb 50%,#e2dbf7)"},
   {id:"rose",name:"Rose",css:"background-image:linear-gradient(160deg,#fff5f6,#ffe9ec 50%,#fbdbe1)"},
 ];
+/* drawing */
+const DRAW_TOOLS=[["pen","✏️","Pen — free line"],["line","╱","Straight line"],["arrow","↗","Arrow"],
+  ["rect","▭","Rectangle"],["ellipse","◯","Ellipse"],["hl","🖍","Highlighter"],["erase","🧽","Rub out a mark"]];
+const DRAW_SWATCHES=["#dc2626","#ea580c","#ca8a04","#059669","#0d9488","#2563eb","#7c3aed","#db2777","#44403c","#ffffff"];
+let drawMode=false,drawTool="pen",drawColor="#dc2626",drawWidth=3;
+const distToSeg=(p,a,b)=>{
+  const dx=b[0]-a[0],dy=b[1]-a[1],L=dx*dx+dy*dy;
+  if(!L)return Math.hypot(p[0]-a[0],p[1]-a[1]);
+  let t=((p[0]-a[0])*dx+(p[1]-a[1])*dy)/L;t=Math.max(0,Math.min(1,t));
+  return Math.hypot(p[0]-(a[0]+t*dx),p[1]-(a[1]+t*dy));
+};
+/* strokes are stored 0..1 on images/notes (so they scale with them) and in px on the page */
+function drawSvgHtml(strokes,sx,sy){
+  return (strokes||[]).map(s=>{
+    const p=(s.pts||[]).map(q2=>[q2[0]*sx,q2[1]*sy]);
+    if(!p.length)return "";
+    const hl=s.t==="hl";
+    const w=hl?Math.max(9,s.w*4):s.w;
+    const at=`stroke="${s.c}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${hl?.35:1}"`;
+    const n=v=>v.toFixed(1);
+    if(s.t==="pen"||hl)return `<polyline points="${p.map(q2=>n(q2[0])+","+n(q2[1])).join(" ")}" ${at}/>`;
+    const a=p[0],b=p[1]||p[0];
+    if(s.t==="line")return `<line x1="${n(a[0])}" y1="${n(a[1])}" x2="${n(b[0])}" y2="${n(b[1])}" ${at}/>`;
+    if(s.t==="arrow"){
+      const ang=Math.atan2(b[1]-a[1],b[0]-a[0]),L=Math.max(10,s.w*3.4);
+      const h1=[b[0]-L*Math.cos(ang-Math.PI/7),b[1]-L*Math.sin(ang-Math.PI/7)];
+      const h2=[b[0]-L*Math.cos(ang+Math.PI/7),b[1]-L*Math.sin(ang+Math.PI/7)];
+      return `<line x1="${n(a[0])}" y1="${n(a[1])}" x2="${n(b[0])}" y2="${n(b[1])}" ${at}/>`
+        +`<polyline points="${n(h1[0])},${n(h1[1])} ${n(b[0])},${n(b[1])} ${n(h2[0])},${n(h2[1])}" ${at}/>`;
+    }
+    if(s.t==="rect")return `<rect x="${n(Math.min(a[0],b[0]))}" y="${n(Math.min(a[1],b[1]))}" width="${n(Math.abs(b[0]-a[0]))}" height="${n(Math.abs(b[1]-a[1]))}" ${at}/>`;
+    if(s.t==="ellipse")return `<ellipse cx="${n((a[0]+b[0])/2)}" cy="${n((a[1]+b[1])/2)}" rx="${n(Math.abs(b[0]-a[0])/2)}" ry="${n(Math.abs(b[1]-a[1])/2)}" ${at}/>`;
+    return "";
+  }).join("");
+}
+function nearStroke(s,px,sx,sy){
+  const p=(s.pts||[]).map(q2=>[q2[0]*sx,q2[1]*sy]);
+  if(!p.length)return false;
+  const tol=Math.max(11,(s.t==="hl"?s.w*4:s.w));
+  if(s.t==="pen"||s.t==="hl")return p.some((q2,i)=>i&&distToSeg(px,p[i-1],q2)<tol)||Math.hypot(p[0][0]-px[0],p[0][1]-px[1])<tol;
+  const a=p[0],b=p[1]||p[0];
+  if(s.t==="line"||s.t==="arrow")return distToSeg(px,a,b)<tol;
+  const x0=Math.min(a[0],b[0])-tol,x1=Math.max(a[0],b[0])+tol,y0=Math.min(a[1],b[1])-tol,y1=Math.max(a[1],b[1])+tol;
+  return px[0]>=x0&&px[0]<=x1&&px[1]>=y0&&px[1]<=y1;
+}
+
+/* notepad looks — CSS only, no assets */
+const PAD_SKINS=[
+  {id:"yellow",name:"Yellow sticky",css:"background:#fef9c3;border:1px solid #fde68a"},
+  {id:"pink",name:"Pink sticky",css:"background:#fce7f3;border:1px solid #fbcfe8"},
+  {id:"blue",name:"Blue sticky",css:"background:#dbeafe;border:1px solid #bfdbfe"},
+  {id:"green",name:"Green sticky",css:"background:#dcfce7;border:1px solid #bbf7d0"},
+  {id:"lined",name:"Notepad page",css:"background-color:#fffef7;background-image:repeating-linear-gradient(#fffef7 0 23px,#cfe3f0 23px 24px);border:1px solid #e7e5e4"},
+  {id:"index",name:"Index card",css:"background-color:#fff;background-image:repeating-linear-gradient(#fff 0 22px,#dbeafe 22px 23px);border:1px solid #e7e5e4;border-top:3px solid #fca5a5"},
+  {id:"graph",name:"Graph card",css:"background-color:#fbfdff;background-image:repeating-linear-gradient(#e3eef7 0 1px,transparent 1px 18px),repeating-linear-gradient(90deg,#e3eef7 0 1px,transparent 1px 18px);border:1px solid #e7e5e4"},
+  {id:"kraft",name:"Kraft",css:"background:#e8d9bf;border:1px solid #d6c3a1"},
+  {id:"plain",name:"Plain card",css:"background:#fff;border:1px solid #e7e5e4"},
+];
 const LEN_BUCKETS=[{label:"Under 100",min:1,max:99},{label:"100 – 249",min:100,max:249},{label:"250 – 399",min:250,max:399},{label:"400 – 599",min:400,max:599},{label:"600 – 999",min:600,max:999},{label:"1000+",min:1000,max:Infinity}];
 function wordRange(r){
   const node=r.startContainer;
@@ -366,7 +453,7 @@ const imgKeysOf=b=>!b?[]:[...((b.images)||[]).map(im=>b.id+"|"+im.id),
   ...((b.entries)||[]).filter(en=>en.cover).map(en=>b.id+"|"+en.id)];
 const q=(sel,root=document)=>root.querySelector(sel);
 const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
-const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],summary:"",pros:[],cons:[],quotes:[],canvasText:"",images:[],created:Date.now()});
+const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],summary:"",pros:[],cons:[],quotes:[],canvasText:"",images:[],pads:[],draw:[],created:Date.now()});
 
 function compressImage(file,maxDim=1000,quality=.82){
   return new Promise((res,rej)=>{
@@ -404,8 +491,9 @@ const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.ons
 let books=[],genres={},dnfCustom=[],audCustom=[];
 let settings={autoBackup:true,keepAuto:3,bg:{id:"none",opacity:100}};
 let bgList=[];                 /* [{id,name}] custom backgrounds, images live at "__bg|<id>" */
-const bgCache=new Map();
-let activeBgPicker=null,bgPick=null;
+let padList=[];                /* [{id,name}] custom notepad looks, images live at "__pad|<id>" */
+const bgCache=new Map(),padCache=new Map();
+let activeBgPicker=null,bgPick=null,bgAdd=null;
 let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="none";
 let cur=null,curCover=null,curImgs={},curEnt={},arrange=false,saveTimer=null,isNew=false;
 const coverCache=new Map();
@@ -477,7 +565,7 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
@@ -511,9 +599,11 @@ async function pullAll(){
           else if(row.key==="deletions"){const rv=row.value||{};for(const k in rv)deletions[k]=Math.max(deletions[k]||0,rv[k]);}
           else if(row.key==="backgrounds"){const have=new Set(bgList.map(x=>x.id));
             (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id))bgList.push(x);});}
+          else if(row.key==="padskins"){const have=new Set(padList.map(x=>x.id));
+            (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id))padList.push(x);});}
         }
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
-        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});
+        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});
       }
     }catch(e){console.warn("[shelf] meta pull",e);}
     // books (per-book last-write-wins by `modified`)
@@ -659,12 +749,14 @@ async function initSync(){
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
   const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
   const bl=await dbGet("meta","backgrounds");bgList=bl&&Array.isArray(bl.v)?bl.v:[];
+  const pl=await dbGet("meta","padskins");padList=pl&&Array.isArray(pl.v)?pl.v:[];
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   applyBg();
   try{
     const live=new Set(books.map(b=>b.id));
     const validImg=new Set();books.forEach(b=>imgKeysOf(b).forEach(k=>validImg.add(k)));
     bgList.forEach(c=>validImg.add(bgKey(c.id)));
+    padList.forEach(c=>validImg.add(padKey(c.id)));
     for(const k of await dbAllKeys("covers"))if(!live.has(k))await dbDel("covers",k);
     for(const k of await dbAllKeys("images"))if(!validImg.has(k))await dbDel("images",k);
   }catch(e){}
@@ -707,6 +799,69 @@ async function deleteCustomBg(id){
   if(SYNC.on)enqueue({kind:"imgDel",key:bgKey(id)});
   if(settings.bg&&settings.bg.id===id){settings.bg={id:"none",opacity:settings.bg.opacity??100};saveSettings();}
 }
+/* ---- custom notepad looks ---- */
+const padKey=id=>"__pad|"+id;
+function savePadList(){dbPut("meta",{k:"padskins",v:padList});enqueue({kind:"meta",key:"padskins"});}
+async function preloadPads(){
+  for(const c of padList)if(!padCache.has(c.id))padCache.set(c.id,await loadImgData(padKey(c.id)));
+}
+async function addCustomPad(file){
+  if(!file||!file.type.startsWith("image/"))return null;
+  let data;try{data=await compressImage(file,900,.85);}catch(e){alert("That image couldn't be read.");return null;}
+  const id=uid();
+  try{await dbPut("images",{key:padKey(id),data});}catch(e){alert("That notepad couldn't be saved — storage may be full.");return null;}
+  padList.push({id,name:(file.name||"My notepad").replace(/\.[^.]+$/,"").slice(0,26)||"My notepad"});
+  padCache.set(id,data);savePadList();
+  if(SYNC.on)enqueue({kind:"img",key:padKey(id)});
+  return id;
+}
+async function deleteCustomPad(id){
+  padList=padList.filter(x=>x.id!==id);padCache.delete(id);
+  await dbDel("images",padKey(id));savePadList();
+  if(SYNC.on)enqueue({kind:"imgDel",key:padKey(id)});
+}
+const padStyle=skin=>{
+  const s=PAD_SKINS.find(x=>x.id===skin);
+  if(s)return s.css;
+  const img=padCache.get(skin);
+  return img?`background-image:url('${img}');border:1px solid #e7e5e4`:PAD_SKINS[0].css;
+};
+async function drawPadPicker(box,getSkin,setSkin){
+  await preloadPads();
+  if(!box||!document.body.contains(box))return;
+  const redraw=()=>drawPadPicker(box,getSkin,setSkin);
+  const pick=id=>{setSkin(id);redraw();};
+  activeBgPicker={box,pick,add:addCustomPad};
+  const c0=getSkin();
+  const sw=(id,name,css,img,on,del)=>`<div class="bgsw ${on?"on":""}" data-ps="${id}" title="${esc(name)}">
+      <div class="bgsw-p" style="${css||""}${img?`background-image:url('${img}')`:""}"></div>
+      <span>${esc(name)}</span>${del?`<button class="bgx" data-psx="${id}" title="Delete this notepad">✕</button>`:""}
+    </div>`;
+  box.innerHTML=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">How this note looks</b>
+      <button class="btn" id="padClose" style="margin-left:auto;padding:4px 10px">Done</button></div>
+    <div class="bgsws">
+      ${PAD_SKINS.map(p=>sw(p.id,p.name,p.css,null,c0===p.id)).join("")}
+      ${padList.map(c=>sw(c.id,c.name,"",padCache.get(c.id)||"",c0===c.id,true)).join("")}
+    </div>
+    <div class="bgdrop" id="padDrop">＋ Upload, drop or paste your own notepad — it's saved here as an option</div>`;
+  qa("[data-ps]",box).forEach(el=>el.onclick=e=>{if(!e.target.closest("[data-psx]"))pick(el.dataset.ps);});
+  qa("[data-psx]",box).forEach(el=>el.onclick=async e=>{
+    e.stopPropagation();
+    const c=padList.find(x=>x.id===el.dataset.psx);
+    if(!confirm(`Delete the notepad “${(c&&c.name)||""}”? Notes using it go back to a yellow sticky.`))return;
+    await deleteCustomPad(el.dataset.psx);
+    if(getSkin()===el.dataset.psx)setSkin("yellow");
+    redraw();
+  });
+  q("#padClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";activeBgPicker=null;};
+  const drop=q("#padDrop",box);
+  drop.onclick=()=>{bgPick=pick;bgAdd=addCustomPad;q("#bgFile").click();};
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add("over");};
+  drop.ondragleave=()=>drop.classList.remove("over");
+  drop.ondrop=async e=>{e.preventDefault();drop.classList.remove("over");
+    const id=await addCustomPad(e.dataTransfer.files[0]);if(id)pick(id);};
+}
+
 /* a book's own background wins; "default" (or nothing) falls back to the app-wide one */
 function effectiveBg(){
   if(view==="book"&&cur&&cur.bg&&cur.bg.id&&cur.bg.id!=="default")return cur.bg;
@@ -729,7 +884,7 @@ async function drawBgPicker(box,getBg,setBg,allowDefault){
   if(!box||!document.body.contains(box))return;
   const redraw=()=>drawBgPicker(box,getBg,setBg,allowDefault);
   const pick=id=>{setBg({id,opacity:(getBg()||{}).opacity??100});redraw();applyBg();};
-  activeBgPicker={box,pick};
+  activeBgPicker={box,pick,add:addCustomBg};
   const c0=getBg()||{id:"none",opacity:100};
   const op=c0.opacity==null?100:c0.opacity;
   const sw=(id,name,css,img,on,del)=>`<div class="bgsw ${on?"on":""}" data-bg="${id}" title="${esc(name)}">
@@ -755,7 +910,7 @@ async function drawBgPicker(box,getBg,setBg,allowDefault){
     redraw();applyBg();
   });
   const drop=q("#bgDrop",box);
-  drop.onclick=()=>{bgPick=pick;q("#bgFile").click();};
+  drop.onclick=()=>{bgPick=pick;bgAdd=addCustomBg;q("#bgFile").click();};
   drop.ondragover=e=>{e.preventDefault();drop.classList.add("over");};
   drop.ondragleave=()=>drop.classList.remove("over");
   drop.ondrop=async e=>{e.preventDefault();drop.classList.remove("over");
@@ -766,8 +921,8 @@ async function drawBgPicker(box,getBg,setBg,allowDefault){
 }
 q("#bgFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
-  const cb=bgPick;bgPick=null;
-  const id=await addCustomBg(f);
+  const cb=bgPick,add=bgAdd||addCustomBg;bgPick=null;bgAdd=null;
+  const id=await add(f);
   if(id&&cb)cb(id);
 });
 /* pasting an image while a picker is on screen makes it a background */
@@ -777,8 +932,8 @@ document.addEventListener("paste",e=>{
   for(const it of e.clipboardData?.items||[]){
     if(it.type.startsWith("image/")){
       e.preventDefault();e.stopPropagation();
-      const f=it.getAsFile(),cb=activeBgPicker.pick;
-      addCustomBg(f).then(id=>{if(id&&cb)cb(id);});
+      const f=it.getAsFile(),cb=activeBgPicker.pick,add=activeBgPicker.add||addCustomBg;
+      add(f).then(id=>{if(id&&cb)cb(id);});
       return;
     }
   }
@@ -1343,7 +1498,8 @@ async function openBook(id,fresh){
   for(const im of cur.images||[]){const d=await loadImgData(id+"|"+im.id);if(d)curImgs[im.id]=d;}
   curEnt={};
   for(const en of cur.entries||[]){if(!en.cover)continue;const d=await loadImgData(id+"|"+en.id);if(d)curEnt[en.id]=d;}
-  arrange=false;view="book";renderEditor();
+  await preloadPads();
+  arrange=false;drawMode=false;view="book";renderEditor();
 }
 
 function setSaved(ok){const el=q("#saveMsg");if(el){el.textContent=ok?"Saved":"Saving…";el.className="savemsg "+(ok?"ok":"no");}}
@@ -1386,12 +1542,26 @@ function renderEditor(){
         ${TEXT_COLORS.map(c=>`<button class="cdot" data-col="${c}" style="background:${c}" title="Text color"></button>`).join("")}
         <span class="vline"></span>
         <button class="sm" id="edImg">🖼 Image</button>
+        <button class="sm" id="edPad" title="Add a notepad page you can write on and drag anywhere">🗒 Note</button>
         <button class="sm ${arrange?"on":""}" id="edArr">✥ ${arrange?"Done arranging":"Arrange pictures"}</button>
         <button class="sm" id="edTag" title="While on: click any word or drag a phrase in the text to tag it instantly">🏷 Tag mode</button>
         <button class="sm" id="edBg" title="Give this book's page its own background">🎨 Background</button>
+        <button class="sm" id="edDraw" title="Draw on the page, on pictures and on notes">✏️ Draw</button>
+      </div>
+      <div class="dbar" id="dbar" hidden>
+        <span class="lbl">Draw:</span>
+        ${DRAW_TOOLS.map(([id,ic,t])=>`<button class="sm dtool" data-dt="${id}" title="${t}">${ic}</button>`).join("")}
+        <span class="vline"></span>
+        <input type="color" id="dcol" value="${drawColor}" title="Pick any colour">
+        ${DRAW_SWATCHES.map(c=>`<button class="dsw" data-dsw="${c}" style="background:${c}" title="${c}"></button>`).join("")}
+        <span class="vline"></span>
+        <input type="range" id="dw" min="1" max="18" value="${drawWidth}" title="Thickness">
+        <span class="vline"></span>
+        <button class="sm" id="dclear" title="Rub out every mark in this book">Clear all</button>
       </div>
     </div>
     <div class="bgpanel" id="bgPanel" hidden></div>
+    <div class="bgpanel" id="padPanel" hidden></div>
 
     <div class="edhead">
       <div class="coverbox" id="coverBox">${curCover?`<img src="${curCover}">`:"🖼<br>Add cover"}</div>
@@ -1445,6 +1615,8 @@ function renderEditor(){
     <div class="rich" id="fNotes" contenteditable="true" data-ph="Free notes — quotes, thoughts, anything…" style="min-height:220px"></div>
 
     <div id="imgLayer"></div>
+    <div id="padLayer"></div>
+    <svg id="drawLayer"></svg>
   </div>`;
 
   const page=q("#edPage");
@@ -1511,7 +1683,9 @@ function renderEditor(){
     }else{p.hidden=true;btn.classList.remove("on");p.innerHTML="";activeBgPicker=null;}
   };
   q("#edArr").onclick=()=>{arrange=!arrange;page.classList.toggle("arr",arrange);
-    const btn=q("#edArr");btn.classList.toggle("on",arrange);btn.innerHTML=`✥ ${arrange?"Done arranging":"Arrange pictures"}`;};
+    const btn=q("#edArr");btn.classList.toggle("on",arrange);btn.innerHTML=`✥ ${arrange?"Done arranging":"Arrange pictures"}`;
+    if(arrange&&drawMode){drawMode=false;page.classList.remove("draw");q("#dbar").hidden=true;q("#edDraw").classList.remove("on");}
+    renderPads();};   /* notes become draggable in arrange mode, writable out of it */
 
   /* simple fields */
   const bind=(id,key,filter)=>{const el=q(id);el.addEventListener("input",()=>{cur[key]=filter?filter(el.value):el.value;scheduleSave();});};
@@ -1795,14 +1969,169 @@ function renderEditor(){
   }
 
   function pageMin(){
-    if(!cur.images.length){page.style.minHeight="";return;}
-    page.style.minHeight=Math.max(...cur.images.map(i=>i.y+i.w*1.2+160))+"px";
+    const hs=[...cur.images.map(i=>i.y+i.w*1.2+160),...(cur.pads||[]).map(p=>p.y+p.h+160)];
+    if(!hs.length){page.style.minHeight="";return;}
+    page.style.minHeight=Math.max(...hs)+"px";
   }
+
+  /* ---- drawing ----
+     A stroke belongs to whatever it was started on: a picture, a note, or the page.
+     Picture/note strokes are kept 0..1 so they travel and scale with their surface. */
+  function surfaceOf(e){
+    const pad=e.target.closest?e.target.closest(".pad"):null;
+    if(pad)return {kind:"pad",el:pad};
+    const sc=e.target.closest?e.target.closest(".scrap"):null;
+    if(sc)return {kind:"img",el:sc};
+    return {kind:"page",el:page};
+  }
+  const surfScale=surf=>{
+    if(surf.kind==="page")return [1,1];
+    const r=surf.el.getBoundingClientRect();
+    return [r.width||1,r.height||1];
+  };
+  function surfPt(surf,cx,cy){
+    const r=surf.el.getBoundingClientRect();
+    if(surf.kind==="page")return [cx-r.left,cy-r.top];
+    return [Math.max(0,Math.min(1,(cx-r.left)/(r.width||1))),Math.max(0,Math.min(1,(cy-r.top)/(r.height||1)))];
+  }
+  function strokeStore(surf){
+    if(surf.kind==="page"){cur.draw=cur.draw||[];return cur.draw;}
+    if(surf.kind==="pad"){const p=cur.pads.find(x=>x.id===surf.el.dataset.pad);if(!p)return null;p.draw=p.draw||[];return p.draw;}
+    const im=cur.images.find(x=>x.id===surf.el.dataset.im);if(!im)return null;im.draw=im.draw||[];return im.draw;
+  }
+  function paintSurface(el,strokes){
+    const svg=q(".dsvg",el);if(!svg)return;
+    const W=el.clientWidth,H=el.clientHeight;
+    if(!W||!H)return;
+    svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+    svg.innerHTML=drawSvgHtml(strokes,W,H);
+  }
+  function syncDraw(){
+    const il=q("#imgLayer"),pl=q("#padLayer"),dl=q("#drawLayer");
+    if(il)qa(".scrap",il).forEach(el=>{const im=cur.images.find(x=>x.id===el.dataset.im);if(im)paintSurface(el,im.draw);});
+    if(pl)qa(".pad",pl).forEach(el=>{const p=(cur.pads||[]).find(x=>x.id===el.dataset.pad);if(p)paintSurface(el,p.draw);});
+    if(dl)dl.innerHTML=drawSvgHtml(cur.draw,1,1);
+  }
+  function startStroke(e){
+    const surf=surfaceOf(e);
+    const store=strokeStore(surf);
+    if(!store)return;
+    const [sx,sy]=surfScale(surf);
+    if(drawTool==="erase"){
+      const px=surfPt(surf,e.clientX,e.clientY);
+      const hit=[...store].reverse().find(s=>nearStroke(s,[px[0]*sx,px[1]*sy],sx,sy));
+      if(hit){store.splice(store.indexOf(hit),1);syncDraw();scheduleSave();}
+      return;
+    }
+    e.preventDefault();
+    const s={t:drawTool,c:drawColor,w:drawWidth,pts:[surfPt(surf,e.clientX,e.clientY)]};
+    store.push(s);
+    const mv=ev=>{
+      const p=surfPt(surf,ev.clientX,ev.clientY);
+      if(s.t==="pen"||s.t==="hl")s.pts.push(p);else s.pts[1]=p;
+      syncDraw();
+    };
+    const up=()=>{
+      window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
+      if(s.pts.length<2)s.pts.push([...s.pts[0]]);
+      syncDraw();scheduleSave();
+    };
+    window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
+  }
+  page.addEventListener("pointerdown",e=>{
+    if(!drawMode)return;
+    if(e.target.closest(".edbar"))return;
+    startStroke(e);
+  });
+  function setDrawUI(){
+    qa("[data-dt]").forEach(b=>b.classList.toggle("on",b.dataset.dt===drawTool));
+  }
+  q("#edDraw").onclick=()=>{
+    drawMode=!drawMode;
+    if(drawMode&&arrange){
+      arrange=false;page.classList.remove("arr");
+      const ab=q("#edArr");ab.classList.remove("on");ab.innerHTML="✥ Arrange pictures";
+      renderPads();
+    }
+    page.classList.toggle("draw",drawMode);
+    q("#dbar").hidden=!drawMode;
+    q("#edDraw").classList.toggle("on",drawMode);
+    setDrawUI();syncDraw();
+  };
+  qa("[data-dt]").forEach(b=>b.onclick=()=>{drawTool=b.dataset.dt;setDrawUI();});
+  q("#dcol").oninput=e=>{drawColor=e.target.value;};
+  qa("[data-dsw]").forEach(b=>b.onclick=()=>{drawColor=b.dataset.dsw;q("#dcol").value=drawColor;});
+  q("#dw").oninput=e=>{drawWidth=+e.target.value;};
+  q("#dclear").onclick=()=>{
+    if(!confirm("Rub out every mark on this page, its pictures and its notes? The Undo button can bring them back."))return;
+    cur.draw=[];
+    (cur.images||[]).forEach(im=>im.draw=[]);
+    (cur.pads||[]).forEach(p=>p.draw=[]);
+    syncDraw();scheduleSave();
+  };
+  setDrawUI();
+
+  /* notepad pages */
+  function addPad(){
+    cur.pads=cur.pads||[];
+    const rect=page.getBoundingClientRect();
+    const baseY=Math.max(20,-rect.top+160);
+    const n=cur.pads.length;
+    const p={id:uid(),x:30+(n*26)%180,y:baseY+(n*18)%90,w:220,h:170,skin:settings.lastPadSkin||"yellow",html:""};
+    cur.pads.push(p);
+    renderPads();scheduleSave();
+    if(!arrange){const t=q(`[data-pad="${p.id}"] .padtext`);if(t)t.focus();}
+  }
+  function renderPads(){
+    cur.pads=cur.pads||[];
+    const layer=q("#padLayer");
+    layer.innerHTML=cur.pads.map(p=>`
+      <div class="pad" data-pad="${p.id}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;${padStyle(p.skin)}">
+        <div class="padtext" contenteditable="${arrange?"false":"true"}" data-ph="Write a note…"></div>
+        <svg class="dsvg" preserveAspectRatio="none"></svg>
+        <div class="pbar">
+          <button class="pskin" title="Change how it looks">🎨</button>
+          <button class="pdel" title="Delete this note">✕</button>
+        </div>
+        <div class="prs"></div>
+      </div>`).join("");
+    qa(".pad",layer).forEach(el=>{
+      const p=cur.pads.find(x=>x.id===el.dataset.pad);
+      const tx=q(".padtext",el);
+      tx.innerHTML=p.html||"";
+      tx.addEventListener("input",()=>{p.html=tx.innerHTML;scheduleSave();});
+      q(".pdel",el).onclick=e=>{e.stopPropagation();
+        cur.pads=cur.pads.filter(x=>x.id!==p.id);renderPads();pageMin();scheduleSave();};
+      q(".pskin",el).onclick=e=>{e.stopPropagation();
+        const box=q("#padPanel");box.hidden=false;
+        drawPadPicker(box,()=>p.skin,v=>{p.skin=v;settings.lastPadSkin=v;saveSettings();renderPads();scheduleSave();});
+        box.scrollIntoView({block:"nearest"});
+      };
+      const startDrag=(e,mode)=>{
+        if(!arrange)return;
+        if(e.target.closest(".pbar"))return;
+        e.preventDefault();
+        const sx=e.clientX,sy=e.clientY,{x,y,w,h}=p;
+        const maxX=Math.max(40,page.clientWidth-60);
+        const mv=ev=>{
+          if(mode==="drag"){p.x=Math.min(maxX,Math.max(0,x+ev.clientX-sx));p.y=Math.max(0,y+ev.clientY-sy);}
+          else{p.w=Math.max(90,Math.min(1200,w+ev.clientX-sx));p.h=Math.max(70,Math.min(1400,h+ev.clientY-sy));}
+          el.style.left=p.x+"px";el.style.top=p.y+"px";el.style.width=p.w+"px";el.style.height=p.h+"px";};
+        const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();syncDraw();scheduleSave();};
+        window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);};
+      el.addEventListener("pointerdown",e=>{
+        if(e.target.closest(".prs"))startDrag(e,"resize");else startDrag(e,"drag");});
+    });
+    pageMin();
+    syncDraw();
+  }
+  q("#edPad").onclick=addPad;
   function renderImages(){
     const layer=q("#imgLayer");
     layer.innerHTML=cur.images.map(im=>curImgs[im.id]?`
       <div class="scrap ${im.behind?"bh":""}" data-im="${im.id}" style="left:${im.x}px;top:${im.y}px;width:${im.w}px">
         <img src="${curImgs[im.id]}" draggable="false">
+        <svg class="dsvg" preserveAspectRatio="none"></svg>
         <div class="sbar">
           <button class="sfade ${im.behind?"on":""}" title="${im.behind?"Make fully visible":"Fade so text shows through"}">◐</button>
           <button class="sdel" title="Delete image">✕</button>
@@ -1826,14 +2155,17 @@ function renderEditor(){
           if(mode==="drag"){im.x=Math.min(maxX,Math.max(0,x+ev.clientX-sx));im.y=Math.max(0,y+ev.clientY-sy);}
           else im.w=Math.max(60,Math.min(1400,w+ev.clientX-sx));
           el.style.left=im.x+"px";el.style.top=im.y+"px";el.style.width=im.w+"px";};
-        const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();scheduleSave();};
+        const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();syncDraw();scheduleSave();};
         window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);};
       el.addEventListener("pointerdown",e=>{
         if(e.target.closest(".rs"))startDrag(e,"resize");else startDrag(e,"drag");});
+      const im2=q("img",el);if(im2)im2.addEventListener("load",syncDraw);
     });
     pageMin();
+    syncDraw();
   }
   renderImages();
+  renderPads();
   applyBg();
 }
 
@@ -1862,7 +2194,8 @@ async function buildBackup(){
   const covers={};(await dbAll("covers")).forEach(c=>covers[c.id]=c.data);
   const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
   return {app:"my-shelf",version:1,exported:new Date().toISOString(),
-    index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,covers,images};
+    index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
+    backgrounds:bgList,padskins:padList,covers,images};
 }
 function downloadJson(json,name){
   const blob=new Blob([json],{type:"application/json"});
@@ -1891,6 +2224,11 @@ async function applyBackup(data){
   genres=Object.assign({},data.genres||{},genres);
   dnfCustom=[...new Set([...dnfCustom,...(data.dnfReasons||[])])];
   audCustom=[...new Set([...audCustom,...(data.audiences||[])])];
+  const haveB=new Set(bgList.map(x=>x.id));
+  (data.backgrounds||[]).forEach(x=>{if(x&&x.id&&!haveB.has(x.id))bgList.push(x);});
+  const haveP=new Set(padList.map(x=>x.id));
+  (data.padskins||[]).forEach(x=>{if(x&&x.id&&!haveP.has(x.id))padList.push(x);});
+  saveBgList();savePadList();
   saveMeta();
   if(SYNC.on){
     for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
