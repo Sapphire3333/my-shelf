@@ -355,7 +355,13 @@
 
   /* backgrounds */
   #bgLayer{position:fixed;inset:0;z-index:-1;pointer-events:none;background-size:cover;background-position:center;background-repeat:no-repeat}
-  .bgpanel{border:1px solid var(--line);background:#fff;border-radius:12px;padding:12px;margin-bottom:14px;box-shadow:0 4px 14px rgba(0,0,0,.08)}
+  /* the editor's pickers float over the page instead of shoving it around */
+  .bgpanel{position:fixed;right:16px;top:50%;transform:translateY(-50%);width:340px;max-height:80vh;overflow:auto;
+    border:1px solid var(--line);background:var(--card);border-radius:14px;padding:13px;z-index:80;
+    box-shadow:0 12px 40px rgba(0,0,0,.28)}
+  @media(max-width:820px){
+    .bgpanel{left:8px;right:8px;width:auto;top:auto;bottom:8px;transform:none;max-height:62vh}
+  }
   .bgsws{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:9px}
   .bgsw{position:relative;cursor:pointer;font-size:11px;color:var(--mut);text-align:center}
   .bgsw-p{height:50px;border:2px solid var(--line);border-radius:9px;background:#faf7f2;margin-bottom:3px;background-size:cover;background-position:center}
@@ -1036,10 +1042,10 @@ async function applyBg(){
   el2.style.cssText=d?`opacity:${op};background-image:url("${d}")`:`opacity:${op}`;
 }
 /* one picker used by both the hub (app default) and the editor (this book) */
-async function drawBgPicker(box,getBg,setBg,allowDefault){
+async function drawBgPicker(box,getBg,setBg,allowDefault,onDone){
   await preloadBgs();
   if(!box||!document.body.contains(box))return;
-  const redraw=()=>drawBgPicker(box,getBg,setBg,allowDefault);
+  const redraw=()=>drawBgPicker(box,getBg,setBg,allowDefault,onDone);
   const pick=id=>{setBg({id,opacity:(getBg()||{}).opacity??100});redraw();applyBg();};
   activeBgPicker={box,pick,add:addCustomBg};
   const c0=getBg()||{id:"none",opacity:100};
@@ -1049,6 +1055,8 @@ async function drawBgPicker(box,getBg,setBg,allowDefault){
       <span>${esc(name)}</span>${del?`<button class="bgx" data-bgx="${id}" title="Delete this background">✕</button>`:""}
     </div>`;
   box.innerHTML=`
+    ${onDone?`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">Background for this page</b>
+      <button class="btn" id="bgClose" style="margin-left:auto;padding:4px 10px">Done</button></div>`:""}
     <div class="bgsws">
       ${allowDefault?sw("default","Use default","background:repeating-linear-gradient(45deg,#f5f5f4 0 6px,#e7e5e4 6px 12px)",null,c0.id==="default"||!c0.id):""}
       ${BG_PRESETS.map(p=>sw(p.id,p.name,p.css,null,c0.id===p.id)).join("")}
@@ -1066,6 +1074,7 @@ async function drawBgPicker(box,getBg,setBg,allowDefault){
     if(was)setBg({id:allowDefault?"default":"none",opacity:(getBg()||{}).opacity??100});
     redraw();applyBg();
   });
+  const bgc=q("#bgClose",box);if(bgc)bgc.onclick=onDone;
   const drop=q("#bgDrop",box);
   drop.onclick=()=>{bgPick=pick;bgAdd=addCustomBg;q("#bgFile").click();};
   drop.ondragover=e=>{e.preventDefault();drop.classList.add("over");};
@@ -1939,12 +1948,14 @@ function renderEditor(){
     sel.removeAllRanges();
     texts.forEach(addKw);
   });
+  const closeBgPanel=()=>{const p=q("#bgPanel");p.hidden=true;p.innerHTML="";q("#edBg").classList.remove("on");activeBgPicker=null;};
   q("#edBg").onclick=()=>{
     const p=q("#bgPanel"),btn=q("#edBg");
     if(p.hidden){
+      q("#padPanel").hidden=true;q("#padPanel").innerHTML="";
       p.hidden=false;btn.classList.add("on");
-      drawBgPicker(p,()=>cur.bg||{id:"default",opacity:100},v=>{cur.bg=v;scheduleSave();},true);
-    }else{p.hidden=true;btn.classList.remove("on");p.innerHTML="";activeBgPicker=null;}
+      drawBgPicker(p,()=>cur.bg||{id:"default",opacity:100},v=>{cur.bg=v;scheduleSave();},true,closeBgPanel);
+    }else closeBgPanel();
   };
   q("#edArr").onclick=()=>{arrange=!arrange;page.classList.toggle("arr",arrange);
     const btn=q("#edArr");btn.classList.toggle("on",arrange);btn.innerHTML=`✥ ${arrange?"Done arranging":"Arrange pictures"}`;
@@ -2370,6 +2381,21 @@ function renderEditor(){
   };
   setDrawUI();
 
+  /* ---- how far left/right things may roam ----
+     x stays measured from the text column's left edge (so nothing already placed
+     moves), but the range now reaches the whole window — including the empty
+     margins either side. On a phone the margins are ~0, so it collapses to the
+     column by itself and nothing ends up off-screen. */
+  function xRange(w){
+    const r=page.getBoundingClientRect();
+    const lo=-r.left+8;
+    const hi=window.innerWidth-r.left-(w||0)-8;   /* whole item stays in view — no sideways scrollbar */
+    return [lo,Math.max(lo,hi)];
+  }
+  /* render-time only: keeps a desktop-placed item reachable on a narrow phone
+     without rewriting what you actually chose */
+  function cx(v,w){const [lo,hi]=xRange(w);return Math.max(lo,Math.min(hi,v||0));}
+
   /* ---- stacking: pictures and notes share one order, so either can sit on top ---- */
   const zOf=o=>o.z||0;
   const allItems=()=>[...(cur.images||[]),...(cur.pads||[])];
@@ -2418,7 +2444,7 @@ function renderEditor(){
     const layer=q("#padLayer");
     layer.innerHTML=cur.pads.map(p=>{
       const sh=shapeOf(p);
-      return `<div class="pad" data-pad="${p.id}" style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;transform:${xform(p)};z-index:${10+Math.min(34,zOf(p))}">
+      return `<div class="pad" data-pad="${p.id}" style="left:${cx(p.x,p.w)}px;top:${p.y}px;width:${p.w}px;height:${p.h}px;transform:${xform(p)};z-index:${10+Math.min(34,zOf(p))}">
         <div class="padshape ${sh!=="none"?"shaped":""}" style="${padStyle(p.skin)}${sh!=="none"?`;clip-path:url(#pc-${sh})`:""}">
           <div class="padtext" contenteditable="${arrange?"false":"true"}" data-ph="Write a note…" style="padding:${shapeInset(sh)}%"></div>
           <svg class="dsvg" preserveAspectRatio="none"></svg>
@@ -2446,19 +2472,19 @@ function renderEditor(){
       q(".pfront",el).onclick=e=>{e.stopPropagation();toFront(p);};
       q(".pback",el).onclick=e=>{e.stopPropagation();toBack(p);};
       q(".pskin",el).onclick=e=>{e.stopPropagation();
+        const bp=q("#bgPanel");bp.hidden=true;bp.innerHTML="";q("#edBg").classList.remove("on");
         const box=q("#padPanel");box.hidden=false;
         drawPadPicker(box,p,()=>{settings.lastPadSkin=p.skin;settings.lastPadShape=p.shape;saveSettings();renderPads();scheduleSave();});
-        box.scrollIntoView({block:"nearest"});
       };
       startRot(q(".rot",el),el,p);
       const startDrag=(e,mode)=>{
         if(!arrange)return;
         if(e.target.closest(".pbar"))return;
         e.preventDefault();
-        const sx=e.clientX,sy=e.clientY,{x,y,w,h}=p;
-        const maxX=Math.max(40,page.clientWidth-60);
+        const sx=e.clientX,sy=e.clientY,x=cx(p.x,p.w),y=p.y,w=p.w,h=p.h;
+        const [loX,hiX]=xRange(p.w);
         const mv=ev=>{
-          if(mode==="drag"){p.x=Math.min(maxX,Math.max(0,x+ev.clientX-sx));p.y=Math.max(0,y+ev.clientY-sy);}
+          if(mode==="drag"){p.x=Math.min(hiX,Math.max(loX,x+ev.clientX-sx));p.y=Math.max(0,y+ev.clientY-sy);}
           else{p.w=Math.max(90,Math.min(1200,w+ev.clientX-sx));p.h=Math.max(70,Math.min(1400,h+ev.clientY-sy));}
           el.style.left=p.x+"px";el.style.top=p.y+"px";el.style.width=p.w+"px";el.style.height=p.h+"px";};
         const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();syncDraw();scheduleSave();};
@@ -2473,7 +2499,7 @@ function renderEditor(){
   function renderImages(){
     const layer=q("#imgLayer");
     layer.innerHTML=cur.images.map(im=>curImgs[im.id]?`
-      <div class="scrap ${im.behind?"bh":""}" data-im="${im.id}" style="left:${im.x}px;top:${im.y}px;width:${im.w}px;transform:${xform(im)};z-index:${10+Math.min(34,zOf(im))}">
+      <div class="scrap ${im.behind?"bh":""}" data-im="${im.id}" style="left:${cx(im.x,im.w)}px;top:${im.y}px;width:${im.w}px;transform:${xform(im)};z-index:${10+Math.min(34,zOf(im))}">
         <img src="${curImgs[im.id]}" draggable="false">
         <svg class="dsvg" preserveAspectRatio="none"></svg>
         <div class="sbar">
@@ -2503,10 +2529,10 @@ function renderEditor(){
         if(!arrange)return;
         if(e.target.closest(".sbar"))return;
         e.preventDefault();
-        const sx=e.clientX,sy=e.clientY,{x,y,w}=im;
-        const maxX=Math.max(40,page.clientWidth-60);
+        const sx=e.clientX,sy=e.clientY,x=cx(im.x,im.w),y=im.y,w=im.w;
+        const [loX,hiX]=xRange(im.w);
         const mv=ev=>{
-          if(mode==="drag"){im.x=Math.min(maxX,Math.max(0,x+ev.clientX-sx));im.y=Math.max(0,y+ev.clientY-sy);}
+          if(mode==="drag"){im.x=Math.min(hiX,Math.max(loX,x+ev.clientX-sx));im.y=Math.max(0,y+ev.clientY-sy);}
           else im.w=Math.max(60,Math.min(1400,w+ev.clientX-sx));
           el.style.left=im.x+"px";el.style.top=im.y+"px";el.style.width=im.w+"px";};
         const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();syncDraw();scheduleSave();};
