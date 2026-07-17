@@ -270,6 +270,24 @@
   .grouphead{display:flex;align-items:center;gap:8px;margin:20px 0 8px}
   .grouphead .n{color:var(--faint);font-size:13px}
   .ghline{flex:1;height:1px;background:var(--line)}
+
+  /* series / collections */
+  .chkrow{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--mut)}
+  .chk{display:flex;align-items:center;gap:6px;cursor:pointer}
+  .chk input{cursor:pointer}
+  .linkbox{border:1px solid #99f6e4;background:#f0fdfa;border-radius:10px;padding:9px 11px;margin-top:7px;font-size:13px;color:#115e59}
+  .linkbox a{color:var(--teal);cursor:pointer;text-decoration:underline}
+  .linkbox a:hover{color:var(--teal-d)}
+  .bst.coll{background:#ede9fe;color:#6d28d9}
+  .entbox{border:1px solid #ddd6fe;background:#f5f3ff55;border-radius:14px;padding:12px}
+  .ent{display:flex;gap:11px;border:1px solid var(--line);background:#fff;border-radius:12px;padding:10px;margin-bottom:8px}
+  .entnum{font-family:Georgia,serif;font-weight:700;color:var(--faint);font-size:13px;flex:none;width:14px;text-align:right;padding-top:6px}
+  .entcov{width:56px;height:78px;flex:none;border:1px dashed #d6d3d1;border-radius:7px;background:#fafaf9;display:flex;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;color:var(--faint);font-size:15px}
+  .entcov:hover{border-color:#2dd4bf}
+  .entcov img{width:100%;height:100%;object-fit:cover}
+  .entmain{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}
+  .entrich{min-height:46px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:7px 9px;font-size:13px}
+  .entrich:empty:before{content:attr(data-ph);color:var(--faint);pointer-events:none}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
@@ -279,6 +297,7 @@
 <input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
 <input type="file" id="coverFile" accept="image/*" hidden>
 <input type="file" id="imgFile" accept="image/*" multiple hidden>
+<input type="file" id="entCoverFile" accept="image/*" hidden>
 
 <script>
 /* =============== constants & helpers =============== */
@@ -306,9 +325,16 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const stripHtml=s=>String(s||"").replace(/<[^>]*>/g," ");
 const statusOf=b=>b.status||"finished";
+/* type: standalone | series (one book of a named series) | collection (one entry holding many stories) */
+const typeOf=b=>b.type||((b.series||"").trim()?"series":"standalone");
+const isColl=b=>typeOf(b)==="collection";
+const blankEntry=()=>({id:uid(),title:"",rating:null,pages:"",summary:"",notes:"",cover:false});
+/* every image key a book owns: its page pictures + its stories' covers */
+const imgKeysOf=b=>!b?[]:[...((b.images)||[]).map(im=>b.id+"|"+im.id),
+  ...((b.entries)||[]).filter(en=>en.cover).map(en=>b.id+"|"+en.id)];
 const q=(sel,root=document)=>root.querySelector(sel);
 const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
-const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",status:"finished",dateFinished:"",rereads:0,series:"",seriesNum:"",seriesTotal:"",summary:"",pros:[],cons:[],quotes:[],canvasText:"",images:[],created:Date.now()});
+const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],summary:"",pros:[],cons:[],quotes:[],canvasText:"",images:[],created:Date.now()});
 
 function compressImage(file,maxDim=1000,quality=.82){
   return new Promise((res,rej)=>{
@@ -346,7 +372,7 @@ const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.ons
 let books=[],genres={},dnfCustom=[],audCustom=[];
 let settings={autoBackup:true,keepAuto:3};
 let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="none";
-let cur=null,curCover=null,curImgs={},arrange=false,saveTimer=null,isNew=false;
+let cur=null,curCover=null,curImgs={},curEnt={},arrange=false,saveTimer=null,isNew=false;
 const coverCache=new Map();
 const S={q:"",scopes:["title"],authorQ:"",filter:null,multi:[],pickGenre:"any",pickWant:true,picked:null};
 let deletions={};
@@ -481,7 +507,7 @@ async function pullAll(){
     for(const b of books){
       if(!remoteIds.has(b.id)&&!(deletions[b.id]>=(b.modified||0))){
         enqueue({kind:"book",id:b.id});enqueue({kind:"cover",id:b.id});
-        (b.images||[]).forEach(im=>enqueue({kind:"img",key:b.id+"|"+im.id}));
+        imgKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
       }
     }
     setSync("synced");
@@ -497,13 +523,22 @@ async function syncBookAssets(b){
     if(!error&&data){const durl=await blobToDataURL(data);await dbPut("covers",{id:b.id,data:durl});coverCache.set(b.id,durl);}
     else{await dbDel("covers",b.id);coverCache.set(b.id,null);}
   }catch(e){}
-  for(const im of b.images||[]){
-    const key=b.id+"|"+im.id;
+  for(const key of imgKeysOf(b)){
     if(!(await dbGet("images",key))){
       try{const {data,error}=await s.storage.from("shelf").download(imgPath(key));
         if(!error&&data)await dbPut("images",{key,data:await blobToDataURL(data)});}catch(e){}
     }
   }
+}
+/* local first, then pull from Storage if this device hasn't got it yet */
+async function loadImgData(key){
+  const r=await dbGet("images",key);
+  if(r)return r.data;
+  if(SYNC.on&&SYNC.user&&navigator.onLine){
+    try{const {data,error}=await SYNC.supa.storage.from("shelf").download(imgPath(key));
+      if(!error&&data){const durl=await blobToDataURL(data);await dbPut("images",{key,data:durl});return durl;}}catch(e){}
+  }
+  return null;
 }
 
 /* ---- auth screen ---- */
@@ -589,7 +624,7 @@ async function initSync(){
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   try{
     const live=new Set(books.map(b=>b.id));
-    const validImg=new Set();books.forEach(b=>(b.images||[]).forEach(im=>validImg.add(b.id+"|"+im.id)));
+    const validImg=new Set();books.forEach(b=>imgKeysOf(b).forEach(k=>validImg.add(k)));
     for(const k of await dbAllKeys("covers"))if(!live.has(k))await dbDel("covers",k);
     for(const k of await dbAllKeys("images"))if(!validImg.has(k))await dbDel("images",k);
   }catch(e){}
@@ -621,17 +656,17 @@ async function applyOp(op,inv){
   if(op.t==="book"||op.t==="del"){
     const body=op.t==="del"?(inv?op.body:null):(inv?op.before:op.after);
     const id=op.t==="del"?op.body.id:op.id;
-    const knownImgs=((op.t==="del"?op.body:op.after)||{}).images||[];
+    const knownKeys=imgKeysOf((op.t==="del"?op.body:op.after)||null);
     if(body){
       const clone=JSON.parse(JSON.stringify(body));
       await dbPut("books",clone);
       const i=books.findIndex(x=>x.id===id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
-      if(SYNC.on){if(deletions[id]){delete deletions[id];saveDeletions();}enqueue({kind:"book",id});enqueue({kind:"cover",id});(clone.images||[]).forEach(im=>enqueue({kind:"img",key:id+"|"+im.id}));}
+      if(SYNC.on){if(deletions[id]){delete deletions[id];saveDeletions();}enqueue({kind:"book",id});enqueue({kind:"cover",id});imgKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));}
     }else{
       await dbDel("books",id);
       books=books.filter(x=>x.id!==id);
-      if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});knownImgs.forEach(im=>enqueue({kind:"imgDel",key:id+"|"+im.id}));}
+      if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});knownKeys.forEach(key=>enqueue({kind:"imgDel",key}));}
     }
     if(view==="book"&&cur&&cur.id===id){
       if(!body){view="library";render();}else{openBook(id,false);}
@@ -699,7 +734,7 @@ function rowHtml(b,withDel,edited){
   return `<div class="row" data-open="${b.id}">
     <div class="thumb" data-cover="${b.id}">📖</div>
     <div class="rmain">
-      <div class="rtitle serif">${esc(b.title)||"Untitled"} ${b.favorite?'<span class="fav">♥</span>':""} ${stBadge(b)} ${b.dnf?'<span class="bdnf">DNF</span>':""}</div>
+      <div class="rtitle serif">${esc(b.title)||"Untitled"} ${b.favorite?'<span class="fav">♥</span>':""} ${stBadge(b)} ${isColl(b)?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':""}</div>
       <div class="rauth">${esc(b.author)||"Unknown author"}${b.series?` <span class="rser">${esc(b.series)}${b.seriesNum?" #"+esc(b.seriesNum):""}</span>`:""}${b.pages?` <span class="rser">· ${esc(String(b.pages))} p.</span>`:""}</div>
       <div>${(b.genres||[]).map(g=>chipHtml(g,true)).join("")}${(b.keywords||[]).map(k=>`<span class="kw">${esc(k)}</span>`).join("")}</div>
     </div>
@@ -715,7 +750,7 @@ function gridHtml(b){
       ${b.rating!=null?`<span class="grate">★ ${Number(b.rating).toFixed(1)}</span>`:""}
       ${b.dnf?'<span class="gdnf">DNF</span>':""}
     </div>
-    <div class="gtitle serif">${esc(b.title)||"Untitled"}</div>
+    <div class="gtitle serif">${isColl(b)?"📚 ":""}${esc(b.title)||"Untitled"}</div>
     <div class="gauth">${esc(b.author)}</div>
   </div>`;
 }
@@ -742,7 +777,8 @@ function wireOpen(root,withDel){
 }
 
 /* =============== library =============== */
-const GROUPS=[["none","none"],["genre","genre"],["author","author"],["series","series"],["status","status"]];
+const GROUPS=[["none","none"],["genre","genre"],["author","author"],["series","series"],["type","standalone / series / story"],["status","status"]];
+const TYPES=[["standalone","Standalone"],["series","Part of a series"],["collection","Collections & their stories"]];
 function sortCmp(a,b){
   if(sortBy==="newest")return(b.created||0)-(a.created||0);
   if(sortBy==="rating")return(b.rating??-1)-(a.rating??-1);
@@ -753,6 +789,9 @@ function sortCmp(a,b){
   if(sortBy==="genre"){const g=x=>((x.genres||[])[0]||"").toLowerCase();const ga=g(a),gb=g(b);
     if(ga&&!gb)return -1;if(!ga&&gb)return 1;
     return ga.localeCompare(gb)||(a.title||"").localeCompare(b.title||"");}
+  if(sortBy==="type"){const rk=x=>typeOf(x)==="standalone"?0:typeOf(x)==="series"?1:2;
+    return rk(a)-rk(b)||(a.series||"").localeCompare(b.series||"")
+      ||(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0)||(a.title||"").localeCompare(b.title||"");}
   return 0;
 }
 /* -> [{label,color?,items[]}] in display order */
@@ -773,6 +812,8 @@ function groupsFor(list){
     Object.keys(map).sort((a,b)=>a.localeCompare(b)).forEach(k=>out.push({label:k,
       items:map[k].slice().sort((x,y)=>(parseFloat(x.seriesNum)||0)-(parseFloat(y.seriesNum)||0))}));
     if(none.length)out.push({label:"Not in a series",items:none});
+  }else if(groupBy==="type"){
+    TYPES.forEach(([k,l])=>{const items=list.filter(b=>typeOf(b)===k);if(items.length)out.push({label:l,items});});
   }else if(groupBy==="status"){
     STATUSES.forEach(([k,l])=>{const items=list.filter(b=>statusOf(b)===k);if(items.length)out.push({label:l,items});});
   }
@@ -788,7 +829,7 @@ function renderLibrary(){
   let html="";
   if(books.length){
     html+=`<div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading"],["want","Want to read"]].map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}">${l} <b>${counts[id]}</b></button>`).join("")}</div>`;
-    html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","title","author","status","genre"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}">${s}</button>`).join("")}
+    html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","title","author","status","genre","type"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}">${s}</button>`).join("")}
       <button class="laybtn" id="layTog">${layout==="list"?"▦ Grid":"☰ List"}</button></div>`;
     html+=`<div class="pills"><span class="lbl">Group under headings:</span>${GROUPS.map(([id,l])=>`<button class="pill ${groupBy===id?"on":""}" data-gb="${id}">${l}</button>`).join("")}</div>`;
   }
@@ -817,7 +858,7 @@ async function deleteBookById(id){
   if(b)pushOp({t:"del",body:JSON.parse(JSON.stringify(b))});
   await dbDel("books",id);
   books=books.filter(x=>x.id!==id);
-  if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});((b&&b.images)||[]).forEach(im=>enqueue({kind:"imgDel",key:id+"|"+im.id}));}
+  if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});imgKeysOf(b).forEach(key=>enqueue({kind:"imgDel",key}));}
   if(view==="book"){view="library";}
   render();
 }
@@ -994,14 +1035,14 @@ function renderSearchBody(){
 
   let results=null,heading="";
   const matchScope=(b,s)=>{switch(s){
-    case "title":return (b.title||"").toLowerCase().includes(qlc);
+    case "title":return (b.title||"").toLowerCase().includes(qlc)||(b.entries||[]).some(en=>(en.title||"").toLowerCase().includes(qlc));
     case "author":return (b.author||"").toLowerCase().includes(qlc);
     case "series":return (b.series||"").toLowerCase().includes(qlc);
     case "genre":return (b.genres||[]).some(g=>g.toLowerCase().includes(qlc));
     case "keyword":return (b.keywords||[]).some(k=>k.toLowerCase().includes(qlc));
     case "quotes":return stripHtml((b.quotes||[]).join(" ")).toLowerCase().includes(qlc);
-    case "summary":return stripHtml(b.summary||"").toLowerCase().includes(qlc);
-    case "notes":return stripHtml(b.canvasText||"").toLowerCase().includes(qlc);
+    case "summary":return stripHtml((b.summary||"")+" "+(b.entries||[]).map(en=>en.summary||"").join(" ")).toLowerCase().includes(qlc);
+    case "notes":return stripHtml((b.canvasText||"")+" "+(b.entries||[]).map(en=>en.notes||"").join(" ")).toLowerCase().includes(qlc);
     case "lists":return stripHtml([...(b.pros||[]),...(b.cons||[])].join(" ")).toLowerCase().includes(qlc);
   }return false;};
   if(qlc){
@@ -1150,14 +1191,9 @@ async function openBook(id,fresh){
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
   const c=await dbGet("covers",id);curCover=c?c.data:null;
   curImgs={};
-  for(const im of cur.images||[]){
-    const key=id+"|"+im.id;let r=await dbGet("images",key);
-    if(!r&&SYNC.on&&SYNC.user&&navigator.onLine){
-      try{const {data,error}=await SYNC.supa.storage.from("shelf").download(imgPath(key));
-        if(!error&&data){const durl=await blobToDataURL(data);await dbPut("images",{key,data:durl});r={data:durl};}}catch(e){}
-    }
-    if(r)curImgs[im.id]=r.data;
-  }
+  for(const im of cur.images||[]){const d=await loadImgData(id+"|"+im.id);if(d)curImgs[im.id]=d;}
+  curEnt={};
+  for(const en of cur.entries||[]){if(!en.cover)continue;const d=await loadImgData(id+"|"+en.id);if(d)curEnt[en.id]=d;}
   arrange=false;view="book";renderEditor();
 }
 
@@ -1214,14 +1250,11 @@ function renderEditor(){
           <input class="field" id="fAuthor" placeholder="Author" value="${esc(b.author)}" autocomplete="off">
           <div class="sug" id="authSug" hidden></div>
         </div>
-        <div class="inrow">
-          <div class="relbox" style="flex:1;min-width:140px">
-            <input class="field" id="fSeries" placeholder="Series (optional)" value="${esc(b.series)}" style="font-size:14px;padding:8px 11px" autocomplete="off">
-            <div class="sug" id="serSug" hidden></div>
-          </div>
-          <span class="lbl">book</span><input class="mini" id="fSerN" placeholder="#" value="${esc(b.seriesNum)}">
-          <span class="lbl">of</span><input class="mini" id="fSerT" placeholder="?" value="${esc(b.seriesTotal)}">
+        <div class="chkrow">
+          <label class="chk"><input type="checkbox" id="cbSeries"> Part of a series</label>
+          <label class="chk"><input type="checkbox" id="cbColl"> A whole series / collection in one entry</label>
         </div>
+        <div id="serWrap"></div>
         <div class="seg" id="statusSeg"></div>
         <div id="audWrap"></div>
         <div class="inrow">
@@ -1244,6 +1277,8 @@ function renderEditor(){
         <div id="kwWrap"></div>
       </div>
     </div>
+
+    <div id="entWrap"></div>
 
     <div class="cap2">Summary</div>
     <div class="rich" id="fSummary" contenteditable="true" data-ph="What is this book about, in your own words…"></div>
@@ -1323,8 +1358,6 @@ function renderEditor(){
   /* simple fields */
   const bind=(id,key,filter)=>{const el=q(id);el.addEventListener("input",()=>{cur[key]=filter?filter(el.value):el.value;scheduleSave();});};
   bind("#fTitle","title");
-  bind("#fSerN","seriesNum",v=>v.replace(/[^\d.]/g,""));
-  bind("#fSerT","seriesTotal",v=>v.replace(/[^\d]/g,""));
   bind("#fDate","dateFinished");
   q("#fRate").addEventListener("input",e=>{const v=e.target.value;cur.rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));scheduleSave();});
   q("#fPages").addEventListener("input",e=>{const v=e.target.value;cur.pages=v===""?"":Math.max(1,parseInt(v)||0);scheduleSave();});
@@ -1334,20 +1367,129 @@ function renderEditor(){
   q("#rrDn").onclick=()=>{cur.rereads=Math.max(0,(cur.rereads||0)-1);q("#rrN").textContent=cur.rereads;scheduleSave();};
 
   /* autocomplete (author + series) */
-  function autoComplete(inputId,sugId,key,poolFn){
+  function autoComplete(inputId,sugId,key,poolFn,after){
     const inp=q(inputId),sug=q(sugId);
     const show=()=>{const v=inp.value.trim().toLowerCase();
       const pool=poolFn().filter(a=>v&&a.toLowerCase().includes(v)&&a!==inp.value);
       if(!pool.length){sug.hidden=true;return;}
       sug.innerHTML=pool.slice(0,6).map(a=>`<button data-p="${esc(a)}">${esc(a)}</button>`).join("");
       sug.hidden=false;
-      qa("[data-p]",sug).forEach(x=>x.onmousedown=()=>{inp.value=x.dataset.p;cur[key]=x.dataset.p;sug.hidden=true;scheduleSave();});};
-    inp.addEventListener("input",()=>{cur[key]=inp.value;scheduleSave();show();});
+      qa("[data-p]",sug).forEach(x=>x.onmousedown=()=>{inp.value=x.dataset.p;cur[key]=x.dataset.p;sug.hidden=true;scheduleSave();if(after)after();});};
+    inp.addEventListener("input",()=>{cur[key]=inp.value;scheduleSave();show();if(after)after();});
     inp.addEventListener("focus",show);
     inp.addEventListener("blur",()=>setTimeout(()=>sug.hidden=true,150));
   }
   autoComplete("#fAuthor","#authSug","author",()=>[...new Set(books.map(x=>(x.author||"").trim()).filter(Boolean))]);
-  autoComplete("#fSeries","#serSug","series",()=>[...new Set(books.map(x=>(x.series||"").trim()).filter(Boolean))]);
+
+  /* series / collection type */
+  function renderSeries(){
+    const w=q("#serWrap"),t=typeOf(cur);
+    q("#cbSeries").checked=t==="series";
+    q("#cbColl").checked=t==="collection";
+    if(t==="standalone"){w.innerHTML="";return;}
+    const isC=t==="collection";
+    w.innerHTML=`<div class="inrow" style="margin-top:8px">
+        <div class="relbox" style="flex:1;min-width:140px">
+          <input class="field" id="fSeries" placeholder="${isC?"Name of the series / collection":"Series name"}" value="${esc(cur.series)}" style="font-size:14px;padding:8px 11px" autocomplete="off">
+          <div class="sug" id="serSug" hidden></div>
+        </div>
+        ${isC?"":`<span class="lbl">book</span><input class="mini" id="fSerN" placeholder="#" value="${esc(cur.seriesNum)}">
+        <span class="lbl">of</span><input class="mini" id="fSerT" placeholder="?" value="${esc(cur.seriesTotal)}">`}
+      </div>
+      <div id="linkWrap"></div>`;
+    autoComplete("#fSeries","#serSug","series",
+      ()=>[...new Set(books.map(x=>(x.series||"").trim()).filter(Boolean))],renderLinked);
+    if(!isC){
+      bind("#fSerN","seriesNum",v=>v.replace(/[^\d.]/g,""));
+      bind("#fSerT","seriesTotal",v=>v.replace(/[^\d]/g,""));
+    }
+    renderLinked();
+  }
+  function renderLinked(){
+    const w=q("#linkWrap");if(!w)return;
+    const s=(cur.series||"").trim().toLowerCase();
+    if(!s){w.innerHTML="";return;}
+    const sibs=books.filter(b=>b.id!==cur.id&&(b.series||"").trim().toLowerCase()===s)
+      .sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0));
+    if(!sibs.length){w.innerHTML='<div class="hint" style="margin-top:6px">First one under this name — anything else you give the same name links up here automatically.</div>';return;}
+    w.innerHTML=`<div class="linkbox">🔗 Linked with ${sibs.length} other${sibs.length===1?"":"s"} in <b>${esc(cur.series)}</b>: ${sibs.map(b=>`<a data-go="${b.id}">${b.seriesNum?"#"+esc(b.seriesNum)+" ":""}${esc(b.title)||"Untitled"}</a>`).join(" · ")}</div>`;
+    qa("[data-go]",w).forEach(a=>a.onclick=()=>finishSaveThen(()=>openBook(a.dataset.go,false)));
+  }
+  q("#cbSeries").onchange=e=>{
+    cur.type=e.target.checked?"series":"standalone";
+    if(!e.target.checked){cur.series="";cur.seriesNum="";cur.seriesTotal="";}
+    renderSeries();renderEntries();scheduleSave();
+  };
+  q("#cbColl").onchange=e=>{
+    cur.type=e.target.checked?"collection":"standalone";
+    if(e.target.checked){cur.seriesNum="";cur.seriesTotal="";cur.entries=cur.entries||[];}
+    else cur.series="";
+    renderSeries();renderEntries();scheduleSave();
+  };
+  renderSeries();
+
+  /* books / stories inside a collection */
+  let pendingEnt=null;
+  q("#entCoverFile").onchange=async e=>{
+    const f=e.target.files[0];e.target.value="";
+    const en=(cur.entries||[]).find(x=>x.id===pendingEnt);pendingEnt=null;
+    if(!f||!en)return;
+    let data;try{data=await compressImage(f,600,.85);}catch(err){alert("That image couldn't be read.");return;}
+    const key=cur.id+"|"+en.id;
+    try{await dbPut("images",{key,data});}catch(err){alert("That cover couldn't be saved.");return;}
+    curEnt[en.id]=data;en.cover=true;
+    if(SYNC.on)enqueue({kind:"img",key});
+    renderEntries();scheduleSave();
+  };
+  function renderEntries(){
+    const w=q("#entWrap");
+    if(!isColl(cur)){w.innerHTML="";return;}
+    cur.entries=cur.entries||[];
+    w.innerHTML=`<div class="cap2">What's inside${cur.series?" — "+esc(cur.series):""}</div>
+      <div class="hint">Each book or story this one entry covers, with its own title, rating, summary, notes and cover.</div>
+      <div class="entbox"><div id="entList"></div>
+        <button class="btn pri" id="entAdd" style="margin-top:4px">＋ Add a book / story</button></div>`;
+    const list=q("#entList");
+    list.innerHTML=cur.entries.map((en,i)=>`
+      <div class="ent">
+        <span class="entnum">${i+1}</span>
+        <div class="entcov" data-ec="${en.id}" title="Add a cover">${curEnt[en.id]?`<img src="${curEnt[en.id]}">`:"🖼"}</div>
+        <div class="entmain">
+          <div class="inrow">
+            <input class="field" data-et="${en.id}" placeholder="Title" value="${esc(en.title)}" style="flex:1;min-width:110px;font-size:14px;padding:7px 10px">
+            <span class="ratebox" style="padding:3px 9px">★ <input type="number" data-er="${en.id}" min="0" max="10" step="0.1" placeholder="–" value="${en.rating??""}" style="width:50px;font-size:14px"></span>
+            <span class="boxbtn" style="cursor:default;padding:5px 9px">Pages <input type="number" data-ep="${en.id}" min="1" placeholder="–" value="${esc(en.pages||"")}" style="border:none;width:50px;text-align:center;font-weight:600"></span>
+            <button class="lx" data-ex="${en.id}" style="opacity:1" title="Remove this one">✕</button>
+          </div>
+          <div class="entrich" contenteditable="true" data-es="${en.id}" data-ph="Summary…"></div>
+          <div class="entrich" contenteditable="true" data-eno="${en.id}" data-ph="Notes…"></div>
+        </div>
+      </div>`).join("")||'<span class="none">Nothing added yet.</span>';
+    const find=id=>cur.entries.find(x=>x.id===id);
+    qa("[data-et]",list).forEach(el=>el.addEventListener("input",()=>{find(el.dataset.et).title=el.value;scheduleSave();}));
+    qa("[data-er]",list).forEach(el=>el.addEventListener("input",()=>{const v=el.value;
+      find(el.dataset.er).rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));scheduleSave();}));
+    qa("[data-ep]",list).forEach(el=>el.addEventListener("input",()=>{const v=el.value;
+      find(el.dataset.ep).pages=v===""?"":Math.max(1,parseInt(v)||0);scheduleSave();}));
+    qa("[data-es]",list).forEach(el=>{el.innerHTML=find(el.dataset.es).summary||"";
+      el.addEventListener("input",()=>{find(el.dataset.es).summary=el.innerHTML;scheduleSave();});});
+    qa("[data-eno]",list).forEach(el=>{el.innerHTML=find(el.dataset.eno).notes||"";
+      el.addEventListener("input",()=>{find(el.dataset.eno).notes=el.innerHTML;scheduleSave();});});
+    qa("[data-ec]",list).forEach(el=>el.onclick=()=>{pendingEnt=el.dataset.ec;q("#entCoverFile").click();});
+    qa("[data-ex]",list).forEach(el=>el.onclick=()=>{
+      const en=find(el.dataset.ex);if(!en)return;
+      if(!confirm(`Remove “${en.title||"Untitled"}” from this collection?`))return;
+      if(SYNC.on&&en.cover)enqueue({kind:"imgDel",key:cur.id+"|"+en.id});
+      delete curEnt[en.id];
+      cur.entries=cur.entries.filter(x=>x.id!==en.id);
+      renderEntries();scheduleSave();
+    });
+    q("#entAdd").onclick=()=>{
+      cur.entries.push(blankEntry());renderEntries();scheduleSave();
+      const ins=qa("[data-et]",q("#entList"));if(ins.length)ins[ins.length-1].focus();
+    };
+  }
+  renderEntries();
 
   /* status segmented */
   function renderStatus(){
