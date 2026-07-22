@@ -408,6 +408,17 @@
   #edPage.arr .rot{display:block}
 
   /* draw mode */
+  /* fit-to-screen: the free canvas becomes a readable vertical stack */
+  #edPage.fit #imgLayer,#edPage.fit #padLayer{position:static}
+  #edPage.fit .scrap,#edPage.fit .pad{
+    position:relative!important;left:auto!important;top:auto!important;transform:none!important;
+    width:100%!important;max-width:440px;height:auto!important;margin:0 auto 14px!important;
+    z-index:auto!important;opacity:1!important}
+  #edPage.fit .scrap img{width:100%;height:auto}
+  #edPage.fit .pad .padshape{position:relative;inset:auto;height:auto;min-height:120px}
+  #edPage.fit .padtext{height:auto;min-height:96px}
+  #edPage.fit #drawLayer{display:none}   /* whole-page marks can't map onto a stack */
+
   #drawLayer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:46;overflow:visible}
   .dsvg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible}
   #edPage.draw{cursor:crosshair}
@@ -574,6 +585,11 @@ const PAD_SHAPES=[
   {id:"bubble",name:"Speech bubble",inset:11},
   {id:"hex",name:"Hexagon",inset:15},
 ];
+const ALIGN_IC={
+  left:'<svg width="14" height="14" viewBox="0 0 14 14"><g stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 3h10M2 7h6M2 11h9"/></g></svg>',
+  center:'<svg width="14" height="14" viewBox="0 0 14 14"><g stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 3h10M4 7h6M3 11h8"/></g></svg>',
+  right:'<svg width="14" height="14" viewBox="0 0 14 14"><g stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 3h10M6 7h6M3 11h9"/></g></svg>'
+};
 const shapeOf=p=>p.shape||"none";
 const shapeInset=sh=>(PAD_SHAPES.find(s=>s.id===sh)||PAD_SHAPES[0]).inset;
 /* flip/tilt, shared by pictures and notes */
@@ -658,6 +674,8 @@ let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="no
 let cur=null,curCover=null,curImgs={},curEnt={},saveTimer=null,isNew=false;
 /* one editor mode at a time: write | arrange | draw | tag */
 let mode="write";
+/* fit-to-screen: stack the free-canvas items readably instead of free placement */
+let fitScreen=false;
 const coverCache=new Map();
 const S={q:"",scopes:["title"],authorQ:"",filter:null,multi:[],pickGenre:"any",pickWant:true,picked:null};
 let deletions={};
@@ -1782,7 +1800,9 @@ async function openBook(id,fresh){
   curEnt={};
   for(const en of cur.entries||[]){if(!en.cover)continue;const d=await loadImgData(id+"|"+en.id);if(d)curEnt[en.id]=d;}
   await preloadPads();
-  mode="write";view="book";renderEditor();
+  mode="write";
+  fitScreen=(settings.fit==null)?window.innerWidth<700:!!settings.fit;   /* auto on phones, else your choice */
+  view="book";renderEditor();
 }
 
 function setSaved(ok){const el=q("#saveMsg");if(el){el.textContent=ok?"Saved":"Saving…";el.className="savemsg "+(ok?"ok":"no");}}
@@ -1814,6 +1834,7 @@ function renderEditor(){
         <button class="backbtn" id="uBtn" title="Undo" disabled>↶</button>
         <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
         <span class="savemsg ok" id="saveMsg">Saved</span>
+        <button class="sm" id="edFit" title="Stack everything to fit your screen (best on a phone)">📱 Fit</button>
         <button class="sm" id="edSave" title="Save this book right now">✓ Save now</button>
         <button class="delbtn" id="edDel">🗑</button>
       </div>
@@ -1822,9 +1843,12 @@ function renderEditor(){
         <button class="tbtn i" data-cmd="italic">I</button>
         <button class="tbtn u" data-cmd="underline">U</button>
         <span class="vline"></span>
+        <button class="tbtn" data-cmd="justifyLeft" title="Align left">${ALIGN_IC.left}</button>
+        <button class="tbtn" data-cmd="justifyCenter" title="Center">${ALIGN_IC.center}</button>
+        <button class="tbtn" data-cmd="justifyRight" title="Align right">${ALIGN_IC.right}</button>
+        <span class="vline"></span>
         ${TEXT_COLORS.map(c=>`<button class="cdot" data-col="${c}" style="background:${c}" title="Text colour"></button>`).join("")}
         <input type="color" id="tcol" value="#44403c" title="Any text colour you like">
-        <span class="vline"></span>
         <span class="vline"></span>
         <span class="lbl">Add:</span>
         <button class="sm" id="edImg" title="Add a picture">🖼 Picture</button>
@@ -1939,6 +1963,19 @@ function renderEditor(){
     syncDraw();
   }
   qa("[data-mode]").forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+
+  /* fit-to-screen: reflow the free canvas into a readable stack */
+  function applyFit(){
+    page.classList.toggle("fit",fitScreen);
+    const btn=q("#edFit");if(btn)btn.classList.toggle("on",fitScreen);
+    if(fitScreen)page.style.minHeight="";else pageMin();
+    syncDraw();
+  }
+  q("#edFit").onclick=()=>{
+    fitScreen=!fitScreen;settings.fit=fitScreen;saveSettings();
+    if(fitScreen&&mode!=="write")setMode("write");   /* free-placement modes don't apply when stacked */
+    applyFit();
+  };
 
   /* rich initial content */
   q("#fSummary").innerHTML=b.summary||"";
@@ -2315,6 +2352,7 @@ function renderEditor(){
   }
 
   function pageMin(){
+    if(fitScreen){page.style.minHeight="";return;}
     const hs=[...cur.images.map(i=>i.y+i.w*1.2+160),...(cur.pads||[]).map(p=>p.y+p.h+160)];
     if(!hs.length){page.style.minHeight="";return;}
     page.style.minHeight=Math.max(...hs)+"px";
@@ -2596,6 +2634,7 @@ function renderEditor(){
   renderImages();
   renderPads();
   applyMode();      /* restore the current mode's look after a re-render */
+  applyFit();       /* and the fit-to-screen layout */
   applyBg();
 }
 
