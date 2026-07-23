@@ -390,6 +390,12 @@
   .bgdrop:hover,.bgdrop.over{border-color:#2dd4bf;background:#f0fdfa}
   .opac{display:flex;align-items:center;gap:9px;margin-top:11px;font-size:13px;color:var(--mut)}
   .opac input[type=range]{flex:1;accent-color:var(--teal)}
+  /* cut-out preview — checkerboard shows what's been made transparent */
+  .cutprev{display:flex;align-items:center;justify-content:center;min-height:150px;border-radius:10px;border:1px solid var(--line);
+    background-color:#fff;background-image:linear-gradient(45deg,#e7e5e4 25%,transparent 25%,transparent 75%,#e7e5e4 75%),
+      linear-gradient(45deg,#e7e5e4 25%,transparent 25%,transparent 75%,#e7e5e4 75%);
+    background-size:16px 16px;background-position:0 0,8px 8px;padding:8px}
+  .cutprev img{max-width:100%;max-height:190px;object-fit:contain}
 
   /* notepad pages */
   .pad{position:absolute;z-index:35}
@@ -652,6 +658,71 @@ function compressImage(file,maxDim=1000,quality=.82){
     r.onerror=rej;r.readAsDataURL(file);});
 }
 
+/* Magic wand: flood the background inward from the edges, clear it, then trim to
+   what's left. Great on a flat/plain backdrop, poor on a busy photo. Returns PNG
+   because JPEG can't hold transparency. */
+function cutOutImage(dataURL,tol,trim){
+  return new Promise((res,rej)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const w=img.naturalWidth,h=img.naturalHeight;
+      if(!w||!h){rej(new Error("That picture couldn't be read."));return;}
+      const c=document.createElement("canvas");c.width=w;c.height=h;
+      const ctx=c.getContext("2d",{willReadFrequently:true});
+      ctx.drawImage(img,0,0);
+      let im;try{im=ctx.getImageData(0,0,w,h);}catch(e){rej(new Error("That picture couldn't be read."));return;}
+      const d=im.data,n=w*h;
+      /* Background colour = the most common colour around the border. Averaging the
+         corners breaks the moment the subject touches one (the mean lands between
+         the two colours and matches neither). */
+      const tally=new Map();
+      const edge=(x,y)=>{
+        const p=(y*w+x)*4;
+        const k=((d[p]>>4)<<8)|((d[p+1]>>4)<<4)|(d[p+2]>>4);
+        const e=tally.get(k)||{n:0,r:0,g:0,b:0};
+        e.n++;e.r+=d[p];e.g+=d[p+1];e.b+=d[p+2];tally.set(k,e);
+      };
+      for(let x=0;x<w;x++){edge(x,0);edge(x,h-1);}
+      for(let y=0;y<h;y++){edge(0,y);edge(w-1,y);}
+      let top=null;tally.forEach(e=>{if(!top||e.n>top.n)top=e;});
+      const ref=[top.r/top.n,top.g/top.n,top.b/top.n];
+      const T=tol*tol*3;
+      const near=i=>{const p=i*4,a=d[p]-ref[0],b=d[p+1]-ref[1],g=d[p+2]-ref[2];return a*a+b*b+g*g<=T;};
+      const seen=new Uint8Array(n),clear=new Uint8Array(n),st=[];
+      const seed=(x,y)=>{const i=y*w+x;if(seen[i])return;seen[i]=1;if(near(i)){clear[i]=1;st.push(i);}};
+      for(let x=0;x<w;x++){seed(x,0);seed(x,h-1);}
+      for(let y=0;y<h;y++){seed(0,y);seed(w-1,y);}
+      while(st.length){
+        const i=st.pop(),x=i%w,y=(i/w)|0;
+        const nb=[[x-1,y],[x+1,y],[x,y-1],[x,y+1]];
+        for(let k=0;k<4;k++){
+          const nx=nb[k][0],ny=nb[k][1];
+          if(nx<0||ny<0||nx>=w||ny>=h)continue;
+          const j=ny*w+nx;
+          if(seen[j])continue;
+          seen[j]=1;
+          if(near(j)){clear[j]=1;st.push(j);}
+        }
+      }
+      let minX=w,minY=h,maxX=-1,maxY=-1,gone=0;
+      for(let i=0;i<n;i++){
+        if(clear[i]){d[i*4+3]=0;gone++;}
+        else{const x=i%w,y=(i/w)|0;
+          if(x<minX)minX=x;if(x>maxX)maxX=x;if(y<minY)minY=y;if(y>maxY)maxY=y;}
+      }
+      if(maxX<0){rej(new Error("The whole picture looked like background — try a lower amount."));return;}
+      ctx.putImageData(im,0,0);
+      const sx=trim?minX:0,sy=trim?minY:0;
+      const cw=trim?maxX-minX+1:w,ch=trim?maxY-minY+1:h;
+      const o=document.createElement("canvas");o.width=cw;o.height=ch;
+      o.getContext("2d").drawImage(c,sx,sy,cw,ch,0,0,cw,ch);
+      res({data:o.toDataURL("image/png"),w:cw,h:ch,pct:Math.round(gone/n*100)});
+    };
+    img.onerror=()=>rej(new Error("That picture couldn't be read."));
+    img.src=dataURL;
+  });
+}
+
 /* =============== IndexedDB =============== */
 let db;
 function openDb(){return new Promise((res,rej)=>{
@@ -762,12 +833,14 @@ async function runOp(op){
     if(error)throw error;
   }else if(op.kind==="cover"){
     const c=await dbGet("covers",op.id);
-    if(c&&c.data){const {error}=await s.storage.from("shelf").upload(coverPath(op.id),dataURLtoBlob(c.data),{upsert:true,contentType:"image/jpeg"});if(error)throw error;}
+    if(c&&c.data){const bl=dataURLtoBlob(c.data);
+      const {error}=await s.storage.from("shelf").upload(coverPath(op.id),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
   }else if(op.kind==="coverDel"){
     await s.storage.from("shelf").remove([coverPath(op.id)]);
   }else if(op.kind==="img"){
     const im=await dbGet("images",op.key);
-    if(im&&im.data){const {error}=await s.storage.from("shelf").upload(imgPath(op.key),dataURLtoBlob(im.data),{upsert:true,contentType:"image/jpeg"});if(error)throw error;}
+    if(im&&im.data){const bl=dataURLtoBlob(im.data);
+      const {error}=await s.storage.from("shelf").upload(imgPath(op.key),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
   }else if(op.kind==="imgDel"){
     await s.storage.from("shelf").remove([imgPath(op.key)]);
   }
@@ -1986,6 +2059,7 @@ function renderEditor(){
     </div>
     <div class="bgpanel" id="bgPanel" hidden></div>
     <div class="bgpanel" id="padPanel" hidden></div>
+    <div class="bgpanel" id="cutPanel" hidden></div>
 
     <div class="edhead">
       <div class="coverbox" id="coverBox">${curCover?`<img src="${curCover}">`:"🖼<br>Add cover"}</div>
@@ -2639,6 +2713,62 @@ function renderEditor(){
      without rewriting what you actually chose */
   function cx(v,w){const [lo,hi]=xRange(w);return Math.max(lo,Math.min(hi,v||0));}
 
+  /* ---- cut the background out of a picture ---- */
+  function openCut(im){
+    const key=cur.id+"|"+im.id;
+    const orig=curImgs[im.id];
+    if(!orig){alert("That picture isn't loaded yet.");return;}
+    const box=q("#cutPanel");box.hidden=false;
+    let tol=32,trim=true,result=null,busy=false,applied=false;
+    box.innerHTML=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">Cut out the background</b>
+        <button class="btn" id="cutX" style="margin-left:auto;padding:4px 10px">Close</button></div>
+      <div class="cutprev" id="cutPrev"><span class="none">Working…</span></div>
+      <div class="opac">Amount <input type="range" id="cutTol" min="4" max="120" value="${tol}"><b id="cutTolV" style="width:34px;text-align:right">${tol}</b></div>
+      <label class="chk" style="margin-top:8px;font-size:13px"><input type="checkbox" id="cutTrim" checked> Trim the empty edges away</label>
+      <div class="hint" id="cutMsg" style="margin:9px 0 0">Works best when the background is one flat colour. Busy photos won't cut cleanly.</div>
+      <div class="hrow2" style="margin-top:11px"><button class="btn pri" id="cutApply">Use this</button>
+        <button class="btn" id="cutBack" hidden>Put the original back</button></div>`;
+    const prev=q("#cutPrev",box),msg=q("#cutMsg",box);
+    const run=async()=>{
+      if(busy)return;busy=true;
+      try{
+        result=await cutOutImage(orig,tol,trim);
+        prev.innerHTML=`<img src="${result.data}">`;
+        msg.textContent=`Removed about ${result.pct}% of the picture — now ${result.w}×${result.h}. Drag Amount if it took too much or too little.`;
+      }catch(err){
+        result=null;prev.innerHTML='<span class="none">Nothing left</span>';
+        msg.textContent=err.message||"That didn't work.";
+      }
+      busy=false;
+    };
+    let t=null;
+    const later=()=>{clearTimeout(t);t=setTimeout(run,180);};
+    q("#cutTol",box).oninput=e=>{tol=+e.target.value;q("#cutTolV",box).textContent=tol;later();};
+    q("#cutTrim",box).onchange=e=>{trim=e.target.checked;later();};
+    q("#cutX",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+    q("#cutApply",box).onclick=async()=>{
+      if(!result)return;
+      await dbPut("images",{key,data:result.data});
+      curImgs[im.id]=result.data;
+      if(SYNC.on)enqueue({kind:"img",key});
+      applied=true;q("#cutBack",box).hidden=false;
+      im.cut=Date.now();          /* a real change, so the book saves and other devices re-pull */
+      renderImages();scheduleSave();
+      msg.textContent="Done. Not right? Put the original back, or close this.";
+    };
+    q("#cutBack",box).onclick=async()=>{
+      if(!applied)return;
+      await dbPut("images",{key,data:orig});
+      curImgs[im.id]=orig;
+      if(SYNC.on)enqueue({kind:"img",key});
+      im.cut=Date.now();
+      renderImages();scheduleSave();
+      q("#cutBack",box).hidden=true;applied=false;
+      msg.textContent="Original put back.";
+    };
+    run();
+  }
+
   /* only one item's ⋯ menu open at a time */
   function closeItemMenus(except){
     qa(".imenu",page).forEach(m=>{if(m!==except)m.hidden=true;});
@@ -2767,6 +2897,7 @@ function renderEditor(){
           <button class="sflv">⇅ Flip upside down</button>
           <button class="sfront">⬆ Bring to front</button>
           <button class="sback">⬇ Send to back</button>
+          <button class="scut">✂ Cut out background</button>
         </div>
         <div class="rot" title="Drag to tilt · double-click to straighten"></div>
         <div class="rs"></div>
@@ -2780,6 +2911,7 @@ function renderEditor(){
       q(".sflv",el).onclick=e=>{e.stopPropagation();im.flipV=!im.flipV;el.style.transform=xform(im);smenu.hidden=true;scheduleSave();};
       q(".sfront",el).onclick=e=>{e.stopPropagation();toFront(im);};
       q(".sback",el).onclick=e=>{e.stopPropagation();toBack(im);};
+      q(".scut",el).onclick=e=>{e.stopPropagation();smenu.hidden=true;openCut(im);};
       startRot(q(".rot",el),el,im);
       q(".sdel",el).onclick=e=>{e.stopPropagation();
         delete curImgs[im.id];
