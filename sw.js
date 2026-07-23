@@ -5,8 +5,8 @@
 
    Deliberately never touches Supabase traffic — API and Storage requests always
    go to the network, so you can't be served a stale library. */
-const CACHE = "my-shelf-v1";
-const SHELL = ["./", "./index.html", "./config.js", "./manifest.json", "./icon.svg"];
+const CACHE = "my-shelf-v2";
+const SHELL = ["./", "./index.html", "./config.js", "./manifest.json", "./icon.svg", "./icon.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(
@@ -35,13 +35,18 @@ self.addEventListener("fetch", e => {
   // Never cache Supabase — login, data and images must always be live.
   if (url.hostname.endsWith("supabase.co")) return;
 
-  // The supabase library from the CDN: cache-first, it's versioned and immutable.
+  // The supabase library from the CDN. The "@2" tag floats, so cached-forever would
+  // pin one version for good — serve the cached copy for speed/offline, but refresh
+  // it in the background so updates do land eventually.
   if (url.hostname === "cdn.jsdelivr.net") {
     e.respondWith(
-      caches.match(req).then(hit => hit || fetch(req).then(res => {
-        if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
-        return res;
-      }))
+      caches.match(req).then(hit => {
+        const net = fetch(req).then(res => {
+          if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+          return res;
+        }).catch(() => hit);
+        return hit || net;
+      })
     );
     return;
   }
