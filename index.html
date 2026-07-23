@@ -354,6 +354,10 @@
   .linkbox a{color:var(--teal);cursor:pointer;text-decoration:underline}
   .linkbox a:hover{color:var(--teal-d)}
   .bst.coll{background:#ede9fe;color:#6d28d9}
+  .bst.kind{background:#e0f2fe;color:#0369a1}
+  [data-theme="dark"] .bst.kind{background:#0c3a52;color:#7dd3fc}
+  .ffbox{border:1px solid #bae6fd;background:#f0f9ff66;border-radius:12px;padding:11px;margin-top:8px}
+  [data-theme="dark"] .ffbox{background:#0c2a3a55;border-color:#0369a1}
   .entbox{border:1px solid #ddd6fe;background:#f5f3ff55;border-radius:14px;padding:12px}
   .ent{display:flex;gap:11px;border:1px solid var(--line);background:#fff;border-radius:12px;padding:10px;margin-bottom:8px}
   .entnum{font-family:Georgia,serif;font-weight:700;color:var(--faint);font-size:13px;flex:none;width:14px;text-align:right;padding-top:6px}
@@ -386,6 +390,12 @@
   .bgdrop:hover,.bgdrop.over{border-color:#2dd4bf;background:#f0fdfa}
   .opac{display:flex;align-items:center;gap:9px;margin-top:11px;font-size:13px;color:var(--mut)}
   .opac input[type=range]{flex:1;accent-color:var(--teal)}
+  /* cut-out preview — checkerboard shows what's been made transparent */
+  .cutprev{display:flex;align-items:center;justify-content:center;min-height:150px;border-radius:10px;border:1px solid var(--line);
+    background-color:#fff;background-image:linear-gradient(45deg,#e7e5e4 25%,transparent 25%,transparent 75%,#e7e5e4 75%),
+      linear-gradient(45deg,#e7e5e4 25%,transparent 25%,transparent 75%,#e7e5e4 75%);
+    background-size:16px 16px;background-position:0 0,8px 8px;padding:8px}
+  .cutprev img{max-width:100%;max-height:190px;object-fit:contain}
 
   /* notepad pages */
   .pad{position:absolute;z-index:35}
@@ -492,6 +502,7 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
 <input type="file" id="coverFile" accept="image/*" hidden>
 <input type="file" id="imgFile" accept="image/*" multiple hidden>
 <input type="file" id="entCoverFile" accept="image/*" hidden>
+<input type="file" id="csvFile" accept=".csv,text/csv" hidden>
 
 <script>
 /* =============== constants & helpers =============== */
@@ -607,7 +618,11 @@ function wordRange(r){
   const nr=document.createRange();nr.setStart(node,s);nr.setEnd(node,e);return nr;
 }
 const STATUSES=[["finished","Finished"],["reading","Reading now"],["want","Want to read"]];
-const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre","Genre"],["keyword","Keyword"],["quotes","Quotes"],["summary","Summary"],["notes","Notes"],["lists","+/− lists"]];
+/* what a shelf entry is: a published book, a fanfic, or an AI-written story */
+const KINDS=[["book","📗 Book"],["fanfic","✍️ Fanfic"],["ai","🤖 AI story"]];
+const kindOf=b=>b.kind||"book";
+const kindLabel=k=>(KINDS.find(x=>x[0]===k)||KINDS[0])[1];
+const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre","Genre"],["keyword","Keyword"],["quotes","Quotes"],["summary","Summary"],["notes","Notes"],["lists","+/− lists"],["fandom","Fandom & characters"]];
 const lastName=a=>{const p=(a||"").trim().split(/\s+/);return (p[p.length-1]||"").toLowerCase();};
 const fmtEdited=t=>new Date(t).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
@@ -628,7 +643,7 @@ const imgKeysOf=b=>!b?[]:[...((b.images)||[]).map(im=>b.id+"|"+im.id),
   ...((b.entries)||[]).filter(en=>en.cover).map(en=>b.id+"|"+en.id)];
 const q=(sel,root=document)=>root.querySelector(sel);
 const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
-const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",progress:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],summary:"",pros:[],cons:[],quotes:[],canvasText:"",images:[],pads:[],draw:[],created:Date.now()});
+const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",progress:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],kind:"book",fandoms:[],characters:[],link:"",summary:"",pros:[],cons:[],quotes:[],canvasText:"",images:[],pads:[],draw:[],created:Date.now()});
 
 function compressImage(file,maxDim=1000,quality=.82){
   return new Promise((res,rej)=>{
@@ -641,6 +656,71 @@ function compressImage(file,maxDim=1000,quality=.82){
         res(c.toDataURL("image/jpeg",quality));};
       img.onerror=rej;img.src=r.result;};
     r.onerror=rej;r.readAsDataURL(file);});
+}
+
+/* Magic wand: flood the background inward from the edges, clear it, then trim to
+   what's left. Great on a flat/plain backdrop, poor on a busy photo. Returns PNG
+   because JPEG can't hold transparency. */
+function cutOutImage(dataURL,tol,trim){
+  return new Promise((res,rej)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const w=img.naturalWidth,h=img.naturalHeight;
+      if(!w||!h){rej(new Error("That picture couldn't be read."));return;}
+      const c=document.createElement("canvas");c.width=w;c.height=h;
+      const ctx=c.getContext("2d",{willReadFrequently:true});
+      ctx.drawImage(img,0,0);
+      let im;try{im=ctx.getImageData(0,0,w,h);}catch(e){rej(new Error("That picture couldn't be read."));return;}
+      const d=im.data,n=w*h;
+      /* Background colour = the most common colour around the border. Averaging the
+         corners breaks the moment the subject touches one (the mean lands between
+         the two colours and matches neither). */
+      const tally=new Map();
+      const edge=(x,y)=>{
+        const p=(y*w+x)*4;
+        const k=((d[p]>>4)<<8)|((d[p+1]>>4)<<4)|(d[p+2]>>4);
+        const e=tally.get(k)||{n:0,r:0,g:0,b:0};
+        e.n++;e.r+=d[p];e.g+=d[p+1];e.b+=d[p+2];tally.set(k,e);
+      };
+      for(let x=0;x<w;x++){edge(x,0);edge(x,h-1);}
+      for(let y=0;y<h;y++){edge(0,y);edge(w-1,y);}
+      let top=null;tally.forEach(e=>{if(!top||e.n>top.n)top=e;});
+      const ref=[top.r/top.n,top.g/top.n,top.b/top.n];
+      const T=tol*tol*3;
+      const near=i=>{const p=i*4,a=d[p]-ref[0],b=d[p+1]-ref[1],g=d[p+2]-ref[2];return a*a+b*b+g*g<=T;};
+      const seen=new Uint8Array(n),clear=new Uint8Array(n),st=[];
+      const seed=(x,y)=>{const i=y*w+x;if(seen[i])return;seen[i]=1;if(near(i)){clear[i]=1;st.push(i);}};
+      for(let x=0;x<w;x++){seed(x,0);seed(x,h-1);}
+      for(let y=0;y<h;y++){seed(0,y);seed(w-1,y);}
+      while(st.length){
+        const i=st.pop(),x=i%w,y=(i/w)|0;
+        const nb=[[x-1,y],[x+1,y],[x,y-1],[x,y+1]];
+        for(let k=0;k<4;k++){
+          const nx=nb[k][0],ny=nb[k][1];
+          if(nx<0||ny<0||nx>=w||ny>=h)continue;
+          const j=ny*w+nx;
+          if(seen[j])continue;
+          seen[j]=1;
+          if(near(j)){clear[j]=1;st.push(j);}
+        }
+      }
+      let minX=w,minY=h,maxX=-1,maxY=-1,gone=0;
+      for(let i=0;i<n;i++){
+        if(clear[i]){d[i*4+3]=0;gone++;}
+        else{const x=i%w,y=(i/w)|0;
+          if(x<minX)minX=x;if(x>maxX)maxX=x;if(y<minY)minY=y;if(y>maxY)maxY=y;}
+      }
+      if(maxX<0){rej(new Error("The whole picture looked like background — try a lower amount."));return;}
+      ctx.putImageData(im,0,0);
+      const sx=trim?minX:0,sy=trim?minY:0;
+      const cw=trim?maxX-minX+1:w,ch=trim?maxY-minY+1:h;
+      const o=document.createElement("canvas");o.width=cw;o.height=ch;
+      o.getContext("2d").drawImage(c,sx,sy,cw,ch,0,0,cw,ch);
+      res({data:o.toDataURL("image/png"),w:cw,h:ch,pct:Math.round(gone/n*100)});
+    };
+    img.onerror=()=>rej(new Error("That picture couldn't be read."));
+    img.src=dataURL;
+  });
 }
 
 /* =============== IndexedDB =============== */
@@ -671,6 +751,8 @@ let padList=[];                /* [{id,name}] custom notepad looks, images live 
 const bgCache=new Map(),padCache=new Map();
 let activeBgPicker=null,bgPick=null,bgAdd=null;
 let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="none";
+let kindFilter=["book","fanfic","ai"];        /* which kinds show in the Library */
+let fandoms={};                                /* fandom -> [characters], shared across books */
 let cur=null,curCover=null,curImgs={},curEnt={},saveTimer=null,isNew=false;
 /* one editor mode at a time: write | arrange | draw | tag */
 let mode="write";
@@ -745,18 +827,20 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
   }else if(op.kind==="cover"){
     const c=await dbGet("covers",op.id);
-    if(c&&c.data){const {error}=await s.storage.from("shelf").upload(coverPath(op.id),dataURLtoBlob(c.data),{upsert:true,contentType:"image/jpeg"});if(error)throw error;}
+    if(c&&c.data){const bl=dataURLtoBlob(c.data);
+      const {error}=await s.storage.from("shelf").upload(coverPath(op.id),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
   }else if(op.kind==="coverDel"){
     await s.storage.from("shelf").remove([coverPath(op.id)]);
   }else if(op.kind==="img"){
     const im=await dbGet("images",op.key);
-    if(im&&im.data){const {error}=await s.storage.from("shelf").upload(imgPath(op.key),dataURLtoBlob(im.data),{upsert:true,contentType:"image/jpeg"});if(error)throw error;}
+    if(im&&im.data){const bl=dataURLtoBlob(im.data);
+      const {error}=await s.storage.from("shelf").upload(imgPath(op.key),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
   }else if(op.kind==="imgDel"){
     await s.storage.from("shelf").remove([imgPath(op.key)]);
   }
@@ -781,9 +865,11 @@ async function pullAll(){
             (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id))bgList.push(x);});}
           else if(row.key==="padskins"){const have=new Set(padList.map(x=>x.id));
             (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id))padList.push(x);});}
+          else if(row.key==="fandoms"){const rv=row.value||{};
+            for(const f in rv)fandoms[f]=[...new Set([...(rv[f]||[]),...(fandoms[f]||[])])];}
         }
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
-        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});
+        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});
       }
     }catch(e){console.warn("[shelf] meta pull",e);}
     // books (per-book last-write-wins by `modified`)
@@ -930,6 +1016,8 @@ async function initSync(){
   const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
   const bl=await dbGet("meta","backgrounds");bgList=bl&&Array.isArray(bl.v)?bl.v:[];
   const pl=await dbGet("meta","padskins");padList=pl&&Array.isArray(pl.v)?pl.v:[];
+  const fd=await dbGet("meta","fandoms");fandoms=fd&&fd.v?fd.v:{};
+  const iq=await dbGet("meta","importQueue");importQueue=iq&&Array.isArray(iq.v)?iq.v:[];
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   applyTheme();applyBg();
   try{
@@ -997,6 +1085,9 @@ async function deleteCustomBg(id){
 /* ---- custom notepad looks ---- */
 const padKey=id=>"__pad|"+id;
 function savePadList(){dbPut("meta",{k:"padskins",v:padList});enqueue({kind:"meta",key:"padskins"});}
+function saveFandoms(){dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});}
+/* characters you may pick, given the fandoms this entry is tagged with */
+const charsFor=list=>[...new Set((list||[]).flatMap(f=>fandoms[f]||[]))].sort((a,b)=>a.localeCompare(b));
 async function preloadPads(){
   for(const c of padList)if(!padCache.has(c.id))padCache.set(c.id,await loadImgData(padKey(c.id)));
 }
@@ -1244,7 +1335,7 @@ function rowHtml(b,withDel,edited){
     <div class="thumb" data-cover="${b.id}">📖</div>
     <div class="rmain">
       <div class="rtitle serif">${esc(b.title)||"Untitled"} ${b.favorite?'<span class="fav">♥</span>':""} ${stBadge(b)} ${isColl(b)?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':""}</div>
-      <div class="rauth">${esc(b.author)||"Unknown author"}${b.series?` <span class="rser">${esc(b.series)}${b.seriesNum?" #"+esc(b.seriesNum):""}</span>`:""}${b.pages?` <span class="rser">· ${esc(String(b.pages))} p.</span>`:""}</div>
+      <div class="rauth">${kindOf(b)!=="book"?`<span class="bst kind">${kindOf(b)==="fanfic"?"FANFIC":"AI"}</span> `:""}${esc(b.author)||(kindOf(b)==="ai"?"":"Unknown author")}${(b.fandoms||[]).length?` <span class="rser">${(b.fandoms||[]).map(esc).join(", ")}${(b.characters||[]).length?" · "+(b.characters||[]).map(esc).join(", "):""}</span>`:""}${b.series?` <span class="rser">${esc(b.series)}${b.seriesNum?" #"+esc(b.seriesNum):""}</span>`:""}${b.pages?` <span class="rser">· ${esc(String(b.pages))} p.</span>`:""}</div>
       <div>${(b.genres||[]).map(g=>chipHtml(g,true)).join("")}${(b.keywords||[]).map(k=>`<span class="kw">${esc(k)}</span>`).join("")}</div>
       ${progHtml(b)}
     </div>
@@ -1335,10 +1426,14 @@ function booksHtml(list,withDel){
 function renderLibrary(){
   const m=q("#main");
   const counts={all:books.length,finished:books.filter(b=>statusOf(b)==="finished").length,reading:books.filter(b=>statusOf(b)==="reading").length,want:books.filter(b=>statusOf(b)==="want").length};
-  const list=books.filter(b=>statusFilter==="all"||statusOf(b)===statusFilter).sort(sortCmp);
+  const kc={};KINDS.forEach(([k])=>kc[k]=books.filter(b=>kindOf(b)===k).length);
+  const list=books.filter(b=>(statusFilter==="all"||statusOf(b)===statusFilter)&&kindFilter.includes(kindOf(b))).sort(sortCmp);
   let html="";
   if(books.length){
     html+=`<div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading"],["want","Want to read"]].map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}">${l} <b>${counts[id]}</b></button>`).join("")}</div>`;
+    if(kc.fanfic||kc.ai)
+      html+=`<div class="pills"><span class="lbl">Show:</span>${KINDS.map(([k,l])=>{const on=kindFilter.includes(k);
+        return `<button class="mg ${on?"on":""}" data-kf="${k}" style="${on?"background:var(--teal);border-color:var(--teal)":""}"><span class="bx">${on?"✓":""}</span>${l} <b>${kc[k]}</b></button>`;}).join("")}</div>`;
     html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","title","author","status","genre","type"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}">${s}</button>`).join("")}
       <button class="laybtn" id="layTog">${layout==="list"?"▦ Grid":"☰ List"}</button></div>`;
     html+=`<div class="pills"><span class="lbl">Group under headings:</span>${GROUPS.map(([id,l])=>`<button class="pill ${groupBy===id?"on":""}" data-gb="${id}">${l}</button>`).join("")}</div>`;
@@ -1355,6 +1450,10 @@ function renderLibrary(){
   }
   m.innerHTML=html;
   qa("[data-sf]",m).forEach(b=>b.onclick=()=>{statusFilter=b.dataset.sf;renderLibrary();});
+  qa("[data-kf]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.kf;
+    kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
+    if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
+    renderLibrary();});
   qa("[data-sort]",m).forEach(b=>b.onclick=()=>{sortBy=b.dataset.sort;renderLibrary();});
   qa("[data-gb]",m).forEach(b=>b.onclick=()=>{groupBy=b.dataset.gb;renderLibrary();});
   const lt=q("#layTog",m);if(lt)lt.onclick=()=>{layout=layout==="list"?"grid":"list";renderLibrary();};
@@ -1463,6 +1562,19 @@ async function renderHub(){
       </div>
     </div>
     <div class="sec">
+      <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph</h2><span class="n" id="impN"></span></div>
+      <div class="hcard">
+        <div class="hrow2"><button class="btn pri" id="csvBtn">⭱ Choose an export file</button>
+          <button class="btn" id="impClear" hidden>Clear the list</button></div>
+        <div class="hint" style="margin:9px 0 0">
+          <b>Goodreads:</b> My Books → Import and Export → Export Library → download the .csv.<br>
+          <b>StoryGraph:</b> Manage Account → Manage Your Data → Export StoryGraph Library.<br>
+          Nothing is added until you pick it. Titles already on your shelf are marked and skipped.
+        </div>
+        <div id="impList"></div>
+      </div>
+    </div>
+    <div class="sec">
       <div class="heading"><h2 class="serif">Recently deleted</h2><span class="n" id="trashN"></span></div>
       <div class="hcard">
         <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good.</div>
@@ -1501,9 +1613,80 @@ async function renderHub(){
     if(q("#bkNow")){q("#bkNow").disabled=false;q("#bkNow").textContent="＋ Back up now";}
     refreshSnaps();refreshStorage();
   };
+  q("#csvBtn").onclick=()=>q("#csvFile").click();
+  q("#impClear").onclick=()=>{
+    if(!confirm("Clear the import list? Nothing already added to your shelf is affected."))return;
+    importQueue=[];saveImportQueue();refreshImport();
+  };
   drawBgPicker(q("#hubBg"),()=>settings.bg||{id:"none",opacity:100},v=>{settings.bg=v;saveSettings();},false);
-  refreshSnaps();refreshStorage();refreshTrash();
+  refreshSnaps();refreshStorage();refreshTrash();refreshImport();
 }
+
+const IMP_SHOW=40;   /* how many titles to list per section before summarising */
+function refreshImport(){
+  const box=q("#impList");if(!box)return;
+  markDupes();
+  const n=q("#impN"),clr=q("#impClear");
+  const pend=importQueue.filter(it=>!it.dupe);
+  if(n)n.textContent=importQueue.length?`(${pend.length} to add)`:"";
+  if(clr)clr.hidden=!importQueue.length;
+  if(!importQueue.length){box.innerHTML="";return;}
+  let html="";
+  for(const [sec,label] of IMPORT_SECTIONS){
+    const all=importQueue.filter(it=>secOf(it)===sec);
+    if(!all.length)continue;
+    const add=all.filter(it=>!it.dupe);
+    html+=`<div style="margin-top:15px">
+      <div class="hrow2" style="margin-bottom:6px">
+        <b style="font-size:14px">${label}</b><span class="none">${all.length}${add.length!==all.length?` · ${all.length-add.length} already on your shelf`:""}</span>
+        ${add.length?`<button class="btn pri" data-impall="${sec}" style="margin-left:auto;padding:5px 11px">Add all ${add.length}</button>`:""}
+      </div>
+      ${all.slice(0,IMP_SHOW).map(it=>`<div class="snap" style="padding:6px 10px">
+        <div style="min-width:0"><div class="when" style="font-size:13px">${esc(it.title)}</div>
+          <div class="meta">${esc(it.author)||"Unknown author"}${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}</div></div>
+        <div class="sp">${it.dupe
+          ? '<span class="none" style="font-size:12px">already on your shelf</span>'
+          : `<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
+      </div>`).join("")}
+      ${all.length>IMP_SHOW?`<div class="none" style="margin-top:5px">…and ${all.length-IMP_SHOW} more — “Add all” takes every one of them.</div>`:""}
+    </div>`;
+  }
+  box.innerHTML=html;
+  qa("[data-impone]",box).forEach(b=>b.onclick=async()=>{
+    const it=importQueue.find(x=>x.id===b.dataset.impone);if(!it)return;
+    b.disabled=true;
+    await importOne(it);saveImportQueue();
+    render();
+  });
+  qa("[data-impall]",box).forEach(b=>b.onclick=async()=>{
+    const sec=b.dataset.impall;
+    const batch=importQueue.filter(it=>secOf(it)===sec&&!it.dupe);
+    if(!batch.length)return;
+    if(!confirm(`Add ${batch.length} book${batch.length===1?"":"s"} to your shelf?`))return;
+    b.disabled=true;b.textContent="Adding…";
+    const msg=q("#busyMsg");if(msg)msg.textContent=`Adding ${batch.length}…`;
+    for(const it of batch)await importOne(it);
+    saveImportQueue();
+    if(SYNC.on)flushQueue();
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    render();
+  });
+}
+
+q("#csvFile").addEventListener("change",async e=>{
+  const f=e.target.files[0];e.target.value="";if(!f)return;
+  const msg=q("#busyMsg");if(msg)msg.textContent="Reading the file…";
+  try{
+    const {src,n}=await loadCsvFile(f);
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    refreshImport();
+    const pend=importQueue.filter(it=>!it.dupe).length;
+    alert(`Found ${n} book${n===1?"":"s"} in your ${src==="goodreads"?"Goodreads":"StoryGraph"} export.\n\n${pend} are new — pick the ones you want below, or add a whole section at once.`);
+  }catch(err){
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    alert(err.message||"That file couldn't be read.");
+  }
+});
 
 async function refreshTrash(){
   const box=q("#trashList");if(!box)return;
@@ -1636,6 +1819,7 @@ function renderSearchBody(){
     case "summary":return stripHtml((b.summary||"")+" "+(b.entries||[]).map(en=>en.summary||"").join(" ")).toLowerCase().includes(qlc);
     case "notes":return stripHtml((b.canvasText||"")+" "+(b.entries||[]).map(en=>en.notes||"").join(" ")+" "+(b.pads||[]).map(p=>p.html||"").join(" ")).toLowerCase().includes(qlc);
     case "lists":return stripHtml([...(b.pros||[]),...(b.cons||[])].join(" ")).toLowerCase().includes(qlc);
+    case "fandom":return [...(b.fandoms||[]),...(b.characters||[])].some(x=>x.toLowerCase().includes(qlc));
   }return false;};
   if(qlc){
     results=books.filter(b=>S.scopes.some(s=>matchScope(b,s)));
@@ -1875,6 +2059,7 @@ function renderEditor(){
     </div>
     <div class="bgpanel" id="bgPanel" hidden></div>
     <div class="bgpanel" id="padPanel" hidden></div>
+    <div class="bgpanel" id="cutPanel" hidden></div>
 
     <div class="edhead">
       <div class="coverbox" id="coverBox">${curCover?`<img src="${curCover}">`:"🖼<br>Add cover"}</div>
@@ -1884,6 +2069,8 @@ function renderEditor(){
           <input class="field" id="fAuthor" placeholder="Author" value="${esc(b.author)}" autocomplete="off">
           <div class="sug" id="authSug" hidden></div>
         </div>
+        <div class="chkrow" id="kindRow"></div>
+        <div id="ffWrap"></div>
         <div class="chkrow">
           <label class="chk"><input type="checkbox" id="cbSeries"> Part of a series</label>
           <label class="chk"><input type="checkbox" id="cbColl"> A whole series / collection in one entry</label>
@@ -2067,6 +2254,67 @@ function renderEditor(){
     inp.addEventListener("blur",()=>setTimeout(()=>sug.hidden=true,150));
   }
   autoComplete("#fAuthor","#authSug","author",()=>[...new Set(books.map(x=>(x.author||"").trim()).filter(Boolean))]);
+
+  /* book / fanfic / AI story */
+  function renderKind(){
+    q("#kindRow").innerHTML=KINDS.map(([id,l])=>
+      `<label class="chk"><input type="checkbox" data-kind="${id}" ${kindOf(cur)===id?"checked":""}> ${l}</label>`).join("");
+    qa("[data-kind]").forEach(x=>x.onchange=()=>{
+      cur.kind=x.checked?x.dataset.kind:"book";      /* exactly one, book is the default */
+      if(cur.kind==="book"){cur.fandoms=[];cur.characters=[];cur.link="";}
+      renderKind();renderFF();scheduleSave();
+    });
+  }
+  /* fandoms + characters + link — only for fanfic and AI stories */
+  function renderFF(){
+    const w=q("#ffWrap");
+    if(kindOf(cur)==="book"){w.innerHTML="";return;}
+    cur.fandoms=cur.fandoms||[];cur.characters=cur.characters||[];
+    const allF=Object.keys(fandoms).sort((a,b)=>a.localeCompare(b));
+    const pickable=charsFor(cur.fandoms);                    /* only this fandom's cast */
+    const firstF=cur.fandoms[0];
+    w.innerHTML=`<div class="ffbox">
+      <div class="lbl" style="display:block;margin-bottom:3px">Fandom${cur.fandoms.length>1?"s":""}</div>
+      <div>${allF.map(f=>`<button class="rsn ${cur.fandoms.includes(f)?"on":""}" data-fd="${esc(f)}">${cur.fandoms.includes(f)?"✓ ":""}${esc(f)}</button>`).join("")}
+        <input id="fdIn" class="addin" style="width:170px;display:inline-block;margin:2px 0 0 2px" placeholder="Add a fandom… (Enter)"></div>
+      <div class="lbl" style="display:block;margin:11px 0 3px">Characters${firstF?"":" — pick a fandom first"}</div>
+      <div>${pickable.map(c=>`<button class="rsn ${cur.characters.includes(c)?"on":""}" data-ch="${esc(c)}">${cur.characters.includes(c)?"✓ ":""}${esc(c)}</button>`).join("")}
+        ${firstF?`<input id="chIn" class="addin" style="width:200px;display:inline-block;margin:2px 0 0 2px" placeholder="Add to ${esc(firstF)}… (Enter)">`:""}</div>
+      <div class="lbl" style="display:block;margin:11px 0 3px">Link</div>
+      <input class="field" id="fLink" placeholder="https://…" value="${esc(cur.link||"")}" style="font-size:13px;padding:7px 10px">
+    </div>`;
+    qa("[data-fd]",w).forEach(x=>x.onclick=()=>{
+      const f=x.dataset.fd;
+      cur.fandoms=cur.fandoms.includes(f)?cur.fandoms.filter(y=>y!==f):[...cur.fandoms,f];
+      /* drop characters that no longer belong to any chosen fandom */
+      const ok=new Set(charsFor(cur.fandoms));
+      cur.characters=cur.characters.filter(c=>ok.has(c));
+      renderFF();scheduleSave();
+    });
+    qa("[data-ch]",w).forEach(x=>x.onclick=()=>{
+      const c=x.dataset.ch;
+      cur.characters=cur.characters.includes(c)?cur.characters.filter(y=>y!==c):[...cur.characters,c];
+      renderFF();scheduleSave();
+    });
+    q("#fdIn",w).addEventListener("keydown",e=>{
+      if(e.key!=="Enter"||!e.target.value.trim())return;
+      const f=e.target.value.trim();
+      if(!fandoms[f]){fandoms[f]=[];saveFandoms();}
+      if(!cur.fandoms.includes(f))cur.fandoms.push(f);
+      renderFF();scheduleSave();
+    });
+    const ci=q("#chIn",w);
+    if(ci)ci.addEventListener("keydown",e=>{
+      if(e.key!=="Enter"||!e.target.value.trim())return;
+      const c=e.target.value.trim();
+      fandoms[firstF]=fandoms[firstF]||[];
+      if(!fandoms[firstF].includes(c)){fandoms[firstF].push(c);saveFandoms();}
+      if(!cur.characters.includes(c))cur.characters.push(c);
+      renderFF();scheduleSave();
+    });
+    q("#fLink",w).addEventListener("input",e=>{cur.link=e.target.value;scheduleSave();});
+  }
+  renderKind();renderFF();
 
   /* series / collection type */
   function renderSeries(){
@@ -2465,6 +2713,62 @@ function renderEditor(){
      without rewriting what you actually chose */
   function cx(v,w){const [lo,hi]=xRange(w);return Math.max(lo,Math.min(hi,v||0));}
 
+  /* ---- cut the background out of a picture ---- */
+  function openCut(im){
+    const key=cur.id+"|"+im.id;
+    const orig=curImgs[im.id];
+    if(!orig){alert("That picture isn't loaded yet.");return;}
+    const box=q("#cutPanel");box.hidden=false;
+    let tol=32,trim=true,result=null,busy=false,applied=false;
+    box.innerHTML=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">Cut out the background</b>
+        <button class="btn" id="cutX" style="margin-left:auto;padding:4px 10px">Close</button></div>
+      <div class="cutprev" id="cutPrev"><span class="none">Working…</span></div>
+      <div class="opac">Amount <input type="range" id="cutTol" min="4" max="120" value="${tol}"><b id="cutTolV" style="width:34px;text-align:right">${tol}</b></div>
+      <label class="chk" style="margin-top:8px;font-size:13px"><input type="checkbox" id="cutTrim" checked> Trim the empty edges away</label>
+      <div class="hint" id="cutMsg" style="margin:9px 0 0">Works best when the background is one flat colour. Busy photos won't cut cleanly.</div>
+      <div class="hrow2" style="margin-top:11px"><button class="btn pri" id="cutApply">Use this</button>
+        <button class="btn" id="cutBack" hidden>Put the original back</button></div>`;
+    const prev=q("#cutPrev",box),msg=q("#cutMsg",box);
+    const run=async()=>{
+      if(busy)return;busy=true;
+      try{
+        result=await cutOutImage(orig,tol,trim);
+        prev.innerHTML=`<img src="${result.data}">`;
+        msg.textContent=`Removed about ${result.pct}% of the picture — now ${result.w}×${result.h}. Drag Amount if it took too much or too little.`;
+      }catch(err){
+        result=null;prev.innerHTML='<span class="none">Nothing left</span>';
+        msg.textContent=err.message||"That didn't work.";
+      }
+      busy=false;
+    };
+    let t=null;
+    const later=()=>{clearTimeout(t);t=setTimeout(run,180);};
+    q("#cutTol",box).oninput=e=>{tol=+e.target.value;q("#cutTolV",box).textContent=tol;later();};
+    q("#cutTrim",box).onchange=e=>{trim=e.target.checked;later();};
+    q("#cutX",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+    q("#cutApply",box).onclick=async()=>{
+      if(!result)return;
+      await dbPut("images",{key,data:result.data});
+      curImgs[im.id]=result.data;
+      if(SYNC.on)enqueue({kind:"img",key});
+      applied=true;q("#cutBack",box).hidden=false;
+      im.cut=Date.now();          /* a real change, so the book saves and other devices re-pull */
+      renderImages();scheduleSave();
+      msg.textContent="Done. Not right? Put the original back, or close this.";
+    };
+    q("#cutBack",box).onclick=async()=>{
+      if(!applied)return;
+      await dbPut("images",{key,data:orig});
+      curImgs[im.id]=orig;
+      if(SYNC.on)enqueue({kind:"img",key});
+      im.cut=Date.now();
+      renderImages();scheduleSave();
+      q("#cutBack",box).hidden=true;applied=false;
+      msg.textContent="Original put back.";
+    };
+    run();
+  }
+
   /* only one item's ⋯ menu open at a time */
   function closeItemMenus(except){
     qa(".imenu",page).forEach(m=>{if(m!==except)m.hidden=true;});
@@ -2593,6 +2897,7 @@ function renderEditor(){
           <button class="sflv">⇅ Flip upside down</button>
           <button class="sfront">⬆ Bring to front</button>
           <button class="sback">⬇ Send to back</button>
+          <button class="scut">✂ Cut out background</button>
         </div>
         <div class="rot" title="Drag to tilt · double-click to straighten"></div>
         <div class="rs"></div>
@@ -2606,6 +2911,7 @@ function renderEditor(){
       q(".sflv",el).onclick=e=>{e.stopPropagation();im.flipV=!im.flipV;el.style.transform=xform(im);smenu.hidden=true;scheduleSave();};
       q(".sfront",el).onclick=e=>{e.stopPropagation();toFront(im);};
       q(".sback",el).onclick=e=>{e.stopPropagation();toBack(im);};
+      q(".scut",el).onclick=e=>{e.stopPropagation();smenu.hidden=true;openCut(im);};
       startRot(q(".rot",el),el,im);
       q(".sdel",el).onclick=e=>{e.stopPropagation();
         delete curImgs[im.id];
@@ -2664,7 +2970,7 @@ async function buildBackup(){
   const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
   return {app:"my-shelf",version:1,exported:new Date().toISOString(),
     index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
-    backgrounds:bgList,padskins:padList,covers,images};
+    backgrounds:bgList,padskins:padList,fandoms,covers,images};
 }
 function downloadJson(json,name){
   const blob=new Blob([json],{type:"application/json"});
@@ -2697,7 +3003,9 @@ async function applyBackup(data){
   (data.backgrounds||[]).forEach(x=>{if(x&&x.id&&!haveB.has(x.id))bgList.push(x);});
   const haveP=new Set(padList.map(x=>x.id));
   (data.padskins||[]).forEach(x=>{if(x&&x.id&&!haveP.has(x.id))padList.push(x);});
-  saveBgList();savePadList();
+  const fdIn=data.fandoms||{};
+  for(const f in fdIn)fandoms[f]=[...new Set([...(fandoms[f]||[]),...(fdIn[f]||[])])];
+  saveBgList();savePadList();saveFandoms();
   saveMeta();
   if(SYNC.on){
     for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
@@ -2706,6 +3014,99 @@ async function applyBackup(data){
     saveDeletions();flushQueue();
   }
   return data.books.length;
+}
+
+/* =============== import from Goodreads / StoryGraph =============== */
+const IMPORT_SECTIONS=[["finished","Read"],["reading","Currently reading"],["want","Want to read"],["dnf","Did not finish"]];
+const secOf=it=>it.dnf?"dnf":it.status;
+const dupeKey=(t,a)=>((t||"")+"|"+(a||"")).toLowerCase().replace(/\s+/g," ").trim();
+
+/* proper CSV: quoted fields, embedded commas/newlines, doubled quotes */
+function parseCsv(text){
+  const rows=[];let row=[],val="",inQ=false;
+  text=String(text).replace(/^﻿/,"");
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(inQ){
+      if(c==='"'){if(text[i+1]==='"'){val+='"';i++;}else inQ=false;}
+      else val+=c;
+    }else if(c==='"')inQ=true;
+    else if(c===","){row.push(val);val="";}
+    else if(c==="\n"){row.push(val);rows.push(row);row=[];val="";}
+    else if(c!=="\r")val+=c;
+  }
+  if(val!==""||row.length){row.push(val);rows.push(row);}
+  return rows.filter(r=>r.some(v=>String(v).trim()!==""));
+}
+function csvObjects(text){
+  const rows=parseCsv(text);
+  if(rows.length<2)return {head:[],items:[]};
+  const head=rows[0].map(h=>h.trim());
+  return {head,items:rows.slice(1).map(r=>{const o={};head.forEach((h,i)=>o[h]=(r[i]==null?"":String(r[i]).trim()));return o;})};
+}
+const csvSource=head=>head.includes("Exclusive Shelf")?"goodreads"
+  :(head.includes("Read Status")||head.includes("Star Rating"))?"storygraph":null;
+const cleanDate=s=>{const m=String(s||"").match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  return m?`${m[1]}-${String(m[2]).padStart(2,"0")}-${String(m[3]).padStart(2,"0")}`:"";};
+const splitTags=s=>String(s||"").split(",").map(x=>x.trim()).filter(Boolean);
+
+const DNF_SHELF=/^(dnf|did-not-finish|did_not_finish|didnotfinish|abandoned|unfinished|not-finished|gave-up|stopped-reading)$/;
+function fromGoodreads(o){
+  const shelf=(o["Exclusive Shelf"]||"").toLowerCase();
+  /* shelves are a comma-separated list — test each one, don't pattern-match the whole string */
+  const dnf=DNF_SHELF.test(shelf)||splitTags(o["Bookshelves"]).some(s=>DNF_SHELF.test(s.toLowerCase()));
+  const r=parseFloat(o["My Rating"]||"0")||0;
+  return {id:uid(),title:o["Title"]||"",author:o["Author"]||"",
+    status:shelf==="currently-reading"?"reading":shelf==="to-read"?"want":"finished",dnf,
+    rating:r>0?Math.min(10,r*2):null,
+    pages:parseInt(o["Number of Pages"]||"")||"",
+    dateFinished:cleanDate(o["Date Read"]),
+    rereads:Math.max(0,(parseInt(o["Read Count"]||"1")||1)-1),
+    summary:o["My Review"]||"",notes:o["Private Notes"]||"",
+    tags:splitTags(o["Bookshelves"]).filter(t=>!["read","to-read","currently-reading"].includes(t.toLowerCase()))};
+}
+function fromStorygraph(o){
+  const st=(o["Read Status"]||"").toLowerCase();
+  const r=parseFloat(o["Star Rating"]||"0")||0;
+  return {id:uid(),title:o["Title"]||"",author:o["Authors"]||o["Author"]||"",
+    status:st==="currently-reading"?"reading":st==="to-read"?"want":"finished",
+    dnf:st==="did-not-finish",
+    rating:r>0?Math.min(10,r*2):null,
+    pages:parseInt(o["Number of Pages"]||o["Pages"]||"")||"",
+    dateFinished:cleanDate(o["Last Date Read"]||o["Dates Read"]),
+    rereads:Math.max(0,(parseInt(o["Read Count"]||"1")||1)-1),
+    summary:o["Review"]||"",notes:o["Content Warning Description"]||"",
+    tags:[...splitTags(o["Tags"]),...splitTags(o["Moods"])]};
+}
+
+let importQueue=[];
+function saveImportQueue(){dbPut("meta",{k:"importQueue",v:importQueue});}
+function markDupes(){
+  const have=new Set(books.map(b=>dupeKey(b.title,b.author)));
+  importQueue.forEach(it=>it.dupe=have.has(dupeKey(it.title,it.author)));
+}
+async function loadCsvFile(file){
+  const {head,items}=csvObjects(await file.text());
+  const src=csvSource(head);
+  if(!src)throw new Error("That doesn't look like a Goodreads or StoryGraph export.");
+  const map=src==="goodreads"?fromGoodreads:fromStorygraph;
+  const staged=items.map(map).filter(it=>it.title);
+  const seen=new Set(importQueue.map(it=>dupeKey(it.title,it.author)));
+  importQueue=[...importQueue,...staged.filter(it=>!seen.has(dupeKey(it.title,it.author)))];
+  markDupes();saveImportQueue();
+  return {src,n:staged.length};
+}
+/* staged entry -> a real book on the shelf */
+async function importOne(it){
+  const b=Object.assign(blankBook(uid()),{
+    title:it.title,author:it.author,status:it.status,dnf:!!it.dnf,rating:it.rating,
+    pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
+    summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
+    keywords:(it.tags||[]).slice(0,12),modified:Date.now()});
+  await dbPut("books",b);
+  books.unshift(b);
+  if(SYNC.on)enqueue({kind:"book",id:b.id});
+  importQueue=importQueue.filter(x=>x.id!==it.id);
 }
 
 async function makeSnapshot(auto){
