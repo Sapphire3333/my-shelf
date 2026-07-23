@@ -6,7 +6,7 @@
 <title>My Shelf</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="icon.svg">
+<link rel="apple-touch-icon" sizes="180x180" href="icon.png">
 <meta name="theme-color" id="themeColor" content="#faf7f2">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="My Shelf">
@@ -449,6 +449,19 @@
   #dw{width:88px;accent-color:var(--teal)}
   .dsw{width:16px;height:16px;border-radius:50%;padding:0;border:1px solid rgba(0,0,0,.15)}
   .dsw:hover{transform:scale(1.2)}
+
+  /* on touch screens, dragging/drawing must beat the browser's scroll gesture —
+     without this the first finger-move scrolls the page and cancels the pointer */
+  #edPage.arr .scrap,#edPage.arr .pad,#edPage.draw,.rot,.rs,.prs{touch-action:none}
+
+  /* remove-cover button */
+  .coverbox{position:relative}
+  .covx{position:absolute;top:6px;right:6px;width:22px;height:22px;padding:0;border-radius:50%;
+    background:#fff;border:1px solid var(--line);color:var(--mut);font-size:11px;
+    display:flex;align-items:center;justify-content:center;opacity:0}
+  .coverbox:hover .covx{opacity:1}
+  .covx:hover{color:var(--rose);border-color:#fda4af}
+  @media(hover:none){.covx{opacity:1}}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
@@ -791,6 +804,11 @@ const imgPath=key=>`${SYNC.user.id}/images/${String(key).replace("|","__")}.jpg`
 async function loadSyncLocal(){
   const dq=await dbGet("meta","syncQueue");SYNC.queue=dq&&Array.isArray(dq.v)?dq.v:[];
   const dd=await dbGet("meta","deletions");deletions=dd&&dd.v?dd.v:{};
+  /* tombstones only need to outlive the longest-offline device — drop ancient ones
+     so the map doesn't grow forever */
+  const cut=Date.now()-90*864e5;let pruned=false;
+  for(const k of Object.keys(deletions))if(deletions[k]<cut){delete deletions[k];pruned=true;}
+  if(pruned)dbPut("meta",{k:"deletions",v:deletions});
 }
 function saveQueue(){dbPut("meta",{k:"syncQueue",v:SYNC.queue});}
 const opKey=o=>o.kind+":"+(o.id||o.key||"");
@@ -803,18 +821,34 @@ function saveDeletions(){dbPut("meta",{k:"deletions",v:deletions});enqueue({kind
 
 async function flushQueue(){
   if(!SYNC.on||!SYNC.user||SYNC.flushing)return;
+  clearTimeout(SYNC.retryT);
   if(!navigator.onLine){setSync("offline");return;}
   if(!SYNC.queue.length){setSync("synced");return;}
   SYNC.flushing=true;setSync("syncing");
+  let op=null;
   try{
     while(SYNC.queue.length){
-      await runOp(SYNC.queue[0]);
-      SYNC.queue.shift();saveQueue();
+      op=SYNC.queue[0];
+      await runOp(op);
+      /* remove by identity, not position — enqueue() may replace the array
+         while an upload is in flight, so [0] might now be a different op */
+      const i=SYNC.queue.indexOf(op);
+      if(i>=0)SYNC.queue.splice(i,1);
+      saveQueue();
     }
     setSync("synced");
   }catch(e){
     console.warn("[shelf] sync paused:",e&&e.message||e);
+    if(op){
+      op.fails=(op.fails||0)+1;
+      /* one stuck op mustn't hold everything behind it hostage */
+      if(op.fails>=3&&SYNC.queue.length>1&&SYNC.queue[0]===op)
+        SYNC.queue.push(SYNC.queue.shift());
+      saveQueue();
+    }
     setSync(navigator.onLine?"error":"offline");
+    /* "will retry" should be true even if the user touches nothing */
+    SYNC.retryT=setTimeout(flushQueue,Math.min(6e4,5e3*((op&&op.fails)||1)));
   }finally{SYNC.flushing=false;}
 }
 async function runOp(op){
@@ -877,6 +911,7 @@ async function pullAll(){
     if(error){setSync(navigator.onLine?"error":"offline");return;}
     const localMap=new Map(books.map(b=>[b.id,b]));
     const remoteIds=new Set();
+    const changed=[];
     for(const row of rows||[]){
       remoteIds.add(row.id);
       const rb=row.data||{};rb.id=row.id;rb.modified=row.modified||rb.modified||rb.created||0;
@@ -888,9 +923,12 @@ async function pullAll(){
         const i=books.findIndex(b=>b.id===row.id);
         if(i>=0)books[i]=rb;else books.push(rb);
         coverCache.delete(row.id);SYNC.triedCover.delete(row.id);
-        await syncBookAssets(rb);
+        changed.push(rb);
       }
     }
+    /* covers & pictures a few at a time — one by one made a first sync crawl */
+    for(let i=0;i<changed.length;i+=4)
+      await Promise.all(changed.slice(i,i+4).map(syncBookAssets));
     // apply remote deletions locally
     for(const id of Object.keys(deletions)){
       const lb=books.find(b=>b.id===id);
@@ -909,18 +947,24 @@ async function pullAll(){
     console.warn("[shelf] pull failed",e);setSync(navigator.onLine?"error":"offline");
   }finally{SYNC.pulling=false;}
 }
+/* "the file isn't there" — as opposed to a network hiccup, which must never delete anything */
+const storeNotFound=e=>!!e&&(e.status===404||e.statusCode===404||e.statusCode==="404"||/not.?found/i.test(e.message||""));
 async function syncBookAssets(b){
   const s=SYNC.supa;
   try{
     const {data,error}=await s.storage.from("shelf").download(coverPath(b.id));
     if(!error&&data){const durl=await blobToDataURL(data);await dbPut("covers",{id:b.id,data:durl});coverCache.set(b.id,durl);}
-    else{await dbDel("covers",b.id);coverCache.set(b.id,null);}
+    else if(storeNotFound(error)){await dbDel("covers",b.id);coverCache.set(b.id,null);}
   }catch(e){}
-  for(const key of imgKeysOf(b)){
-    if(!(await dbGet("images",key))){
-      try{const {data,error}=await s.storage.from("shelf").download(imgPath(key));
-        if(!error&&data)await dbPut("images",{key,data:await blobToDataURL(data)});}catch(e){}
-    }
+  /* each image carries a version (bumped when it's cut out / replaced) so edits
+     to an already-downloaded picture still reach other devices */
+  const wants=[...((b.images)||[]).map(im=>({key:b.id+"|"+im.id,v:im.cut||0})),
+    ...((b.entries)||[]).filter(en=>en.cover).map(en=>({key:b.id+"|"+en.id,v:en.coverV||0}))];
+  for(const {key,v} of wants){
+    const rec=await dbGet("images",key);
+    if(rec&&(rec.v||0)>=v)continue;
+    try{const {data,error}=await s.storage.from("shelf").download(imgPath(key));
+      if(!error&&data)await dbPut("images",{key,data:await blobToDataURL(data),v});}catch(e){}
   }
 }
 /* local first, then pull from Storage if this device hasn't got it yet */
@@ -949,6 +993,9 @@ function renderLogin(msg){
       <button id="auSignup">Create an account</button>
       <button id="auMagic">Email me a link instead</button>
     </div>
+    <div class="alt" style="justify-content:center">
+      <button id="auLocal">Use offline on this device — no account</button>
+    </div>
     <div class="authmsg ${msg&&msg.err?"err":"ok"}" id="auMsg">${msg?esc(msg.text):""}</div>
   </div></div>`;
   const email=()=>q("#auEmail").value.trim(),pass=()=>q("#auPass").value;
@@ -971,7 +1018,11 @@ function renderLogin(msg){
     }catch(e){setMsg(e.message||"That didn't work.",true);}
     busy(false);
   };
-  q("#auSignup").onclick=()=>{mode="up";q("#auGo").textContent="Create account";setMsg("Pick a password (6+ characters), then press Create account.",false);};
+  q("#auSignup").onclick=()=>{mode="up";q("#auGo").textContent="Create account";
+    q("#auPass").setAttribute("autocomplete","new-password");
+    setMsg("Pick a password (6+ characters), then press Create account.",false);};
+  /* the library lives in this browser — being signed out must never lock it away */
+  q("#auLocal").onclick=()=>{SYNC.user=null;render();};
   q("#auMagic").onclick=async()=>{
     if(!email()){setMsg("Enter your email first.",true);return;}
     try{const {error}=await SYNC.supa.auth.signInWithOtp({email:email()});if(error)throw error;
@@ -980,7 +1031,25 @@ function renderLogin(msg){
   q("#auEmail").addEventListener("keydown",e=>{if(e.key==="Enter")q("#auPass").focus();});
   q("#auPass").addEventListener("keydown",e=>{if(e.key==="Enter")q("#auGo").click();});
 }
-async function signOut(){try{await SYNC.supa.auth.signOut();}catch(e){}SYNC.user=null;SYNC.queue=[];renderLogin({text:"Signed out.",err:false});}
+/* the queue is kept: unsynced edits go up on the next sign-in (the account
+   check below stops them landing in the wrong account) */
+async function signOut(){try{await SYNC.supa.auth.signOut();}catch(e){}SYNC.user=null;renderLogin({text:"Signed out.",err:false});}
+
+/* signing into a DIFFERENT account than this device last synced with would merge
+   the local library into it and push everything up — make that an informed choice */
+async function checkAccount(user){
+  try{
+    const r=await dbGet("meta","lastUser");
+    const last=r?r.v:null;
+    if(last&&last!==user.id&&books.length){
+      if(!confirm(`This device holds ${books.length} book${books.length===1?"":"s"} that were synced to a different account.\n\nOK merges them into ${user.email||"this account"}'s cloud library.\nCancel signs out and leaves everything as it is.`)){
+        await signOut();return false;
+      }
+    }
+    dbPut("meta",{k:"lastUser",v:user.id});
+  }catch(e){}
+  return true;
+}
 
 async function initSync(){
   if(!syncConfigured()){SYNC.on=false;render();return;}
@@ -991,14 +1060,17 @@ async function initSync(){
   window.addEventListener("offline",()=>setSync("offline"));
   SYNC.supa.auth.onAuthStateChange((event,session)=>{
     if(event==="SIGNED_IN"&&session&&session.user){
-      if(!SYNC.user){SYNC.user=session.user;render();flushQueue().then(pullAll);}
-      else SYNC.user=session.user;
-    }else if(event==="SIGNED_OUT"){SYNC.user=null;SYNC.queue=[];renderLogin();}
+      if(!SYNC.user){
+        SYNC.user=session.user;render();
+        checkAccount(session.user).then(ok=>{if(ok)flushQueue().then(pullAll);});
+      }else SYNC.user=session.user;
+    }else if(event==="SIGNED_OUT"){SYNC.user=null;renderLogin();}
     else if(session&&session.user){SYNC.user=session.user;}
   });
   const {data}=await SYNC.supa.auth.getSession();
   if(data&&data.session&&data.session.user){
-    SYNC.user=data.session.user;render();flushQueue().then(pullAll);
+    SYNC.user=data.session.user;render();
+    if(await checkAccount(SYNC.user))flushQueue().then(pullAll);
   }else{
     renderLogin();
   }
@@ -1009,6 +1081,9 @@ async function initSync(){
   try{db=await openDb();}catch(e){
     q("#app").innerHTML='<div class="wrap"><div class="empty">This browser blocked local storage for the file. Try opening the file in Chrome or Edge.</div></div>';return;
   }
+  /* ask the browser not to evict our storage under disk pressure — without this,
+     "best-effort" IndexedDB (books, covers AND the in-browser backups) can be wiped */
+  try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
   books=await dbAll("books");
   const g=await dbGet("meta","genres");genres=g?g.v:{};
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
@@ -1033,6 +1108,34 @@ async function initSync(){
   maybeAutoBackup();
   purgeTrash();
 })();
+
+/* Phones kill background tabs without warning and throttle timers, so the 700ms
+   autosave may never fire — commit the open book the moment the tab goes hidden.
+   Coming back is the natural moment to fetch what other devices did meanwhile. */
+let lastFocusPull=0;
+function onHidden(){
+  if(view==="book"&&cur){clearTimeout(saveTimer);commitCur();}
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="hidden"){onHidden();return;}
+  if(SYNC.on&&SYNC.user&&navigator.onLine&&Date.now()-lastFocusPull>60000){
+    lastFocusPull=Date.now();
+    flushQueue().then(pullAll);
+  }
+});
+window.addEventListener("pagehide",onHidden);
+
+/* Ctrl+Z / Ctrl+Y work app-wide when you're not inside a text field
+   (inside one, the browser's own text undo stays in charge) */
+document.addEventListener("keydown",e=>{
+  if(!(e.ctrlKey||e.metaKey)||e.altKey)return;
+  const k=e.key.toLowerCase();
+  if(k!=="z"&&k!=="y")return;
+  const t=e.target;
+  if(t&&(t.isContentEditable||/^(input|textarea|select)$/i.test(t.tagName||"")))return;
+  e.preventDefault();
+  if(k==="y"||e.shiftKey)doRedo();else doUndo();
+});
 
 let metaSnap=null;
 function saveMeta(){
@@ -1287,7 +1390,7 @@ function render(){
       <div class="hrow">
         <div>
           <h1 class="serif">My Shelf</h1>
-          <div class="sub">${books.length} book${books.length===1?"":"s"} · ${favN} favorites · ${dnfN} DNF</div>
+          <div class="sub">${books.length} on the shelf · ${favN} favorites · ${dnfN} DNF</div>
         </div>
         <button class="addbtn" id="addBook">+ Add book</button>
       </div>
@@ -1356,7 +1459,8 @@ function gridHtml(b){
   </div>`;
 }
 async function hydrateCovers(root){
-  for(const el of qa("[data-cover]",root)){
+  const els=qa("[data-cover]",root);
+  const one=async el=>{
     const id=el.dataset.cover;
     let src=coverCache.get(id);
     if(src===undefined){const r=await dbGet("covers",id);src=r?r.data:null;coverCache.set(id,src);}
@@ -1366,7 +1470,9 @@ async function hydrateCovers(root){
         if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);}}catch(e){}
     }
     if(src){const overlays=[...el.children].map(c=>c.outerHTML).join("");el.innerHTML=`<img src="${src}">`+overlays;}
-  }
+  };
+  /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
+  for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
 }
 function wireOpen(root,withDel){
   root.onclick=e=>{
@@ -1577,7 +1683,7 @@ async function renderHub(){
     <div class="sec">
       <div class="heading"><h2 class="serif">Recently deleted</h2><span class="n" id="trashN"></span></div>
       <div class="hcard">
-        <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good.</div>
+        <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good. The bin is kept on this device only.</div>
         <div id="trashList"></div>
       </div>
     </div>
@@ -1997,8 +2103,14 @@ async function commitCur(){
   const strip=o=>{const c={...o};delete c.modified;return JSON.stringify(c);};
   if(before&&strip(before)===strip(after)){setSaved(true);return;}
   after.modified=Date.now();cur.modified=after.modified;
+  try{await dbPut("books",after);}
+  catch(e){
+    const el=q("#saveMsg");if(el){el.textContent="Couldn't save!";el.className="savemsg no";}
+    if(Date.now()-(commitCur.warned||0)>60000){commitCur.warned=Date.now();
+      alert("This couldn't be saved — storage may be full.\n\nExport a backup from the Overview tab, then delete some pictures or old backups.");}
+    return;
+  }
   pushOp({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))});
-  await dbPut("books",after);
   if(i>=0)books[i]=after;else books.unshift(after);
   if(SYNC.on){if(deletions[cur.id]){delete deletions[cur.id];saveDeletions();}enqueue({kind:"book",id:cur.id});}
   isNew=false;setSaved(true);
@@ -2062,7 +2174,7 @@ function renderEditor(){
     <div class="bgpanel" id="cutPanel" hidden></div>
 
     <div class="edhead">
-      <div class="coverbox" id="coverBox">${curCover?`<img src="${curCover}">`:"🖼<br>Add cover"}</div>
+      <div class="coverbox" id="coverBox"></div>
       <div class="edfields">
         <input class="field titlein serif" id="fTitle" placeholder="Book title" value="${esc(b.title)}">
         <div class="relbox">
@@ -2371,7 +2483,8 @@ function renderEditor(){
     if(!f||!en)return;
     let data;try{data=await compressImage(f,600,.85);}catch(err){alert("That image couldn't be read.");return;}
     const key=cur.id+"|"+en.id;
-    try{await dbPut("images",{key,data});}catch(err){alert("That cover couldn't be saved.");return;}
+    en.coverV=Date.now();          /* version, so replacing a cover reaches other devices too */
+    try{await dbPut("images",{key,data,v:en.coverV});}catch(err){alert("That cover couldn't be saved.");return;}
     curEnt[en.id]=data;en.cover=true;
     if(SYNC.on)enqueue({kind:"img",key});
     renderEntries();scheduleSave();
@@ -2568,13 +2681,28 @@ function renderEditor(){
   });
 
   /* cover */
+  function renderCover(){
+    const box=q("#coverBox");
+    box.innerHTML=curCover?`<img src="${curCover}"><button class="covx" id="covDel" title="Remove this cover">✕</button>`:"🖼<br>Add cover";
+    const d=q("#covDel");
+    if(d)d.onclick=async e=>{
+      e.stopPropagation();
+      if(!confirm("Remove this cover?"))return;
+      await dbDel("covers",cur.id);
+      curCover=null;coverCache.set(cur.id,null);
+      if(SYNC.on)enqueue({kind:"coverDel",id:cur.id});
+      cur.coverV=Date.now();renderCover();scheduleSave();
+    };
+  }
+  renderCover();
   q("#coverBox").onclick=()=>q("#coverFile").click();
   q("#coverFile").onchange=async e=>{
     const f=e.target.files[0];e.target.value="";if(!f)return;
     curCover=await compressImage(f,600,.85);
-    await dbPut("covers",{id:cur.id,data:curCover});
+    try{await dbPut("covers",{id:cur.id,data:curCover});}
+    catch(err){alert("That cover couldn't be saved — storage may be full.");return;}
     coverCache.set(cur.id,curCover);SYNC.triedCover.delete(cur.id);
-    q("#coverBox").innerHTML=`<img src="${curCover}">`;
+    renderCover();
     if(SYNC.on)enqueue({kind:"cover",id:cur.id});
     cur.coverV=Date.now();scheduleSave();
   };
@@ -2748,20 +2876,20 @@ function renderEditor(){
     q("#cutX",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
     q("#cutApply",box).onclick=async()=>{
       if(!result)return;
-      await dbPut("images",{key,data:result.data});
+      im.cut=Date.now();          /* a real change, so the book saves and other devices re-pull this picture */
+      await dbPut("images",{key,data:result.data,v:im.cut});
       curImgs[im.id]=result.data;
       if(SYNC.on)enqueue({kind:"img",key});
       applied=true;q("#cutBack",box).hidden=false;
-      im.cut=Date.now();          /* a real change, so the book saves and other devices re-pull */
       renderImages();scheduleSave();
       msg.textContent="Done. Not right? Put the original back, or close this.";
     };
     q("#cutBack",box).onclick=async()=>{
       if(!applied)return;
-      await dbPut("images",{key,data:orig});
+      im.cut=Date.now();
+      await dbPut("images",{key,data:orig,v:im.cut});
       curImgs[im.id]=orig;
       if(SYNC.on)enqueue({kind:"img",key});
-      im.cut=Date.now();
       renderImages();scheduleSave();
       q("#cutBack",box).hidden=true;applied=false;
       msg.textContent="Original put back.";
@@ -2987,10 +3115,33 @@ async function exportBackup(){
   }catch(e){alert("Export ran into a problem — try again.");}
   if(q("#busyMsg"))q("#busyMsg").textContent="";
 }
+/* a backup file is the one input that may come from outside this app — strip
+   anything that could run (event handlers, scripts) before it reaches innerHTML */
+function cleanHtml(h){
+  if(typeof h!=="string"||h.indexOf("<")<0)return h;
+  const t=document.createElement("template");t.innerHTML=h;
+  t.content.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach(n=>n.remove());
+  t.content.querySelectorAll("*").forEach(n=>{
+    for(const a of [...n.attributes]){
+      const nm=a.name.toLowerCase();
+      if(nm.indexOf("on")===0||((nm==="href"||nm==="src")&&/^\s*(javascript:|data:text\/html)/i.test(a.value)))n.removeAttribute(a.name);
+    }
+  });
+  return t.innerHTML;
+}
+function sanitizeBook(b){
+  b.summary=cleanHtml(b.summary);b.canvasText=cleanHtml(b.canvasText);
+  ["pros","cons","quotes"].forEach(k=>{if(Array.isArray(b[k]))b[k]=b[k].map(cleanHtml);});
+  (b.pads||[]).forEach(p=>{p.html=cleanHtml(p.html);});
+  (b.entries||[]).forEach(en=>{en.summary=cleanHtml(en.summary);en.notes=cleanHtml(en.notes);});
+}
 /* merges a backup in: existing books kept, matching ones updated */
 async function applyBackup(data){
   if(!data||data.app!=="my-shelf"||!Array.isArray(data.books))throw new Error("not a shelf backup");
-  for(const b of data.books)await dbPut("books",b);
+  /* stamp restored books as edited-now: "restore wins" then holds on every device,
+     instead of losing a last-write race against newer cloud copies */
+  const now=Date.now();
+  for(const b of data.books){sanitizeBook(b);b.modified=now;await dbPut("books",b);}
   for(const[id,c]of Object.entries(data.covers||{})){await dbPut("covers",{id,data:c});coverCache.delete(id);SYNC.triedCover.delete(id);}
   for(const[k,d]of Object.entries(data.images||{}))await dbPut("images",{key:k,data:d});
   const map=new Map(books.map(b=>[b.id,b]));
@@ -3020,6 +3171,8 @@ async function applyBackup(data){
 const IMPORT_SECTIONS=[["finished","Read"],["reading","Currently reading"],["want","Want to read"],["dnf","Did not finish"]];
 const secOf=it=>it.dnf?"dnf":it.status;
 const dupeKey=(t,a)=>((t||"")+"|"+(a||"")).toLowerCase().replace(/\s+/g," ").trim();
+/* Goodreads wraps ISBNs in ="…" for Excel; keep just the digits (and a check-X) */
+const cleanIsbn=s=>String(s||"").replace(/[^0-9Xx]/g,"").toUpperCase();
 
 /* proper CSV: quoted fields, embedded commas/newlines, doubled quotes */
 function parseCsv(text){
@@ -3057,6 +3210,7 @@ function fromGoodreads(o){
   const dnf=DNF_SHELF.test(shelf)||splitTags(o["Bookshelves"]).some(s=>DNF_SHELF.test(s.toLowerCase()));
   const r=parseFloat(o["My Rating"]||"0")||0;
   return {id:uid(),title:o["Title"]||"",author:o["Author"]||"",
+    isbn:cleanIsbn(o["ISBN13"]||o["ISBN"]),
     status:shelf==="currently-reading"?"reading":shelf==="to-read"?"want":"finished",dnf,
     rating:r>0?Math.min(10,r*2):null,
     pages:parseInt(o["Number of Pages"]||"")||"",
@@ -3069,6 +3223,7 @@ function fromStorygraph(o){
   const st=(o["Read Status"]||"").toLowerCase();
   const r=parseFloat(o["Star Rating"]||"0")||0;
   return {id:uid(),title:o["Title"]||"",author:o["Authors"]||o["Author"]||"",
+    isbn:cleanIsbn(o["ISBN/UID"]||o["ISBN"]),
     status:st==="currently-reading"?"reading":st==="to-read"?"want":"finished",
     dnf:st==="did-not-finish",
     rating:r>0?Math.min(10,r*2):null,
@@ -3083,7 +3238,8 @@ let importQueue=[];
 function saveImportQueue(){dbPut("meta",{k:"importQueue",v:importQueue});}
 function markDupes(){
   const have=new Set(books.map(b=>dupeKey(b.title,b.author)));
-  importQueue.forEach(it=>it.dupe=have.has(dupeKey(it.title,it.author)));
+  const haveIsbn=new Set(books.map(b=>b.isbn).filter(Boolean));
+  importQueue.forEach(it=>it.dupe=(!!it.isbn&&haveIsbn.has(it.isbn))||have.has(dupeKey(it.title,it.author)));
 }
 async function loadCsvFile(file){
   const {head,items}=csvObjects(await file.text());
@@ -3091,15 +3247,17 @@ async function loadCsvFile(file){
   if(!src)throw new Error("That doesn't look like a Goodreads or StoryGraph export.");
   const map=src==="goodreads"?fromGoodreads:fromStorygraph;
   const staged=items.map(map).filter(it=>it.title);
-  const seen=new Set(importQueue.map(it=>dupeKey(it.title,it.author)));
-  importQueue=[...importQueue,...staged.filter(it=>!seen.has(dupeKey(it.title,it.author)))];
+  const seenK=new Set(importQueue.map(it=>dupeKey(it.title,it.author)));
+  const seenI=new Set(importQueue.map(it=>it.isbn).filter(Boolean));
+  importQueue=[...importQueue,...staged.filter(it=>
+    !((it.isbn&&seenI.has(it.isbn))||seenK.has(dupeKey(it.title,it.author))))];
   markDupes();saveImportQueue();
   return {src,n:staged.length};
 }
 /* staged entry -> a real book on the shelf */
 async function importOne(it){
   const b=Object.assign(blankBook(uid()),{
-    title:it.title,author:it.author,status:it.status,dnf:!!it.dnf,rating:it.rating,
+    title:it.title,author:it.author,isbn:it.isbn||"",status:it.status,dnf:!!it.dnf,rating:it.rating,
     pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
     summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
     keywords:(it.tags||[]).slice(0,12),modified:Date.now()});
