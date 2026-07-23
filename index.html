@@ -496,6 +496,7 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
 <input type="file" id="coverFile" accept="image/*" hidden>
 <input type="file" id="imgFile" accept="image/*" multiple hidden>
 <input type="file" id="entCoverFile" accept="image/*" hidden>
+<input type="file" id="csvFile" accept=".csv,text/csv" hidden>
 
 <script>
 /* =============== constants & helpers =============== */
@@ -943,6 +944,7 @@ async function initSync(){
   const bl=await dbGet("meta","backgrounds");bgList=bl&&Array.isArray(bl.v)?bl.v:[];
   const pl=await dbGet("meta","padskins");padList=pl&&Array.isArray(pl.v)?pl.v:[];
   const fd=await dbGet("meta","fandoms");fandoms=fd&&fd.v?fd.v:{};
+  const iq=await dbGet("meta","importQueue");importQueue=iq&&Array.isArray(iq.v)?iq.v:[];
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   applyTheme();applyBg();
   try{
@@ -1487,6 +1489,19 @@ async function renderHub(){
       </div>
     </div>
     <div class="sec">
+      <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph</h2><span class="n" id="impN"></span></div>
+      <div class="hcard">
+        <div class="hrow2"><button class="btn pri" id="csvBtn">⭱ Choose an export file</button>
+          <button class="btn" id="impClear" hidden>Clear the list</button></div>
+        <div class="hint" style="margin:9px 0 0">
+          <b>Goodreads:</b> My Books → Import and Export → Export Library → download the .csv.<br>
+          <b>StoryGraph:</b> Manage Account → Manage Your Data → Export StoryGraph Library.<br>
+          Nothing is added until you pick it. Titles already on your shelf are marked and skipped.
+        </div>
+        <div id="impList"></div>
+      </div>
+    </div>
+    <div class="sec">
       <div class="heading"><h2 class="serif">Recently deleted</h2><span class="n" id="trashN"></span></div>
       <div class="hcard">
         <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good.</div>
@@ -1525,9 +1540,80 @@ async function renderHub(){
     if(q("#bkNow")){q("#bkNow").disabled=false;q("#bkNow").textContent="＋ Back up now";}
     refreshSnaps();refreshStorage();
   };
+  q("#csvBtn").onclick=()=>q("#csvFile").click();
+  q("#impClear").onclick=()=>{
+    if(!confirm("Clear the import list? Nothing already added to your shelf is affected."))return;
+    importQueue=[];saveImportQueue();refreshImport();
+  };
   drawBgPicker(q("#hubBg"),()=>settings.bg||{id:"none",opacity:100},v=>{settings.bg=v;saveSettings();},false);
-  refreshSnaps();refreshStorage();refreshTrash();
+  refreshSnaps();refreshStorage();refreshTrash();refreshImport();
 }
+
+const IMP_SHOW=40;   /* how many titles to list per section before summarising */
+function refreshImport(){
+  const box=q("#impList");if(!box)return;
+  markDupes();
+  const n=q("#impN"),clr=q("#impClear");
+  const pend=importQueue.filter(it=>!it.dupe);
+  if(n)n.textContent=importQueue.length?`(${pend.length} to add)`:"";
+  if(clr)clr.hidden=!importQueue.length;
+  if(!importQueue.length){box.innerHTML="";return;}
+  let html="";
+  for(const [sec,label] of IMPORT_SECTIONS){
+    const all=importQueue.filter(it=>secOf(it)===sec);
+    if(!all.length)continue;
+    const add=all.filter(it=>!it.dupe);
+    html+=`<div style="margin-top:15px">
+      <div class="hrow2" style="margin-bottom:6px">
+        <b style="font-size:14px">${label}</b><span class="none">${all.length}${add.length!==all.length?` · ${all.length-add.length} already on your shelf`:""}</span>
+        ${add.length?`<button class="btn pri" data-impall="${sec}" style="margin-left:auto;padding:5px 11px">Add all ${add.length}</button>`:""}
+      </div>
+      ${all.slice(0,IMP_SHOW).map(it=>`<div class="snap" style="padding:6px 10px">
+        <div style="min-width:0"><div class="when" style="font-size:13px">${esc(it.title)}</div>
+          <div class="meta">${esc(it.author)||"Unknown author"}${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}</div></div>
+        <div class="sp">${it.dupe
+          ? '<span class="none" style="font-size:12px">already on your shelf</span>'
+          : `<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
+      </div>`).join("")}
+      ${all.length>IMP_SHOW?`<div class="none" style="margin-top:5px">…and ${all.length-IMP_SHOW} more — “Add all” takes every one of them.</div>`:""}
+    </div>`;
+  }
+  box.innerHTML=html;
+  qa("[data-impone]",box).forEach(b=>b.onclick=async()=>{
+    const it=importQueue.find(x=>x.id===b.dataset.impone);if(!it)return;
+    b.disabled=true;
+    await importOne(it);saveImportQueue();
+    render();
+  });
+  qa("[data-impall]",box).forEach(b=>b.onclick=async()=>{
+    const sec=b.dataset.impall;
+    const batch=importQueue.filter(it=>secOf(it)===sec&&!it.dupe);
+    if(!batch.length)return;
+    if(!confirm(`Add ${batch.length} book${batch.length===1?"":"s"} to your shelf?`))return;
+    b.disabled=true;b.textContent="Adding…";
+    const msg=q("#busyMsg");if(msg)msg.textContent=`Adding ${batch.length}…`;
+    for(const it of batch)await importOne(it);
+    saveImportQueue();
+    if(SYNC.on)flushQueue();
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    render();
+  });
+}
+
+q("#csvFile").addEventListener("change",async e=>{
+  const f=e.target.files[0];e.target.value="";if(!f)return;
+  const msg=q("#busyMsg");if(msg)msg.textContent="Reading the file…";
+  try{
+    const {src,n}=await loadCsvFile(f);
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    refreshImport();
+    const pend=importQueue.filter(it=>!it.dupe).length;
+    alert(`Found ${n} book${n===1?"":"s"} in your ${src==="goodreads"?"Goodreads":"StoryGraph"} export.\n\n${pend} are new — pick the ones you want below, or add a whole section at once.`);
+  }catch(err){
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    alert(err.message||"That file couldn't be read.");
+  }
+});
 
 async function refreshTrash(){
   const box=q("#trashList");if(!box)return;
@@ -2796,6 +2882,99 @@ async function applyBackup(data){
     saveDeletions();flushQueue();
   }
   return data.books.length;
+}
+
+/* =============== import from Goodreads / StoryGraph =============== */
+const IMPORT_SECTIONS=[["finished","Read"],["reading","Currently reading"],["want","Want to read"],["dnf","Did not finish"]];
+const secOf=it=>it.dnf?"dnf":it.status;
+const dupeKey=(t,a)=>((t||"")+"|"+(a||"")).toLowerCase().replace(/\s+/g," ").trim();
+
+/* proper CSV: quoted fields, embedded commas/newlines, doubled quotes */
+function parseCsv(text){
+  const rows=[];let row=[],val="",inQ=false;
+  text=String(text).replace(/^﻿/,"");
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(inQ){
+      if(c==='"'){if(text[i+1]==='"'){val+='"';i++;}else inQ=false;}
+      else val+=c;
+    }else if(c==='"')inQ=true;
+    else if(c===","){row.push(val);val="";}
+    else if(c==="\n"){row.push(val);rows.push(row);row=[];val="";}
+    else if(c!=="\r")val+=c;
+  }
+  if(val!==""||row.length){row.push(val);rows.push(row);}
+  return rows.filter(r=>r.some(v=>String(v).trim()!==""));
+}
+function csvObjects(text){
+  const rows=parseCsv(text);
+  if(rows.length<2)return {head:[],items:[]};
+  const head=rows[0].map(h=>h.trim());
+  return {head,items:rows.slice(1).map(r=>{const o={};head.forEach((h,i)=>o[h]=(r[i]==null?"":String(r[i]).trim()));return o;})};
+}
+const csvSource=head=>head.includes("Exclusive Shelf")?"goodreads"
+  :(head.includes("Read Status")||head.includes("Star Rating"))?"storygraph":null;
+const cleanDate=s=>{const m=String(s||"").match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  return m?`${m[1]}-${String(m[2]).padStart(2,"0")}-${String(m[3]).padStart(2,"0")}`:"";};
+const splitTags=s=>String(s||"").split(",").map(x=>x.trim()).filter(Boolean);
+
+const DNF_SHELF=/^(dnf|did-not-finish|did_not_finish|didnotfinish|abandoned|unfinished|not-finished|gave-up|stopped-reading)$/;
+function fromGoodreads(o){
+  const shelf=(o["Exclusive Shelf"]||"").toLowerCase();
+  /* shelves are a comma-separated list — test each one, don't pattern-match the whole string */
+  const dnf=DNF_SHELF.test(shelf)||splitTags(o["Bookshelves"]).some(s=>DNF_SHELF.test(s.toLowerCase()));
+  const r=parseFloat(o["My Rating"]||"0")||0;
+  return {id:uid(),title:o["Title"]||"",author:o["Author"]||"",
+    status:shelf==="currently-reading"?"reading":shelf==="to-read"?"want":"finished",dnf,
+    rating:r>0?Math.min(10,r*2):null,
+    pages:parseInt(o["Number of Pages"]||"")||"",
+    dateFinished:cleanDate(o["Date Read"]),
+    rereads:Math.max(0,(parseInt(o["Read Count"]||"1")||1)-1),
+    summary:o["My Review"]||"",notes:o["Private Notes"]||"",
+    tags:splitTags(o["Bookshelves"]).filter(t=>!["read","to-read","currently-reading"].includes(t.toLowerCase()))};
+}
+function fromStorygraph(o){
+  const st=(o["Read Status"]||"").toLowerCase();
+  const r=parseFloat(o["Star Rating"]||"0")||0;
+  return {id:uid(),title:o["Title"]||"",author:o["Authors"]||o["Author"]||"",
+    status:st==="currently-reading"?"reading":st==="to-read"?"want":"finished",
+    dnf:st==="did-not-finish",
+    rating:r>0?Math.min(10,r*2):null,
+    pages:parseInt(o["Number of Pages"]||o["Pages"]||"")||"",
+    dateFinished:cleanDate(o["Last Date Read"]||o["Dates Read"]),
+    rereads:Math.max(0,(parseInt(o["Read Count"]||"1")||1)-1),
+    summary:o["Review"]||"",notes:o["Content Warning Description"]||"",
+    tags:[...splitTags(o["Tags"]),...splitTags(o["Moods"])]};
+}
+
+let importQueue=[];
+function saveImportQueue(){dbPut("meta",{k:"importQueue",v:importQueue});}
+function markDupes(){
+  const have=new Set(books.map(b=>dupeKey(b.title,b.author)));
+  importQueue.forEach(it=>it.dupe=have.has(dupeKey(it.title,it.author)));
+}
+async function loadCsvFile(file){
+  const {head,items}=csvObjects(await file.text());
+  const src=csvSource(head);
+  if(!src)throw new Error("That doesn't look like a Goodreads or StoryGraph export.");
+  const map=src==="goodreads"?fromGoodreads:fromStorygraph;
+  const staged=items.map(map).filter(it=>it.title);
+  const seen=new Set(importQueue.map(it=>dupeKey(it.title,it.author)));
+  importQueue=[...importQueue,...staged.filter(it=>!seen.has(dupeKey(it.title,it.author)))];
+  markDupes();saveImportQueue();
+  return {src,n:staged.length};
+}
+/* staged entry -> a real book on the shelf */
+async function importOne(it){
+  const b=Object.assign(blankBook(uid()),{
+    title:it.title,author:it.author,status:it.status,dnf:!!it.dnf,rating:it.rating,
+    pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
+    summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
+    keywords:(it.tags||[]).slice(0,12),modified:Date.now()});
+  await dbPut("books",b);
+  books.unshift(b);
+  if(SYNC.on)enqueue({kind:"book",id:b.id});
+  importQueue=importQueue.filter(x=>x.id!==it.id);
 }
 
 async function makeSnapshot(auto){
