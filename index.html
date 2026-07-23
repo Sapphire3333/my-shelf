@@ -354,6 +354,10 @@
   .linkbox a{color:var(--teal);cursor:pointer;text-decoration:underline}
   .linkbox a:hover{color:var(--teal-d)}
   .bst.coll{background:#ede9fe;color:#6d28d9}
+  .bst.kind{background:#e0f2fe;color:#0369a1}
+  [data-theme="dark"] .bst.kind{background:#0c3a52;color:#7dd3fc}
+  .ffbox{border:1px solid #bae6fd;background:#f0f9ff66;border-radius:12px;padding:11px;margin-top:8px}
+  [data-theme="dark"] .ffbox{background:#0c2a3a55;border-color:#0369a1}
   .entbox{border:1px solid #ddd6fe;background:#f5f3ff55;border-radius:14px;padding:12px}
   .ent{display:flex;gap:11px;border:1px solid var(--line);background:#fff;border-radius:12px;padding:10px;margin-bottom:8px}
   .entnum{font-family:Georgia,serif;font-weight:700;color:var(--faint);font-size:13px;flex:none;width:14px;text-align:right;padding-top:6px}
@@ -607,7 +611,11 @@ function wordRange(r){
   const nr=document.createRange();nr.setStart(node,s);nr.setEnd(node,e);return nr;
 }
 const STATUSES=[["finished","Finished"],["reading","Reading now"],["want","Want to read"]];
-const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre","Genre"],["keyword","Keyword"],["quotes","Quotes"],["summary","Summary"],["notes","Notes"],["lists","+/− lists"]];
+/* what a shelf entry is: a published book, a fanfic, or an AI-written story */
+const KINDS=[["book","📗 Book"],["fanfic","✍️ Fanfic"],["ai","🤖 AI story"]];
+const kindOf=b=>b.kind||"book";
+const kindLabel=k=>(KINDS.find(x=>x[0]===k)||KINDS[0])[1];
+const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre","Genre"],["keyword","Keyword"],["quotes","Quotes"],["summary","Summary"],["notes","Notes"],["lists","+/− lists"],["fandom","Fandom & characters"]];
 const lastName=a=>{const p=(a||"").trim().split(/\s+/);return (p[p.length-1]||"").toLowerCase();};
 const fmtEdited=t=>new Date(t).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
@@ -628,7 +636,7 @@ const imgKeysOf=b=>!b?[]:[...((b.images)||[]).map(im=>b.id+"|"+im.id),
   ...((b.entries)||[]).filter(en=>en.cover).map(en=>b.id+"|"+en.id)];
 const q=(sel,root=document)=>root.querySelector(sel);
 const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
-const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",progress:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],summary:"",pros:[],cons:[],quotes:[],canvasText:"",images:[],pads:[],draw:[],created:Date.now()});
+const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",progress:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],kind:"book",fandoms:[],characters:[],link:"",summary:"",pros:[],cons:[],quotes:[],canvasText:"",images:[],pads:[],draw:[],created:Date.now()});
 
 function compressImage(file,maxDim=1000,quality=.82){
   return new Promise((res,rej)=>{
@@ -671,6 +679,8 @@ let padList=[];                /* [{id,name}] custom notepad looks, images live 
 const bgCache=new Map(),padCache=new Map();
 let activeBgPicker=null,bgPick=null,bgAdd=null;
 let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="none";
+let kindFilter=["book","fanfic","ai"];        /* which kinds show in the Library */
+let fandoms={};                                /* fandom -> [characters], shared across books */
 let cur=null,curCover=null,curImgs={},curEnt={},saveTimer=null,isNew=false;
 /* one editor mode at a time: write | arrange | draw | tag */
 let mode="write";
@@ -745,7 +755,7 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
@@ -781,9 +791,11 @@ async function pullAll(){
             (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id))bgList.push(x);});}
           else if(row.key==="padskins"){const have=new Set(padList.map(x=>x.id));
             (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id))padList.push(x);});}
+          else if(row.key==="fandoms"){const rv=row.value||{};
+            for(const f in rv)fandoms[f]=[...new Set([...(rv[f]||[]),...(fandoms[f]||[])])];}
         }
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
-        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});
+        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});
       }
     }catch(e){console.warn("[shelf] meta pull",e);}
     // books (per-book last-write-wins by `modified`)
@@ -930,6 +942,7 @@ async function initSync(){
   const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
   const bl=await dbGet("meta","backgrounds");bgList=bl&&Array.isArray(bl.v)?bl.v:[];
   const pl=await dbGet("meta","padskins");padList=pl&&Array.isArray(pl.v)?pl.v:[];
+  const fd=await dbGet("meta","fandoms");fandoms=fd&&fd.v?fd.v:{};
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   applyTheme();applyBg();
   try{
@@ -997,6 +1010,9 @@ async function deleteCustomBg(id){
 /* ---- custom notepad looks ---- */
 const padKey=id=>"__pad|"+id;
 function savePadList(){dbPut("meta",{k:"padskins",v:padList});enqueue({kind:"meta",key:"padskins"});}
+function saveFandoms(){dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});}
+/* characters you may pick, given the fandoms this entry is tagged with */
+const charsFor=list=>[...new Set((list||[]).flatMap(f=>fandoms[f]||[]))].sort((a,b)=>a.localeCompare(b));
 async function preloadPads(){
   for(const c of padList)if(!padCache.has(c.id))padCache.set(c.id,await loadImgData(padKey(c.id)));
 }
@@ -1244,7 +1260,7 @@ function rowHtml(b,withDel,edited){
     <div class="thumb" data-cover="${b.id}">📖</div>
     <div class="rmain">
       <div class="rtitle serif">${esc(b.title)||"Untitled"} ${b.favorite?'<span class="fav">♥</span>':""} ${stBadge(b)} ${isColl(b)?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':""}</div>
-      <div class="rauth">${esc(b.author)||"Unknown author"}${b.series?` <span class="rser">${esc(b.series)}${b.seriesNum?" #"+esc(b.seriesNum):""}</span>`:""}${b.pages?` <span class="rser">· ${esc(String(b.pages))} p.</span>`:""}</div>
+      <div class="rauth">${kindOf(b)!=="book"?`<span class="bst kind">${kindOf(b)==="fanfic"?"FANFIC":"AI"}</span> `:""}${esc(b.author)||(kindOf(b)==="ai"?"":"Unknown author")}${(b.fandoms||[]).length?` <span class="rser">${(b.fandoms||[]).map(esc).join(", ")}${(b.characters||[]).length?" · "+(b.characters||[]).map(esc).join(", "):""}</span>`:""}${b.series?` <span class="rser">${esc(b.series)}${b.seriesNum?" #"+esc(b.seriesNum):""}</span>`:""}${b.pages?` <span class="rser">· ${esc(String(b.pages))} p.</span>`:""}</div>
       <div>${(b.genres||[]).map(g=>chipHtml(g,true)).join("")}${(b.keywords||[]).map(k=>`<span class="kw">${esc(k)}</span>`).join("")}</div>
       ${progHtml(b)}
     </div>
@@ -1335,10 +1351,14 @@ function booksHtml(list,withDel){
 function renderLibrary(){
   const m=q("#main");
   const counts={all:books.length,finished:books.filter(b=>statusOf(b)==="finished").length,reading:books.filter(b=>statusOf(b)==="reading").length,want:books.filter(b=>statusOf(b)==="want").length};
-  const list=books.filter(b=>statusFilter==="all"||statusOf(b)===statusFilter).sort(sortCmp);
+  const kc={};KINDS.forEach(([k])=>kc[k]=books.filter(b=>kindOf(b)===k).length);
+  const list=books.filter(b=>(statusFilter==="all"||statusOf(b)===statusFilter)&&kindFilter.includes(kindOf(b))).sort(sortCmp);
   let html="";
   if(books.length){
     html+=`<div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading"],["want","Want to read"]].map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}">${l} <b>${counts[id]}</b></button>`).join("")}</div>`;
+    if(kc.fanfic||kc.ai)
+      html+=`<div class="pills"><span class="lbl">Show:</span>${KINDS.map(([k,l])=>{const on=kindFilter.includes(k);
+        return `<button class="mg ${on?"on":""}" data-kf="${k}" style="${on?"background:var(--teal);border-color:var(--teal)":""}"><span class="bx">${on?"✓":""}</span>${l} <b>${kc[k]}</b></button>`;}).join("")}</div>`;
     html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","title","author","status","genre","type"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}">${s}</button>`).join("")}
       <button class="laybtn" id="layTog">${layout==="list"?"▦ Grid":"☰ List"}</button></div>`;
     html+=`<div class="pills"><span class="lbl">Group under headings:</span>${GROUPS.map(([id,l])=>`<button class="pill ${groupBy===id?"on":""}" data-gb="${id}">${l}</button>`).join("")}</div>`;
@@ -1355,6 +1375,10 @@ function renderLibrary(){
   }
   m.innerHTML=html;
   qa("[data-sf]",m).forEach(b=>b.onclick=()=>{statusFilter=b.dataset.sf;renderLibrary();});
+  qa("[data-kf]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.kf;
+    kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
+    if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
+    renderLibrary();});
   qa("[data-sort]",m).forEach(b=>b.onclick=()=>{sortBy=b.dataset.sort;renderLibrary();});
   qa("[data-gb]",m).forEach(b=>b.onclick=()=>{groupBy=b.dataset.gb;renderLibrary();});
   const lt=q("#layTog",m);if(lt)lt.onclick=()=>{layout=layout==="list"?"grid":"list";renderLibrary();};
@@ -1636,6 +1660,7 @@ function renderSearchBody(){
     case "summary":return stripHtml((b.summary||"")+" "+(b.entries||[]).map(en=>en.summary||"").join(" ")).toLowerCase().includes(qlc);
     case "notes":return stripHtml((b.canvasText||"")+" "+(b.entries||[]).map(en=>en.notes||"").join(" ")+" "+(b.pads||[]).map(p=>p.html||"").join(" ")).toLowerCase().includes(qlc);
     case "lists":return stripHtml([...(b.pros||[]),...(b.cons||[])].join(" ")).toLowerCase().includes(qlc);
+    case "fandom":return [...(b.fandoms||[]),...(b.characters||[])].some(x=>x.toLowerCase().includes(qlc));
   }return false;};
   if(qlc){
     results=books.filter(b=>S.scopes.some(s=>matchScope(b,s)));
@@ -1884,6 +1909,8 @@ function renderEditor(){
           <input class="field" id="fAuthor" placeholder="Author" value="${esc(b.author)}" autocomplete="off">
           <div class="sug" id="authSug" hidden></div>
         </div>
+        <div class="chkrow" id="kindRow"></div>
+        <div id="ffWrap"></div>
         <div class="chkrow">
           <label class="chk"><input type="checkbox" id="cbSeries"> Part of a series</label>
           <label class="chk"><input type="checkbox" id="cbColl"> A whole series / collection in one entry</label>
@@ -2067,6 +2094,67 @@ function renderEditor(){
     inp.addEventListener("blur",()=>setTimeout(()=>sug.hidden=true,150));
   }
   autoComplete("#fAuthor","#authSug","author",()=>[...new Set(books.map(x=>(x.author||"").trim()).filter(Boolean))]);
+
+  /* book / fanfic / AI story */
+  function renderKind(){
+    q("#kindRow").innerHTML=KINDS.map(([id,l])=>
+      `<label class="chk"><input type="checkbox" data-kind="${id}" ${kindOf(cur)===id?"checked":""}> ${l}</label>`).join("");
+    qa("[data-kind]").forEach(x=>x.onchange=()=>{
+      cur.kind=x.checked?x.dataset.kind:"book";      /* exactly one, book is the default */
+      if(cur.kind==="book"){cur.fandoms=[];cur.characters=[];cur.link="";}
+      renderKind();renderFF();scheduleSave();
+    });
+  }
+  /* fandoms + characters + link — only for fanfic and AI stories */
+  function renderFF(){
+    const w=q("#ffWrap");
+    if(kindOf(cur)==="book"){w.innerHTML="";return;}
+    cur.fandoms=cur.fandoms||[];cur.characters=cur.characters||[];
+    const allF=Object.keys(fandoms).sort((a,b)=>a.localeCompare(b));
+    const pickable=charsFor(cur.fandoms);                    /* only this fandom's cast */
+    const firstF=cur.fandoms[0];
+    w.innerHTML=`<div class="ffbox">
+      <div class="lbl" style="display:block;margin-bottom:3px">Fandom${cur.fandoms.length>1?"s":""}</div>
+      <div>${allF.map(f=>`<button class="rsn ${cur.fandoms.includes(f)?"on":""}" data-fd="${esc(f)}">${cur.fandoms.includes(f)?"✓ ":""}${esc(f)}</button>`).join("")}
+        <input id="fdIn" class="addin" style="width:170px;display:inline-block;margin:2px 0 0 2px" placeholder="Add a fandom… (Enter)"></div>
+      <div class="lbl" style="display:block;margin:11px 0 3px">Characters${firstF?"":" — pick a fandom first"}</div>
+      <div>${pickable.map(c=>`<button class="rsn ${cur.characters.includes(c)?"on":""}" data-ch="${esc(c)}">${cur.characters.includes(c)?"✓ ":""}${esc(c)}</button>`).join("")}
+        ${firstF?`<input id="chIn" class="addin" style="width:200px;display:inline-block;margin:2px 0 0 2px" placeholder="Add to ${esc(firstF)}… (Enter)">`:""}</div>
+      <div class="lbl" style="display:block;margin:11px 0 3px">Link</div>
+      <input class="field" id="fLink" placeholder="https://…" value="${esc(cur.link||"")}" style="font-size:13px;padding:7px 10px">
+    </div>`;
+    qa("[data-fd]",w).forEach(x=>x.onclick=()=>{
+      const f=x.dataset.fd;
+      cur.fandoms=cur.fandoms.includes(f)?cur.fandoms.filter(y=>y!==f):[...cur.fandoms,f];
+      /* drop characters that no longer belong to any chosen fandom */
+      const ok=new Set(charsFor(cur.fandoms));
+      cur.characters=cur.characters.filter(c=>ok.has(c));
+      renderFF();scheduleSave();
+    });
+    qa("[data-ch]",w).forEach(x=>x.onclick=()=>{
+      const c=x.dataset.ch;
+      cur.characters=cur.characters.includes(c)?cur.characters.filter(y=>y!==c):[...cur.characters,c];
+      renderFF();scheduleSave();
+    });
+    q("#fdIn",w).addEventListener("keydown",e=>{
+      if(e.key!=="Enter"||!e.target.value.trim())return;
+      const f=e.target.value.trim();
+      if(!fandoms[f]){fandoms[f]=[];saveFandoms();}
+      if(!cur.fandoms.includes(f))cur.fandoms.push(f);
+      renderFF();scheduleSave();
+    });
+    const ci=q("#chIn",w);
+    if(ci)ci.addEventListener("keydown",e=>{
+      if(e.key!=="Enter"||!e.target.value.trim())return;
+      const c=e.target.value.trim();
+      fandoms[firstF]=fandoms[firstF]||[];
+      if(!fandoms[firstF].includes(c)){fandoms[firstF].push(c);saveFandoms();}
+      if(!cur.characters.includes(c))cur.characters.push(c);
+      renderFF();scheduleSave();
+    });
+    q("#fLink",w).addEventListener("input",e=>{cur.link=e.target.value;scheduleSave();});
+  }
+  renderKind();renderFF();
 
   /* series / collection type */
   function renderSeries(){
@@ -2664,7 +2752,7 @@ async function buildBackup(){
   const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
   return {app:"my-shelf",version:1,exported:new Date().toISOString(),
     index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
-    backgrounds:bgList,padskins:padList,covers,images};
+    backgrounds:bgList,padskins:padList,fandoms,covers,images};
 }
 function downloadJson(json,name){
   const blob=new Blob([json],{type:"application/json"});
@@ -2697,7 +2785,9 @@ async function applyBackup(data){
   (data.backgrounds||[]).forEach(x=>{if(x&&x.id&&!haveB.has(x.id))bgList.push(x);});
   const haveP=new Set(padList.map(x=>x.id));
   (data.padskins||[]).forEach(x=>{if(x&&x.id&&!haveP.has(x.id))padList.push(x);});
-  saveBgList();savePadList();
+  const fdIn=data.fandoms||{};
+  for(const f in fdIn)fandoms[f]=[...new Set([...(fandoms[f]||[]),...(fdIn[f]||[])])];
+  saveBgList();savePadList();saveFandoms();
   saveMeta();
   if(SYNC.on){
     for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
