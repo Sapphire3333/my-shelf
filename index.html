@@ -360,17 +360,20 @@
   .gcar{color:var(--mut);font-size:13px;padding:0 2px}
   .grouphead .gart{opacity:.55}
   .grouphead:hover .gart,.grouphead .gart:hover{opacity:1}
-  .gartbox{position:relative;margin:0 0 10px;border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#f5f5f4}
+  /* the whole picture, never cropped: the width is what you drag, the height
+     follows the picture's own shape, and it all sits in the flow */
+  .gartbox{position:relative;margin:0 0 10px;border-radius:14px;overflow:hidden;
+    border:1px solid var(--line);background:#f5f5f4;max-width:100%}
   [data-theme="dark"] .gartbox{background:#3a3532}
-  .gartbox img{width:100%;height:100%;object-fit:cover;display:block}
+  .gartbox img{width:100%;height:auto;display:block}
   .gartx{position:absolute;top:7px;right:7px;width:24px;height:24px;border-radius:50%;padding:0;
     background:rgba(255,255,255,.9);color:#57534e;font-size:12px;display:flex;align-items:center;justify-content:center;opacity:0}
   .gartbox:hover .gartx{opacity:1}
   .gartx:hover{color:var(--rose)}
-  .gartgrip{position:absolute;left:0;right:0;bottom:0;height:14px;cursor:ns-resize;touch-action:none;
-    background:linear-gradient(transparent,rgba(0,0,0,.25))}
-  .gartgrip:after{content:"";position:absolute;left:50%;bottom:4px;width:40px;height:3px;margin-left:-20px;
-    border-radius:2px;background:rgba(255,255,255,.85)}
+  .gartgrip{position:absolute;right:0;bottom:0;width:24px;height:24px;cursor:nwse-resize;touch-action:none;
+    background:var(--teal);border-radius:9px 0 0 0;opacity:.8}
+  .gartgrip:after{content:"⤡";position:absolute;right:4px;bottom:0;color:#fff;font-size:13px;line-height:20px}
+  .gartgrip:hover{opacity:1}
   @media(hover:none){.gartx{opacity:1}}
   .grouphead .n{color:var(--faint);font-size:13px}
   .ghline{flex:1;height:1px;background:var(--line)}
@@ -562,6 +565,7 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
 <div id="bgLayer"></div>
 <div id="app"></div>
 <div class="bgpanel" id="authPanel" hidden></div>
+<div class="bgpanel" id="gartPanel" hidden></div>
 <div class="bgpanel" id="quickPanel" hidden></div>
 <input type="file" id="qaFile" accept="image/*" hidden>
 <input type="file" id="bgFile" accept="image/*" hidden>
@@ -1284,15 +1288,15 @@ async function deleteCustomBg(id){
 /* ---- a picture at the head of a library group ---- */
 const gartKey=id=>"__gart|"+id;
 function saveGroupArt(){dbPut("meta",{k:"groupArt",v:groupArt});enqueue({kind:"meta",key:"groupArt"});}
-async function setGroupArt(key,file){
+async function setGroupArt(key,file,maxDim){
   if(!file||!file.type.startsWith("image/"))return false;
-  let data;try{data=await compressImage(file,1600,.82);}catch(e){alert("That image couldn't be read.");return false;}
+  let data;try{data=await compressImage(file,maxDim||2000,.88);}catch(e){alert("That image couldn't be read.");return false;}
   const id=uid();
   try{await dbPut("images",{key:gartKey(id),data});}catch(e){alert("That picture couldn't be saved — storage may be full.");return false;}
   const old=groupArt[key];
   if(old&&old.img){await dbDel("images",gartKey(old.img));gartCache.delete(old.img);
     if(SYNC.on)enqueue({kind:"imgDel",key:gartKey(old.img)});}
-  groupArt[key]={img:id,h:(old&&old.h)||170};
+  groupArt[key]={img:id,w:(old&&old.w)||100};
   gartCache.set(id,data);saveGroupArt();
   if(SYNC.on)enqueue({kind:"img",key:gartKey(id)});
   return true;
@@ -1870,10 +1874,10 @@ function renderLibrary(){
           <span class="n">${g.items.length}</span><span class="ghline"></span>
           <button class="btn gart" data-gart="${esc(key)}" title="${art?"Change or remove this group's picture":"Give this group a picture"}" style="padding:2px 8px;font-size:12px">🖼${art?" ✓":""}</button>
         </div>
-        ${art&&!shut?`<div class="gartbox" style="height:${Math.max(60,art.h||170)}px">
+        ${art&&!shut?`<div class="gartbox" style="width:${Math.max(15,Math.min(100,art.w||100))}%">
             <img data-gartimg="${esc(art.img)}" alt="">
             <button class="gartx" data-gartx="${esc(key)}" title="Remove this picture">✕</button>
-            <div class="gartgrip" data-gartgrip="${esc(key)}" title="Drag to resize"></div>
+            <div class="gartgrip" data-gartgrip="${esc(key)}" title="Drag the corner to resize"></div>
           </div>`:""}
         ${shut?"":booksHtml(g.items,true)}
       </div>`;}).join("");
@@ -1915,14 +1919,19 @@ function renderLibrary(){
     if(!confirm("Remove this group's picture?"))return;
     await clearGroupArt(b.dataset.gartx);renderLibrary();
   });
+  /* drag the corner: the picture keeps its shape, only its size changes */
   qa("[data-gartgrip]",m).forEach(gr=>gr.addEventListener("pointerdown",e=>{
     e.preventDefault();e.stopPropagation();
     const key=gr.dataset.gartgrip,boxEl=gr.parentElement;
-    const y0=e.clientY,h0=boxEl.getBoundingClientRect().height;
-    const mv=ev=>{boxEl.style.height=Math.max(60,Math.min(760,h0+ev.clientY-y0))+"px";};
+    const full=boxEl.parentElement.getBoundingClientRect().width||1;
+    const x0=e.clientX,w0=boxEl.getBoundingClientRect().width;
+    const mv=ev=>{
+      const pctW=Math.max(15,Math.min(100,(w0+(ev.clientX-x0))/full*100));
+      boxEl.style.width=pctW+"%";
+    };
     const up=()=>{
       window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
-      groupArt[key]=Object.assign({},groupArt[key],{h:Math.round(parseFloat(boxEl.style.height)||170)});
+      groupArt[key]=Object.assign({},groupArt[key],{w:Math.round(parseFloat(boxEl.style.width)||100)});
       saveGroupArt();
     };
     window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
@@ -1976,12 +1985,39 @@ async function hydrateGroupArt(root){
     if(d)el.src=d;
   }
 }
-q("#gartFile").addEventListener("change",async e=>{
+q("#gartFile").addEventListener("change",e=>{
   const f=e.target.files[0];e.target.value="";
   const key=pendingGart;pendingGart=null;
   if(!f||!key)return;
-  if(await setGroupArt(key,f)){if(SYNC.on)flushQueue();renderLibrary();}
+  openGartPanel(key,f);
 });
+/* how sharp to keep it has to be decided now — once it's stored, the original
+   is gone, and a picture kept small looks rough the moment it's made large */
+function openGartPanel(key,file){
+  const box=q("#gartPanel");box.hidden=false;
+  const url=URL.createObjectURL(file);
+  const close=()=>{box.hidden=true;box.innerHTML="";URL.revokeObjectURL(url);};
+  box.innerHTML=`
+    <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">🖼 Picture for “${esc(key.split("|").slice(1).join("|"))}”</b>
+      <button class="btn" id="gaX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+    <img src="${url}" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;border:1px solid var(--line);background:var(--bg)">
+    <div class="lbl" style="display:block;margin:11px 0 4px">How sharp should it be kept?</div>
+    <select id="gaDim" class="field" style="font-size:13px;padding:7px 10px">
+      <option value="1200">Small — easy on storage, fine at a modest size</option>
+      <option value="2000" selected>Sharp — the sensible middle (recommended)</option>
+      <option value="3200">Very sharp — best if you'll show it big, takes more room</option>
+    </select>
+    <div class="hint" style="margin:7px 0 0">The whole picture is always shown, never cropped — drag its corner afterwards to set how big it sits.</div>
+    <button class="btn pri" id="gaGo" style="margin-top:11px">Use this picture</button>`;
+  q("#gaX",box).onclick=close;
+  q("#gaGo",box).onclick=async()=>{
+    const b=q("#gaGo",box);b.disabled=true;b.textContent="Saving…";
+    const dim=parseInt(q("#gaDim",box).value)||2000;
+    const ok=await setGroupArt(key,file,dim);
+    close();
+    if(ok){if(SYNC.on)flushQueue();renderLibrary();}
+  };
+}
 
 /* deleted books wait in the bin for 30 days before they're really gone */
 const TRASH_DAYS=30;
@@ -2893,6 +2929,7 @@ function renderEditor(){
         <span id="hlModeWrap" hidden>
           <button class="sm" data-hlm="free" title="Draw highlight strokes freehand">✏️ Free</button>
           <button class="sm" data-hlm="text" title="Select words in your writing to highlight them">🔤 Over text</button>
+          <button class="sm" data-hlm="off" title="Select highlighted words to take the colour off them">🧽 Rub out</button>
           <span class="vline"></span>
         </span>
         <span class="lbl">Thickness</span>
@@ -3073,16 +3110,48 @@ function renderEditor(){
   };
   q("#edDel").onclick=()=>deleteBookById(cur.id);
   q("#edImg").onclick=()=>q("#imgFile").click();
-  /* highlighter, "over text": paint whatever you selected rather than draw on it */
+  /* take the colour off anything highlighted that the selection touches. Touching
+     is enough — hunting for the exact ends of an old highlight would be misery. */
+  function clearHighlight(range,ed){
+    let n=0;
+    [...ed.querySelectorAll("*")].forEach(el=>{
+      let hit=false;
+      try{hit=range.intersectsNode(el);}catch(err){hit=false;}
+      if(!hit)return;
+      const hasBg=el.style&&el.style.backgroundColor;
+      const isMark=el.tagName==="MARK";
+      if(!hasBg&&!isMark&&!el.hasAttribute("bgcolor"))return;
+      if(hasBg)el.style.backgroundColor="";
+      el.removeAttribute("bgcolor");
+      if(el.getAttribute("style")==="")el.removeAttribute("style");
+      n++;
+      /* a span or mark that only existed to carry the colour goes away entirely */
+      if((el.tagName==="SPAN"||isMark)&&!el.attributes.length){
+        const p=el.parentNode;
+        while(el.firstChild)p.insertBefore(el.firstChild,el);
+        p.removeChild(el);
+      }
+    });
+    ed.normalize();
+    return n;
+  }
+  /* highlighter over text: paint what you selected, or rub the colour off it */
   page.addEventListener("mouseup",e=>{
-    if(mode!=="draw"||drawTool!=="hl"||hlMode!=="text")return;
+    if(mode!=="draw"||drawTool!=="hl"||hlMode==="free")return;
     if(e.target.closest(".edbar,.bgpanel"))return;
     const sel=window.getSelection();
     if(!sel||!sel.rangeCount||sel.isCollapsed)return;
-    const n=sel.getRangeAt(0).commonAncestorContainer;
+    const range=sel.getRangeAt(0);
+    const n=range.commonAncestorContainer;
     const el=n.nodeType===1?n:n.parentElement;
     const ed=el&&el.closest&&el.closest('[contenteditable="true"]');
     if(!ed)return;
+    if(hlMode==="off"){
+      const hit=clearHighlight(range,ed);
+      sel.removeAllRanges();
+      if(hit)ed.dispatchEvent(new Event("input",{bubbles:true}));
+      return;
+    }
     const rgba=hexToRgba(drawColor,hlAlpha);
     document.execCommand("styleWithCSS",false,true);
     if(!document.execCommand("hiliteColor",false,rgba))document.execCommand("backColor",false,rgba);
@@ -3947,7 +4016,7 @@ function renderEditor(){
   if(window.__drawDown)document.removeEventListener("pointerdown",window.__drawDown);
   window.__drawDown=e=>{
     if(mode!=="draw")return;
-    if(drawTool==="hl"&&hlMode==="text")return;   /* that one paints selections instead */
+    if(drawTool==="hl"&&hlMode!=="free")return;   /* those work on selected text instead */
     if(!document.body.contains(page)){document.removeEventListener("pointerdown",window.__drawDown);window.__drawDown=null;return;}
     const t=e.target;
     if(t&&t.closest&&t.closest(".edbar,.bgpanel,.modebar,.imenu,.sbar,.pbar"))return;
@@ -3960,8 +4029,8 @@ function renderEditor(){
     const hw=q("#hlWrap");if(hw)hw.hidden=!isHl;
     const hm=q("#hlModeWrap");if(hm)hm.hidden=!isHl;
     qa("[data-hlm]").forEach(b=>b.classList.toggle("on",b.dataset.hlm===hlMode));
-    /* "over text" needs the writing clickable again, and the pen out of the way */
-    page.classList.toggle("hlsel",mode==="draw"&&isHl&&hlMode==="text");
+    /* working on text needs the writing selectable again, and the pen out of the way */
+    page.classList.toggle("hlsel",mode==="draw"&&isHl&&hlMode!=="free");
     renderColStrip();
   }
   qa("[data-hlm]").forEach(b=>b.onclick=()=>{hlMode=b.dataset.hlm;setDrawUI();});
@@ -4620,14 +4689,17 @@ async function fetchBookInfo(title,author,isbn){
     .filter(t=>t&&t.length<=30&&!/^(fiction|general)$/i.test(t)).slice(0,15);
   /* cover candidates, most-downloadable first — Open Library serves them with the
      header browsers need; Google's host doesn't, so it's only a last resort */
-  /* where to read more — the two we asked, plus the sites people actually review on
-     (search links: neither lets a page like this read their reviews directly) */
+  /* where to read more. An ISBN gets you the book's own Goodreads page; without
+     one all we can honestly offer is a search, since neither site has a public
+     way to look a title up. */
   const term=(title||"")+(author?" "+author:"");
+  const isbnLink=cleanIsbn(isbn||out.isbn);
+  if(isbnLink)out.links.push({name:"Goodreads — this book",url:"https://www.goodreads.com/book/isbn/"+isbnLink});
   if(term.trim()){
-    out.links.push({name:"Goodreads",url:"https://www.goodreads.com/search?q="+encodeURIComponent(term)});
-    out.links.push({name:"StoryGraph",url:"https://app.thestorygraph.com/search?search_term="+encodeURIComponent(term)});
+    if(!isbnLink)out.links.push({name:"Goodreads — search",url:"https://www.goodreads.com/search?q="+encodeURIComponent(term)});
+    out.links.push({name:"StoryGraph — search",url:"https://app.thestorygraph.com/browse?search_term="+encodeURIComponent(title||term)});
   }
-  const isbnForCover=cleanIsbn(isbn||out.isbn);
+  const isbnForCover=isbnLink;
   out.covers=[out.olCover,
     isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
     out.coverUrl].filter((u,i,a)=>u&&a.indexOf(u)===i);
