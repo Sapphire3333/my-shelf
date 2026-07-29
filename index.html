@@ -927,11 +927,17 @@ async function pullAll(){
     const localMap=new Map(books.map(b=>[b.id,b]));
     const remoteIds=new Set();
     const changed=[];
+    /* A book we haven't managed to upload yet is newer than anything the cloud can
+       tell us, whatever the timestamps say — clocks on two devices rarely agree.
+       Same for the book open in the editor: those edits are still being typed. */
+    const pending=new Set(SYNC.queue.filter(o=>o.kind==="book"&&o.id).map(o=>o.id));
+    const heldBack=id=>pending.has(id)||(view==="book"&&cur&&cur.id===id);
     for(const row of rows||[]){
       remoteIds.add(row.id);
       const rb=row.data||{};rb.id=row.id;rb.modified=row.modified||rb.modified||rb.created||0;
       const tomb=deletions[row.id]||0;
       if(tomb&&tomb>=(rb.modified||0))continue;
+      if(heldBack(row.id))continue;
       const lb=localMap.get(row.id);
       if(!lb||(rb.modified||0)>(lb.modified||0)){
         await dbPut("books",rb);
@@ -946,6 +952,7 @@ async function pullAll(){
       await Promise.all(changed.slice(i,i+4).map(syncBookAssets));
     // apply remote deletions locally
     for(const id of Object.keys(deletions)){
+      if(heldBack(id))continue;
       const lb=books.find(b=>b.id===id);
       if(lb&&deletions[id]>=(lb.modified||0)){await dbDel("books",id);books=books.filter(b=>b.id!==id);}
     }
@@ -2752,12 +2759,18 @@ function renderEditor(){
     box.hidden=false;
     box.innerHTML=head+`<div class="none">Looking up “${esc(title)}”${cur.author?" by "+esc(cur.author):""}…</div>`;
     wireClose();
-    let info=null;
-    try{info=await fetchBookInfo(title,(cur.author||"").trim(),en?"":(cur.isbn||"").trim());}catch(e){}
+    let info=null,unreachable=false;
+    try{info=await fetchBookInfo(title,(cur.author||"").trim(),en?"":(cur.isbn||"").trim());}
+    catch(e){unreachable=true;}
     if(box.hidden)return;   /* closed while we were fetching */
     if(!info){
-      box.innerHTML=head+'<div class="none">Nothing found. Check the spelling — and this needs an internet connection.</div>';
-      wireClose();return;
+      box.innerHTML=head+`<div class="none">${unreachable
+        ? "Couldn't reach the book sites just now — they're free and sometimes busy. Your connection may also be down."
+        : "Nothing found under that title. Try the author's name too, or a shorter title."}</div>
+        <button class="btn pri" id="fpRetry" style="margin-top:9px">Try again</button>`;
+      wireClose();
+      q("#fpRetry",box).onclick=()=>openFetchPanel(en);
+      return;
     }
     const tagSel=new Set();
     const newTags=info.tags.filter(t=>!cur.keywords.some(k=>k.toLowerCase()===t.toLowerCase()));
@@ -3877,14 +3890,31 @@ async function importCollection(items,name){
 /* =============== look a book up online (Google Books + Open Library) =============== */
 /* Both are free, keyless and CORS-friendly. StoryGraph/Goodreads have no public
    API — this is the honest way to auto-fill a blurb, tags, pages and a cover. */
+/* Both sites are free and busy: they time out, rate-limit and hiccup. One attempt
+   made Auto-fill look broken when it was only unlucky, so give it a few goes. */
+async function fetchJson(url,tries){
+  let last=null;
+  for(let i=0;i<(tries||3);i++){
+    const ac=typeof AbortController==="function"?new AbortController():null;
+    const t=ac?setTimeout(()=>ac.abort(),9000):null;
+    try{
+      const r=await fetch(url,ac?{signal:ac.signal}:undefined);
+      if(t)clearTimeout(t);
+      if(r.status===429||r.status>=500)last=new Error("busy ("+r.status+")");
+      else return await r.json();
+    }catch(e){if(t)clearTimeout(t);last=e;}
+    if(i<(tries||3)-1)await new Promise(s=>setTimeout(s,700*(i+1)));
+  }
+  throw last||new Error("no answer");
+}
 async function fetchBookInfo(title,author,isbn){
   const out={summary:"",tags:[],pages:"",coverUrl:"",olCover:"",isbn:"",year:"",source:[],covers:[]};
+  let gErr=false,oErr=false;
   try{
     const qs=isbn?`isbn:${isbn}`:`intitle:"${title}"${author?` inauthor:"${author}"`:""}`;
     /* an own key in config.js skips the shared (often exhausted) keyless quota */
     const gk=CFG.googleBooksKey&&!/YOUR_/.test(CFG.googleBooksKey)?"&key="+encodeURIComponent(CFG.googleBooksKey):"";
-    const r=await fetch("https://www.googleapis.com/books/v1/volumes?maxResults=5&q="+encodeURIComponent(qs)+gk);
-    const j=await r.json();
+    const j=await fetchJson("https://www.googleapis.com/books/v1/volumes?maxResults=5&q="+encodeURIComponent(qs)+gk);
     const items=(j.items||[]).map(x=>x.volumeInfo||{});
     const vi=items.find(v=>v.description)||items[0];
     if(vi){
@@ -3901,14 +3931,13 @@ async function fetchBookInfo(title,author,isbn){
         ||(vi.industryIdentifiers||[]).map(x=>String(x.identifier||"")).find(x=>x.length===10)||"");
       out.source.push("Google Books");
     }
-  }catch(e){}
+  }catch(e){gErr=true;}
   try{
     /* subjects only come back when asked for explicitly via `fields` */
     const u="https://openlibrary.org/search.json?limit=3&fields=key,subject,cover_i,number_of_pages_median,first_publish_year&"
       +(isbn?"q="+encodeURIComponent(isbn)
       :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):""));
-    const r=await fetch(u);
-    const j=await r.json();
+    const j=await fetchJson(u);
     const d=(j.docs||[])[0];
     if(d){
       out.tags=[...new Set([...out.tags,...(d.subject||[]).map(s=>String(s).trim())])];
@@ -3920,13 +3949,13 @@ async function fetchBookInfo(title,author,isbn){
          work record has a blurb of its own */
       if(!out.summary&&d.key){
         try{
-          const w=await(await fetch("https://openlibrary.org"+d.key+".json")).json();
+          const w=await fetchJson("https://openlibrary.org"+d.key+".json",2);
           const desc=w&&w.description;
           out.summary=String(typeof desc==="string"?desc:(desc&&desc.value)||"").trim();
         }catch(e){}
       }
     }
-  }catch(e){}
+  }catch(e){oErr=true;}
   out.tags=[...new Set(out.tags.map(t=>t.replace(/\s+/g," ").trim()))]
     .filter(t=>t&&t.length<=30&&!/^(fiction|general)$/i.test(t)).slice(0,15);
   /* cover candidates, most-downloadable first — Open Library serves them with the
@@ -3935,7 +3964,10 @@ async function fetchBookInfo(title,author,isbn){
   out.covers=[out.olCover,
     isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
     out.coverUrl].filter((u,i,a)=>u&&a.indexOf(u)===i);
-  return (out.summary||out.tags.length||out.pages||out.covers.length)?out:null;
+  if(out.summary||out.tags.length||out.pages||out.covers.length)return out;
+  /* nothing to show: say which it was, so "not found" doesn't mean "flaky wifi" */
+  if(gErr&&oErr)throw new Error("unreachable");
+  return null;
 }
 async function urlToDataURL(url,maxDim){
   const r=await fetch(url);
