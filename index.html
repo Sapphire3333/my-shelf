@@ -300,6 +300,10 @@
   .prog i{display:block;height:100%;background:var(--teal);border-radius:999px;transition:width .2s}
   .ovh{display:flex;align-items:center;gap:8px;margin:0 0 8px}
   #edPage.tagmode [contenteditable]{cursor:crosshair}
+  /* editing labels: make it obvious which chips are now click-to-edit */
+  #edPage.tagedit #genChips .chip,#edPage.tagedit #genSug .chip,#edPage.tagedit #kwWrap .kw{
+    cursor:pointer;outline:2px dashed var(--amber);outline-offset:2px}
+  #edPage.tagedit #tagEditTog{background:var(--amber);border-color:var(--amber);color:#43290b;font-weight:700}
   .sm.tag-on{background:#fbbf24;border-color:#f59e0b;color:#78350f;font-weight:700}
 
   /* auth + sync */
@@ -455,6 +459,9 @@
   #dw{width:88px;accent-color:var(--teal)}
   .dsw{width:16px;height:16px;border-radius:50%;padding:0;border:1px solid rgba(0,0,0,.15)}
   .dsw:hover{transform:scale(1.2)}
+  /* text formatting has nothing to do while you're drawing — one palette at a time */
+  #fmtGrp{display:contents}
+  #edPage.draw #fmtGrp{display:none}
 
   /* on touch screens, dragging/drawing must beat the browser's scroll gesture —
      without this the first finger-move scrolls the page and cancels the pointer */
@@ -557,7 +564,9 @@ const BG_PRESETS=[
 const DRAW_TOOLS=[["pen","✏️","Pen — free line"],["line","╱","Straight line"],["arrow","↗","Arrow"],
   ["rect","▭","Rectangle"],["ellipse","◯","Ellipse"],["hl","🖍","Highlighter"],["erase","🧽","Rub out a mark"]];
 const DRAW_SWATCHES=["#dc2626","#ea580c","#ca8a04","#059669","#0d9488","#2563eb","#7c3aed","#db2777","#44403c","#ffffff"];
-let drawTool="pen",drawColor="#dc2626",drawWidth=3;
+/* the highlighter wants soft, washed-out inks — the pen's colours go muddy at low opacity */
+const HL_SWATCHES=["#fde68a","#fdba74","#fca5a5","#f9a8d4","#d8b4fe","#a5b4fc","#93c5fd","#99f6e4","#bbf7d0","#e5e7eb"];
+let drawTool="pen",drawColor="#dc2626",drawWidth=3,hlAlpha=.35;
 const distToSeg=(p,a,b)=>{
   const dx=b[0]-a[0],dy=b[1]-a[1],L=dx*dx+dy*dy;
   if(!L)return Math.hypot(p[0]-a[0],p[1]-a[1]);
@@ -571,7 +580,7 @@ function drawSvgHtml(strokes,sx,sy){
     if(!p.length)return "";
     const hl=s.t==="hl";
     const w=hl?Math.max(9,s.w*4):s.w;
-    const at=`stroke="${s.c}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${hl?.35:1}"`;
+    const at=`stroke="${s.c}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${hl?(s.o==null?.35:s.o):1}"`;
     const n=v=>v.toFixed(1);
     if(s.t==="pen"||hl)return `<polyline points="${p.map(q2=>n(q2[0])+","+n(q2[1])).join(" ")}" ${at}/>`;
     const a=p[0],b=p[1]||p[0];
@@ -668,6 +677,12 @@ const stripHtml=s=>String(s||"").replace(/<[^>]*>/g," ")
   .replace(/&quot;/gi,'"').replace(/&#39;/gi,"'").replace(/&amp;/gi,"&")
   .replace(/\s+/g," ").trim();
 const statusOf=b=>b.status||"finished";
+/* a book can be for several audiences. `audience` stays a plain joined string so
+   older versions and older backups still read it; `audienceList` is the real one */
+const audsOf=b=>Array.isArray(b.audienceList)&&b.audienceList.length
+  ?b.audienceList
+  :((b.audience||"").trim()?String(b.audience).split(",").map(s=>s.trim()).filter(Boolean):[]);
+const setAuds=(b,list)=>{b.audienceList=[...list];b.audience=list.join(", ");};
 /* type: standalone | series (one book of a named series) | collection (one entry holding many stories) */
 const typeOf=b=>b.type||((b.series||"").trim()?"series":"standalone");
 const isColl=b=>typeOf(b)==="collection";
@@ -1750,7 +1765,15 @@ function renderLibrary(){
   }
   if(!books.length)html+='<div class="empty">📖<br>Your shelf is empty. Add your first book to start.</div>';
   else if(!list.length)html+='<div class="none" style="text-align:center;padding:40px 0">No books with this status yet.</div>';
-  else if(groupBy==="none")html+=booksHtml(list,true);
+  else if(groupBy==="none"){
+    /* what you're reading right now belongs at the top, not buried by date added */
+    const now=list.filter(b=>statusOf(b)==="reading"),rest=list.filter(b=>statusOf(b)!=="reading");
+    if(statusFilter==="all"&&now.length&&rest.length){
+      const head=(t,n)=>`<div class="grouphead"><h2 class="serif" style="margin:0;font-size:17px">${t}</h2><span class="n">${n}</span><span class="ghline"></span></div>`;
+      html+=head("📖 Reading now",now.length)+booksHtml(now,true)
+           +head("Everything else",rest.length)+booksHtml(rest,true);
+    }else html+=booksHtml(list,true);
+  }
   else{
     const gs=groupsFor(list);
     html+=gs.map(g=>`<div class="grouphead">${g.color
@@ -2201,7 +2224,7 @@ function renderSearchBody(){
     if(f.type==="favorite")results=books.filter(b=>b.favorite);
     if(f.type==="dnf")results=books.filter(b=>b.dnf);
     if(f.type==="status")results=books.filter(b=>statusOf(b)===f.value);
-    if(f.type==="audience")results=books.filter(b=>(b.audience||"").trim()===f.value);
+    if(f.type==="audience")results=books.filter(b=>audsOf(b).indexOf(f.value)>=0);
     if(f.type==="pages")results=f.value==="none"?books.filter(b=>!parseInt(b.pages)):books.filter(b=>{const p=parseInt(b.pages);return p&&p>=f.value.min&&p<=f.value.max;});
     if(f.type==="series")results=books.filter(b=>(b.series||"").trim()===f.value).sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0));
     if(f.type==="rating")results=f.value==="unrated"?books.filter(b=>b.rating==null):books.filter(b=>b.rating!=null&&b.rating>=f.value.min&&b.rating<=f.value.max);
@@ -2224,7 +2247,7 @@ function renderSearchBody(){
         <button class="colbtn w" data-cf="want" ${wantN?"":"disabled"}>★ Want to read <b>${wantN}</b></button>
         <button class="colbtn d" data-cf="dnf" ${dnfN?"":"disabled"}><span class="bdnf" style="background:#57534e;color:#fff">DNF</span> Did not finish <b>${dnfN}</b></button>
       </div>`;
-      const audCounts={};books.forEach(b=>{const a=(b.audience||"").trim();if(a)audCounts[a]=(audCounts[a]||0)+1;});
+      const audCounts={};books.forEach(b=>audsOf(b).forEach(a=>audCounts[a]=(audCounts[a]||0)+1));
       const audAll=[...new Set([...DEFAULT_AUD,...audCustom,...Object.keys(audCounts)])];
       html+=`<div class="sec"><h2 class="serif">Who it's for</h2>${audAll.map(a=>{const n=audCounts[a]||0;return `<button class="aut" data-aud="${esc(a)}" ${n?"":'disabled style="opacity:.4;cursor:default"'}>${esc(a)} <b>${n}</b></button>`;}).join("")}</div>`;
       html+=`<div class="sec"><h2 class="serif">Authors <span class="n" style="font-weight:400;font-size:13px;color:var(--faint)">(${authorList.length})</span></h2>
@@ -2518,17 +2541,19 @@ function renderEditor(){
         <button class="delbtn" id="edDel">🗑</button>
       </div>
       <div class="r2" id="tbar">
-        <button class="tbtn" data-cmd="bold">B</button>
-        <button class="tbtn i" data-cmd="italic">I</button>
-        <button class="tbtn u" data-cmd="underline">U</button>
-        <span class="vline"></span>
-        <button class="tbtn" data-cmd="justifyLeft" title="Align left">${ALIGN_IC.left}</button>
-        <button class="tbtn" data-cmd="justifyCenter" title="Center">${ALIGN_IC.center}</button>
-        <button class="tbtn" data-cmd="justifyRight" title="Align right">${ALIGN_IC.right}</button>
-        <span class="vline"></span>
-        ${TEXT_COLORS.map(c=>`<button class="cdot" data-col="${c}" style="background:${c}" title="Text colour"></button>`).join("")}
-        <input type="color" id="tcol" value="#44403c" title="Any text colour you like">
-        <span class="vline"></span>
+        <span id="fmtGrp">
+          <button class="tbtn" data-cmd="bold">B</button>
+          <button class="tbtn i" data-cmd="italic">I</button>
+          <button class="tbtn u" data-cmd="underline">U</button>
+          <span class="vline"></span>
+          <button class="tbtn" data-cmd="justifyLeft" title="Align left">${ALIGN_IC.left}</button>
+          <button class="tbtn" data-cmd="justifyCenter" title="Center">${ALIGN_IC.center}</button>
+          <button class="tbtn" data-cmd="justifyRight" title="Align right">${ALIGN_IC.right}</button>
+          <span class="vline"></span>
+          ${TEXT_COLORS.map(c=>`<button class="cdot" data-col="${c}" style="background:${c}" title="Text colour"></button>`).join("")}
+          <input type="color" id="tcol" value="#44403c" title="Any text colour you like">
+          <span class="vline"></span>
+        </span>
         <span class="lbl">Add:</span>
         <button class="sm" id="edImg" title="Add a picture">🖼 Picture</button>
         <button class="sm" id="edPad" title="Add a notepad page you can write on and drag anywhere">🗒 Note</button>
@@ -2545,9 +2570,11 @@ function renderEditor(){
         ${DRAW_TOOLS.map(([id,ic,t])=>`<button class="sm dtool" data-dt="${id}" title="${t}">${ic}</button>`).join("")}
         <span class="vline"></span>
         <input type="color" id="dcol" value="${drawColor}" title="Pick any colour">
-        ${DRAW_SWATCHES.map(c=>`<button class="dsw" data-dsw="${c}" style="background:${c}" title="${c}"></button>`).join("")}
+        <span id="dswWrap"></span>
         <span class="vline"></span>
         <input type="range" id="dw" min="1" max="18" value="${drawWidth}" title="Thickness">
+        <span id="hlWrap" hidden><span class="vline"></span><span class="lbl">Dimness</span>
+          <input type="range" id="hlDim" min="8" max="70" value="${Math.round(hlAlpha*100)}" title="How see-through the highlight is" style="width:78px;accent-color:var(--teal)"></span>
         <span class="vline"></span>
         <button class="sm" id="dclear" title="Rub out every mark in this book">Clear all</button>
       </div>
@@ -2558,6 +2585,8 @@ function renderEditor(){
     <div class="bgpanel" id="fetchPanel" hidden></div>
     <div class="bgpanel" id="foldPanel" hidden></div>
     <div class="bgpanel" id="orderPanel" hidden></div>
+    <div class="bgpanel" id="tagPanel" hidden></div>
+    <div class="bgpanel" id="cropPanel" hidden></div>
 
     <div class="edhead">
       <div class="coverbox" id="coverBox"></div>
@@ -2594,6 +2623,8 @@ function renderEditor(){
         </div>
         <div id="dnfWrap"></div>
         <div id="genWrap">
+          <div class="lbl" style="display:flex;align-items:center;gap:8px;margin-bottom:4px">Genres
+            <button class="btn" id="tagEditTog" style="margin-left:auto;padding:3px 9px;font-size:12px" title="Rename a genre or keyword, or change a genre's colour — everywhere at once">✎ Edit names &amp; colours</button></div>
           <div id="genChips" style="margin-bottom:6px"></div>
           <input class="field" id="fGenre" placeholder="Add genre… (Enter)" style="font-size:14px;padding:8px 11px" autocomplete="off">
           <div id="genSug" style="margin-top:6px"></div>
@@ -3251,19 +3282,26 @@ function renderEditor(){
   }
   renderDnf();
 
-  /* audience */
+  /* audience — tick as many as fit */
   function renderAud(){
     const w=q("#audWrap");
-    const audAll=[...new Set([...DEFAULT_AUD,...audCustom,...(cur.audience?[cur.audience]:[])])];
-    w.innerHTML=`<div class="lbl" style="display:block;margin-bottom:3px">Who it's for</div><div>
-      ${audAll.map(a=>`<button class="rsn ${cur.audience===a?"on":""}" data-a="${esc(a)}">${cur.audience===a?"✓ ":""}${esc(a)}</button>`).join("")}
+    const mine=audsOf(cur);
+    const audAll=[...new Set([...DEFAULT_AUD,...audCustom,...mine])];
+    w.innerHTML=`<div class="lbl" style="display:block;margin-bottom:3px">Who it's for${mine.length>1?` — ${mine.length} picked`:""}</div><div>
+      ${audAll.map(a=>{const on=mine.indexOf(a)>=0;
+        return `<button class="rsn ${on?"on":""}" data-a="${esc(a)}">${on?"✓ ":""}${esc(a)}</button>`;}).join("")}
       <input id="audIn" class="addin" style="width:150px;display:inline-block;margin:2px 0 0 2px" placeholder="Add… (Enter)"></div>`;
-    qa("[data-a]",w).forEach(x=>x.onclick=()=>{cur.audience=cur.audience===x.dataset.a?"":x.dataset.a;renderAud();scheduleSave();});
+    qa("[data-a]",w).forEach(x=>x.onclick=()=>{
+      const a=x.dataset.a,list=audsOf(cur);
+      setAuds(cur,list.indexOf(a)>=0?list.filter(y=>y!==a):[...list,a]);
+      renderAud();scheduleSave();});
     q("#audIn",w).addEventListener("keydown",e=>{
       if(e.key==="Enter"&&e.target.value.trim()){
         const v=e.target.value.trim();
         if(![...DEFAULT_AUD,...audCustom].includes(v)){audCustom.push(v);saveMeta();}
-        cur.audience=v;renderAud();scheduleSave();}});
+        const list=audsOf(cur);
+        if(list.indexOf(v)<0)setAuds(cur,[...list,v]);
+        e.target.value="";renderAud();scheduleSave();}});
   }
   renderAud();
 
@@ -3280,20 +3318,96 @@ function renderEditor(){
       ...(cur.pads||[]).map(p=>p.html||""),...(cur.entries||[]).map(en=>(en.title||"")+" "+(en.summary||"")+" "+(en.notes||""))].join(" ")).toLowerCase();
     const sug=others.filter(k=>!cur.keywords.some(x=>x.toLowerCase()===k.toLowerCase())&&btext.includes(k.toLowerCase())).slice(0,10);
     w.innerHTML=`<div class="lbl" style="display:block;margin:10px 0 3px">Keywords</div>
-      <div>${cur.keywords.map((k,i)=>`<span class="kw" style="font-size:12px;padding:2px 7px">${esc(k)} <span class="x" data-kx="${i}" style="cursor:pointer;opacity:.6">✕</span></span>`).join("")}</div>
+      <div>${cur.keywords.map((k,i)=>`<span class="kw" data-kedit="${esc(k)}" style="font-size:12px;padding:2px 7px">${esc(k)} <span class="x" data-kx="${i}" style="cursor:pointer;opacity:.6">✕</span></span>`).join("")}</div>
       <input id="kwIn" class="addin" placeholder='Add keyword… (Enter) — or turn on 🏷 Tag mode and click words in the text'>
       ${sug.length?`<div class="hint" style="margin-top:5px">Suggestions: ${sug.map(k=>`<span class="kw" data-ks="${esc(k)}" style="cursor:pointer;font-size:11px;padding:1px 6px;border-style:dashed">＋ ${esc(k)}</span>`).join("")}</div>`:""}`;
-    qa("[data-kx]",w).forEach(x=>x.onclick=()=>{cur.keywords.splice(+x.dataset.kx,1);renderKw();scheduleSave();});
+    qa("[data-kx]",w).forEach(x=>x.onclick=e=>{e.stopPropagation();cur.keywords.splice(+x.dataset.kx,1);renderKw();scheduleSave();});
+    qa("[data-kedit]",w).forEach(x=>x.onclick=e=>{
+      if(e.target.closest("[data-kx]")||!tagEdit)return;
+      openTagEditor("keyword",x.dataset.kedit);});
     qa("[data-ks]",w).forEach(x=>x.onclick=()=>addKw(x.dataset.ks));
     q("#kwIn",w).addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target.value.trim()){addKw(e.target.value);e.target.value="";}});
   }
   renderKw();
 
+  /* ---- editing a genre or keyword everywhere it appears ---- */
+  let tagEdit=false;
+  const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,((b&&SYNC.seen[b.id])||0)+1);
+  /* rewrite one label across every book; the open book is left to its own autosave */
+  async function relabel(field,oldN,newN){
+    for(const b of books){
+      if(b.id===cur.id)continue;
+      const list=b[field]||[];
+      if(list.indexOf(oldN)<0)continue;
+      b[field]=[...new Set(list.map(x=>x===oldN?newN:x))].filter(Boolean);
+      b.modified=nextMod(b);
+      await dbPut("books",b);
+      if(SYNC.on)enqueue({kind:"book",id:b.id});
+    }
+    if((cur[field]||[]).indexOf(oldN)>=0)
+      cur[field]=[...new Set(cur[field].map(x=>x===oldN?newN:x))].filter(Boolean);
+  }
+  async function renameGenre(oldN,newN,color){
+    newN=(newN||"").trim();
+    const renaming=newN&&newN!==oldN;
+    if(renaming){
+      genres[newN]=color||genres[newN]||genres[oldN]||"#78716c";
+      delete genres[oldN];
+      await relabel("genres",oldN,newN);
+    }else if(color)genres[oldN]=color;
+    saveMeta();
+    if(SYNC.on)flushQueue();
+    renderGenres();scheduleSave();
+  }
+  async function renameKeyword(oldN,newN){
+    newN=(newN||"").trim();
+    if(!newN||newN===oldN)return;
+    await relabel("keywords",oldN,newN);
+    if(SYNC.on)flushQueue();
+    renderKw();scheduleSave();
+  }
+  function openTagEditor(kind,name){
+    const box=q("#tagPanel");box.hidden=false;
+    const isG=kind==="genre";
+    const used=books.filter(b=>(isG?(b.genres||[]):(b.keywords||[])).indexOf(name)>=0).length;
+    let color=isG?(genres[name]||"#78716c"):null,typed=name;
+    const draw=()=>{
+      box.innerHTML=`
+        <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">✎ ${isG?"Genre":"Keyword"}</b>
+          <button class="btn" id="teClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+        <div class="hint" style="margin:0 0 7px">On ${used} book${used===1?"":"s"} — what you change here changes all of them.</div>
+        <input class="field" id="teName" value="${esc(typed)}" placeholder="Name">
+        ${isG?`<div class="lbl" style="display:block;margin:11px 0 5px">Colour</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">${PALETTE.map(c=>
+            `<button class="cdot" data-tec="${c}" style="width:26px;height:26px;background:${c}${c===color?";outline:2px solid var(--ink);outline-offset:2px":""}"></button>`).join("")}</div>`:""}
+        <button class="btn pri" id="teSave" style="margin-top:12px">Save</button>`;
+      q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+      /* picking a colour redraws the panel — keep whatever's been typed so far */
+      q("#teName",box).addEventListener("input",e=>{typed=e.target.value;});
+      qa("[data-tec]",box).forEach(b=>b.onclick=()=>{typed=q("#teName",box).value;color=b.dataset.tec;draw();});
+      q("#teSave",box).onclick=async()=>{
+        const nn=q("#teName",box).value.trim();
+        box.hidden=true;box.innerHTML="";
+        if(isG)await renameGenre(name,nn,color);else await renameKeyword(name,nn);
+      };
+    };
+    draw();
+  }
+  q("#tagEditTog").onclick=()=>{
+    tagEdit=!tagEdit;
+    page.classList.toggle("tagedit",tagEdit);
+    q("#tagEditTog").textContent=tagEdit?"✓ Done":"✎ Edit names & colours";
+    renderGenres();renderKw();
+  };
+
   /* genres */
   let pendingGenre=null;
   function renderGenres(){
-    q("#genChips").innerHTML=cur.genres.map(g=>`<span class="chip big" style="background:${genres[g]||"#78716c"}">${esc(g)} <span class="x" data-gx="${esc(g)}">✕</span></span>`).join("");
-    qa("[data-gx]").forEach(x=>x.onclick=()=>{cur.genres=cur.genres.filter(g=>g!==x.dataset.gx);renderGenres();scheduleSave();});
+    q("#genChips").innerHTML=cur.genres.map(g=>`<span class="chip big" data-gedit="${esc(g)}" style="background:${genres[g]||"#78716c"}">${esc(g)} <span class="x" data-gx="${esc(g)}">✕</span></span>`).join("");
+    qa("[data-gx]").forEach(x=>x.onclick=e=>{e.stopPropagation();cur.genres=cur.genres.filter(g=>g!==x.dataset.gx);renderGenres();scheduleSave();});
+    qa("[data-gedit]").forEach(x=>x.onclick=e=>{
+      if(e.target.closest("[data-gx]")||!tagEdit)return;
+      openTagEditor("genre",x.dataset.gedit);});
     /* every genre you've already made is on show — typing just narrows it */
     const v=q("#fGenre").value.trim();
     const pool=Object.keys(genres).filter(g=>!cur.genres.includes(g)).sort((a,b)=>a.localeCompare(b));
@@ -3302,7 +3416,7 @@ function renderEditor(){
       ?`<div class="lbl" style="display:block;margin-bottom:3px">${v?"Matching":"Tap to add"}</div>`
         +sug.map(g=>`<span class="chip" style="background:${genres[g]};cursor:pointer" data-gs="${esc(g)}">＋ ${esc(g)}</span>`).join("")
       :(v&&!pendingGenre?`<div class="lbl">No genre by that name yet — press Enter to make it.</div>`:"");
-    qa("[data-gs]").forEach(x=>x.onclick=()=>addGenre(x.dataset.gs,null));
+    qa("[data-gs]").forEach(x=>x.onclick=()=>tagEdit?openTagEditor("genre",x.dataset.gs):addGenre(x.dataset.gs,null));
     q("#genPick").innerHTML=pendingGenre?`<div class="colorpick"><div class="hint" style="margin:0">Pick a color for <b>${esc(pendingGenre)}</b> — it will stay this color everywhere:</div>
       <div class="dots">${PALETTE.map(c=>`<button class="cdot" data-gc="${c}" style="background:${c}"></button>`).join("")}</div></div>`:"";
     qa("[data-gc]").forEach(x=>x.onclick=()=>addGenre(pendingGenre,x.dataset.gc));
@@ -3455,6 +3569,7 @@ function renderEditor(){
     }
     e.preventDefault();
     const s={t:drawTool,c:drawColor,w:drawWidth,pts:[surfPt(surf,e.clientX,e.clientY)]};
+    if(drawTool==="hl")s.o=hlAlpha;      /* each highlight keeps the dimness it was drawn with */
     store.push(s);
     const mv=ev=>{
       const p=surfPt(surf,ev.clientX,ev.clientY);
@@ -3468,18 +3583,41 @@ function renderEditor(){
     };
     window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
   }
-  page.addEventListener("pointerdown",e=>{
+  /* #edPage is only the middle text column, so listening on it left the empty
+     margins undrawable — listen on the window instead and let page strokes run
+     past the column's edges (they're stored relative to it, negatives included) */
+  if(window.__drawDown)document.removeEventListener("pointerdown",window.__drawDown);
+  window.__drawDown=e=>{
     if(mode!=="draw")return;
-    if(e.target.closest(".edbar"))return;
+    if(!document.body.contains(page)){document.removeEventListener("pointerdown",window.__drawDown);window.__drawDown=null;return;}
+    const t=e.target;
+    if(t&&t.closest&&t.closest(".edbar,.bgpanel,.modebar,.imenu,.sbar,.pbar"))return;
     startStroke(e);
-  });
+  };
+  document.addEventListener("pointerdown",window.__drawDown);
   function setDrawUI(){
     qa("[data-dt]").forEach(b=>b.classList.toggle("on",b.dataset.dt===drawTool));
+    const isHl=drawTool==="hl";
+    const wrap=q("#dswWrap");
+    if(wrap){
+      wrap.innerHTML=(isHl?HL_SWATCHES:DRAW_SWATCHES)
+        .map(c=>`<button class="dsw" data-dsw="${c}" style="background:${c}" title="${c}"></button>`).join("");
+      qa("[data-dsw]",wrap).forEach(b=>b.onclick=()=>{drawColor=b.dataset.dsw;const dc=q("#dcol");if(dc)dc.value=drawColor;});
+    }
+    const hw=q("#hlWrap");if(hw)hw.hidden=!isHl;
+    const dc=q("#dcol");if(dc)dc.value=drawColor;
   }
-  qa("[data-dt]").forEach(b=>b.onclick=()=>{drawTool=b.dataset.dt;setDrawUI();});
+  qa("[data-dt]").forEach(b=>b.onclick=()=>{
+    const was=drawTool;drawTool=b.dataset.dt;
+    /* the pen's inks go muddy once washed out, so swap palettes with the tool —
+       unless you'd picked your own colour from the wheel */
+    if(drawTool==="hl"&&was!=="hl"&&DRAW_SWATCHES.indexOf(drawColor)>=0)drawColor=HL_SWATCHES[0];
+    else if(drawTool!=="hl"&&was==="hl"&&HL_SWATCHES.indexOf(drawColor)>=0)drawColor=DRAW_SWATCHES[0];
+    setDrawUI();
+  });
   q("#dcol").oninput=e=>{drawColor=e.target.value;};
-  qa("[data-dsw]").forEach(b=>b.onclick=()=>{drawColor=b.dataset.dsw;q("#dcol").value=drawColor;});
   q("#dw").oninput=e=>{drawWidth=+e.target.value;};
+  q("#hlDim").oninput=e=>{hlAlpha=+e.target.value/100;};
   q("#dclear").onclick=()=>{
     if(!confirm("Rub out every mark on this page, its pictures and its notes? The Undo button can bring them back."))return;
     cur.draw=[];
@@ -3501,8 +3639,13 @@ function renderEditor(){
     return [lo,Math.max(lo,hi)];
   }
   /* render-time only: keeps a desktop-placed item reachable on a narrow phone
-     without rewriting what you actually chose */
-  function cx(v,w){const [lo,hi]=xRange(w);return Math.max(lo,Math.min(hi,v||0));}
+     without rewriting what you actually chose. The allowance matters — the range
+     depends on the window width, which changes by a scrollbar's worth when the
+     page grows, and clamping to it every render nudged things off their spot. */
+  function cx(v,w){
+    const x=v||0,[lo,hi]=xRange(w);
+    return (x<lo-40||x>hi+40)?Math.max(lo,Math.min(hi,x)):x;
+  }
 
   /* ---- cut the background out of a picture ---- */
   function openCut(im){
@@ -3558,6 +3701,98 @@ function renderEditor(){
       msg.textContent="Original put back.";
     };
     run();
+  }
+
+  /* ---- crop: drag a box over the part worth keeping ---- */
+  function openCrop(im){
+    const key=cur.id+"|"+im.id;
+    const orig=curImgs[im.id];
+    if(!orig){alert("That picture isn't loaded yet.");return;}
+    const box=q("#cropPanel");box.hidden=false;
+    let sel=null,applied=false;      /* sel is 0..1 of the picture */
+    box.innerHTML=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">⬚ Crop</b>
+        <button class="btn" id="crX" style="margin-left:auto;padding:4px 10px">Close</button></div>
+      <div class="hint" style="margin:0 0 8px">Drag a box over the part you want to keep. Everything outside it is trimmed away.</div>
+      <div id="crStage" style="position:relative;display:inline-block;max-width:100%;touch-action:none;cursor:crosshair">
+        <img id="crImg" src="${orig}" style="max-width:100%;max-height:300px;display:block;border-radius:8px">
+        <div id="crSel" hidden style="position:absolute;border:2px solid #14b8a6;background:rgba(20,184,166,.18);pointer-events:none"></div>
+      </div>
+      <div class="hint" id="crMsg" style="margin:8px 0 0">Nothing selected yet.</div>
+      <div class="hrow2" style="margin-top:9px">
+        <button class="btn pri" id="crDo" disabled>Keep this part</button>
+        <button class="btn" id="crClr" disabled>Clear</button>
+        <button class="btn" id="crBack" hidden>Put the original back</button>
+      </div>`;
+    const stage=q("#crStage",box),selEl=q("#crSel",box),msg=q("#crMsg",box);
+    const paint=()=>{
+      const r=q("#crImg",box).getBoundingClientRect(),s=stage.getBoundingClientRect();
+      if(!sel){selEl.hidden=true;return;}
+      selEl.hidden=false;
+      selEl.style.left=(r.left-s.left+sel.x*r.width)+"px";
+      selEl.style.top=(r.top-s.top+sel.y*r.height)+"px";
+      selEl.style.width=(sel.w*r.width)+"px";
+      selEl.style.height=(sel.h*r.height)+"px";
+    };
+    stage.addEventListener("pointerdown",e=>{
+      e.preventDefault();
+      const r=q("#crImg",box).getBoundingClientRect();
+      const cl=v=>Math.max(0,Math.min(1,v));
+      const x0=cl((e.clientX-r.left)/r.width),y0=cl((e.clientY-r.top)/r.height);
+      const mv=ev=>{
+        const x1=cl((ev.clientX-r.left)/r.width),y1=cl((ev.clientY-r.top)/r.height);
+        sel={x:Math.min(x0,x1),y:Math.min(y0,y1),w:Math.abs(x1-x0),h:Math.abs(y1-y0)};
+        paint();
+      };
+      const up=()=>{
+        window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
+        const ok=sel&&sel.w>.02&&sel.h>.02;
+        if(!ok){sel=null;paint();}
+        q("#crDo",box).disabled=!ok;q("#crClr",box).disabled=!ok;
+        msg.textContent=ok?`Keeping about ${Math.round(sel.w*100)}% across and ${Math.round(sel.h*100)}% down.`
+          :"Drag a bigger box — that one was too small.";
+      };
+      window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
+    });
+    q("#crClr",box).onclick=()=>{sel=null;paint();q("#crDo",box).disabled=true;q("#crClr",box).disabled=true;msg.textContent="Nothing selected yet.";};
+    q("#crX",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+    q("#crDo",box).onclick=()=>{
+      if(!sel)return;
+      const img=new Image();
+      img.onload=async()=>{
+        const W=img.naturalWidth,H=img.naturalHeight;
+        const sx=Math.round(sel.x*W),sy=Math.round(sel.y*H);
+        const sw=Math.max(1,Math.round(sel.w*W)),sh=Math.max(1,Math.round(sel.h*H));
+        const c=document.createElement("canvas");c.width=sw;c.height=sh;
+        c.getContext("2d").drawImage(img,sx,sy,sw,sh,0,0,sw,sh);
+        /* keep PNG if it was one — a cut-out picture's transparency must survive */
+        const png=/^data:image\/png/i.test(orig);
+        const data=png?c.toDataURL("image/png"):c.toDataURL("image/jpeg",.88);
+        im.cut=Date.now();
+        try{await dbPut("images",{key,data,v:im.cut});}
+        catch(err){alert("That didn't fit — storage may be full.");return;}
+        curImgs[im.id]=data;
+        if(SYNC.on)enqueue({kind:"img",key});
+        applied=true;q("#crBack",box).hidden=false;
+        sel=null;paint();
+        q("#crDo",box).disabled=true;q("#crClr",box).disabled=true;
+        const ci=q("#crImg",box);if(ci)ci.src=data;
+        msg.textContent=`Cropped to ${sw}×${sh}. Crop again, or close.`;
+        renderImages();scheduleSave();
+      };
+      img.onerror=()=>{msg.textContent="That picture couldn't be read.";};
+      img.src=curImgs[im.id];
+    };
+    q("#crBack",box).onclick=async()=>{
+      if(!applied)return;
+      im.cut=Date.now();
+      await dbPut("images",{key,data:orig,v:im.cut});
+      curImgs[im.id]=orig;
+      if(SYNC.on)enqueue({kind:"img",key});
+      const ci=q("#crImg",box);if(ci)ci.src=orig;
+      q("#crBack",box).hidden=true;applied=false;sel=null;paint();
+      msg.textContent="Original put back.";
+      renderImages();scheduleSave();
+    };
   }
 
   /* only one item's ⋯ menu open at a time */
@@ -3688,6 +3923,7 @@ function renderEditor(){
           <button class="sflv">⇅ Flip upside down</button>
           <button class="sfront">⬆ Bring to front</button>
           <button class="sback">⬇ Send to back</button>
+          <button class="scrop">⬚ Crop — keep part of it</button>
           <button class="scut">✂ Cut out background</button>
         </div>
         <div class="rot" title="Drag to tilt · double-click to straighten"></div>
@@ -3702,6 +3938,7 @@ function renderEditor(){
       q(".sflv",el).onclick=e=>{e.stopPropagation();im.flipV=!im.flipV;el.style.transform=xform(im);smenu.hidden=true;scheduleSave();};
       q(".sfront",el).onclick=e=>{e.stopPropagation();toFront(im);};
       q(".sback",el).onclick=e=>{e.stopPropagation();toBack(im);};
+      q(".scrop",el).onclick=e=>{e.stopPropagation();smenu.hidden=true;openCrop(im);};
       q(".scut",el).onclick=e=>{e.stopPropagation();smenu.hidden=true;openCut(im);};
       startRot(q(".rot",el),el,im);
       q(".sdel",el).onclick=e=>{e.stopPropagation();
