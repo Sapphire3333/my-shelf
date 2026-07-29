@@ -462,6 +462,8 @@
   .coverbox:hover .covx{opacity:1}
   .covx:hover{color:var(--rose);border-color:#fda4af}
   @media(hover:none){.covx{opacity:1}}
+  /* five tabs still fit on a phone */
+  @media(max-width:640px){.tab{font-size:11.5px;padding:8px 2px}}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
@@ -510,6 +512,9 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
 </defs></svg>
 <div id="bgLayer"></div>
 <div id="app"></div>
+<div class="bgpanel" id="authPanel" hidden></div>
+<div class="bgpanel" id="quickPanel" hidden></div>
+<input type="file" id="qaFile" accept="image/*" hidden>
 <input type="file" id="bgFile" accept="image/*" hidden>
 <input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
 <input type="file" id="coverFile" accept="image/*" hidden>
@@ -637,6 +642,10 @@ const kindOf=b=>b.kind||"book";
 const kindLabel=k=>(KINDS.find(x=>x[0]===k)||KINDS[0])[1];
 const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre","Genre"],["keyword","Keyword"],["quotes","Quotes"],["summary","Summary"],["notes","Notes"],["lists","+/− lists"],["fandom","Fandom & characters"]];
 const lastName=a=>{const p=(a||"").trim().split(/\s+/);return (p[p.length-1]||"").toLowerCase();};
+/* surname even for "Rowling, J. K." style — used to spot the same author written differently */
+const surnameOf=a=>{a=String(a||"").trim();if(!a)return"";
+  const c=a.indexOf(",");if(c>0)return a.slice(0,c).trim().toLowerCase();
+  const p=a.replace(/\./g," ").trim().split(/\s+/);return (p[p.length-1]||"").toLowerCase();};
 const fmtEdited=t=>new Date(t).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -772,7 +781,7 @@ let mode="write";
 /* fit-to-screen: stack the free-canvas items readably instead of free placement */
 let fitScreen=false;
 const coverCache=new Map();
-const S={q:"",scopes:["title"],authorQ:"",filter:null,multi:[],pickGenre:"any",pickWant:true,picked:null};
+const S={q:"",scopes:["title"],authorQ:"",filter:null,multi:[],pickGenres:[],pickKws:[],pickKwOpen:false,pickWant:true,picked:null};
 let deletions={};
 
 /* =============== sync (Supabase — optional, offline-first) =============== */
@@ -1392,13 +1401,17 @@ function render(){
           <h1 class="serif">My Shelf</h1>
           <div class="sub">${books.length} on the shelf · ${favN} favorites · ${dnfN} DNF</div>
         </div>
-        <button class="addbtn" id="addBook">+ Add book</button>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
+          <button class="addbtn" id="addBook">+ Add book</button>
+          <button class="btn" id="quickAdd" style="padding:4px 10px;font-size:12px" title="Paste a blurb or drop a photo — the details are read off it">⚡ From text / photo</button>
+        </div>
       </div>
       <div class="tabs">
         <button class="tab ${view==="overview"?"on":""}" data-v="overview">🗂 Overview</button>
         <button class="tab ${view==="library"?"on":""}" data-v="library">📚 Library</button>
         <button class="tab ${view==="history"?"on":""}" data-v="history">🕘 History</button>
         <button class="tab ${view==="search"?"on":""}" data-v="search">🔍 Search &amp; stats</button>
+        <button class="tab ${view==="insights"?"on":""}" data-v="insights">✨ Insights</button>
       </div>
       <div class="bkrow">
         <button id="uBtn" disabled>↶ Undo</button>
@@ -1412,11 +1425,12 @@ function render(){
     <div class="foot">${SYNC.on?"Your library syncs to your own private cloud and is kept on this device too.":"Everything is saved in this browser on this PC."} Export a backup now and then — it's your safety net.</div>
   </div>`;
   q("#addBook").onclick=()=>openBook(uid(),true);
+  q("#quickAdd").onclick=openQuickAdd;
   qa(".tab").forEach(t=>t.onclick=()=>{view=t.dataset.v;render();});
   q("#uBtn").onclick=doUndo;q("#rBtn").onclick=doRedo;refreshHistBtns();
   const so=q("#signOut");if(so)so.onclick=signOut;updateSyncUI();
   applyBg();
-  if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else renderSearchView();
+  if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else if(view==="insights")renderInsights();else renderSearchView();
 }
 
 /* =============== shared row / card html =============== */
@@ -1480,6 +1494,164 @@ function wireOpen(root,withDel){
     if(del){e.stopPropagation();deleteBookById(del.dataset.del);return;}
     const op=e.target.closest("[data-open]");
     if(op)openBook(op.dataset.open,false);
+  };
+}
+
+/* =============== author panel — see, tidy and group one author's books =============== */
+/* Fold several existing books into ONE collection entry. Their notes, ratings,
+   pages and covers become the collection's stories; their own pages go to the
+   bin (30 days, restorable) so nothing shows up twice. */
+async function makeCollectionFrom(ids,name,author){
+  const sel=ids.map(id=>books.find(b=>b.id===id)).filter(Boolean);
+  if(!sel.length)return null;
+  sel.sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0)
+    ||(a.dateFinished||"9999").localeCompare(b.dateFinished||"9999")||(a.created||0)-(b.created||0));
+  const nb=blankBook(uid());
+  nb.type="collection";nb.title=name;nb.series=name;
+  nb.author=author||sel[0].author||"";
+  nb.kind=kindOf(sel[0]);
+  nb.genres=[...new Set(sel.flatMap(b=>b.genres||[]))];
+  nb.keywords=[...new Set(sel.flatMap(b=>b.keywords||[]))].slice(0,20);
+  nb.favorite=sel.some(b=>b.favorite);
+  nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":sel.some(b=>statusOf(b)==="reading")?"reading":"want";
+  nb.dateFinished=sel.map(b=>b.dateFinished||"").sort().pop()||"";
+  nb.entries=[];
+  for(const b of sel){
+    const en=blankEntry();
+    en.title=b.title;en.rating=b.rating;en.pages=b.pages;
+    en.summary=b.summary||"";en.notes=b.canvasText||"";
+    const cov=await dbGet("covers",b.id);
+    if(cov&&cov.data){
+      en.cover=true;en.coverV=Date.now();
+      try{await dbPut("images",{key:nb.id+"|"+en.id,data:cov.data,v:en.coverV});
+        if(SYNC.on)enqueue({kind:"img",key:nb.id+"|"+en.id});}catch(e){en.cover=false;}
+    }
+    nb.entries.push(en);
+  }
+  nb.modified=Date.now();
+  await dbPut("books",nb);
+  books.unshift(nb);
+  if(SYNC.on)enqueue({kind:"book",id:nb.id});
+  for(const b of sel){
+    await toTrash(b);
+    await dbDel("books",b.id);
+    books=books.filter(x=>x.id!==b.id);
+    if(SYNC.on){deletions[b.id]=Date.now();saveDeletions();
+      enqueue({kind:"bookDel",id:b.id});enqueue({kind:"coverDel",id:b.id});
+      imgKeysOf(b).forEach(key=>enqueue({kind:"imgDel",key}));}
+  }
+  if(SYNC.on)flushQueue();
+  return nb.id;
+}
+/* Link several existing books as a named series — each keeps its own page */
+async function makeSeriesFrom(ids,name){
+  const sel=ids.map(id=>books.find(b=>b.id===id)).filter(Boolean);
+  if(!sel.length)return;
+  sel.sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0)
+    ||(a.dateFinished||"9999").localeCompare(b.dateFinished||"9999")||(a.created||0)-(b.created||0));
+  let n=1;
+  for(const b of sel){
+    b.type="series";b.series=name;
+    if(!b.seriesNum)b.seriesNum=String(n);
+    if(!b.seriesTotal)b.seriesTotal=String(sel.length);
+    n++;
+    b.modified=Date.now();
+    await dbPut("books",b);
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+  }
+  if(SYNC.on)flushQueue();
+}
+
+let authSel=new Set(),authVarSel=new Set(),authSimOpen=false;
+function openAuthorPanel(name){
+  name=(name||"").trim();
+  if(!name)return;
+  authSel=new Set();authVarSel=new Set();authSimOpen=false;
+  renderAuthorPanel(name);
+}
+function closeAuthorPanel(){const box=q("#authPanel");box.hidden=true;box.innerHTML="";}
+function renderAuthorPanel(name){
+  const box=q("#authPanel");box.hidden=false;
+  const mine=books.filter(b=>(b.author||"").trim()===name)
+    .sort((a,b)=>(a.series||"").localeCompare(b.series||"")||(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0)||(a.title||"").localeCompare(b.title||""));
+  authSel=new Set([...authSel].filter(id=>mine.some(b=>b.id===id)));
+  const sn=surnameOf(name);
+  const variants={};
+  if(sn)books.forEach(b=>{const a=(b.author||"").trim();
+    if(a&&a!==name&&surnameOf(a)===sn)(variants[a]=variants[a]||[]).push(b);});
+  const vNames=Object.keys(variants).sort((a,b)=>a.localeCompare(b));
+  authVarSel=new Set([...authVarSel].filter(v=>variants[v]));
+  const row=b=>`<label class="snap" style="padding:6px 10px;cursor:pointer">
+      <input type="checkbox" data-apb="${b.id}" ${authSel.has(b.id)?"checked":""}>
+      <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${isColl(b)?"📚 ":""}${esc(b.title)||"Untitled"}</div>
+        <div class="meta">${isColl(b)?`collection · ${(b.entries||[]).length} stories`:b.series?esc(b.series)+(b.seriesNum?" #"+esc(b.seriesNum):"")+" · ":""}${!isColl(b)?(b.rating!=null?"★ "+Number(b.rating).toFixed(1):"unrated"):""}</div></div>
+      <button class="btn" data-apo="${b.id}" style="padding:3px 9px">Open</button>
+    </label>`;
+  box.innerHTML=`
+    <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">📚 ${esc(name)}</b>
+      <button class="btn" id="apClose" style="margin-left:auto;padding:4px 10px">Done</button></div>
+    <div class="lbl" style="display:block;margin-bottom:5px">${mine.length} on your shelf — tick two or more to group them</div>
+    ${mine.map(row).join("")||'<span class="none">Nothing by this author yet.</span>'}
+    <div class="hrow2" style="margin-top:9px">
+      <button class="btn" id="apColl" ${authSel.size>1?"":"disabled"}>📚 One collection entry…</button>
+      <button class="btn" id="apSer" ${authSel.size>1?"":"disabled"}>🔗 Link as a series…</button>
+    </div>
+    <div class="hint" style="margin-top:5px">A <b>collection</b> folds the ticked books into one entry — their own pages move to Recently deleted, notes and covers carry over. A <b>series</b> keeps every page and links them under one name.</div>
+    ${vNames.length?`
+      <button class="btn" id="apSim" style="margin-top:13px;width:100%;text-align:left">${authSimOpen?"▾":"▸"} Similar names — same surname (${vNames.length})</button>
+      ${authSimOpen?`<div style="margin-top:7px">
+        <div class="hint" style="margin:0 0 6px">Imports sometimes write the same person differently. Tick the ones that are really ${esc(name)} and combine them:</div>
+        ${vNames.map(v=>`<label class="snap" style="padding:6px 10px;cursor:pointer">
+          <input type="checkbox" data-apv="${esc(v)}" ${authVarSel.has(v)?"checked":""}>
+          <div style="flex:1;min-width:0"><div class="when" style="font-size:13px">${esc(v)}</div>
+          <div class="meta">${variants[v].length} book${variants[v].length===1?"":"s"}${variants[v][0]?": "+esc(variants[v].slice(0,3).map(b=>b.title||"Untitled").join(", "))+(variants[v].length>3?"…":""):""}</div></div></label>`).join("")}
+        <button class="btn pri" id="apMerge" style="margin-top:6px" ${authVarSel.size?"":"disabled"}>Rename ticked to “${esc(name)}”</button>
+      </div>`:""}`:""}`;
+  q("#apClose",box).onclick=closeAuthorPanel;
+  qa("[data-apb]",box).forEach(c=>c.onchange=()=>{
+    c.checked?authSel.add(c.dataset.apb):authSel.delete(c.dataset.apb);
+    q("#apColl",box).disabled=q("#apSer",box).disabled=authSel.size<2;
+  });
+  qa("[data-apo]",box).forEach(b=>b.onclick=e=>{
+    e.preventDefault();e.stopPropagation();
+    finishSaveThen(()=>openBook(b.dataset.apo,false));
+  });
+  const sim=q("#apSim",box);
+  if(sim)sim.onclick=()=>{authSimOpen=!authSimOpen;renderAuthorPanel(name);};
+  qa("[data-apv]",box).forEach(c=>c.onchange=()=>{
+    c.checked?authVarSel.add(c.dataset.apv):authVarSel.delete(c.dataset.apv);
+    const mb=q("#apMerge",box);if(mb)mb.disabled=!authVarSel.size;
+  });
+  const mb=q("#apMerge",box);
+  if(mb)mb.onclick=async()=>{
+    if(!authVarSel.size)return;
+    const affected=books.filter(b=>authVarSel.has((b.author||"").trim()));
+    if(!confirm(`Rename the author on ${affected.length} book${affected.length===1?"":"s"} to “${name}”?`))return;
+    for(const b of affected){b.author=name;b.modified=Date.now();await dbPut("books",b);if(SYNC.on)enqueue({kind:"book",id:b.id});}
+    if(SYNC.on)flushQueue();
+    if(view==="book"&&cur&&affected.some(b=>b.id===cur.id))await openBook(cur.id,false);else render();
+    renderAuthorPanel(name);
+  };
+  q("#apColl",box).onclick=async()=>{
+    if(authSel.size<2)return;
+    const nm=prompt("Name for the collection (its title on the shelf):",name?name+" — collection":"");
+    if(nm==null||!nm.trim())return;
+    if(!confirm(`Fold ${authSel.size} books into “${nm.trim()}”?\n\nTheir own pages move to Recently deleted (Overview tab) — notes, ratings, pages and covers carry into the collection.`))return;
+    const openId=view==="book"&&cur?cur.id:null;
+    const nid=await makeCollectionFrom([...authSel],nm.trim(),name);
+    authSel=new Set();
+    if(openId&&!books.find(b=>b.id===openId))await openBook(nid,false);else render();
+    renderAuthorPanel(name);
+  };
+  q("#apSer",box).onclick=async()=>{
+    if(authSel.size<2)return;
+    const nm=prompt("Series name — every ticked book keeps its page, linked under:","");
+    if(nm==null||!nm.trim())return;
+    const ids=[...authSel];
+    await makeSeriesFrom(ids,nm.trim());
+    authSel=new Set();
+    if(view==="book"&&cur&&ids.includes(cur.id))await openBook(cur.id,false);else render();
+    renderAuthorPanel(name);
   };
 }
 
@@ -1729,18 +1901,34 @@ async function renderHub(){
 }
 
 const IMP_SHOW=40;   /* how many titles to list per section before summarising */
+let impSel=new Set(),impQ="";
 function refreshImport(){
   const box=q("#impList");if(!box)return;
   markDupes();
+  impSel=new Set([...impSel].filter(id=>importQueue.some(it=>it.id===id&&!it.dupe)));
   const n=q("#impN"),clr=q("#impClear");
   const pend=importQueue.filter(it=>!it.dupe);
   if(n)n.textContent=importQueue.length?`(${pend.length} to add)`:"";
   if(clr)clr.hidden=!importQueue.length;
   if(!importQueue.length){box.innerHTML="";return;}
-  let html="";
+  const ql=impQ.trim().toLowerCase();
+  const match=it=>!ql||(it.title||"").toLowerCase().includes(ql)||(it.author||"").toLowerCase().includes(ql);
+  let html=`<div style="margin-top:12px">
+    <input class="field" id="impSearch" placeholder="Search this list — title or author…" value="${esc(impQ)}" style="font-size:13px;padding:7px 11px">
+    <div class="hint" style="margin:5px 0 0">Tick books (tap an author's name to tick everything of theirs), then add them together — as plain books, a linked series, or one collection entry.</div>
+    ${impSel.size?`<div class="hrow2" style="margin-top:7px">
+      <b style="font-size:13px">${impSel.size} ticked</b>
+      <button class="btn pri" id="impSelAdd" style="padding:5px 11px">＋ Add as books</button>
+      <button class="btn" id="impSelSer" style="padding:5px 11px">🔗 As a series…</button>
+      <button class="btn" id="impSelColl" style="padding:5px 11px">📚 As one collection…</button>
+      <button class="btn" id="impSelNo" style="padding:5px 11px">Untick</button>
+    </div>`:""}
+  </div>`;
+  let shown=0;
   for(const [sec,label] of IMPORT_SECTIONS){
-    const all=importQueue.filter(it=>secOf(it)===sec);
+    const all=importQueue.filter(it=>secOf(it)===sec&&match(it));
     if(!all.length)continue;
+    shown+=all.length;
     const add=all.filter(it=>!it.dupe);
     html+=`<div style="margin-top:15px">
       <div class="hrow2" style="margin-bottom:6px">
@@ -1748,16 +1936,60 @@ function refreshImport(){
         ${add.length?`<button class="btn pri" data-impall="${sec}" style="margin-left:auto;padding:5px 11px">Add all ${add.length}</button>`:""}
       </div>
       ${all.slice(0,IMP_SHOW).map(it=>`<div class="snap" style="padding:6px 10px">
-        <div style="min-width:0"><div class="when" style="font-size:13px">${esc(it.title)}</div>
-          <div class="meta">${esc(it.author)||"Unknown author"}${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}</div></div>
+        ${it.dupe?"":`<input type="checkbox" data-impc="${it.id}" ${impSel.has(it.id)?"checked":""}>`}
+        <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(it.title)}</div>
+          <div class="meta"><button data-impa="${esc(it.author||"")}" style="padding:0;color:inherit;text-decoration:underline dotted" title="Tick / untick everything by this author">${esc(it.author)||"Unknown author"}</button>${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}</div></div>
         <div class="sp">${it.dupe
           ? '<span class="none" style="font-size:12px">already on your shelf</span>'
           : `<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
       </div>`).join("")}
-      ${all.length>IMP_SHOW?`<div class="none" style="margin-top:5px">…and ${all.length-IMP_SHOW} more — “Add all” takes every one of them.</div>`:""}
+      ${all.length>IMP_SHOW?`<div class="none" style="margin-top:5px">…and ${all.length-IMP_SHOW} more — search to narrow the list, or “Add all”.</div>`:""}
     </div>`;
   }
+  if(!shown)html+='<div class="none" style="margin-top:10px">Nothing in the list matches that search.</div>';
   box.innerHTML=html;
+  const se=q("#impSearch",box);
+  se.oninput=()=>{impQ=se.value;refreshImport();
+    const s2=q("#impSearch");if(s2){s2.focus();s2.setSelectionRange(s2.value.length,s2.value.length);}};
+  qa("[data-impc]",box).forEach(c=>c.onchange=()=>{
+    c.checked?impSel.add(c.dataset.impc):impSel.delete(c.dataset.impc);refreshImport();});
+  qa("[data-impa]",box).forEach(b=>b.onclick=()=>{
+    const a=b.dataset.impa;
+    const ids=importQueue.filter(it=>!it.dupe&&(it.author||"")===a).map(it=>it.id);
+    if(!ids.length)return;
+    const allIn=ids.every(id=>impSel.has(id));
+    ids.forEach(id=>allIn?impSel.delete(id):impSel.add(id));
+    refreshImport();
+  });
+  const selItems=()=>importQueue.filter(it=>impSel.has(it.id));
+  const doneSel=()=>{impSel.clear();saveImportQueue();if(SYNC.on)flushQueue();render();};
+  const bSel=q("#impSelAdd",box);
+  if(bSel)bSel.onclick=async()=>{
+    const items=selItems();if(!items.length)return;
+    if(!confirm(`Add ${items.length} book${items.length===1?"":"s"} to your shelf?`))return;
+    for(const it of items)await importOne(it);
+    doneSel();
+  };
+  const bSer=q("#impSelSer",box);
+  if(bSer)bSer.onclick=async()=>{
+    const items=selItems();if(!items.length)return;
+    const nm=prompt("Series name — each book gets its own page, linked under this name:","");
+    if(nm==null||!nm.trim())return;
+    let i=1;
+    for(const it of items)await importOne(it,{type:"series",series:nm.trim(),seriesNum:String(i++),seriesTotal:String(items.length)});
+    doneSel();
+  };
+  const bColl=q("#impSelColl",box);
+  if(bColl)bColl.onclick=async()=>{
+    const items=selItems();if(!items.length)return;
+    const nm=prompt("Name for the collection — ONE entry holds all of these as its stories:",
+      (items[0].author?items[0].author+" — ":"")+"collection");
+    if(nm==null||!nm.trim())return;
+    await importCollection(items,nm.trim());
+    doneSel();
+  };
+  const bNo=q("#impSelNo",box);
+  if(bNo)bNo.onclick=()=>{impSel.clear();refreshImport();};
   qa("[data-impone]",box).forEach(b=>b.onclick=async()=>{
     const it=importQueue.find(x=>x.id===b.dataset.impone);if(!it)return;
     b.disabled=true;
@@ -1766,7 +1998,7 @@ function refreshImport(){
   });
   qa("[data-impall]",box).forEach(b=>b.onclick=async()=>{
     const sec=b.dataset.impall;
-    const batch=importQueue.filter(it=>secOf(it)===sec&&!it.dupe);
+    const batch=importQueue.filter(it=>secOf(it)===sec&&match(it)&&!it.dupe);
     if(!batch.length)return;
     if(!confirm(`Add ${batch.length} book${batch.length===1?"":"s"} to your shelf?`))return;
     b.disabled=true;b.textContent="Adding…";
@@ -1949,7 +2181,7 @@ function renderSearchBody(){
 
   let html="";
   if(results){
-    html+=`<div class="sec"><div class="heading"><h2 class="serif">${heading}</h2><span class="n">(${results.length})</span><button class="clearbtn" id="sclear">✕ Clear</button></div>
+    html+=`<div class="sec"><div class="heading"><h2 class="serif">${heading}</h2><span class="n">(${results.length})</span>${S.filter&&S.filter.type==="author"?`<button class="btn" id="sgrp" style="padding:3px 10px;font-size:12px" title="Link as a series, fold into a collection, or merge duplicate spellings">📚 Group / tidy…</button>`:""}<button class="clearbtn" id="sclear">✕ Clear</button></div>
       ${results.length?results.map(b=>rowHtml(b,false)).join(""):'<div class="none" style="text-align:center;padding:30px 0">Nothing here yet.</div>'}</div>`;
   }
   if(!results||S.multi.length){
@@ -1964,15 +2196,19 @@ function renderSearchBody(){
       const audAll=[...new Set([...DEFAULT_AUD,...audCustom,...Object.keys(audCounts)])];
       html+=`<div class="sec"><h2 class="serif">Who it's for</h2>${audAll.map(a=>{const n=audCounts[a]||0;return `<button class="aut" data-aud="${esc(a)}" ${n?"":'disabled style="opacity:.4;cursor:default"'}>${esc(a)} <b>${n}</b></button>`;}).join("")}</div>`;
       if(books.length){
+        const allKw=[...new Set(books.flatMap(b=>b.keywords||[]))].sort((a,b)=>a.localeCompare(b));
         html+=`<div class="sec pickbox"><h2 class="serif" style="margin-bottom:8px">🎲 Pick for me</h2>
-          <div class="inrow">
-            <select id="pkg" class="field" style="width:auto;padding:6px 10px;font-size:13px">
-              <option value="any">Any genre</option>${allG.map(g=>`<option value="${esc(g)}" ${S.pickGenre===g?"selected":""}>${esc(g)}</option>`).join("")}
-            </select>
+          ${allG.length?`<div class="lbl" style="display:block;margin-bottom:4px">Genres — tick any; a book counts if it carries one of them</div>
+          <div>${allG.map(g=>{const on=S.pickGenres.includes(g);
+            return `<button class="mg ${on?"on":""}" data-pg="${esc(g)}" style="${on?`background:${genres[g]};border-color:${genres[g]}`:""}"><span class="bx">${on?"✓":""}</span>${esc(g)}</button>`;}).join("")}</div>`:""}
+          ${allKw.length?`<button class="btn" id="pkTagTog" style="margin-top:8px;padding:4px 10px;font-size:12px">${S.pickKwOpen?"▾":"▸"} Tags${S.pickKws.length?` · ${S.pickKws.length} ticked`:""} (${allKw.length})</button>
+          ${S.pickKwOpen?`<div style="margin-top:6px">${allKw.map(k=>{const on=S.pickKws.includes(k);
+            return `<button class="mg ${on?"on":""}" data-pk="${esc(k)}" style="${on?"background:var(--teal);border-color:var(--teal);color:#fff":""}"><span class="bx">${on?"✓":""}</span>${esc(k)}</button>`;}).join("")}</div>`:""}`:""}
+          <div class="inrow" style="margin-top:10px">
             <label style="font-size:13px;color:var(--mut);display:flex;gap:5px;align-items:center"><input type="checkbox" id="pkw" ${S.pickWant?"checked":""}> from my want-to-read pile</label>
             <button class="pickbtn" id="pkb">${S.picked&&S.picked!=="none"?"Pick again":"Pick"}</button>
           </div>
-          <div id="pkres" style="margin-top:10px">${S.picked==="none"?'<span class="none">Nothing matches — try unchecking the want-to-read filter or another genre.</span>':S.picked?rowHtml(S.picked,false):""}</div>
+          <div id="pkres" style="margin-top:10px">${S.picked==="none"?'<span class="none">Nothing matches — untick a filter or two.</span>':S.picked?rowHtml(S.picked,false):""}</div>
         </div>`;
       }
       html+=`<div class="sec"><h2 class="serif">Authors <span class="n" style="font-weight:400;font-size:13px;color:var(--faint)">(${authorList.length})</span></h2>
@@ -2027,6 +2263,7 @@ function renderSearchBody(){
   m.innerHTML=html;
 
   const clear=q("#sclear",m);if(clear)clear.onclick=()=>{S.q="";S.filter=null;S.multi=[];q("#sq").value="";renderSearchBody();};
+  const sg=q("#sgrp",m);if(sg)sg.onclick=()=>openAuthorPanel(S.filter.value);
   const pick=f=>{S.q="";S.multi=[];S.filter=f;q("#sq").value="";renderSearchBody();};
   qa("[data-cf]",m).forEach(b=>b.onclick=()=>{const t=b.dataset.cf;
     if(t==="favorite")pick({type:"favorite",label:"Favorites"});
@@ -2043,13 +2280,18 @@ function renderSearchBody(){
   qa("[data-len]",m).forEach(b=>b.onclick=()=>{const v=b.dataset.len;
     if(v==="none")pick({type:"pages",value:"none",label:"No page count"});
     else{const bk=LEN_BUCKETS[+v];pick({type:"pages",value:bk,label:`Length: ${bk.label} pages`});}});
+  qa("[data-pg]",m).forEach(b=>b.onclick=()=>{const g=b.dataset.pg;
+    S.pickGenres=S.pickGenres.includes(g)?S.pickGenres.filter(x=>x!==g):[...S.pickGenres,g];renderSearchBody();});
+  qa("[data-pk]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.pk;
+    S.pickKws=S.pickKws.includes(k)?S.pickKws.filter(x=>x!==k):[...S.pickKws,k];renderSearchBody();});
+  const ptt=q("#pkTagTog",m);if(ptt)ptt.onclick=()=>{S.pickKwOpen=!S.pickKwOpen;renderSearchBody();};
   const pkb=q("#pkb",m);
   if(pkb){
-    q("#pkg",m).onchange=e=>S.pickGenre=e.target.value;
     q("#pkw",m).onchange=e=>S.pickWant=e.target.checked;
     pkb.onclick=()=>{let pool=books.filter(b=>!b.dnf);
       if(S.pickWant)pool=pool.filter(b=>statusOf(b)==="want");
-      if(S.pickGenre!=="any")pool=pool.filter(b=>(b.genres||[]).includes(S.pickGenre));
+      if(S.pickGenres.length)pool=pool.filter(b=>(b.genres||[]).some(g=>S.pickGenres.includes(g)));
+      if(S.pickKws.length)pool=pool.filter(b=>(b.keywords||[]).some(k=>S.pickKws.includes(k)));
       S.picked=pool.length?pool[Math.floor(Math.random()*pool.length)]:"none";
       renderSearchBody();};
   }
@@ -2064,6 +2306,105 @@ function renderSearchBody(){
   }
   wireOpen(m,false);
   hydrateCovers(m);
+}
+
+/* =============== insights — what your whole shelf says about you =============== */
+function renderInsights(){
+  const m=q("#main");
+  if(!books.length){m.innerHTML='<div class="empty">📖<br>Add a few books first — then this page can tell you something about your reading.</div>';return;}
+  const fin=books.filter(b=>statusOf(b)==="finished"&&!b.dnf);
+  const dnf=books.filter(b=>b.dnf);
+  const want=books.filter(b=>statusOf(b)==="want");
+  const rated=books.filter(b=>b.rating!=null);
+  const avg=rated.length?rated.reduce((s,b)=>s+b.rating,0)/rated.length:null;
+  const sd=rated.length>1?Math.sqrt(rated.reduce((s,b)=>s+Math.pow(b.rating-avg,2),0)/rated.length):0;
+  const gcount={},gsum={},gn={};
+  books.forEach(b=>(b.genres||[]).forEach(g=>{gcount[g]=(gcount[g]||0)+1;
+    if(b.rating!=null){gsum[g]=(gsum[g]||0)+b.rating;gn[g]=(gn[g]||0)+1;}}));
+  const topG=Object.entries(gcount).sort((a,b)=>b[1]-a[1]);
+  const bestG=Object.keys(gsum).filter(g=>gn[g]>=2).map(g=>[g,gsum[g]/gn[g]]).sort((a,b)=>b[1]-a[1]);
+  const aCount={};books.forEach(b=>{const a=(b.author||"").trim();if(a)aCount[a]=(aCount[a]||0)+1;});
+  const topA=Object.entries(aCount).sort((a,b)=>b[1]-a[1]);
+  const pagesRead=fin.reduce((s,b)=>s+(parseInt(b.pages)||0)*(1+(b.rereads||0)),0);
+  const rereads=books.reduce((s,b)=>s+(b.rereads||0),0);
+  const years={};fin.forEach(b=>{const y=(b.dateFinished||"").slice(0,4);if(y.length===4)years[y]=(years[y]||0)+1;});
+  const yl=Object.entries(years).sort((a,b)=>b[0].localeCompare(a[0]));
+  const thisYear=String(new Date().getFullYear());
+  const pace=yl.length?Math.round(yl.reduce((s,x)=>s+x[1],0)/yl.length):0;
+  const finRate=(fin.length+dnf.length)?fin.length/(fin.length+dnf.length):null;
+  const dnfReasons={};dnf.forEach(b=>(b.dnfReasons||[]).forEach(r=>dnfReasons[r]=(dnfReasons[r]||0)+1));
+  const topDnf=Object.entries(dnfReasons).sort((a,b)=>b[1]-a[1])[0];
+  const kwCount={};books.forEach(b=>(b.keywords||[]).forEach(k=>kwCount[k]=(kwCount[k]||0)+1));
+  const topKw=Object.entries(kwCount).filter(x=>x[1]>1).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  const withPages=fin.filter(b=>parseInt(b.pages));
+  const avgLen=withPages.length?Math.round(withPages.reduce((s,b)=>s+parseInt(b.pages),0)/withPages.length):null;
+  const fandomCount={};books.forEach(b=>(b.fandoms||[]).forEach(f=>fandomCount[f]=(fandomCount[f]||0)+1));
+  const topF=Object.entries(fandomCount).sort((a,b)=>b[1]-a[1])[0];
+  const kinds={};books.forEach(b=>kinds[kindOf(b)]=(kinds[kindOf(b)]||0)+1);
+  const lenLove=LEN_BUCKETS.map(bk=>{const g=rated.filter(b=>{const p=parseInt(b.pages);return p&&p>=bk.min&&p<=bk.max;});
+    return g.length>=2?[bk.label,g.reduce((s,b)=>s+b.rating,0)/g.length,g.length]:null;}).filter(Boolean).sort((a,b)=>b[1]-a[1]);
+
+  const say=[];
+  if(topG.length){
+    say.push(`Your shelf leans <b>${esc(topG[0][0])}</b>${topG[1]?` with a strong side of <b>${esc(topG[1][0])}</b>`:""} — ${topG[0][1]} book${topG[0][1]===1?"":"s"} carry that tag.`);
+    if(bestG.length&&bestG[0][0]!==topG[0][0])say.push(`But the genre you actually <i>rate</i> highest is <b>${esc(bestG[0][0])}</b> (★ ${bestG[0][1].toFixed(1)} average) — maybe your shelf wants more of it.`);
+    else if(bestG.length)say.push(`And it's not just volume — <b>${esc(bestG[0][0])}</b> is also your highest-rated genre (★ ${bestG[0][1].toFixed(1)} average). You know what you like.`);
+  }
+  if(finRate!=null){
+    if(finRate>=.9)say.push(`You finish what you start — ${Math.round(finRate*100)}% of the books you open get finished.`);
+    else if(finRate>=.7)say.push(`You mostly see books through (${Math.round(finRate*100)}%), but you're willing to walk away.`);
+    else say.push(`Life's too short for the wrong book — you put down ${Math.round((1-finRate)*100)}% of what you start.`);
+    if(topDnf)say.push(`When you do give up, it's usually: <i>${esc(topDnf[0])}</i>.`);
+  }
+  if(avg!=null){
+    if(avg>=8)say.push(`You rate generously — ★ ${avg.toFixed(1)} on average. Either you pick well or you love easily${sd>=2?"; though when a book misses, it really misses — your scores swing widely":""}.`);
+    else if(avg>=6.5)say.push(`Your average is a level-headed ★ ${avg.toFixed(1)}${sd>=2?", but your scores swing hard — love-it-or-hate-it reading":", and your scores stay near it — an even-handed judge"}.`);
+    else say.push(`You're a tough critic — ★ ${avg.toFixed(1)} average. A high score from you means something.`);
+  }
+  if(topA.length&&topA[0][1]>=3)say.push(`You're author-loyal: when a voice clicks, you stay — <b>${esc(topA[0][0])}</b> alone accounts for ${topA[0][1]} books.`);
+  if(avgLen!=null){
+    if(avgLen>=450)say.push(`Big books don't scare you — your finished books average <b>${avgLen} pages</b>.`);
+    else if(avgLen<=250)say.push(`You favour lean books — around <b>${avgLen} pages</b>. In and out, no padding.`);
+    else say.push(`Your comfortable length sits around <b>${avgLen} pages</b>.`);
+  }
+  if(lenLove.length>=2&&lenLove[0][1]-lenLove[lenLove.length-1][1]>=1)
+    say.push(`Your highest marks go to <b>${esc(lenLove[0][0])}-page</b> books (★ ${lenLove[0][1].toFixed(1)} average) — worth remembering when you pick the next one.`);
+  if(rereads>0)say.push(`You're a re-reader — ${rereads} re-read${rereads===1?"":"s"} logged. Comfort books count double.`);
+  if(topF)say.push(`Deepest fandom: <b>${esc(topF[0])}</b> (${topF[1]} entr${topF[1]===1?"y":"ies"}).`);
+  if((kinds.fanfic||0)+(kinds.ai||0)>0)say.push(`Your shelf isn't only print — ${kinds.fanfic||0} fanfic${(kinds.fanfic||0)===1?"":"s"} and ${kinds.ai||0} AI stor${(kinds.ai||0)===1?"y":"ies"} live here too.`);
+  if(topKw.length)say.push(`Themes that keep following you: ${topKw.map(x=>`<span class="kw">${esc(x[0])}</span>`).join(" ")}`);
+  if(want.length&&pace)say.push(`Your want-to-read pile holds <b>${want.length}</b> — at your usual pace (~${pace}/year), that's about <b>${Math.max(1,Math.round(want.length/pace*12))} month${Math.round(want.length/pace*12)===1?"":"s"}</b> of reading already queued.`);
+  else if(want.length)say.push(`Your want-to-read pile holds <b>${want.length}</b> book${want.length===1?"":"s"}.`);
+  if(years[thisYear])say.push(`This year so far: <b>${years[thisYear]}</b> finished.`);
+
+  const bigYear=yl.length?yl.slice().sort((a,b)=>b[1]-a[1])[0]:null;
+  const cards=[
+    [String(books.length),"on the shelf"],[String(fin.length),"finished"],
+    [pagesRead?pagesRead.toLocaleString():"–","pages read (re-reads counted)"],
+    [avg!=null?"★ "+avg.toFixed(2):"–",`average rating (${rated.length} rated)`],
+    [finRate!=null?Math.round(finRate*100)+"%":"–","finish rate"],
+    [String(want.length),"waiting to be read"],
+    [topA.length?topA[0][0]:"–","most-read author"],
+    [bestG.length?bestG[0][0]:"–","best-rated genre"],
+    [bigYear?bigYear[0]+" ("+bigYear[1]+")":"–","biggest reading year"]];
+  m.innerHTML=`
+    <div class="sec"><div class="heading"><h2 class="serif">You, as a reader</h2></div>
+      <div class="hcard">${say.map(s=>`<div class="li"><span class="dot" style="background:var(--teal)"></span><div>${s}</div></div>`).join("")||'<span class="none">Add ratings, genres, page counts and finish dates — the more you log, the sharper this gets.</span>'}
+        <div class="hint" style="margin:10px 0 0">Worked out entirely from your own shelf, on this device — nothing is sent anywhere.</div>
+      </div>
+    </div>
+    <div class="sec"><div class="heading"><h2 class="serif">The numbers</h2></div>
+      <div class="stats">${cards.map(c=>`<div class="stat"><div class="v" ${String(c[0]).length>8?'style="font-size:16px"':""}>${esc(String(c[0]))}</div><div class="k">${esc(c[1])}</div></div>`).join("")}</div>
+    </div>
+    <div class="sec"><div class="heading"><h2 class="serif">Genres, honestly rated</h2></div>
+      <div class="hcard">${topG.length?topG.map(x=>{
+        const g=x[0],a=gn[g]?gsum[g]/gn[g]:null;
+        return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span class="chip" style="background:${genres[g]||"#78716c"}">${esc(g)}</span>
+          <span class="prog" style="flex:1"><i style="width:${a!=null?a*10:0}%"></i></span>
+          <span class="rr" style="width:120px;text-align:right">${a!=null?"★ "+a.toFixed(1)+" avg":"unrated"} · ${x[1]} book${x[1]===1?"":"s"}</span></div>`;}).join(""):'<span class="none">No genres yet.</span>'}
+      </div>
+    </div>`;
 }
 
 /* =============== editor =============== */
@@ -2177,9 +2518,12 @@ function renderEditor(){
       <div class="coverbox" id="coverBox"></div>
       <div class="edfields">
         <input class="field titlein serif" id="fTitle" placeholder="Book title" value="${esc(b.title)}">
-        <div class="relbox">
-          <input class="field" id="fAuthor" placeholder="Author" value="${esc(b.author)}" autocomplete="off">
-          <div class="sug" id="authSug" hidden></div>
+        <div class="inrow" style="align-items:center">
+          <div class="relbox" style="flex:1;min-width:180px">
+            <input class="field" id="fAuthor" placeholder="Author" value="${esc(b.author)}" autocomplete="off">
+            <div class="sug" id="authSug" hidden></div>
+          </div>
+          <button class="sm" id="authBooks" title="Everything on your shelf by this author — open, link as a series, fold into a collection, or tidy duplicate spellings">📚 By this author</button>
         </div>
         <div class="chkrow" id="kindRow"></div>
         <div id="ffWrap"></div>
@@ -2366,6 +2710,11 @@ function renderEditor(){
     inp.addEventListener("blur",()=>setTimeout(()=>sug.hidden=true,150));
   }
   autoComplete("#fAuthor","#authSug","author",()=>[...new Set(books.map(x=>(x.author||"").trim()).filter(Boolean))]);
+  q("#authBooks").onclick=()=>{
+    const a=(cur.author||"").trim();
+    if(!a){alert("Give the book an author first.");return;}
+    finishSaveThen(()=>openAuthorPanel(a));
+  };
 
   /* book / fanfic / AI story */
   function renderKind(){
@@ -3254,18 +3603,164 @@ async function loadCsvFile(file){
   markDupes();saveImportQueue();
   return {src,n:staged.length};
 }
-/* staged entry -> a real book on the shelf */
-async function importOne(it){
+/* staged entry -> a real book on the shelf; `extra` lets a batch land as a series */
+async function importOne(it,extra){
   const b=Object.assign(blankBook(uid()),{
     title:it.title,author:it.author,isbn:it.isbn||"",status:it.status,dnf:!!it.dnf,rating:it.rating,
     pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
     summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
-    keywords:(it.tags||[]).slice(0,12),modified:Date.now()});
+    keywords:(it.tags||[]).slice(0,12),modified:Date.now()},extra||{});
   await dbPut("books",b);
   books.unshift(b);
   if(SYNC.on)enqueue({kind:"book",id:b.id});
   importQueue=importQueue.filter(x=>x.id!==it.id);
 }
+/* several staged entries -> ONE collection book, each as a story inside it */
+async function importCollection(items,name){
+  const nb=Object.assign(blankBook(uid()),{
+    type:"collection",title:name,series:name,
+    author:items[0].author||"",
+    status:items.every(it=>it.status==="finished"&&!it.dnf)?"finished":items.some(it=>it.status==="reading")?"reading":"want",
+    dateFinished:items.map(it=>it.dateFinished||"").sort().pop()||"",
+    keywords:[...new Set(items.flatMap(it=>it.tags||[]))].slice(0,12),
+    entries:items.map(it=>Object.assign(blankEntry(),{
+      title:it.title,rating:it.rating,pages:it.pages,
+      summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""})),
+    modified:Date.now()});
+  await dbPut("books",nb);
+  books.unshift(nb);
+  if(SYNC.on)enqueue({kind:"book",id:nb.id});
+  const ids=new Set(items.map(x=>x.id));
+  importQueue=importQueue.filter(x=>!ids.has(x.id));
+}
+
+/* =============== quick add — a book from pasted text or a photo =============== */
+let ocrLoad=null;
+function loadOcr(){
+  if(window.Tesseract)return Promise.resolve();
+  if(!ocrLoad)ocrLoad=new Promise((res,rej)=>{
+    const s=document.createElement("script");
+    s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    s.onload=res;
+    s.onerror=()=>{ocrLoad=null;rej(new Error("The text reader couldn't load — reading photos needs an internet connection the first time."));};
+    document.head.appendChild(s);
+  });
+  return ocrLoad;
+}
+/* best-effort guesses from a blurb / shop page / "Title by Author" — always shown
+   for checking before anything is created */
+function parseBookText(t){
+  t=String(t||"").replace(/\r/g,"");
+  const out={title:"",author:"",series:"",seriesNum:"",pages:"",summary:"",isbn:""};
+  const lines=t.split("\n").map(s=>s.trim()).filter(Boolean);
+  const NAME=/^[A-ZÀ-Ž][\w.'’-]*(?:\s+[A-ZÀ-Ž][\w.'’-]*){1,3}$/;
+  let m=t.match(/^\s*(.{2,120}?)\s+by\s+([A-ZÀ-Ž][\w.'’-]*(?:\s+[A-ZÀ-Ž][\w.'’-]*){0,3})\s*$/m);
+  if(m){out.title=m[1].trim();out.author=m[2].trim();}
+  if(!out.title&&lines.length)out.title=lines[0].slice(0,120);
+  if(!out.author){
+    m=t.match(/\bby\s+([A-ZÀ-Ž][\w.'’-]*(?:\s+[A-ZÀ-Ž][\w.'’-]*){0,3})/);
+    if(m)out.author=m[1].trim();
+    else if(lines[1]&&NAME.test(lines[1]))out.author=lines[1];
+  }
+  m=t.match(/(\d{2,4})\s*(?:pages|pp\b|p\.)/i);if(m)out.pages=m[1];
+  m=t.match(/\(([^()#,]{2,60}?)\s*(?:,|#|Book)\s*(\d+(?:\.\d+)?)\)/i);
+  if(m){out.series=m[1].replace(/\bseries\b/i,"").trim();out.seriesNum=m[2];}
+  else{m=t.match(/Book\s+(\d+)\s+(?:of|in)\s+(?:the\s+)?(.{2,60}?)(?:\s+series)?\s*[\n.,)]/i);
+    if(m){out.seriesNum=m[1];out.series=m[2].trim();}}
+  m=t.match(/ISBN[-:\s]*((?:97[89])?[\d-]{9,17}[\dX])/i);if(m)out.isbn=cleanIsbn(m[1]);
+  const paras=t.split(/\n\s*\n/).map(s=>s.trim()).filter(s=>s.length>80);
+  if(paras.length)out.summary=paras.sort((a,b)=>b.length-a.length)[0].slice(0,4000);
+  out.title=out.title.replace(/\s*\([^)]*\)\s*$/,"").trim();
+  return out;
+}
+function closeQuickAdd(){const box=q("#quickPanel");box.hidden=true;box.innerHTML="";}
+function openQuickAdd(){
+  const box=q("#quickPanel");
+  if(!box.hidden){closeQuickAdd();return;}
+  box.hidden=false;
+  box.innerHTML=`
+    <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">⚡ Quick add a book</b>
+      <button class="btn" id="qaClose" style="margin-left:auto;padding:4px 10px">Close</button></div>
+    <div class="hint" style="margin:0 0 7px">Paste anything — a blurb, a shop page, “Title by Author” — or give it a photo of the cover or back, and the details are filled in for you to check.</div>
+    <textarea class="field" id="qaText" rows="6" placeholder="Paste text about the book here…"></textarea>
+    <div class="bgdrop" id="qaDrop" style="margin-top:8px">📷 Drop, paste or choose a photo — the text is read off it (needs internet the first time)</div>
+    <div class="hint" id="qaMsg" style="margin:7px 0 0;min-height:16px"></div>
+    <button class="btn pri" id="qaGo" style="margin-top:8px">Read the details</button>
+    <div id="qaPrev" style="margin-top:10px"></div>`;
+  q("#qaClose").onclick=closeQuickAdd;
+  const drop=q("#qaDrop");
+  drop.onclick=()=>q("#qaFile").click();
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add("over");};
+  drop.ondragleave=()=>drop.classList.remove("over");
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove("over");quickOcr(e.dataTransfer.files[0]);};
+  q("#qaGo").onclick=()=>{
+    const t=q("#qaText").value;
+    if(!t.trim()){const e=q("#qaMsg");if(e)e.textContent="Paste some text (or drop a photo) first.";return;}
+    showQuickPreview(parseBookText(t));
+  };
+}
+async function quickOcr(file){
+  if(!file||!file.type.startsWith("image/"))return;
+  const msg=t=>{const e=q("#qaMsg");if(e)e.textContent=t||"";};
+  try{
+    msg("Loading the text reader…");
+    await loadOcr();
+    msg("Reading the photo — this can take a little while…");
+    const worker=await Tesseract.createWorker("eng");
+    let text="";
+    try{const r=await worker.recognize(file);text=(r.data&&r.data.text)||"";}
+    finally{try{worker.terminate();}catch(e){}}
+    if(!text.trim()){msg("No readable text found in that photo — a sharper, closer shot works best.");return;}
+    const ta=q("#qaText");if(ta)ta.value=(ta.value.trim()?ta.value+"\n\n":"")+text.trim();
+    msg("Read it — check what it found below:");
+    showQuickPreview(parseBookText(q("#qaText")?q("#qaText").value:text));
+  }catch(e){msg(e.message||"That photo couldn't be read.");}
+}
+function showQuickPreview(p){
+  const w=q("#qaPrev");if(!w)return;
+  w.innerHTML=`
+    <div class="lbl" style="display:block;margin-bottom:4px">Check &amp; fix, then create:</div>
+    <input class="field" id="qpT" placeholder="Title" value="${esc(p.title)}" style="margin-bottom:6px">
+    <input class="field" id="qpA" placeholder="Author" value="${esc(p.author)}" style="margin-bottom:6px">
+    <div class="inrow" style="margin-bottom:6px">
+      <input class="field" id="qpS" placeholder="Series (optional)" value="${esc(p.series)}" style="flex:1;min-width:120px">
+      <input class="mini" id="qpSN" placeholder="#" value="${esc(p.seriesNum)}" title="Number in the series">
+      <input class="mini" id="qpP" placeholder="pages" value="${esc(String(p.pages||""))}" style="width:64px">
+    </div>
+    <select id="qpSt" class="field" style="margin-bottom:6px">
+      <option value="want">Want to read</option><option value="reading">Reading now</option><option value="finished">Finished</option>
+    </select>
+    <textarea class="field" id="qpSum" rows="4" placeholder="Summary…">${esc(p.summary)}</textarea>
+    <button class="btn pri" id="qpMake" style="margin-top:8px">＋ Create the book</button>`;
+  q("#qpMake").onclick=async()=>{
+    const title=q("#qpT").value.trim();
+    if(!title){alert("It needs at least a title.");return;}
+    const b=blankBook(uid());
+    b.title=title;b.author=q("#qpA").value.trim();
+    b.series=q("#qpS").value.trim();b.seriesNum=q("#qpSN").value.trim();
+    if(b.series)b.type="series";
+    b.pages=parseInt(q("#qpP").value)||"";
+    b.status=q("#qpSt").value;
+    b.isbn=p.isbn||"";
+    const sum=q("#qpSum").value.trim();
+    if(sum)b.summary=esc(sum).replace(/\n/g,"<br>");
+    b.modified=Date.now();
+    try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");return;}
+    books.unshift(b);
+    if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+    closeQuickAdd();
+    openBook(b.id,false);
+  };
+}
+q("#qaFile").addEventListener("change",e=>{const f=e.target.files[0];e.target.value="";if(f)quickOcr(f);});
+/* pasting an image while the quick-add panel is open reads the book off it */
+document.addEventListener("paste",e=>{
+  const box=q("#quickPanel");
+  if(!box||box.hidden)return;
+  for(const it of e.clipboardData?.items||[]){
+    if(it.type.startsWith("image/")){e.preventDefault();e.stopPropagation();quickOcr(it.getAsFile());return;}
+  }
+},true);
 
 async function makeSnapshot(auto){
   const json=JSON.stringify(await buildBackup());

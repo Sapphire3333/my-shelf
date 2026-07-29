@@ -197,5 +197,6 @@ open it in a browser, done.
 | `sw.js` | Service worker so the app itself opens offline. |
 | `manifest.json`, `icon.svg`, `icon.png` | Home-screen install bits. |
 
-*Vanilla JS, no build step, no framework, no npm. The only runtime dependency is
-`@supabase/supabase-js`, loaded from a CDN — and the app runs fine without it.*
+*Vanilla JS, no build step, no framework, no npm. The only runtime dependencies are
+`@supabase/supabase-js` (CDN, optional — the app runs fine without it) and
+`tesseract.js` (CDN, fetched only if you use the read-a-photo quick add).*
