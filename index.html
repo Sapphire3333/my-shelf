@@ -792,7 +792,10 @@ let deletions={};
 
 /* =============== sync (Supabase — optional, offline-first) =============== */
 const CFG=window.SHELF_CONFIG||{};
-const SYNC={supa:null,user:null,on:false,queue:[],flushing:false,pulling:false,status:"local",triedCover:new Set()};
+const SYNC={supa:null,user:null,on:false,queue:[],flushing:false,pulling:false,status:"local",triedCover:new Set(),
+  /* highest `modified` ever seen from the cloud per book — an edit made after
+     seeing it must outrank it even if this device's clock is behind */
+  seen:{}};
 
 function syncConfigured(){
   return !!(CFG.url&&CFG.anonKey&&!/YOUR_/.test(String(CFG.url)+String(CFG.anonKey))
@@ -819,6 +822,7 @@ const imgPath=key=>`${SYNC.user.id}/images/${String(key).replace("|","__")}.jpg`
 async function loadSyncLocal(){
   const dq=await dbGet("meta","syncQueue");SYNC.queue=dq&&Array.isArray(dq.v)?dq.v:[];
   const dd=await dbGet("meta","deletions");deletions=dd&&dd.v?dd.v:{};
+  const sm=await dbGet("meta","seenMod");SYNC.seen=sm&&sm.v?sm.v:{};
   /* tombstones only need to outlive the longest-offline device — drop ancient ones
      so the map doesn't grow forever */
   const cut=Date.now()-90*864e5;let pruned=false;
@@ -935,6 +939,8 @@ async function pullAll(){
     for(const row of rows||[]){
       remoteIds.add(row.id);
       const rb=row.data||{};rb.id=row.id;rb.modified=row.modified||rb.modified||rb.created||0;
+      /* remember it even when we don't take it — the next edit here must beat it */
+      if((rb.modified||0)>(SYNC.seen[row.id]||0))SYNC.seen[row.id]=rb.modified||0;
       const tomb=deletions[row.id]||0;
       if(tomb&&tomb>=(rb.modified||0))continue;
       if(heldBack(row.id))continue;
@@ -963,6 +969,7 @@ async function pullAll(){
         imgKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
       }
     }
+    dbPut("meta",{k:"seenMod",v:SYNC.seen});
     setSync("synced");
     if(view!=="book")render();
   }catch(e){
@@ -2469,7 +2476,10 @@ async function commitCur(){
   const before=i>=0?JSON.parse(JSON.stringify(books[i])):null;
   const strip=o=>{const c={...o};delete c.modified;return JSON.stringify(c);};
   if(before&&strip(before)===strip(after)){setSaved(true);return;}
-  after.modified=Date.now();cur.modified=after.modified;
+  /* beat our previous save AND anything the cloud has shown us, so a device whose
+     clock runs fast can't have its older copy win forever */
+  after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,(SYNC.seen[cur.id]||0)+1);
+  cur.modified=after.modified;
   try{await dbPut("books",after);}
   catch(e){
     const el=q("#saveMsg");if(el){el.textContent="Couldn't save!";el.className="savemsg no";}
