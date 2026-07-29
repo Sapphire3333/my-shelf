@@ -36,5 +36,5 @@
 window.SHELF_CONFIG = {
   url: "https://ckomxkieiypfznyfagpc.supabase.co",
   anonKey: "sb_publishable_n6ma7ssOgVU2wG5XFjXPHA_5B4XhiGQ",
-  googleBooksKey: ""
+  googleBooksKey: "AIzaSyB4loZgVC1-ymgnZKzr96WLX2pFo0zFWmg"
 };
