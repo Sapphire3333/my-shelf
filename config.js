@@ -17,8 +17,24 @@
    If these are left as YOUR_… placeholders, the app just runs in
    local-only mode (exactly like the old offline file) — no login,
    no sync.
+
+   OPTIONAL — googleBooksKey:
+   The 🔎 Auto-fill button uses Google Books without any key, but its
+   keyless quota is shared per network and sometimes runs dry (the app
+   then falls back to Open Library). A free key of your own removes
+   that lottery:
+     1. console.cloud.google.com → create a project (any name)
+     2. APIs & Services → Library → enable "Books API"
+     3. APIs & Services → Credentials → Create credentials → API key
+     4. Paste the key below.
+   Before committing the key to a public repo, restrict it: in the
+   key's settings choose "Websites" and add your app's address, e.g.
+   https://<your-username>.github.io/* — then it only works from your
+   site and is safe to publish. Leave it "" to keep using the shared
+   keyless quota.
    ============================================================ */
 window.SHELF_CONFIG = {
   url: "https://ckomxkieiypfznyfagpc.supabase.co",
-  anonKey: "sb_publishable_n6ma7ssOgVU2wG5XFjXPHA_5B4XhiGQ"
+  anonKey: "sb_publishable_n6ma7ssOgVU2wG5XFjXPHA_5B4XhiGQ",
+  googleBooksKey: ""
 };

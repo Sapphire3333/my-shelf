@@ -121,6 +121,16 @@ This gives you a private login and the same library on every device.
 > **Note:** the URL and anon key in `config.js` are public *by design* — it's safe
 > to commit them. Your data is protected by row-level security, not by hiding keys.
 
+### Optional — a Google Books key for Auto-fill
+
+The 🔎 Auto-fill button works with no setup, but Google's keyless quota is shared
+per network and sometimes runs dry (the app then falls back to Open Library, which
+still gives a blurb, tags and a cover). For consistently richer results, get a free
+key: [console.cloud.google.com](https://console.cloud.google.com) → create a project
+→ enable the **Books API** → **Credentials → Create credentials → API key**, and
+paste it into `googleBooksKey` in `config.js`. Restrict the key to your site
+(Websites → `https://<your-username>.github.io/*`) and it's safe to commit.
+
 ### Put it on your phone's home screen
 
 Open your URL in the phone's browser and choose **Add to Home Screen** (Share menu
