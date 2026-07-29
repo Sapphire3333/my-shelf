@@ -733,6 +733,39 @@ const surnameOf=a=>{a=String(a||"").trim();if(!a)return"";
   const p=a.replace(/\./g," ").trim().split(/\s+/);return (p[p.length-1]||"").toLowerCase();};
 const fmtEdited=t=>new Date(t).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+/* ---- colour helpers: muting and brightening need HSL, not hex ---- */
+function hexToHsl(hex){
+  const m=String(hex||"").replace("#","");
+  const v=m.length===3?m.split("").map(c=>c+c).join(""):m;
+  const n=parseInt(v||"000000",16)||0;
+  const r=((n>>16)&255)/255,g=((n>>8)&255)/255,b=(n&255)/255;
+  const mx=Math.max(r,g,b),mn=Math.min(r,g,b),d=mx-mn;
+  let h=0;
+  if(d){
+    if(mx===r)h=((g-b)/d+(g<b?6:0));
+    else if(mx===g)h=(b-r)/d+2;
+    else h=(r-g)/d+4;
+    h*=60;
+  }
+  const l=(mx+mn)/2;
+  const s=d?d/(1-Math.abs(2*l-1)):0;
+  return {h,s:s*100,l:l*100};
+}
+function hslToHex(h,s,l){
+  s=Math.max(0,Math.min(100,s))/100;l=Math.max(0,Math.min(100,l))/100;
+  const c=(1-Math.abs(2*l-1))*s,x=c*(1-Math.abs(((h/60)%2)-1)),m=l-c/2;
+  let r=0,g=0,b=0;
+  const hh=((h%360)+360)%360;
+  if(hh<60){r=c;g=x;}else if(hh<120){r=x;g=c;}else if(hh<180){g=c;b=x;}
+  else if(hh<240){g=x;b=c;}else if(hh<300){r=x;b=c;}else{r=c;b=x;}
+  const to=v=>Math.round((v+m)*255).toString(16).padStart(2,"0");
+  return "#"+to(r)+to(g)+to(b);
+}
+/* softer, chalkier version of a colour — the same hue, just calmer */
+const mutedOf=hex=>{const c=hexToHsl(hex);return hslToHex(c.h,Math.max(16,c.s*.48),Math.min(88,c.l*1.3+20));};
+const shadeOf=(hex,pct)=>{const c=hexToHsl(hex);return hslToHex(c.h,c.s,Math.max(8,Math.min(95,c.l*pct/100)));};
+/* dark text on a pale chip, white on a deep one */
+const inkOn=hex=>hexToHsl(hex).l>62?"#292524":"#ffffff";
 const hexToRgba=(hex,a)=>{
   const m=String(hex||"").replace("#","");
   const v=m.length===3?m.split("").map(c=>c+c).join(""):m;
@@ -864,6 +897,11 @@ const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.ons
 
 /* =============== state =============== */
 let books=[],genres={},dnfCustom=[],audCustom=[];
+let kwColors={};               /* keyword -> colour; plain grey when unset */
+const kwStyle=k=>{
+  const c=kwColors[k];
+  return c?`background:${c};border-color:${c};color:${inkOn(c)}`:"";
+};
 let settings={autoBackup:true,keepAuto:3,bg:{id:"none",opacity:100},theme:"auto"};
 let groupArt={};               /* "genre|Fantasy" -> {img:<id>,h:<px>}; picture at "__gart|<id>" */
 const gartCache=new Map();
@@ -974,7 +1012,7 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
@@ -1016,9 +1054,11 @@ async function pullAll(){
             for(const f in rv)fandoms[f]=[...new Set([...(rv[f]||[]),...(fandoms[f]||[])])];}
           else if(row.key==="groupArt"){const rv=row.value||{};
             for(const k in rv)if(!groupArt[k])groupArt[k]=rv[k];}
+          else if(row.key==="kwColors"){const rv=row.value||{};
+            for(const k in rv)if(!kwColors[k])kwColors[k]=rv[k];}
         }
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
-        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});dbPut("meta",{k:"groupArt",v:groupArt});
+        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});dbPut("meta",{k:"groupArt",v:groupArt});dbPut("meta",{k:"kwColors",v:kwColors});
       }
     }catch(e){console.warn("[shelf] meta pull",e);}
     // books (per-book last-write-wins by `modified`)
@@ -1218,6 +1258,7 @@ async function initSync(){
   const pl=await dbGet("meta","padskins");padList=pl&&Array.isArray(pl.v)?pl.v:[];
   const fd=await dbGet("meta","fandoms");fandoms=fd&&fd.v?fd.v:{};
   const ga=await dbGet("meta","groupArt");groupArt=ga&&ga.v?ga.v:{};
+  const kc=await dbGet("meta","kwColors");kwColors=kc&&kc.v?kc.v:{};
   const iq=await dbGet("meta","importQueue");importQueue=iq&&Array.isArray(iq.v)?iq.v:[];
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   applyTheme();applyBg();
@@ -1338,6 +1379,7 @@ async function clearGroupArt(key){
 const padKey=id=>"__pad|"+id;
 function savePadList(){dbPut("meta",{k:"padskins",v:padList});enqueue({kind:"meta",key:"padskins"});}
 function saveFandoms(){dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});}
+function saveKwColors(){dbPut("meta",{k:"kwColors",v:kwColors});enqueue({kind:"meta",key:"kwColors"});}
 /* characters you may pick, given the fandoms this entry is tagged with */
 const charsFor=list=>[...new Set((list||[]).flatMap(f=>fandoms[f]||[]))].sort((a,b)=>a.localeCompare(b));
 async function preloadPads(){
@@ -1485,6 +1527,53 @@ document.addEventListener("paste",e=>{
     }
   }
 },true);
+
+/* =============== the colour chooser, shared by genres and tags =============== */
+/* Paints once and then only touches the swatches, so dragging the brightness
+   slider or the wheel doesn't rebuild the control under your finger. */
+function drawColorPicker(box,start,onChange){
+  let base=(start&&/^#[0-9a-f]{3,6}$/i.test(start))?start:PALETTE[0];
+  let muted=false,bright=100;
+  const eff=()=>shadeOf(muted?mutedOf(base):base,bright);
+  box.innerHTML=`
+    <div class="hrow2" style="gap:6px;margin-bottom:8px">
+      <button class="pill on" data-cpm="0">Bright</button>
+      <button class="pill" data-cpm="1">Muted</button>
+      <span class="chip big" id="cpPrev" style="margin-left:auto">Preview</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${PALETTE.map(c=>`<button class="cdot" data-cpc="${c}" style="width:26px;height:26px"></button>`).join("")}
+    </div>
+    <div class="hrow2" style="margin-top:10px;gap:8px">
+      <input type="color" id="cpWheel" value="${eff()}" title="Any colour you like">
+      <span class="lbl">or pick any colour at all</span>
+    </div>
+    <div class="opac" style="margin-top:8px">Brightness
+      <input type="range" id="cpB" min="55" max="145" value="100">
+      <b id="cpBV" style="width:44px;text-align:right">100%</b></div>`;
+  const refresh=()=>{
+    const c=eff();
+    const pv=q("#cpPrev",box);
+    if(pv){pv.style.background=c;pv.style.color=inkOn(c);}
+    qa("[data-cpc]",box).forEach(b=>{
+      const bc=b.dataset.cpc;
+      b.style.background=shadeOf(muted?mutedOf(bc):bc,bright);
+      b.style.outline=bc===base?"2px solid var(--ink)":"";
+      b.style.outlineOffset="2px";
+    });
+    qa("[data-cpm]",box).forEach(b=>b.classList.toggle("on",(b.dataset.cpm==="1")===muted));
+    const bv=q("#cpBV",box);if(bv)bv.textContent=bright+"%";
+    const w=q("#cpWheel",box);if(w&&document.activeElement!==w)w.value=c;
+    if(onChange)onChange(c);
+  };
+  qa("[data-cpm]",box).forEach(b=>b.onclick=()=>{muted=b.dataset.cpm==="1";refresh();});
+  qa("[data-cpc]",box).forEach(b=>b.onclick=()=>{base=b.dataset.cpc;refresh();});
+  q("#cpWheel",box).oninput=e=>{base=e.target.value;muted=false;bright=100;
+    const s=q("#cpB",box);if(s)s.value=100;refresh();};
+  q("#cpB",box).oninput=e=>{bright=+e.target.value;refresh();};
+  refresh();
+  return eff;
+}
 
 /* =============== undo / redo =============== */
 const HIST={undo:[],redo:[]};
@@ -1640,7 +1729,7 @@ function rowHtml(b,withDel,edited){
     <div class="rmain">
       <div class="rtitle serif">${esc(b.title)||"Untitled"} ${b.favorite?'<span class="fav">♥</span>':""} ${stBadge(b)} ${isColl(b)?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':""}</div>
       <div class="rauth">${kindOf(b)!=="book"?`<span class="bst kind">${kindOf(b)==="fanfic"?"FANFIC":"AI"}</span> `:""}${esc(b.author)||(kindOf(b)==="ai"?"":"Unknown author")}${(b.fandoms||[]).length?` <span class="rser">${(b.fandoms||[]).map(esc).join(", ")}${(b.characters||[]).length?" · "+(b.characters||[]).map(esc).join(", "):""}</span>`:""}${b.series?` <span class="rser">${esc(b.series)}${b.seriesNum?" #"+esc(b.seriesNum):""}</span>`:""}${b.pages?` <span class="rser">· ${esc(String(b.pages))} p.</span>`:""}</div>
-      <div>${(b.keywords||[]).map(k=>`<span class="kw">${esc(k)}</span>`).join("")}</div>
+      <div>${(b.keywords||[]).map(k=>`<span class="kw" style="${kwStyle(k)}">${esc(k)}</span>`).join("")}</div>
       ${progHtml(b)}
     </div>
     <div class="rside">${rateHtml(b.rating)}${(b.genres||[]).length?`<div class="rgen">${(b.genres||[]).map(g=>chipHtml(g,true)).join("")}</div>`:""}${edited?`<span class="rr">edited ${edited}</span>`:""}${(b.rereads||0)>0?`<span class="rr">read ×${(b.rereads||0)+1}</span>`:""}${withDel?`<button class="rdel" data-del="${b.id}">✕</button>`:""}</div>
@@ -3894,7 +3983,7 @@ function renderEditor(){
       ...(cur.pads||[]).map(p=>p.html||""),...(cur.entries||[]).map(en=>(en.title||"")+" "+(en.summary||"")+" "+(en.notes||""))].join(" ")).toLowerCase();
     const sug=others.filter(k=>!cur.keywords.some(x=>x.toLowerCase()===k.toLowerCase())&&btext.includes(k.toLowerCase())).slice(0,10);
     w.innerHTML=`<div class="lbl" style="display:block;margin:10px 0 3px">Keywords</div>
-      <div>${cur.keywords.map((k,i)=>`<span class="kw" data-kedit="${esc(k)}" style="font-size:12px;padding:2px 7px">${esc(k)} <span class="x" data-kx="${i}" style="cursor:pointer;opacity:.6">✕</span></span>`).join("")}</div>
+      <div>${cur.keywords.map((k,i)=>`<span class="kw" data-kedit="${esc(k)}" style="font-size:12px;padding:2px 7px;${kwStyle(k)}">${esc(k)} <span class="x" data-kx="${i}" style="cursor:pointer;opacity:.6">✕</span></span>`).join("")}</div>
       <input id="kwIn" class="addin" placeholder='Add keyword… (Enter) — or turn on 🏷 Tag mode and click words in the text'>
       ${sug.length?`<div class="hint" style="margin-top:5px">Suggestions: ${sug.map(k=>`<span class="kw" data-ks="${esc(k)}" style="cursor:pointer;font-size:11px;padding:1px 6px;border-style:dashed">＋ ${esc(k)}</span>`).join("")}</div>`:""}`;
     qa("[data-kx]",w).forEach(x=>x.onclick=e=>{e.stopPropagation();cur.keywords.splice(+x.dataset.kx,1);renderKw();scheduleSave();});
@@ -3946,28 +4035,36 @@ function renderEditor(){
     const box=q("#tagPanel");box.hidden=false;
     const isG=kind==="genre";
     const used=books.filter(b=>(isG?(b.genres||[]):(b.keywords||[])).indexOf(name)>=0).length;
-    let color=isG?(genres[name]||"#78716c"):null,typed=name;
-    const draw=()=>{
-      box.innerHTML=`
-        <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">✎ ${isG?"Genre":"Keyword"}</b>
-          <button class="btn" id="teClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
-        <div class="hint" style="margin:0 0 7px">On ${used} book${used===1?"":"s"} — what you change here changes all of them.</div>
-        <input class="field" id="teName" value="${esc(typed)}" placeholder="Name">
-        ${isG?`<div class="lbl" style="display:block;margin:11px 0 5px">Colour</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">${PALETTE.map(c=>
-            `<button class="cdot" data-tec="${c}" style="width:26px;height:26px;background:${c}${c===color?";outline:2px solid var(--ink);outline-offset:2px":""}"></button>`).join("")}</div>`:""}
-        <button class="btn pri" id="teSave" style="margin-top:12px">Save</button>`;
-      q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
-      /* picking a colour redraws the panel — keep whatever's been typed so far */
-      q("#teName",box).addEventListener("input",e=>{typed=e.target.value;});
-      qa("[data-tec]",box).forEach(b=>b.onclick=()=>{typed=q("#teName",box).value;color=b.dataset.tec;draw();});
-      q("#teSave",box).onclick=async()=>{
-        const nn=q("#teName",box).value.trim();
-        box.hidden=true;box.innerHTML="";
-        if(isG)await renameGenre(name,nn,color);else await renameKeyword(name,nn);
-      };
+    let color=isG?(genres[name]||"#78716c"):(kwColors[name]||"");
+    box.innerHTML=`
+      <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">✎ ${isG?"Genre":"Keyword"}</b>
+        <button class="btn" id="teClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+      <div class="hint" style="margin:0 0 7px">On ${used} book${used===1?"":"s"} — what you change here changes all of them.</div>
+      <input class="field" id="teName" value="${esc(name)}" placeholder="Name">
+      <div class="lbl" style="display:block;margin:12px 0 6px">Colour</div>
+      <div id="teCol"></div>
+      ${isG?"":`<div class="hint" style="margin:8px 0 0">Leave it be and this keyword stays plain grey — <button class="btn" id="tePlain" style="padding:2px 8px;font-size:12px">make it plain again</button></div>`}
+      <button class="btn pri" id="teSave" style="margin-top:12px">Save</button>`;
+    q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+    drawColorPicker(q("#teCol",box),color||PALETTE[0],c=>{color=c;});
+    const tp=q("#tePlain",box);
+    if(tp)tp.onclick=async()=>{
+      delete kwColors[name];saveKwColors();
+      box.hidden=true;box.innerHTML="";
+      renderKw();
+      if(SYNC.on)flushQueue();
     };
-    draw();
+    q("#teSave",box).onclick=async()=>{
+      const nn=q("#teName",box).value.trim();
+      box.hidden=true;box.innerHTML="";
+      if(isG)await renameGenre(name,nn,color);
+      else{
+        /* the colour travels with the name */
+        if(color){kwColors[nn||name]=color;if(nn&&nn!==name)delete kwColors[name];saveKwColors();}
+        await renameKeyword(name,nn);
+        renderKw();
+      }
+    };
   }
   q("#tagEditTog").onclick=()=>{
     tagEdit=!tagEdit;
@@ -3993,9 +4090,17 @@ function renderEditor(){
         +sug.map(g=>`<span class="chip" style="background:${genres[g]};cursor:pointer" data-gs="${esc(g)}">＋ ${esc(g)}</span>`).join("")
       :(v&&!pendingGenre?`<div class="lbl">No genre by that name yet — press Enter to make it.</div>`:"");
     qa("[data-gs]").forEach(x=>x.onclick=()=>tagEdit?openTagEditor("genre",x.dataset.gs):addGenre(x.dataset.gs,null));
-    q("#genPick").innerHTML=pendingGenre?`<div class="colorpick"><div class="hint" style="margin:0">Pick a color for <b>${esc(pendingGenre)}</b> — it will stay this color everywhere:</div>
-      <div class="dots">${PALETTE.map(c=>`<button class="cdot" data-gc="${c}" style="background:${c}"></button>`).join("")}</div></div>`:"";
-    qa("[data-gc]").forEach(x=>x.onclick=()=>addGenre(pendingGenre,x.dataset.gc));
+    q("#genPick").innerHTML=pendingGenre?`<div class="colorpick">
+      <div class="hint" style="margin:0 0 9px">Pick a colour for <b>${esc(pendingGenre)}</b> — it will look like this everywhere:</div>
+      <div id="genPickCol"></div>
+      <div class="hrow2" style="margin-top:11px"><button class="btn pri" id="genPickGo">Add “${esc(pendingGenre)}”</button>
+        <button class="btn" id="genPickX">Cancel</button></div></div>`:"";
+    if(pendingGenre){
+      let chosen=PALETTE[0];
+      drawColorPicker(q("#genPickCol"),PALETTE[0],c=>{chosen=c;});
+      q("#genPickGo").onclick=()=>addGenre(pendingGenre,chosen);
+      q("#genPickX").onclick=()=>{pendingGenre=null;renderGenres();};
+    }
   }
   function addGenre(name,color){
     const clean=(name||"").trim();if(!clean)return;
@@ -4575,7 +4680,7 @@ async function buildBackup(){
   const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
   return {app:"my-shelf",version:1,exported:new Date().toISOString(),
     index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
-    backgrounds:bgList,padskins:padList,fandoms,groupArt,covers,images};
+    backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,covers,images};
 }
 function downloadJson(json,name){
   const blob=new Blob([json],{type:"application/json"});
@@ -4635,7 +4740,9 @@ async function applyBackup(data){
   for(const f in fdIn)fandoms[f]=[...new Set([...(fandoms[f]||[]),...(fdIn[f]||[])])];
   const gaIn=data.groupArt||{};
   for(const k in gaIn)if(!groupArt[k])groupArt[k]=gaIn[k];
-  saveBgList();savePadList();saveFandoms();saveGroupArt();
+  const kcIn=data.kwColors||{};
+  for(const k in kcIn)if(!kwColors[k])kwColors[k]=kcIn[k];
+  saveBgList();savePadList();saveFandoms();saveGroupArt();saveKwColors();
   saveMeta();
   if(SYNC.on){
     for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
