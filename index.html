@@ -125,6 +125,9 @@
   .rr{font-size:10px;color:var(--faint)}
   .rdel{color:#d6d3d1;border-radius:6px;padding:2px 6px;opacity:0}
   .row:hover .rdel{opacity:1}
+  .stcyc{padding:1px 7px;font-size:12px;opacity:.45;line-height:1.5}
+  .row:hover .stcyc{opacity:1}
+  @media(hover:none){.rdel,.stcyc{opacity:1}}
   .rdel:hover{color:var(--rose);background:#fff1f2}
 
   /* grid */
@@ -244,6 +247,12 @@
   .sbar{position:absolute;top:-32px;left:0;display:none;gap:3px;background:#292524;border-radius:7px;padding:3px 5px}
   .sbar.below,.pbar.below{top:auto;bottom:-32px}
   #edPage.arr .sbar{display:flex}
+  /* a small drop-down under a toolbar button — kept out of the flow so opening it
+     can't change the toolbar's height */
+  .dropmenu{position:absolute;top:100%;left:0;z-index:60;background:#292524;border-radius:9px;padding:4px;
+    display:flex;flex-direction:column;min-width:170px;box-shadow:0 10px 26px rgba(0,0,0,.42)}
+  .dropmenu button{color:#fff;text-align:left;padding:7px 10px;border-radius:6px;font-size:12.5px;white-space:nowrap}
+  .dropmenu button:hover{background:#57534e}
   /* the ⋯ menu for the fiddlier per-item actions */
   .imenu{position:absolute;top:4px;left:4px;background:#292524;border-radius:8px;padding:4px;
     display:none;flex-direction:column;min-width:158px;z-index:6;box-shadow:0 8px 22px rgba(0,0,0,.4)}
@@ -898,6 +907,13 @@ const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.ons
 /* =============== state =============== */
 let books=[],genres={},dnfCustom=[],audCustom=[];
 let kwColors={};               /* keyword -> colour; plain grey when unset */
+/* "bg:<id>" / "pad:<id>" / "fandom:<name>" / "genre:<name>" / "kw:<name>" -> when it
+   was deleted. Without these the merge only ever adds, so anything you deleted on
+   one device came straight back from the other. */
+let metaDel={};
+function saveMetaDel(){dbPut("meta",{k:"metaDel",v:metaDel});enqueue({kind:"meta",key:"metaDel"});}
+function markMetaDel(k){metaDel[k]=Date.now();saveMetaDel();}
+function unmarkMetaDel(k){if(metaDel[k]){delete metaDel[k];saveMetaDel();}}
 const kwStyle=k=>{
   const c=kwColors[k];
   return c?`background:${c};border-color:${c};color:${inkOn(c)}`:"";
@@ -919,7 +935,7 @@ let mode="write";
 /* fit-to-screen: stack the free-canvas items readably instead of free placement */
 let fitScreen=false;
 const coverCache=new Map();
-const S={q:"",scopes:["title"],authorQ:"",filter:null,multi:[],pickGenres:[],pickKws:[],pickKwOpen:false,pickWant:true,pickText:"",picked:null};
+const S={q:"",scopes:["title","author","fandom"],authorQ:"",filter:null,multi:[],pickGenres:[],pickKws:[],pickKwOpen:false,pickWant:true,pickText:"",picked:null};
 let deletions={};
 
 /* =============== sync (Supabase — optional, offline-first) =============== */
@@ -1012,7 +1028,7 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="trashCloud"?trashCloud:null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
@@ -1041,22 +1057,43 @@ async function pullAll(){
     try{
       const {data:metaRows,error:me}=await s.from("meta").select("key,value").eq("user_id",uid);
       if(!me&&metaRows){
+        /* take the deletion record first, so nothing deleted elsewhere is re-added below */
+        const mdRow=metaRows.find(r=>r.key==="metaDel");
+        if(mdRow&&mdRow.value)for(const k in mdRow.value)metaDel[k]=Math.max(metaDel[k]||0,mdRow.value[k]);
+        const gone=k=>!!metaDel[k];
         for(const row of metaRows){
-          if(row.key==="genres")genres=Object.assign({},row.value||{},genres);
+          if(row.key==="genres"){const rv=row.value||{};
+            for(const g in rv)if(!(g in genres)&&!gone("genre:"+g))genres[g]=rv[g];}
           else if(row.key==="dnfReasons")dnfCustom=[...new Set([...(row.value||[]),...dnfCustom])];
           else if(row.key==="audiences")audCustom=[...new Set([...(row.value||[]),...audCustom])];
           else if(row.key==="deletions"){const rv=row.value||{};for(const k in rv)deletions[k]=Math.max(deletions[k]||0,rv[k]);}
           else if(row.key==="backgrounds"){const have=new Set(bgList.map(x=>x.id));
-            (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id))bgList.push(x);});}
+            (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id)&&!gone("bg:"+x.id))bgList.push(x);});}
           else if(row.key==="padskins"){const have=new Set(padList.map(x=>x.id));
-            (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id))padList.push(x);});}
+            (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id)&&!gone("pad:"+x.id))padList.push(x);});}
           else if(row.key==="fandoms"){const rv=row.value||{};
-            for(const f in rv)fandoms[f]=[...new Set([...(rv[f]||[]),...(fandoms[f]||[])])];}
+            for(const f in rv){
+              if(gone("fandom:"+f))continue;
+              fandoms[f]=[...new Set([...(rv[f]||[]),...(fandoms[f]||[])])];
+            }}
           else if(row.key==="groupArt"){const rv=row.value||{};
-            for(const k in rv)if(!groupArt[k])groupArt[k]=rv[k];}
+            for(const k in rv)if(!groupArt[k]&&!gone("gart:"+k))groupArt[k]=rv[k];}
           else if(row.key==="kwColors"){const rv=row.value||{};
-            for(const k in rv)if(!kwColors[k])kwColors[k]=rv[k];}
+            for(const k in rv)if(!kwColors[k]&&!gone("kw:"+k))kwColors[k]=rv[k];}
+          else if(row.key==="trashCloud"){const rv=row.value||{};
+            for(const k in rv)if(!trashCloud[k]&&!(deletions[k]&&!rv[k]))trashCloud[k]=rv[k];}
         }
+        /* anything deleted here must go from the merged copies too */
+        for(const k in metaDel){
+          const [kind,...rest]=k.split(":");const nm=rest.join(":");
+          if(kind==="genre")delete genres[nm];
+          else if(kind==="kw")delete kwColors[nm];
+          else if(kind==="fandom")delete fandoms[nm];
+          else if(kind==="gart")delete groupArt[nm];
+          else if(kind==="bg")bgList=bgList.filter(x=>x.id!==nm);
+          else if(kind==="pad")padList=padList.filter(x=>x.id!==nm);
+        }
+        dbPut("meta",{k:"metaDel",v:metaDel});dbPut("meta",{k:"kwColors",v:kwColors});dbPut("meta",{k:"trashCloud",v:trashCloud});
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
         dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});dbPut("meta",{k:"groupArt",v:groupArt});dbPut("meta",{k:"kwColors",v:kwColors});
       }
@@ -1259,6 +1296,8 @@ async function initSync(){
   const fd=await dbGet("meta","fandoms");fandoms=fd&&fd.v?fd.v:{};
   const ga=await dbGet("meta","groupArt");groupArt=ga&&ga.v?ga.v:{};
   const kc=await dbGet("meta","kwColors");kwColors=kc&&kc.v?kc.v:{};
+  const md=await dbGet("meta","metaDel");metaDel=md&&md.v?md.v:{};
+  const tc=await dbGet("meta","trashCloud");trashCloud=tc&&tc.v?tc.v:{};
   const iq=await dbGet("meta","importQueue");importQueue=iq&&Array.isArray(iq.v)?iq.v:[];
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   applyTheme();applyBg();
@@ -1349,6 +1388,7 @@ async function addCustomBg(file){
 async function deleteCustomBg(id){
   bgList=bgList.filter(b=>b.id!==id);bgCache.delete(id);
   await dbDel("images",bgKey(id));
+  markMetaDel("bg:"+id);
   saveBgList();
   if(SYNC.on)enqueue({kind:"imgDel",key:bgKey(id)});
   if(settings.bg&&settings.bg.id===id){settings.bg={id:"none",opacity:settings.bg.opacity??100};saveSettings();}
@@ -1365,6 +1405,7 @@ async function setGroupArt(key,file,maxDim){
   if(old&&old.img){await dbDel("images",gartKey(old.img));gartCache.delete(old.img);
     if(SYNC.on)enqueue({kind:"imgDel",key:gartKey(old.img)});}
   groupArt[key]={img:id,w:(old&&old.w)||100};
+  unmarkMetaDel("gart:"+key);      /* deliberately back, so stop suppressing it */
   gartCache.set(id,data);saveGroupArt();
   if(SYNC.on)enqueue({kind:"img",key:gartKey(id)});
   return true;
@@ -1373,13 +1414,17 @@ async function clearGroupArt(key){
   const a=groupArt[key];if(!a)return;
   if(a.img){await dbDel("images",gartKey(a.img));gartCache.delete(a.img);
     if(SYNC.on)enqueue({kind:"imgDel",key:gartKey(a.img)});}
-  delete groupArt[key];saveGroupArt();
+  delete groupArt[key];markMetaDel("gart:"+key);saveGroupArt();
 }
 /* ---- custom notepad looks ---- */
 const padKey=id=>"__pad|"+id;
 function savePadList(){dbPut("meta",{k:"padskins",v:padList});enqueue({kind:"meta",key:"padskins"});}
 function saveFandoms(){dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});}
 function saveKwColors(){dbPut("meta",{k:"kwColors",v:kwColors});enqueue({kind:"meta",key:"kwColors"});}
+/* the bin, shared: {id:{at,book}}. The cover and pictures stay in the cloud until
+   the 30 days are up, so any device can put a deleted book back. */
+let trashCloud={};
+function saveTrashCloud(){dbPut("meta",{k:"trashCloud",v:trashCloud});enqueue({kind:"meta",key:"trashCloud"});}
 /* characters you may pick, given the fandoms this entry is tagged with */
 const charsFor=list=>[...new Set((list||[]).flatMap(f=>fandoms[f]||[]))].sort((a,b)=>a.localeCompare(b));
 async function preloadPads(){
@@ -1397,7 +1442,7 @@ async function addCustomPad(file){
 }
 async function deleteCustomPad(id){
   padList=padList.filter(x=>x.id!==id);padCache.delete(id);
-  await dbDel("images",padKey(id));savePadList();
+  await dbDel("images",padKey(id));markMetaDel("pad:"+id);savePadList();
   if(SYNC.on)enqueue({kind:"imgDel",key:padKey(id)});
 }
 const padStyle=skin=>{
@@ -1686,10 +1731,13 @@ function fabSections(){
 function closeFabMenu(){const m=q("#fabMenu");if(m){m.hidden=true;m.innerHTML="";}}
 function updateFab(){
   const fab=q("#fab");if(!fab)return;
-  const show=window.scrollY>260;
-  fab.hidden=!show;
-  if(!show)closeFabMenu();
-  const jb=q("#fabJump");if(jb)jb.hidden=fabSections().length<2;
+  /* jumping is useful straight away; going back to the top only once you've left it */
+  const jb=q("#fabJump"),tb=q("#fabTop");
+  const canJump=fabSections().length>1;
+  if(jb)jb.hidden=!canJump;
+  if(tb)tb.hidden=window.scrollY<200;
+  fab.hidden=!canJump&&window.scrollY<200;
+  if(!canJump)closeFabMenu();
 }
 window.addEventListener("scroll",updateFab,{passive:true});
 window.addEventListener("resize",updateFab);
@@ -1732,7 +1780,7 @@ function rowHtml(b,withDel,edited){
       <div>${(b.keywords||[]).map(k=>`<span class="kw" style="${kwStyle(k)}">${esc(k)}</span>`).join("")}</div>
       ${progHtml(b)}
     </div>
-    <div class="rside">${rateHtml(b.rating)}${(b.genres||[]).length?`<div class="rgen">${(b.genres||[]).map(g=>chipHtml(g,true)).join("")}</div>`:""}${edited?`<span class="rr">edited ${edited}</span>`:""}${(b.rereads||0)>0?`<span class="rr">read ×${(b.rereads||0)+1}</span>`:""}${withDel?`<button class="rdel" data-del="${b.id}">✕</button>`:""}</div>
+    <div class="rside">${rateHtml(b.rating)}${(b.genres||[]).length?`<div class="rgen">${(b.genres||[]).slice(0,3).map(g=>chipHtml(g,true)).join("")}${(b.genres||[]).length>3?`<span class="chip" style="background:#a8a29e" title="${esc((b.genres||[]).slice(3).join(", "))}">+${(b.genres||[]).length-3}</span>`:""}</div>`:""}${edited?`<span class="rr">edited ${edited}</span>`:""}${(b.rereads||0)>0?`<span class="rr">read ×${(b.rereads||0)+1}</span>`:""}${withDel?`<div class="hrow2" style="gap:4px"><button class="btn stcyc" data-cyc="${b.id}" title="Change what stage it's at — without opening it">${statusOf(b)==="finished"?"✓":statusOf(b)==="reading"?"📖":"★"}</button><button class="rdel" data-del="${b.id}">✕</button></div>`:""}</div>
   </div>`;
 }
 function gridHtml(b){
@@ -1764,8 +1812,20 @@ async function hydrateCovers(root){
   /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
   for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
 }
+/* finished → reading → want → finished, without opening the book */
+async function cycleStatus(id){
+  const b=books.find(x=>x.id===id);if(!b)return;
+  const order=["finished","reading","want"];
+  b.status=order[(order.indexOf(statusOf(b))+1)%order.length];
+  b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
+  await dbPut("books",b);
+  if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+  render();
+}
 function wireOpen(root,withDel){
   root.onclick=e=>{
+    const cyc=e.target.closest("[data-cyc]");
+    if(cyc){e.stopPropagation();cycleStatus(cyc.dataset.cyc);return;}
     const del=e.target.closest("[data-del]");
     if(del){e.stopPropagation();deleteBookById(del.dataset.del);return;}
     const op=e.target.closest("[data-open]");
@@ -1972,8 +2032,19 @@ function groupsFor(list){
   }else if(groupBy==="series"){
     const map={},none=[];
     list.forEach(b=>{const s=(b.series||"").trim();if(s)(map[s]=map[s]||[]).push(b);else none.push(b);});
-    Object.keys(map).sort((a,b)=>a.localeCompare(b)).forEach(k=>out.push({label:k,
-      items:map[k].slice().sort((x,y)=>(parseFloat(x.seriesNum)||0)-(parseFloat(y.seriesNum)||0))}));
+    Object.keys(map).sort((a,b)=>a.localeCompare(b)).forEach(k=>{
+      const items=map[k].slice().sort((x,y)=>(parseFloat(x.seriesNum)||0)-(parseFloat(y.seriesNum)||0));
+      /* how much of the series is on the shelf, and which numbers are absent */
+      const total=Math.max(0,...items.map(b=>parseInt(b.seriesTotal)||0));
+      let note="";
+      if(total){
+        const have=new Set(items.map(b=>parseFloat(b.seriesNum)).filter(n=>!isNaN(n)));
+        const missing=[];
+        for(let i=1;i<=total;i++)if(!have.has(i))missing.push(i);
+        note=`${items.length} of ${total}`+(missing.length&&missing.length<=6?` · missing #${missing.join(", #")}`:"");
+      }
+      out.push({label:k,items,note});
+    });
     if(none.length)out.push({label:"Not in a series",items:none});
   }else if(groupBy==="type"){
     TYPES.forEach(([k,l])=>{const items=list.filter(b=>typeOf(b)===k);if(items.length)out.push({label:l,items});});
@@ -2035,7 +2106,7 @@ function renderLibrary(){
           <button class="gcar" title="${shut?"Open":"Close"} this group">${shut?"▸":"▾"}</button>
           ${g.color?`<span class="chip big" style="background:${g.color}">${esc(g.label)}</span>`
             :`<h2 class="serif" style="margin:0;font-size:17px">${esc(g.label)}</h2>`}
-          <span class="n">${g.items.length}</span><span class="ghline"></span>
+          <span class="n">${g.note?esc(g.note):g.items.length}</span><span class="ghline"></span>
           <button class="btn gart" data-gart="${esc(key)}" title="${art?"Change or remove this group's picture":"Give this group a picture"}" style="padding:2px 8px;font-size:12px">🖼${art?" ✓":""}</button>
         </div>
         ${art&&!shut?`<div class="gartbox" style="width:${Math.max(15,Math.min(100,art.w||100))}%">
@@ -2192,6 +2263,18 @@ const TRASH_DAYS=30;
 async function purgeTrash(){
   const cutoff=Date.now()-TRASH_DAYS*864e5;
   try{for(const t of await dbAll("trash"))if((t.at||0)<cutoff)await dbDel("trash",t.id);}catch(e){}
+  /* the 30 days are up: now the cloud copies of its pictures can go too */
+  let changed=false;
+  for(const id of Object.keys(trashCloud)){
+    const e=trashCloud[id];
+    if(!e||(e.at||0)>=cutoff)continue;
+    if(SYNC.on){
+      enqueue({kind:"coverDel",id});
+      imgKeysOf(e.book).forEach(key=>enqueue({kind:"imgDel",key}));
+    }
+    delete trashCloud[id];changed=true;
+  }
+  if(changed)saveTrashCloud();
 }
 async function toTrash(b){
   if(!b)return;
@@ -2203,11 +2286,22 @@ async function toTrash(b){
   }catch(e){console.warn("[shelf] couldn't put that in the bin",e);}
 }
 async function restoreTrash(tid){
-  const t=await dbGet("trash",tid);if(!t||!t.book)return;
+  /* the copy kept here if this is the device that deleted it, otherwise the one
+     the cloud carries — with its pictures fetched back down */
+  let t=await dbGet("trash",tid);
+  let fromCloud=false;
+  if(!t||!t.book){
+    const c=trashCloud[tid];
+    if(!c||!c.book)return;
+    t={id:tid,at:c.at,book:c.book,cover:null,images:{}};
+    fromCloud=true;
+  }
   const b=t.book;
   await dbPut("books",b);
   if(t.cover){await dbPut("covers",{id:b.id,data:t.cover});coverCache.delete(b.id);SYNC.triedCover.delete(b.id);}
   for(const[k,d]of Object.entries(t.images||{}))await dbPut("images",{key:k,data:d});
+  if(fromCloud){coverCache.delete(b.id);SYNC.triedCover.delete(b.id);
+    if(SYNC.on&&SYNC.user&&navigator.onLine)try{await syncBookAssets(b);}catch(e){}}
   const i=books.findIndex(x=>x.id===b.id);
   if(i>=0)books[i]=b;else books.unshift(b);
   if(SYNC.on){
@@ -2216,6 +2310,7 @@ async function restoreTrash(tid){
     imgKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
   }
   await dbDel("trash",tid);
+  if(trashCloud[tid]){delete trashCloud[tid];saveTrashCloud();}
   render();
 }
 
@@ -2226,7 +2321,13 @@ async function deleteBookById(id){
   await toTrash(b);
   await dbDel("books",id);
   books=books.filter(x=>x.id!==id);
-  if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});imgKeysOf(b).forEach(key=>enqueue({kind:"imgDel",key}));}
+  if(SYNC.on){
+    deletions[id]=Date.now();saveDeletions();
+    enqueue({kind:"bookDel",id});
+    /* the cover and pictures are left where they are — they're what makes putting
+       it back possible from another device. purgeTrash clears them at 30 days. */
+    if(b){trashCloud[id]={at:Date.now(),book:JSON.parse(JSON.stringify(b))};saveTrashCloud();}
+  }
   if(view==="book"){view="library";}
   render();
 }
@@ -2248,10 +2349,19 @@ async function renderHub(){
   m.innerHTML=`
     <div class="hubcols">
     <div class="sec">
+      <div class="heading"><h2 class="serif">Tidying up</h2><span class="n" id="dupN"></span></div>
+      <div class="hcard"><div id="dupBox"><span class="none">Checking for duplicates…</span></div></div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Settings</h2>
+        <button class="btn" id="setTog" style="margin-left:auto;padding:3px 10px;font-size:12px">${settings.setOpen?"▾ Hide":"▸ Show"}</button></div>
+      <div class="hcard"><div class="none" ${settings.setOpen?"hidden":""}>Storage, appearance and background — set once, then forgotten.</div></div>
+    </div>
+    <div class="sec setblk" ${settings.setOpen?"":"hidden"}>
       <div class="heading"><h2 class="serif">Storage</h2></div>
       <div class="hcard" id="stoCard"><span class="none">Checking…</span></div>
     </div>
-    <div class="sec">
+    <div class="sec setblk" ${settings.setOpen?"":"hidden"}>
       <div class="heading"><h2 class="serif">Appearance</h2></div>
       <div class="hcard">
         <div class="pills" style="margin:0">${[["auto","Auto"],["light","Light"],["dark","Dark"]].map(([id,l])=>
@@ -2259,7 +2369,7 @@ async function renderHub(){
         <div class="hint" style="margin:8px 0 0">Auto follows your phone or computer's own light/dark setting.</div>
       </div>
     </div>
-    <div class="sec">
+    <div class="sec setblk" ${settings.setOpen?"":"hidden"}>
       <div class="heading"><h2 class="serif">Background</h2></div>
       <div class="hcard">
         <div class="hint" style="margin:0 0 9px">Used everywhere. Any book page can still be given its own from the editor's 🎨 Background button.</div>
@@ -2303,7 +2413,7 @@ async function renderHub(){
     <div class="sec">
       <div class="heading"><h2 class="serif">Recently deleted</h2><span class="n" id="trashN"></span></div>
       <div class="hcard">
-        <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good. The bin is kept on this device only.</div>
+        <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good.${SYNC.on?" Anything you delete can be put back from any of your devices.":""}</div>
         <div id="trashList"></div>
       </div>
     </div>
@@ -2319,6 +2429,8 @@ async function renderHub(){
     </div>
     </div>`;
 
+  q("#setTog").onclick=()=>{settings.setOpen=!settings.setOpen;saveSettings();renderHub();};
+  refreshDupes();
   q("#expBtn").onclick=exportBackup;
   q("#impBtn").onclick=()=>q("#importFile").click();
   qa("[data-th]").forEach(b=>b.onclick=()=>{settings.theme=b.dataset.th;saveSettings();applyTheme();renderHub();});
@@ -2474,16 +2586,46 @@ q("#csvFile").addEventListener("change",async e=>{
   }
 });
 
+/* two entries for the same book creep in when you add one by hand that an import
+   already brought — match on ISBN first, then on title and author */
+function refreshDupes(){
+  const box=q("#dupBox");if(!box)return;
+  const map={};
+  books.forEach(b=>{
+    const k=(b.isbn&&cleanIsbn(b.isbn))||dupeKey(b.title,b.author);
+    if(!k||k==="|")return;
+    (map[k]=map[k]||[]).push(b);
+  });
+  const dupes=Object.values(map).filter(g=>g.length>1);
+  const n=q("#dupN");if(n)n.textContent=dupes.length?`(${dupes.length})`:"";
+  if(!dupes.length){box.innerHTML='<span class="none">Nothing looks duplicated — every book on the shelf is its own.</span>';return;}
+  box.innerHTML=`<div class="hint" style="margin:0 0 8px">These look like the same book more than once. Open them to compare, then delete whichever you don't want — nothing is removed for you.</div>`
+    +dupes.map(g=>`<div class="snap" style="align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <div class="when" style="font-size:13px">${esc(g[0].title)||"Untitled"}</div>
+        <div class="meta">${esc(g[0].author)||"Unknown author"} · ${g.length} copies</div>
+      </div>
+      <div class="sp" style="flex-wrap:wrap;justify-content:flex-end">
+        ${g.map((b,i)=>`<button class="btn" data-dup="${b.id}" style="padding:3px 9px">Open ${i+1}${b.rating!=null?` · ★${Number(b.rating).toFixed(1)}`:""}</button>`).join("")}
+      </div></div>`).join("");
+  qa("[data-dup]",box).forEach(b=>b.onclick=()=>openBook(b.dataset.dup,false));
+}
+
 async function refreshTrash(){
   const box=q("#trashList");if(!box)return;
-  const list=(await dbAll("trash")).sort((a,b)=>b.at-a.at);
+  const local=await dbAll("trash");
+  const have=new Set(local.map(t=>t.id));
+  /* books binned on another device show up here too */
+  const remote=Object.keys(trashCloud).filter(id=>!have.has(id))
+    .map(id=>({id,at:trashCloud[id].at,book:trashCloud[id].book,elsewhere:true}));
+  const list=[...local,...remote].sort((a,b)=>b.at-a.at);
   if(!q("#trashList"))return;
   const n=q("#trashN");if(n)n.textContent=list.length?`(${list.length})`:"";
   q("#trashList").innerHTML=list.length?list.map(t=>{
     const left=Math.max(0,TRASH_DAYS-Math.floor((Date.now()-(t.at||0))/864e5));
     return `<div class="snap">
       <div><div class="when">${esc((t.book&&t.book.title)||"Untitled")}</div>
-        <div class="meta">${esc((t.book&&t.book.author)||"Unknown author")} · deleted ${fmtWhen(t.at)} · ${left} day${left===1?"":"s"} left</div></div>
+        <div class="meta">${esc((t.book&&t.book.author)||"Unknown author")} · deleted ${fmtWhen(t.at)} · ${left} day${left===1?"":"s"} left${t.elsewhere?" · from another device":""}</div></div>
       <div class="sp">
         <button class="btn" data-tr="${t.id}">Put back</button>
         <button class="btn danger" data-tx="${t.id}" title="Delete for good">✕</button>
@@ -2491,9 +2633,18 @@ async function refreshTrash(){
     </div>`;}).join(""):'<div class="none" style="margin-top:9px">Nothing deleted lately.</div>';
   qa("[data-tr]",box).forEach(b=>b.onclick=async()=>{await restoreTrash(b.dataset.tr);});
   qa("[data-tx]",box).forEach(b=>b.onclick=async()=>{
-    const t=await dbGet("trash",b.dataset.tx);if(!t)return;
+    const id=b.dataset.tx;
+    const t=(await dbGet("trash",id))||(trashCloud[id]?{id,book:trashCloud[id].book}:null);
+    if(!t)return;
     if(!confirm(`Delete “${(t.book&&t.book.title)||"Untitled"}” for good? This can't be undone.`))return;
-    await dbDel("trash",t.id);refreshTrash();refreshStorage();
+    await dbDel("trash",id);
+    if(trashCloud[id]){
+      /* its pictures were being kept only so it could come back — let them go */
+      if(SYNC.on){enqueue({kind:"coverDel",id});imgKeysOf(trashCloud[id].book).forEach(key=>enqueue({kind:"imgDel",key}));}
+      delete trashCloud[id];saveTrashCloud();
+      if(SYNC.on)flushQueue();
+    }
+    refreshTrash();refreshStorage();
   });
 }
 
@@ -2861,6 +3012,17 @@ function renderInsights(){
   if(want.length&&pace)say.push(`Your want-to-read pile holds <b>${want.length}</b> — at your usual pace (~${pace}/year), that's about <b>${Math.max(1,Math.round(want.length/pace*12))} month${Math.round(want.length/pace*12)===1?"":"s"}</b> of reading already queued.`);
   else if(want.length)say.push(`Your want-to-read pile holds <b>${want.length}</b> book${want.length===1?"":"s"}.`);
   if(years[thisYear])say.push(`This year so far: <b>${years[thisYear]}</b> finished.`);
+  /* what the page-by-page records say about the last month */
+  const cut=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
+  let recentPages=0;const activeDays=new Set();
+  books.forEach(b=>{
+    const log=(b.progLog||[]).filter(e2=>e2.d>=cut).sort((x,y)=>x.d.localeCompare(y.d));
+    for(let i=1;i<log.length;i++){
+      const d=(log[i].p||0)-(log[i-1].p||0);
+      if(d>0){recentPages+=d;activeDays.add(log[i].d);}
+    }
+  });
+  if(recentPages>0)say.push(`In the last month you've turned about <b>${recentPages.toLocaleString()} pages</b> across <b>${activeDays.size}</b> day${activeDays.size===1?"":"s"} — roughly ${Math.round(recentPages/Math.max(1,activeDays.size))} pages on a day you read.`);
 
   /* the same figures, written out at length — something you can keep or paste */
   function buildAnalysis(){
@@ -2929,6 +3091,17 @@ function renderInsights(){
     return P.join("\n\n");
   }
 
+  /* say plainly what's missing rather than quietly producing thinner answers */
+  const gaps=[];
+  const noRate=books.length-rated.length;
+  const noDate=fin.filter(b=>!b.dateFinished).length;
+  const noPages=books.filter(b=>!isColl(b)&&!parseInt(b.pages)).length;
+  const noGenre=books.filter(b=>!(b.genres||[]).length).length;
+  if(noRate)gaps.push(`${noRate} unrated`);
+  if(noDate)gaps.push(`${noDate} finished without a date`);
+  if(noPages)gaps.push(`${noPages} with no page count`);
+  if(noGenre)gaps.push(`${noGenre} with no genre`);
+
   const bigYear=yl.length?yl.slice().sort((a,b)=>b[1]-a[1])[0]:null;
   const cards=[
     [String(books.length),"on the shelf"],[String(fin.length),"finished"],
@@ -2947,6 +3120,7 @@ function renderInsights(){
     </div></div>
     <div class="sec"><div class="heading"><h2 class="serif">You, as a reader</h2></div>
       <div class="hcard">${say.map(s=>`<div class="li"><span class="dot" style="background:var(--teal)"></span><div>${s}</div></div>`).join("")||'<span class="none">Add ratings, genres, page counts and finish dates — the more you log, the sharper this gets.</span>'}
+        ${gaps.length?`<div class="hint" style="margin:10px 0 0;color:var(--amber)">This page reads your records, so gaps in them show up here: ${gaps.join(", ")}. Filling those in sharpens everything above.</div>`:""}
         <div class="hint" style="margin:10px 0 0">Worked out entirely from your own shelf, on this device — nothing is sent anywhere.</div>
       </div>
     </div>
@@ -3078,10 +3252,14 @@ function renderEditor(){
         <span id="colStrip"></span>
         <input type="color" id="tcol" value="#44403c" title="Any colour you like">
         <span class="vline"></span>
-        <span class="lbl">Add:</span>
-        <button class="sm" id="edImg" title="Add a picture">🖼 Picture</button>
-        <button class="sm" id="edPad" title="Add a notepad page you can write on and drag anywhere">🗒 Note</button>
-        <button class="sm" id="edBg" title="Give this book's page its own background">🎨 Background</button>
+        <span style="position:relative;display:inline-block">
+          <button class="sm" id="edAdd" title="Add a picture, a note, or a background">＋ Add ▾</button>
+          <div class="dropmenu" id="addMenu" hidden>
+            <button id="edImg">🖼 Picture</button>
+            <button id="edPad">🗒 Note you can drag anywhere</button>
+            <button id="edBg">🎨 Background for this page</button>
+          </div>
+        </span>
         <span class="vline"></span>
         <span class="lbl">Mode:</span>
         <button class="sm" data-mode="arrange" title="Drag, tilt and layer your pictures and notes">✥ Arrange</button>
@@ -3277,6 +3455,13 @@ function renderEditor(){
       setTimeout(()=>{const e2=q("#saveMsg");if(e2&&e2.textContent==="Saved ✓")e2.textContent="Saved";},2000);}
   };
   q("#edDel").onclick=()=>deleteBookById(cur.id);
+  const addMenu=q("#addMenu");
+  q("#edAdd").onclick=e=>{e.stopPropagation();addMenu.hidden=!addMenu.hidden;};
+  document.addEventListener("pointerdown",e=>{
+    if(!addMenu||!document.body.contains(addMenu))return;
+    if(!e.target.closest||!e.target.closest("#addMenu,#edAdd"))addMenu.hidden=true;
+  });
+  qa("button",addMenu).forEach(b=>b.addEventListener("click",()=>{addMenu.hidden=true;}));
   q("#edImg").onclick=()=>q("#imgFile").click();
   /* take the colour off anything highlighted that the selection touches. Touching
      is enough — hunting for the exact ends of an old highlight would be misery. */
@@ -3921,6 +4106,13 @@ function renderEditor(){
     q("#fProg",w).addEventListener("input",e=>{
       const v=e.target.value;
       cur.progress=v===""?"":Math.max(0,parseInt(v)||0);
+      /* one entry per day: enough to work out a pace later, without a fuss */
+      const today=new Date().toISOString().slice(0,10);
+      cur.progLog=cur.progLog||[];
+      const last=cur.progLog[cur.progLog.length-1];
+      if(last&&last.d===today)last.p=cur.progress||0;
+      else cur.progLog.push({d:today,p:cur.progress||0});
+      if(cur.progLog.length>400)cur.progLog=cur.progLog.slice(-400);
       progBarUI();scheduleSave();
     });
     progBarUI();
@@ -4044,7 +4236,8 @@ function renderEditor(){
       <div class="lbl" style="display:block;margin:12px 0 6px">Colour</div>
       <div id="teCol"></div>
       ${isG?"":`<div class="hint" style="margin:8px 0 0">Leave it be and this keyword stays plain grey — <button class="btn" id="tePlain" style="padding:2px 8px;font-size:12px">make it plain again</button></div>`}
-      <button class="btn pri" id="teSave" style="margin-top:12px">Save</button>`;
+      <div class="hrow2" style="margin-top:12px"><button class="btn pri" id="teSave">Save</button>
+        <button class="btn danger" id="teDel" title="Take it off every book and out of the list">🗑 Remove everywhere</button></div>`;
     q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
     drawColorPicker(q("#teCol",box),color||PALETTE[0],c=>{color=c;});
     const tp=q("#tePlain",box);
@@ -4053,6 +4246,16 @@ function renderEditor(){
       box.hidden=true;box.innerHTML="";
       renderKw();
       if(SYNC.on)flushQueue();
+    };
+    q("#teDel",box).onclick=async()=>{
+      if(!confirm(`Remove “${name}” from ${used} book${used===1?"":"s"} and from the ${isG?"genre":"keyword"} list?\n\nThe books themselves are untouched. Undo can bring it back.`))return;
+      box.hidden=true;box.innerHTML="";
+      await relabel(isG?"genres":"keywords",name,"");   /* mapping to nothing drops it */
+      markMetaDel((isG?"genre:":"kw:")+name);
+      if(isG){delete genres[name];saveMeta();renderGenres();}
+      else{delete kwColors[name];saveKwColors();renderKw();}
+      if(SYNC.on)flushQueue();
+      scheduleSave();
     };
     q("#teSave",box).onclick=async()=>{
       const nn=q("#teName",box).value.trim();
@@ -4106,7 +4309,7 @@ function renderEditor(){
     const clean=(name||"").trim();if(!clean)return;
     if(!genres[clean]){
       if(!color){pendingGenre=clean;renderGenres();return;}
-      genres[clean]=color;saveMeta();
+      genres[clean]=color;unmarkMetaDel("genre:"+clean);saveMeta();
     }
     if(!cur.genres.includes(clean))cur.genres.push(clean);
     pendingGenre=null;q("#fGenre").value="";
