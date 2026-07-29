@@ -2741,18 +2741,19 @@ function renderEditor(){
 
   /* ---- auto-fill from Google Books / Open Library ---- */
   const closeFetch=()=>{const p=q("#fetchPanel");if(p){p.hidden=true;p.innerHTML="";}};
-  async function openFetchPanel(){
+  /* `en` given: look up ONE story inside a collection; absent: the whole book */
+  async function openFetchPanel(en){
     const box=q("#fetchPanel");
-    const head=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">🔎 Auto-fill</b>
+    const head=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">🔎 Auto-fill${en?" — "+esc(en.title||"this story"):""}</b>
       <button class="btn" id="fpClose" style="margin-left:auto;padding:4px 10px">Close</button></div>`;
     const wireClose=()=>{const c=q("#fpClose",box);if(c)c.onclick=closeFetch;};
-    const title=(cur.title||"").trim();
-    if(!title){alert("Give the book a title first — that's what it searches by.");return;}
+    const title=((en?en.title:cur.title)||"").trim();
+    if(!title){alert(`Give the ${en?"story":"book"} a title first — that's what it searches by.`);return;}
     box.hidden=false;
     box.innerHTML=head+`<div class="none">Looking up “${esc(title)}”${cur.author?" by "+esc(cur.author):""}…</div>`;
     wireClose();
     let info=null;
-    try{info=await fetchBookInfo(title,(cur.author||"").trim(),(cur.isbn||"").trim());}catch(e){}
+    try{info=await fetchBookInfo(title,(cur.author||"").trim(),en?"":(cur.isbn||"").trim());}catch(e){}
     if(box.hidden)return;   /* closed while we were fetching */
     if(!info){
       box.innerHTML=head+'<div class="none">Nothing found. Check the spelling — and this needs an internet connection.</div>';
@@ -2761,16 +2762,19 @@ function renderEditor(){
     const tagSel=new Set();
     const newTags=info.tags.filter(t=>!cur.keywords.some(k=>k.toLowerCase()===t.toLowerCase()));
     const cov=info.olCover||info.coverUrl;
+    const hadCover=en?!!curEnt[en.id]:!!curCover;
+    const hadSummary=!!stripHtml((en?en.summary:cur.summary)||"").trim();
+    const curPages=en?en.pages:cur.pages;
     box.innerHTML=head+`
       ${cov?`<div class="hrow2" style="margin-bottom:9px"><img src="${esc(cov)}" alt="" style="width:56px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--line)">
-        <button class="btn" id="fpCover">${curCover?"Replace the cover":"Use as cover"}</button></div>`:""}
+        <button class="btn" id="fpCover">${hadCover?"Replace the cover":"Use as cover"}</button></div>`:""}
       ${info.summary?`<div class="lbl" style="display:block;margin-bottom:3px">Blurb</div>
         <div style="font-size:13px;max-height:130px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">${esc(info.summary)}</div>
-        <button class="btn" id="fpSum" style="margin-top:6px">${stripHtml(cur.summary||"").trim()?"Replace my summary":"Use as summary"}</button>`:""}
-      ${newTags.length?`<div class="lbl" style="display:block;margin:11px 0 3px">Tags — tick the ones worth keeping</div>
+        <button class="btn" id="fpSum" style="margin-top:6px">${hadSummary?"Replace my summary":"Use as summary"}</button>`:""}
+      ${newTags.length?`<div class="lbl" style="display:block;margin:11px 0 3px">Tags — tick the ones worth keeping${en?" (they go on the collection)":""}</div>
         <div>${newTags.map(t=>`<button class="mg" data-fpt="${esc(t)}"><span class="bx"></span>${esc(t)}</button>`).join("")}</div>
         <button class="btn" id="fpTags" style="margin-top:6px" disabled>Add ticked as keywords</button>`:""}
-      ${info.pages&&String(info.pages)!==String(cur.pages||"")?`<div style="margin-top:11px"><button class="btn" id="fpPages">Set pages to ${info.pages}</button></div>`:""}
+      ${info.pages&&String(info.pages)!==String(curPages||"")?`<div style="margin-top:11px"><button class="btn" id="fpPages">Set pages to ${info.pages}</button></div>`:""}
       <div class="hint" style="margin:11px 0 0">Found via ${info.source.join(" & ")}${info.year?` · first published ${esc(info.year)}`:""}. Nothing is applied until you press a button.</div>`;
     wireClose();
     const fc=q("#fpCover",box);
@@ -2778,19 +2782,29 @@ function renderEditor(){
       fc.disabled=true;fc.textContent="Fetching…";
       try{
         const data=await urlToDataURL(info.olCover||info.coverUrl,600);
-        await dbPut("covers",{id:cur.id,data});
-        curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);
-        renderCover();
-        if(SYNC.on)enqueue({kind:"cover",id:cur.id});
-        cur.coverV=Date.now();scheduleSave();
+        if(en){
+          en.cover=true;en.coverV=Date.now();
+          await dbPut("images",{key:cur.id+"|"+en.id,data,v:en.coverV});
+          curEnt[en.id]=data;
+          if(SYNC.on)enqueue({kind:"img",key:cur.id+"|"+en.id});
+          renderEntries();
+        }else{
+          await dbPut("covers",{id:cur.id,data});
+          curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);
+          renderCover();
+          if(SYNC.on)enqueue({kind:"cover",id:cur.id});
+          cur.coverV=Date.now();
+        }
+        scheduleSave();
         fc.textContent="Cover set ✓";
       }catch(e){fc.disabled=false;fc.textContent="Couldn't fetch that cover";}
     };
     const fs=q("#fpSum",box);
     if(fs)fs.onclick=()=>{
-      if(stripHtml(cur.summary||"").trim()&&!confirm("Replace your current summary with the fetched blurb?"))return;
-      cur.summary=esc(info.summary).replace(/\n/g,"<br>");
-      const el=q("#fSummary");if(el)el.innerHTML=cur.summary;
+      if(hadSummary&&!confirm("Replace the current summary with the fetched blurb?"))return;
+      const html=esc(info.summary).replace(/\n/g,"<br>");
+      if(en){en.summary=html;renderEntries();}
+      else{cur.summary=html;const el=q("#fSummary");if(el)el.innerHTML=html;}
       scheduleSave();fs.textContent="Summary set ✓";fs.disabled=true;
     };
     qa("[data-fpt]",box).forEach(b=>b.onclick=()=>{
@@ -2808,9 +2822,13 @@ function renderEditor(){
     };
     const fp=q("#fpPages",box);
     if(fp)fp.onclick=()=>{
-      cur.pages=parseInt(info.pages)||"";
-      const el=q("#fPages");if(el)el.value=cur.pages;
-      renderProgress();scheduleSave();
+      if(en){en.pages=parseInt(info.pages)||"";renderEntries();}
+      else{
+        cur.pages=parseInt(info.pages)||"";
+        const el=q("#fPages");if(el)el.value=cur.pages;
+        renderProgress();
+      }
+      scheduleSave();
       fp.textContent="Pages set ✓";fp.disabled=true;
     };
   }
@@ -2960,6 +2978,7 @@ function renderEditor(){
             <input class="field" data-et="${en.id}" placeholder="Title" value="${esc(en.title)}" style="flex:1;min-width:110px;font-size:14px;padding:7px 10px">
             <span class="ratebox" style="padding:3px 9px">★ <input type="number" data-er="${en.id}" min="0" max="10" step="0.1" placeholder="–" value="${en.rating??""}" style="width:50px;font-size:14px"></span>
             <span class="boxbtn" style="cursor:default;padding:5px 9px">Pages <input type="number" data-ep="${en.id}" min="1" placeholder="–" value="${esc(en.pages||"")}" style="border:none;width:50px;text-align:center;font-weight:600"></span>
+            <button class="cnt" data-ef="${en.id}" title="Look this story up online — blurb, pages, cover">🔎</button>
             <button class="cnt" data-eu="${en.id}" title="Move up" ${i===0?"disabled":""}>↑</button>
             <button class="cnt" data-ed="${en.id}" title="Move down" ${i===cur.entries.length-1?"disabled":""}>↓</button>
             <button class="lx" data-ex="${en.id}" style="opacity:1" title="Remove this one">✕</button>
@@ -2996,6 +3015,7 @@ function renderEditor(){
     };
     qa("[data-eu]",list).forEach(el=>el.onclick=()=>move(el.dataset.eu,-1));
     qa("[data-ed]",list).forEach(el=>el.onclick=()=>move(el.dataset.ed,1));
+    qa("[data-ef]",list).forEach(el=>el.onclick=()=>{const e2=find(el.dataset.ef);if(e2)openFetchPanel(e2);});
     /* type a position into the number and the story jumps there */
     qa("[data-en]",list).forEach(el=>el.addEventListener("change",()=>{
       const i=cur.entries.findIndex(x=>x.id===el.dataset.en);
