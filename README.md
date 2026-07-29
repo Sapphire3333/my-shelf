@@ -53,7 +53,10 @@ like a scrapbook, and pull your history in from Goodreads or StoryGraph.
   notes and fandoms — you choose the scopes
 - Browse by author, series, genre combinations, rating buckets, book length
 - Stats corner: averages, most-read author, highest-rated genre, books per year
-- 🎲 *Pick for me* — a random suggestion from your want-to-read pile
+- 🎲 *Pick for me* — its own tab: tick genres and tags for the mood, get a
+  random suggestion from your want-to-read pile
+- 🔎 *Auto-fill* — one click looks a book up (Google Books + Open Library) and
+  offers its blurb, tags, page count and cover for you to apply
 - Library views: list or cover grid, sorted and grouped how you like
 
 **Safety nets**

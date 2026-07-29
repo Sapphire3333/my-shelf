@@ -462,8 +462,8 @@
   .coverbox:hover .covx{opacity:1}
   .covx:hover{color:var(--rose);border-color:#fda4af}
   @media(hover:none){.covx{opacity:1}}
-  /* five tabs still fit on a phone */
-  @media(max-width:640px){.tab{font-size:11.5px;padding:8px 2px}}
+  /* six tabs still fit on a phone */
+  @media(max-width:640px){.tab{font-size:10.5px;padding:7px 1px}}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
@@ -1411,6 +1411,7 @@ function render(){
         <button class="tab ${view==="library"?"on":""}" data-v="library">📚 Library</button>
         <button class="tab ${view==="history"?"on":""}" data-v="history">🕘 History</button>
         <button class="tab ${view==="search"?"on":""}" data-v="search">🔍 Search &amp; stats</button>
+        <button class="tab ${view==="pick"?"on":""}" data-v="pick">🎲 Pick</button>
         <button class="tab ${view==="insights"?"on":""}" data-v="insights">✨ Insights</button>
       </div>
       <div class="bkrow">
@@ -1430,7 +1431,7 @@ function render(){
   q("#uBtn").onclick=doUndo;q("#rBtn").onclick=doRedo;refreshHistBtns();
   const so=q("#signOut");if(so)so.onclick=signOut;updateSyncUI();
   applyBg();
-  if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else if(view==="insights")renderInsights();else renderSearchView();
+  if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else if(view==="insights")renderInsights();else if(view==="pick")renderPick();else renderSearchView();
 }
 
 /* =============== shared row / card html =============== */
@@ -1501,6 +1502,29 @@ function wireOpen(root,withDel){
 /* Fold several existing books into ONE collection entry. Their notes, ratings,
    pages and covers become the collection's stories; their own pages go to the
    bin (30 days, restorable) so nothing shows up twice. */
+/* turn an existing book into a collection entry — cover copied under the collection */
+async function bookToEntry(b,collId){
+  const en=blankEntry();
+  en.title=b.title;en.rating=b.rating;en.pages=b.pages;
+  en.summary=b.summary||"";en.notes=b.canvasText||"";
+  let coverData=null;
+  const cov=await dbGet("covers",b.id);
+  if(cov&&cov.data){
+    en.cover=true;en.coverV=Date.now();coverData=cov.data;
+    try{await dbPut("images",{key:collId+"|"+en.id,data:cov.data,v:en.coverV});
+      if(SYNC.on)enqueue({kind:"img",key:collId+"|"+en.id});}catch(e){en.cover=false;coverData=null;}
+  }
+  return {en,coverData};
+}
+/* a folded-away book loses its own page: bin (30 days) + synced deletion */
+async function retireBook(b){
+  await toTrash(b);
+  await dbDel("books",b.id);
+  books=books.filter(x=>x.id!==b.id);
+  if(SYNC.on){deletions[b.id]=Date.now();saveDeletions();
+    enqueue({kind:"bookDel",id:b.id});enqueue({kind:"coverDel",id:b.id});
+    imgKeysOf(b).forEach(key=>enqueue({kind:"imgDel",key}));}
+}
 async function makeCollectionFrom(ids,name,author){
   const sel=ids.map(id=>books.find(b=>b.id===id)).filter(Boolean);
   if(!sel.length)return null;
@@ -1516,30 +1540,12 @@ async function makeCollectionFrom(ids,name,author){
   nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":sel.some(b=>statusOf(b)==="reading")?"reading":"want";
   nb.dateFinished=sel.map(b=>b.dateFinished||"").sort().pop()||"";
   nb.entries=[];
-  for(const b of sel){
-    const en=blankEntry();
-    en.title=b.title;en.rating=b.rating;en.pages=b.pages;
-    en.summary=b.summary||"";en.notes=b.canvasText||"";
-    const cov=await dbGet("covers",b.id);
-    if(cov&&cov.data){
-      en.cover=true;en.coverV=Date.now();
-      try{await dbPut("images",{key:nb.id+"|"+en.id,data:cov.data,v:en.coverV});
-        if(SYNC.on)enqueue({kind:"img",key:nb.id+"|"+en.id});}catch(e){en.cover=false;}
-    }
-    nb.entries.push(en);
-  }
+  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id)).en);
   nb.modified=Date.now();
   await dbPut("books",nb);
   books.unshift(nb);
   if(SYNC.on)enqueue({kind:"book",id:nb.id});
-  for(const b of sel){
-    await toTrash(b);
-    await dbDel("books",b.id);
-    books=books.filter(x=>x.id!==b.id);
-    if(SYNC.on){deletions[b.id]=Date.now();saveDeletions();
-      enqueue({kind:"bookDel",id:b.id});enqueue({kind:"coverDel",id:b.id});
-      imgKeysOf(b).forEach(key=>enqueue({kind:"imgDel",key}));}
-  }
+  for(const b of sel)await retireBook(b);
   if(SYNC.on)flushQueue();
   return nb.id;
 }
@@ -2195,22 +2201,6 @@ function renderSearchBody(){
       const audCounts={};books.forEach(b=>{const a=(b.audience||"").trim();if(a)audCounts[a]=(audCounts[a]||0)+1;});
       const audAll=[...new Set([...DEFAULT_AUD,...audCustom,...Object.keys(audCounts)])];
       html+=`<div class="sec"><h2 class="serif">Who it's for</h2>${audAll.map(a=>{const n=audCounts[a]||0;return `<button class="aut" data-aud="${esc(a)}" ${n?"":'disabled style="opacity:.4;cursor:default"'}>${esc(a)} <b>${n}</b></button>`;}).join("")}</div>`;
-      if(books.length){
-        const allKw=[...new Set(books.flatMap(b=>b.keywords||[]))].sort((a,b)=>a.localeCompare(b));
-        html+=`<div class="sec pickbox"><h2 class="serif" style="margin-bottom:8px">🎲 Pick for me</h2>
-          ${allG.length?`<div class="lbl" style="display:block;margin-bottom:4px">Genres — tick any; a book counts if it carries one of them</div>
-          <div>${allG.map(g=>{const on=S.pickGenres.includes(g);
-            return `<button class="mg ${on?"on":""}" data-pg="${esc(g)}" style="${on?`background:${genres[g]};border-color:${genres[g]}`:""}"><span class="bx">${on?"✓":""}</span>${esc(g)}</button>`;}).join("")}</div>`:""}
-          ${allKw.length?`<button class="btn" id="pkTagTog" style="margin-top:8px;padding:4px 10px;font-size:12px">${S.pickKwOpen?"▾":"▸"} Tags${S.pickKws.length?` · ${S.pickKws.length} ticked`:""} (${allKw.length})</button>
-          ${S.pickKwOpen?`<div style="margin-top:6px">${allKw.map(k=>{const on=S.pickKws.includes(k);
-            return `<button class="mg ${on?"on":""}" data-pk="${esc(k)}" style="${on?"background:var(--teal);border-color:var(--teal);color:#fff":""}"><span class="bx">${on?"✓":""}</span>${esc(k)}</button>`;}).join("")}</div>`:""}`:""}
-          <div class="inrow" style="margin-top:10px">
-            <label style="font-size:13px;color:var(--mut);display:flex;gap:5px;align-items:center"><input type="checkbox" id="pkw" ${S.pickWant?"checked":""}> from my want-to-read pile</label>
-            <button class="pickbtn" id="pkb">${S.picked&&S.picked!=="none"?"Pick again":"Pick"}</button>
-          </div>
-          <div id="pkres" style="margin-top:10px">${S.picked==="none"?'<span class="none">Nothing matches — untick a filter or two.</span>':S.picked?rowHtml(S.picked,false):""}</div>
-        </div>`;
-      }
       html+=`<div class="sec"><h2 class="serif">Authors <span class="n" style="font-weight:400;font-size:13px;color:var(--faint)">(${authorList.length})</span></h2>
         <input class="field" id="aq" placeholder="Filter authors…" value="${esc(S.authorQ)}" style="margin-bottom:8px;font-size:13px;padding:7px 11px">
         <div id="authChips"></div></div>`;
@@ -2280,21 +2270,6 @@ function renderSearchBody(){
   qa("[data-len]",m).forEach(b=>b.onclick=()=>{const v=b.dataset.len;
     if(v==="none")pick({type:"pages",value:"none",label:"No page count"});
     else{const bk=LEN_BUCKETS[+v];pick({type:"pages",value:bk,label:`Length: ${bk.label} pages`});}});
-  qa("[data-pg]",m).forEach(b=>b.onclick=()=>{const g=b.dataset.pg;
-    S.pickGenres=S.pickGenres.includes(g)?S.pickGenres.filter(x=>x!==g):[...S.pickGenres,g];renderSearchBody();});
-  qa("[data-pk]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.pk;
-    S.pickKws=S.pickKws.includes(k)?S.pickKws.filter(x=>x!==k):[...S.pickKws,k];renderSearchBody();});
-  const ptt=q("#pkTagTog",m);if(ptt)ptt.onclick=()=>{S.pickKwOpen=!S.pickKwOpen;renderSearchBody();};
-  const pkb=q("#pkb",m);
-  if(pkb){
-    q("#pkw",m).onchange=e=>S.pickWant=e.target.checked;
-    pkb.onclick=()=>{let pool=books.filter(b=>!b.dnf);
-      if(S.pickWant)pool=pool.filter(b=>statusOf(b)==="want");
-      if(S.pickGenres.length)pool=pool.filter(b=>(b.genres||[]).some(g=>S.pickGenres.includes(g)));
-      if(S.pickKws.length)pool=pool.filter(b=>(b.keywords||[]).some(k=>S.pickKws.includes(k)));
-      S.picked=pool.length?pool[Math.floor(Math.random()*pool.length)]:"none";
-      renderSearchBody();};
-  }
   const aq=q("#aq",m);
   if(aq){
     const renderAuth=()=>{const box=q("#authChips",m);
@@ -2304,6 +2279,44 @@ function renderSearchBody(){
     aq.oninput=()=>{S.authorQ=aq.value;renderAuth();};
     renderAuth();
   }
+  wireOpen(m,false);
+  hydrateCovers(m);
+}
+
+/* =============== pick for me — its own tab =============== */
+function renderPick(){
+  const m=q("#main");
+  if(!books.length){m.innerHTML='<div class="empty">📖<br>Add some books first — then I can pick one for you.</div>';return;}
+  const allG=Object.keys(genres).sort((a,b)=>a.localeCompare(b));
+  const allKw=[...new Set(books.flatMap(b=>b.keywords||[]))].sort((a,b)=>a.localeCompare(b));
+  m.innerHTML=`<div class="sec pickbox"><h2 class="serif" style="margin-bottom:8px">🎲 Pick for me</h2>
+    <div class="hint" style="margin:0 0 8px">Can't decide? Narrow the mood below (or don't) and let the dice choose. DNF books are never picked.</div>
+    ${allG.length?`<div class="lbl" style="display:block;margin-bottom:4px">Genres — tick any; a book counts if it carries one of them</div>
+    <div>${allG.map(g=>{const on=S.pickGenres.includes(g);
+      return `<button class="mg ${on?"on":""}" data-pg="${esc(g)}" style="${on?`background:${genres[g]};border-color:${genres[g]}`:""}"><span class="bx">${on?"✓":""}</span>${esc(g)}</button>`;}).join("")}</div>`:""}
+    ${allKw.length?`<button class="btn" id="pkTagTog" style="margin-top:8px;padding:4px 10px;font-size:12px">${S.pickKwOpen?"▾":"▸"} Tags${S.pickKws.length?` · ${S.pickKws.length} ticked`:""} (${allKw.length})</button>
+    ${S.pickKwOpen?`<div style="margin-top:6px">${allKw.map(k=>{const on=S.pickKws.includes(k);
+      return `<button class="mg ${on?"on":""}" data-pk="${esc(k)}" style="${on?"background:var(--teal);border-color:var(--teal);color:#fff":""}"><span class="bx">${on?"✓":""}</span>${esc(k)}</button>`;}).join("")}</div>`:""}`:""}
+    <div class="inrow" style="margin-top:10px">
+      <label style="font-size:13px;color:var(--mut);display:flex;gap:5px;align-items:center"><input type="checkbox" id="pkw" ${S.pickWant?"checked":""}> from my want-to-read pile</label>
+      <button class="pickbtn" id="pkb">${S.picked&&S.picked!=="none"?"Pick again":"Pick"}</button>
+    </div>
+    <div id="pkres" style="margin-top:10px">${S.picked==="none"?'<span class="none">Nothing matches — untick a filter or two.</span>':S.picked?rowHtml(S.picked,false):""}</div>
+  </div>`;
+  qa("[data-pg]",m).forEach(b=>b.onclick=()=>{const g=b.dataset.pg;
+    S.pickGenres=S.pickGenres.includes(g)?S.pickGenres.filter(x=>x!==g):[...S.pickGenres,g];renderPick();});
+  qa("[data-pk]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.pk;
+    S.pickKws=S.pickKws.includes(k)?S.pickKws.filter(x=>x!==k):[...S.pickKws,k];renderPick();});
+  const ptt=q("#pkTagTog",m);if(ptt)ptt.onclick=()=>{S.pickKwOpen=!S.pickKwOpen;renderPick();};
+  q("#pkw",m).onchange=e=>S.pickWant=e.target.checked;
+  q("#pkb",m).onclick=()=>{
+    let pool=books.filter(b=>!b.dnf);
+    if(S.pickWant)pool=pool.filter(b=>statusOf(b)==="want");
+    if(S.pickGenres.length)pool=pool.filter(b=>(b.genres||[]).some(g=>S.pickGenres.includes(g)));
+    if(S.pickKws.length)pool=pool.filter(b=>(b.keywords||[]).some(k=>S.pickKws.includes(k)));
+    S.picked=pool.length?pool[Math.floor(Math.random()*pool.length)]:"none";
+    renderPick();
+  };
   wireOpen(m,false);
   hydrateCovers(m);
 }
@@ -2513,6 +2526,8 @@ function renderEditor(){
     <div class="bgpanel" id="bgPanel" hidden></div>
     <div class="bgpanel" id="padPanel" hidden></div>
     <div class="bgpanel" id="cutPanel" hidden></div>
+    <div class="bgpanel" id="fetchPanel" hidden></div>
+    <div class="bgpanel" id="foldPanel" hidden></div>
 
     <div class="edhead">
       <div class="coverbox" id="coverBox"></div>
@@ -2524,6 +2539,7 @@ function renderEditor(){
             <div class="sug" id="authSug" hidden></div>
           </div>
           <button class="sm" id="authBooks" title="Everything on your shelf by this author — open, link as a series, fold into a collection, or tidy duplicate spellings">📚 By this author</button>
+          <button class="sm" id="autoFill" title="Look this book up online and offer its blurb, tags, page count and cover">🔎 Auto-fill</button>
         </div>
         <div class="chkrow" id="kindRow"></div>
         <div id="ffWrap"></div>
@@ -2716,6 +2732,83 @@ function renderEditor(){
     finishSaveThen(()=>openAuthorPanel(a));
   };
 
+  /* ---- auto-fill from Google Books / Open Library ---- */
+  const closeFetch=()=>{const p=q("#fetchPanel");if(p){p.hidden=true;p.innerHTML="";}};
+  async function openFetchPanel(){
+    const box=q("#fetchPanel");
+    const head=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">🔎 Auto-fill</b>
+      <button class="btn" id="fpClose" style="margin-left:auto;padding:4px 10px">Close</button></div>`;
+    const wireClose=()=>{const c=q("#fpClose",box);if(c)c.onclick=closeFetch;};
+    const title=(cur.title||"").trim();
+    if(!title){alert("Give the book a title first — that's what it searches by.");return;}
+    box.hidden=false;
+    box.innerHTML=head+`<div class="none">Looking up “${esc(title)}”${cur.author?" by "+esc(cur.author):""}…</div>`;
+    wireClose();
+    let info=null;
+    try{info=await fetchBookInfo(title,(cur.author||"").trim(),(cur.isbn||"").trim());}catch(e){}
+    if(box.hidden)return;   /* closed while we were fetching */
+    if(!info){
+      box.innerHTML=head+'<div class="none">Nothing found. Check the spelling — and this needs an internet connection.</div>';
+      wireClose();return;
+    }
+    const tagSel=new Set();
+    const newTags=info.tags.filter(t=>!cur.keywords.some(k=>k.toLowerCase()===t.toLowerCase()));
+    const cov=info.olCover||info.coverUrl;
+    box.innerHTML=head+`
+      ${cov?`<div class="hrow2" style="margin-bottom:9px"><img src="${esc(cov)}" alt="" style="width:56px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--line)">
+        <button class="btn" id="fpCover">${curCover?"Replace the cover":"Use as cover"}</button></div>`:""}
+      ${info.summary?`<div class="lbl" style="display:block;margin-bottom:3px">Blurb</div>
+        <div style="font-size:13px;max-height:130px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">${esc(info.summary)}</div>
+        <button class="btn" id="fpSum" style="margin-top:6px">${stripHtml(cur.summary||"").trim()?"Replace my summary":"Use as summary"}</button>`:""}
+      ${newTags.length?`<div class="lbl" style="display:block;margin:11px 0 3px">Tags — tick the ones worth keeping</div>
+        <div>${newTags.map(t=>`<button class="mg" data-fpt="${esc(t)}"><span class="bx"></span>${esc(t)}</button>`).join("")}</div>
+        <button class="btn" id="fpTags" style="margin-top:6px" disabled>Add ticked as keywords</button>`:""}
+      ${info.pages&&String(info.pages)!==String(cur.pages||"")?`<div style="margin-top:11px"><button class="btn" id="fpPages">Set pages to ${info.pages}</button></div>`:""}
+      <div class="hint" style="margin:11px 0 0">Found via ${info.source.join(" & ")}${info.year?` · first published ${esc(info.year)}`:""}. Nothing is applied until you press a button.</div>`;
+    wireClose();
+    const fc=q("#fpCover",box);
+    if(fc)fc.onclick=async()=>{
+      fc.disabled=true;fc.textContent="Fetching…";
+      try{
+        const data=await urlToDataURL(info.olCover||info.coverUrl,600);
+        await dbPut("covers",{id:cur.id,data});
+        curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);
+        renderCover();
+        if(SYNC.on)enqueue({kind:"cover",id:cur.id});
+        cur.coverV=Date.now();scheduleSave();
+        fc.textContent="Cover set ✓";
+      }catch(e){fc.disabled=false;fc.textContent="Couldn't fetch that cover";}
+    };
+    const fs=q("#fpSum",box);
+    if(fs)fs.onclick=()=>{
+      if(stripHtml(cur.summary||"").trim()&&!confirm("Replace your current summary with the fetched blurb?"))return;
+      cur.summary=esc(info.summary).replace(/\n/g,"<br>");
+      const el=q("#fSummary");if(el)el.innerHTML=cur.summary;
+      scheduleSave();fs.textContent="Summary set ✓";fs.disabled=true;
+    };
+    qa("[data-fpt]",box).forEach(b=>b.onclick=()=>{
+      const t=b.dataset.fpt;
+      tagSel.has(t)?tagSel.delete(t):tagSel.add(t);
+      b.classList.toggle("on",tagSel.has(t));
+      q(".bx",b).textContent=tagSel.has(t)?"✓":"";
+      b.style.cssText=tagSel.has(t)?"background:var(--teal);border-color:var(--teal);color:#fff":"";
+      const ft2=q("#fpTags",box);if(ft2)ft2.disabled=!tagSel.size;
+    });
+    const ft=q("#fpTags",box);
+    if(ft)ft.onclick=()=>{
+      tagSel.forEach(addKw);
+      ft.textContent=`Added ${tagSel.size} ✓`;ft.disabled=true;tagSel.clear();
+    };
+    const fp=q("#fpPages",box);
+    if(fp)fp.onclick=()=>{
+      cur.pages=parseInt(info.pages)||"";
+      const el=q("#fPages");if(el)el.value=cur.pages;
+      renderProgress();scheduleSave();
+      fp.textContent="Pages set ✓";fp.disabled=true;
+    };
+  }
+  q("#autoFill").onclick=()=>{const p=q("#fetchPanel");p.hidden?openFetchPanel():closeFetch();};
+
   /* book / fanfic / AI story */
   function renderKind(){
     q("#kindRow").innerHTML=KINDS.map(([id,l])=>
@@ -2845,7 +2938,10 @@ function renderEditor(){
     w.innerHTML=`<div class="cap2">What's inside${cur.series?" — "+esc(cur.series):""}</div>
       <div class="hint">Each book or story this one entry covers, with its own title, rating, summary, notes and cover.</div>
       <div class="entbox"><div id="entList"></div>
-        <button class="btn pri" id="entAdd" style="margin-top:4px">＋ Add a book / story</button></div>`;
+        <div class="hrow2" style="margin-top:4px">
+          <button class="btn pri" id="entAdd">＋ Add a book / story</button>
+          <button class="btn" id="entFold" title="Move a book that has its own page into this collection">⤵ Fold in a book from your shelf…</button>
+        </div></div>`;
     const list=q("#entList");
     list.innerHTML=cur.entries.map((en,i)=>`
       <div class="ent">
@@ -2856,6 +2952,8 @@ function renderEditor(){
             <input class="field" data-et="${en.id}" placeholder="Title" value="${esc(en.title)}" style="flex:1;min-width:110px;font-size:14px;padding:7px 10px">
             <span class="ratebox" style="padding:3px 9px">★ <input type="number" data-er="${en.id}" min="0" max="10" step="0.1" placeholder="–" value="${en.rating??""}" style="width:50px;font-size:14px"></span>
             <span class="boxbtn" style="cursor:default;padding:5px 9px">Pages <input type="number" data-ep="${en.id}" min="1" placeholder="–" value="${esc(en.pages||"")}" style="border:none;width:50px;text-align:center;font-weight:600"></span>
+            <button class="cnt" data-eu="${en.id}" title="Move up" ${i===0?"disabled":""}>↑</button>
+            <button class="cnt" data-ed="${en.id}" title="Move down" ${i===cur.entries.length-1?"disabled":""}>↓</button>
             <button class="lx" data-ex="${en.id}" style="opacity:1" title="Remove this one">✕</button>
           </div>
           <div class="entrich" contenteditable="true" data-es="${en.id}" data-ph="Summary…"></div>
@@ -2881,10 +2979,59 @@ function renderEditor(){
       cur.entries=cur.entries.filter(x=>x.id!==en.id);
       renderEntries();scheduleSave();
     });
+    const move=(id,dir)=>{
+      const i=cur.entries.findIndex(x=>x.id===id);
+      const j=i+dir;
+      if(i<0||j<0||j>=cur.entries.length)return;
+      [cur.entries[i],cur.entries[j]]=[cur.entries[j],cur.entries[i]];
+      renderEntries();scheduleSave();
+    };
+    qa("[data-eu]",list).forEach(el=>el.onclick=()=>move(el.dataset.eu,-1));
+    qa("[data-ed]",list).forEach(el=>el.onclick=()=>move(el.dataset.ed,1));
     q("#entAdd").onclick=()=>{
       cur.entries.push(blankEntry());renderEntries();scheduleSave();
       const ins=qa("[data-et]",q("#entList"));if(ins.length)ins[ins.length-1].focus();
     };
+    q("#entFold").onclick=openFoldPanel;
+  }
+  /* pick a book that has its own page and fold it into this collection */
+  function openFoldPanel(){
+    const box=q("#foldPanel");box.hidden=false;
+    let fq="";
+    const draw=()=>{
+      const ql=fq.trim().toLowerCase();
+      const pool=books.filter(b=>b.id!==cur.id&&!isColl(b)
+        &&(!ql||(b.title||"").toLowerCase().includes(ql)||(b.author||"").toLowerCase().includes(ql)))
+        .sort((a,b)=>(a.title||"").localeCompare(b.title||""));
+      box.innerHTML=`
+        <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">⤵ Fold a book into this collection</b>
+          <button class="btn" id="fdClose" style="margin-left:auto;padding:4px 10px">Close</button></div>
+        <div class="hint" style="margin:0 0 7px">Its notes, rating, pages and cover become a story in here; its own page moves to Recently deleted (restorable for ${TRASH_DAYS} days).</div>
+        <input class="field" id="fdSearch" placeholder="Search by title or author…" value="${esc(fq)}" style="font-size:13px;padding:7px 11px;margin-bottom:7px">
+        ${pool.slice(0,30).map(b=>`<div class="snap" style="padding:6px 10px">
+          <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(b.title)||"Untitled"}</div>
+            <div class="meta">${esc(b.author)||"Unknown author"}${b.rating!=null?` · ★ ${Number(b.rating).toFixed(1)}`:""}</div></div>
+          <button class="btn" data-fb="${b.id}" style="padding:3px 9px">Fold in</button>
+        </div>`).join("")||'<div class="none">Nothing matches.</div>'}
+        ${pool.length>30?`<div class="none" style="margin-top:5px">…and ${pool.length-30} more — search to narrow it.</div>`:""}`;
+      q("#fdClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+      const se=q("#fdSearch",box);
+      se.oninput=()=>{fq=se.value;draw();
+        const s2=q("#fdSearch",box);if(s2){s2.focus();s2.setSelectionRange(s2.value.length,s2.value.length);}};
+      qa("[data-fb]",box).forEach(btn=>btn.onclick=async()=>{
+        const b=books.find(x=>x.id===btn.dataset.fb);if(!b)return;
+        if(!confirm(`Fold “${b.title||"Untitled"}” into this collection?\n\nIts own page moves to Recently deleted — notes, rating, pages and cover carry over.`))return;
+        btn.disabled=true;
+        const {en,coverData}=await bookToEntry(b,cur.id);
+        cur.entries.push(en);
+        if(coverData)curEnt[en.id]=coverData;
+        await retireBook(b);
+        if(SYNC.on)flushQueue();
+        renderEntries();scheduleSave();
+        draw();
+      });
+    };
+    draw();
   }
   renderEntries();
 
@@ -3632,6 +3779,64 @@ async function importCollection(items,name){
   if(SYNC.on)enqueue({kind:"book",id:nb.id});
   const ids=new Set(items.map(x=>x.id));
   importQueue=importQueue.filter(x=>!ids.has(x.id));
+}
+
+/* =============== look a book up online (Google Books + Open Library) =============== */
+/* Both are free, keyless and CORS-friendly. StoryGraph/Goodreads have no public
+   API — this is the honest way to auto-fill a blurb, tags, pages and a cover. */
+async function fetchBookInfo(title,author,isbn){
+  const out={summary:"",tags:[],pages:"",coverUrl:"",olCover:"",year:"",source:[]};
+  try{
+    const qs=isbn?`isbn:${isbn}`:`intitle:"${title}"${author?` inauthor:"${author}"`:""}`;
+    const r=await fetch("https://www.googleapis.com/books/v1/volumes?maxResults=5&q="+encodeURIComponent(qs));
+    const j=await r.json();
+    const items=(j.items||[]).map(x=>x.volumeInfo||{});
+    const vi=items.find(v=>v.description)||items[0];
+    if(vi){
+      out.summary=String(vi.description||"").trim();
+      out.tags=(vi.categories||[]).flatMap(c=>String(c).split("/").map(s=>s.trim())).filter(Boolean);
+      out.pages=vi.pageCount||"";
+      const im=vi.imageLinks||{};
+      out.coverUrl=String(im.thumbnail||im.smallThumbnail||"").replace(/^http:/,"https:");
+      out.year=String(vi.publishedDate||"").slice(0,4);
+      out.source.push("Google Books");
+    }
+  }catch(e){}
+  try{
+    /* subjects only come back when asked for explicitly via `fields` */
+    const u="https://openlibrary.org/search.json?limit=3&fields=key,subject,cover_i,number_of_pages_median,first_publish_year&"
+      +(isbn?"q="+encodeURIComponent(isbn)
+      :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):""));
+    const r=await fetch(u);
+    const j=await r.json();
+    const d=(j.docs||[])[0];
+    if(d){
+      out.tags=[...new Set([...out.tags,...(d.subject||[]).map(s=>String(s).trim())])];
+      if(!out.pages&&d.number_of_pages_median)out.pages=d.number_of_pages_median;
+      if(d.cover_i)out.olCover="https://covers.openlibrary.org/b/id/"+d.cover_i+"-L.jpg";
+      if(!out.year&&d.first_publish_year)out.year=String(d.first_publish_year);
+      out.source.push("Open Library");
+      /* Google's keyless quota is shared and often runs dry — the Open Library
+         work record has a blurb of its own */
+      if(!out.summary&&d.key){
+        try{
+          const w=await(await fetch("https://openlibrary.org"+d.key+".json")).json();
+          const desc=w&&w.description;
+          out.summary=String(typeof desc==="string"?desc:(desc&&desc.value)||"").trim();
+        }catch(e){}
+      }
+    }
+  }catch(e){}
+  out.tags=[...new Set(out.tags.map(t=>t.replace(/\s+/g," ").trim()))]
+    .filter(t=>t&&t.length<=30&&!/^(fiction|general)$/i.test(t)).slice(0,15);
+  return (out.summary||out.tags.length||out.pages||out.olCover||out.coverUrl)?out:null;
+}
+async function urlToDataURL(url,maxDim){
+  const r=await fetch(url);
+  if(!r.ok)throw new Error("cover fetch failed");
+  const bl=await r.blob();
+  if(!bl.type.startsWith("image/"))throw new Error("not an image");
+  return compressImage(bl,maxDim||600,.85);
 }
 
 /* =============== quick add — a book from pasted text or a photo =============== */
