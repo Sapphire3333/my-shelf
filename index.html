@@ -343,6 +343,23 @@
   @media(max-width:640px){#fab{right:10px;bottom:10px}}
   /* so a jumped-to heading doesn't hide under the sticky toolbar */
   [data-gh],#secDetails,#secSummary,#secLists,#secQuotes,#secNotes,#entWrap{scroll-margin-top:150px}
+  /* loose pictures over the library page — they can sit out in the margins, and
+     they only take clicks while Pictures mode is on */
+  #main{position:relative}
+  #libArtLayer{position:absolute;left:0;top:0;width:100%;height:0;z-index:6;pointer-events:none;overflow:visible}
+  .libpic{position:absolute;pointer-events:none}
+  #main.artmode .libpic{pointer-events:auto;cursor:move;touch-action:none}
+  .libpic img{width:100%;height:auto;display:block;border-radius:10px;box-shadow:0 2px 9px rgba(0,0,0,.2)}
+  #main.artmode .libpic img{outline:2px solid #2dd4bf}
+  .lptag{position:absolute;bottom:5px;left:5px;background:rgba(0,0,0,.62);color:#fff;font-size:10px;
+    border-radius:5px;padding:1px 6px;white-space:nowrap;max-width:90%;overflow:hidden;text-overflow:ellipsis}
+  .lpbar{position:absolute;top:-30px;left:0;display:none;gap:3px;background:#292524;border-radius:7px;padding:3px 5px}
+  #main.artmode .lpbar{display:flex}
+  .lpbar button{color:#fff;border-radius:5px;padding:2px 7px;font-size:12px}
+  .lpbar button:hover{background:#57534e}
+  .lpgrip{position:absolute;right:-7px;bottom:-7px;width:17px;height:17px;background:#14b8a6;border-radius:5px;
+    display:none;cursor:nwse-resize;touch-action:none;box-shadow:0 1px 3px rgba(0,0,0,.35)}
+  #main.artmode .lpgrip{display:block}
   .foot{margin-top:40px;font-size:11px;color:var(--faint);text-align:center}
   .kw{display:inline-flex;align-items:center;gap:3px;border:1px solid #d6d3d1;background:#fafaf9;color:#57534e;font-weight:700;font-size:10px;border-radius:5px;padding:0 5px;margin:1px}
   .prog{display:inline-block;height:7px;border-radius:999px;background:var(--line);overflow:hidden;vertical-align:middle}
@@ -617,6 +634,8 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
 <div id="app"></div>
 <div class="bgpanel" id="authPanel" hidden></div>
 <div class="bgpanel" id="gartPanel" hidden></div>
+<div class="bgpanel" id="cropPanel2" hidden></div>
+<div class="bgpanel" id="libGroupPanel" hidden></div>
 <div class="bgpanel" id="quickPanel" hidden></div>
 <div id="fab" hidden>
   <div id="fabMenu" hidden></div>
@@ -631,6 +650,7 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
 <input type="file" id="entCoverFile" accept="image/*" hidden>
 <input type="file" id="csvFile" accept=".csv,text/csv" hidden>
 <input type="file" id="gartFile" accept="image/*" hidden>
+<input type="file" id="libArtFile" accept="image/*" multiple hidden>
 
 <script>
 /* =============== constants & helpers =============== */
@@ -941,6 +961,12 @@ const kwStyle=k=>{
 let settings={autoBackup:true,keepAuto:3,bg:{id:"none",opacity:100},theme:"auto"};
 let groupArt={};               /* "genre|Fantasy" -> {img:<id>,h:<px>}; picture at "__gart|<id>" */
 const gartCache=new Map();
+/* loose pictures pinned about the library page: [{id,x,y,w,group}]. `group` ties one
+   to a heading so it folds away with it; without one it stays put whatever's folded. */
+let libArt=[],libArtMode=false;
+const libArtCache=new Map();
+const libArtKey=id=>"__libart|"+id;
+function saveLibArt(){dbPut("meta",{k:"libArt",v:libArt});enqueue({kind:"meta",key:"libArt"});}
 let bgList=[];                 /* [{id,name}] custom backgrounds, images live at "__bg|<id>" */
 let padList=[];                /* [{id,name}] custom notepad looks, images live at "__pad|<id>" */
 const bgCache=new Map(),padCache=new Map();
@@ -1051,7 +1077,7 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="trashCloud"?trashCloud:null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="trashCloud"?trashCloud:op.key==="libArt"?libArt:null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
@@ -1105,6 +1131,8 @@ async function pullAll(){
             for(const k in rv)if(!kwColors[k]&&!gone("kw:"+k))kwColors[k]=rv[k];}
           else if(row.key==="trashCloud"){const rv=row.value||{};
             for(const k in rv)if(!trashCloud[k]&&!(deletions[k]&&!rv[k]))trashCloud[k]=rv[k];}
+          else if(row.key==="libArt"){const have=new Set(libArt.map(a=>a.id));
+            (row.value||[]).forEach(a=>{if(a&&a.id&&!have.has(a.id)&&!gone("libart:"+a.id))libArt.push(a);});}
         }
         /* anything deleted here must go from the merged copies too */
         for(const k in metaDel){
@@ -1115,7 +1143,9 @@ async function pullAll(){
           else if(kind==="gart")delete groupArt[nm];
           else if(kind==="bg")bgList=bgList.filter(x=>x.id!==nm);
           else if(kind==="pad")padList=padList.filter(x=>x.id!==nm);
+          else if(kind==="libart")libArt=libArt.filter(x=>x.id!==nm);
         }
+        dbPut("meta",{k:"libArt",v:libArt});
         dbPut("meta",{k:"metaDel",v:metaDel});dbPut("meta",{k:"kwColors",v:kwColors});dbPut("meta",{k:"trashCloud",v:trashCloud});
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
         dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});dbPut("meta",{k:"groupArt",v:groupArt});dbPut("meta",{k:"kwColors",v:kwColors});
@@ -1322,6 +1352,7 @@ async function initSync(){
   repairGroupArt();
   const md=await dbGet("meta","metaDel");metaDel=md&&md.v?md.v:{};
   const tc=await dbGet("meta","trashCloud");trashCloud=tc&&tc.v?tc.v:{};
+  const la=await dbGet("meta","libArt");libArt=la&&Array.isArray(la.v)?la.v:[];
   const iq=await dbGet("meta","importQueue");importQueue=iq&&Array.isArray(iq.v)?iq.v:[];
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   applyTheme();applyBg();
@@ -1331,6 +1362,7 @@ async function initSync(){
     bgList.forEach(c=>validImg.add(bgKey(c.id)));
     padList.forEach(c=>validImg.add(padKey(c.id)));
     Object.keys(groupArt).forEach(k=>{if(groupArt[k]&&groupArt[k].img)validImg.add(gartKey(groupArt[k].img));});
+    libArt.forEach(a=>{if(a&&a.id)validImg.add(libArtKey(a.id));});
     for(const k of await dbAllKeys("covers"))if(!live.has(k))await dbDel("covers",k);
     for(const k of await dbAllKeys("images"))if(!validImg.has(k))await dbDel("images",k);
   }catch(e){}
@@ -2142,7 +2174,9 @@ function renderLibrary(){
       <button class="laybtn" id="layTog">${layout==="list"?"▦ Grid":"☰ List"}</button></div>`;
     html+=`<div class="pills"><span class="lbl">Group under headings:</span>${GROUPS.map(([id,l])=>`<button class="pill ${groupBy===id?"on":""}" data-gb="${id}">${l}</button>`).join("")}</div>`;
     html+=`<div class="pills"><button class="pill ${libSelMode?"on":""}" id="selTog" title="Tick several books, then group them or give them genres">☑ Select books</button>
-      ${rawN?`<button class="pill ${onlyRaw?"on":""}" id="rawTog" title="Books an import brought in that you haven't opened and added anything to yet">⭱ Straight from an import <b>${rawN}</b></button>`:""}</div>`;
+      ${rawN?`<button class="pill ${onlyRaw?"on":""}" id="rawTog" title="Books an import brought in that you haven't opened and added anything to yet">⭱ Straight from an import <b>${rawN}</b></button>`:""}
+      <button class="pill ${libArtMode?"on":""}" id="artTog" title="Put pictures anywhere on this page — including the empty margins">🖼 Pictures${libArt.length?` <b>${libArt.length}</b>`:""}</button>
+      ${libArtMode?`<button class="pill" id="artAdd">＋ Add a picture</button><span class="lbl">…or just paste one</span>`:""}</div>`;
     if(libSelMode)html+=`<div class="hcard" style="margin-bottom:9px"><div class="hrow2">
       <b style="font-size:13px">${libSel.size} ticked</b>
       <button class="btn" id="selSer" ${libSel.size>1?"":"disabled"}>🔗 Link as a series…</button>
@@ -2250,6 +2284,7 @@ function renderLibrary(){
     };
     window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
   }));
+  renderLibArt(m);
   qa("[data-jump]",m).forEach(b=>b.onclick=()=>{
     const h=qa("[data-gh]",m)[+b.dataset.jump];
     if(h)h.scrollIntoView({behavior:"smooth",block:"start"});
@@ -2259,6 +2294,10 @@ function renderLibrary(){
   if(stg)stg.onclick=()=>{libSelMode=!libSelMode;if(!libSelMode)libSel.clear();renderLibrary();};
   const rt=q("#rawTog",m);
   if(rt)rt.onclick=()=>{onlyRaw=!onlyRaw;renderLibrary();};
+  const at=q("#artTog",m);
+  if(at)at.onclick=()=>{libArtMode=!libArtMode;renderLibrary();};
+  const aa=q("#artAdd",m);
+  if(aa)aa.onclick=()=>q("#libArtFile").click();
   if(libSelMode){
     qa("[data-open]",m).forEach(el=>{
       const id=el.dataset.open;
@@ -2337,6 +2376,86 @@ function renderLibrary(){
   hydrateCovers(m);
 }
 
+/* ---- loose pictures on the library page ---- */
+async function addLibArt(file,at){
+  if(!file||!file.type.startsWith("image/"))return null;
+  let data;try{data=await compressImage(file,1800,.86);}catch(e){alert("That image couldn't be read.");return null;}
+  const id=uid();
+  try{await dbPut("images",{key:libArtKey(id),data});}catch(e){alert("That picture couldn't be saved — storage may be full.");return null;}
+  libArt.push({id,x:(at&&at.x)||24,y:(at&&at.y)||24,w:230,group:""});
+  libArtCache.set(id,data);saveLibArt();
+  if(SYNC.on){enqueue({kind:"img",key:libArtKey(id)});flushQueue();}
+  return id;
+}
+async function removeLibArt(id){
+  libArt=libArt.filter(a=>a.id!==id);libArtCache.delete(id);
+  await dbDel("images",libArtKey(id));
+  markMetaDel("libart:"+id);saveLibArt();
+  if(SYNC.on){enqueue({kind:"imgDel",key:libArtKey(id)});flushQueue();}
+}
+/* crop, for pictures that aren't inside a book */
+function cropLibArt(a){
+  const box=q("#cropPanel2");box.hidden=false;
+  const orig=libArtCache.get(a.id);
+  if(!orig){alert("That picture isn't loaded yet.");box.hidden=true;return;}
+  let sel=null;
+  box.innerHTML=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">⬚ Crop</b>
+      <button class="btn" id="lcX" style="margin-left:auto;padding:4px 10px">Close</button></div>
+    <div class="hint" style="margin:0 0 8px">Drag a box over the part you want to keep.</div>
+    <div id="lcStage" style="position:relative;display:inline-block;max-width:100%;touch-action:none;cursor:crosshair">
+      <img id="lcImg" src="${orig}" style="max-width:100%;max-height:300px;display:block;border-radius:8px">
+      <div id="lcSel" hidden style="position:absolute;border:2px solid #14b8a6;background:rgba(20,184,166,.18);pointer-events:none"></div>
+    </div>
+    <div class="hint" id="lcMsg" style="margin:8px 0 0">Nothing selected yet.</div>
+    <button class="btn pri" id="lcDo" style="margin-top:9px" disabled>Keep this part</button>`;
+  const stage=q("#lcStage",box),selEl=q("#lcSel",box),msg=q("#lcMsg",box);
+  const paint=()=>{
+    const r=q("#lcImg",box).getBoundingClientRect(),s=stage.getBoundingClientRect();
+    if(!sel){selEl.hidden=true;return;}
+    selEl.hidden=false;
+    selEl.style.left=(r.left-s.left+sel.x*r.width)+"px";
+    selEl.style.top=(r.top-s.top+sel.y*r.height)+"px";
+    selEl.style.width=(sel.w*r.width)+"px";selEl.style.height=(sel.h*r.height)+"px";
+  };
+  stage.addEventListener("pointerdown",e=>{
+    e.preventDefault();
+    const r=q("#lcImg",box).getBoundingClientRect();
+    const cl=v=>Math.max(0,Math.min(1,v));
+    const x0=cl((e.clientX-r.left)/r.width),y0=cl((e.clientY-r.top)/r.height);
+    const mv=ev=>{const x1=cl((ev.clientX-r.left)/r.width),y1=cl((ev.clientY-r.top)/r.height);
+      sel={x:Math.min(x0,x1),y:Math.min(y0,y1),w:Math.abs(x1-x0),h:Math.abs(y1-y0)};paint();};
+    const up=()=>{
+      window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
+      const ok=sel&&sel.w>.02&&sel.h>.02;
+      if(!ok){sel=null;paint();}
+      q("#lcDo",box).disabled=!ok;
+      msg.textContent=ok?`Keeping about ${Math.round(sel.w*100)}% across and ${Math.round(sel.h*100)}% down.`:"Drag a bigger box.";
+    };
+    window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
+  });
+  q("#lcX",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+  q("#lcDo",box).onclick=()=>{
+    if(!sel)return;
+    const img=new Image();
+    img.onload=async()=>{
+      const W=img.naturalWidth,H=img.naturalHeight;
+      const sx=Math.round(sel.x*W),sy=Math.round(sel.y*H);
+      const sw=Math.max(1,Math.round(sel.w*W)),sh=Math.max(1,Math.round(sel.h*H));
+      const c=document.createElement("canvas");c.width=sw;c.height=sh;
+      c.getContext("2d").drawImage(img,sx,sy,sw,sh,0,0,sw,sh);
+      const png=/^data:image\/png/i.test(orig);
+      const data=png?c.toDataURL("image/png"):c.toDataURL("image/jpeg",.88);
+      try{await dbPut("images",{key:libArtKey(a.id),data,v:Date.now()});}
+      catch(err){alert("That didn't fit — storage may be full.");return;}
+      libArtCache.set(a.id,data);
+      if(SYNC.on){enqueue({kind:"img",key:libArtKey(a.id)});flushQueue();}
+      box.hidden=true;box.innerHTML="";
+      renderLibrary();
+    };
+    img.onerror=()=>{msg.textContent="That picture couldn't be read.";};
+    img.src=orig;
+  };
+}
 let pendingGart=null;
 async function hydrateGroupArt(root){
   for(const el of qa("[data-gartimg]",root)){
@@ -2346,6 +2465,23 @@ async function hydrateGroupArt(root){
     if(d)el.src=d;
   }
 }
+q("#libArtFile").addEventListener("change",async e=>{
+  const fs=[...e.target.files];e.target.value="";
+  for(const f of fs)await addLibArt(f,{x:24,y:24+libArt.length*18});
+  if(view==="library")renderLibrary();
+});
+/* paste a picture straight onto the library page */
+document.addEventListener("paste",e=>{
+  if(view!=="library"||!libArtMode)return;
+  if(activeBgPicker)return;
+  for(const it of e.clipboardData?.items||[]){
+    if(it.type.startsWith("image/")){
+      e.preventDefault();
+      addLibArt(it.getAsFile(),{x:24,y:24+libArt.length*18}).then(()=>{if(view==="library")renderLibrary();});
+      return;
+    }
+  }
+});
 q("#gartFile").addEventListener("change",e=>{
   const f=e.target.files[0];e.target.value="";
   const key=pendingGart;pendingGart=null;
@@ -2378,6 +2514,82 @@ function openGartPanel(key,file){
     close();
     if(ok){if(SYNC.on)flushQueue();renderLibrary();}
   };
+}
+
+/* the loose pictures, drawn over the library page */
+function renderLibArt(m){
+  m.classList.toggle("artmode",libArtMode);
+  let layer=q("#libArtLayer",m);
+  if(!layer){layer=document.createElement("div");layer.id="libArtLayer";m.appendChild(layer);}
+  const shut=new Set(settings.collapsed||[]);
+  /* one tied to a heading folds away with it; a loose one always stays */
+  const shown=libArt.filter(a=>!a.group||!shut.has(a.group));
+  layer.innerHTML=shown.map(a=>`
+    <div class="libpic" data-lp="${a.id}" style="left:${a.x||0}px;top:${a.y||0}px;width:${a.w||230}px">
+      <img data-lpimg="${a.id}" alt="">
+      ${a.group?`<span class="lptag" title="Folds away with this heading">🔗 ${esc(a.group.split("|").slice(1).join("|"))}</span>`:""}
+      <div class="lpbar">
+        <button data-lpg="${a.id}" title="Tie it to a heading, so it folds away with it">🔗</button>
+        <button data-lpc="${a.id}" title="Crop it">⬚</button>
+        <button data-lpx="${a.id}" title="Remove it">✕</button>
+      </div>
+      <div class="lpgrip" data-lpr="${a.id}" title="Drag to resize"></div>
+    </div>`).join("");
+  /* pictures live in the browser, so fill them in after the markup */
+  (async()=>{
+    for(const el of qa("[data-lpimg]",layer)){
+      const id=el.dataset.lpimg;
+      let d=libArtCache.get(id);
+      if(d===undefined){d=await loadImgData(libArtKey(id));libArtCache.set(id,d);}
+      if(d)el.src=d;
+    }
+  })();
+  const find=id=>libArt.find(a=>a.id===id);
+  qa("[data-lpx]",layer).forEach(b=>b.onclick=async e=>{
+    e.stopPropagation();
+    if(!confirm("Remove this picture from the library page?"))return;
+    await removeLibArt(b.dataset.lpx);renderLibrary();
+  });
+  qa("[data-lpc]",layer).forEach(b=>b.onclick=e=>{e.stopPropagation();const a=find(b.dataset.lpc);if(a)cropLibArt(a);});
+  qa("[data-lpg]",layer).forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const a=find(b.dataset.lpg);if(!a)return;
+    const keys=qa("[data-gh]",m).map(h=>h.dataset.gh);
+    const box=q("#libGroupPanel");box.hidden=false;
+    box.innerHTML=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">🔗 Fold this picture away with…</b>
+        <button class="btn" id="lgX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+      <div class="hint" style="margin:0 0 8px">Tie it to a heading and it hides whenever that heading is folded. Left loose, it stays wherever you put it.</div>
+      <button class="btn" data-lgset="" style="width:100%;text-align:left;margin-bottom:5px">✋ Loose — always on the page</button>
+      ${keys.map(k=>`<button class="btn" data-lgset="${esc(k)}" style="width:100%;text-align:left;margin-bottom:5px">${esc(k.split("|").slice(1).join("|"))}</button>`).join("")
+        ||'<div class="none">Group the library by genre (or author, series…) first — then there are headings to tie it to.</div>'}`;
+    q("#lgX",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+    qa("[data-lgset]",box).forEach(x=>x.onclick=()=>{
+      a.group=x.dataset.lgset;saveLibArt();
+      if(SYNC.on)flushQueue();
+      box.hidden=true;box.innerHTML="";renderLibrary();
+    });
+  });
+  const drag=(el,a,how)=>e=>{
+    if(!libArtMode)return;
+    if(e.target.closest(".lpbar"))return;
+    if(how==="move"&&e.target.closest(".lpgrip"))return;
+    e.preventDefault();e.stopPropagation();
+    const sx=e.clientX,sy=e.clientY,x0=a.x||0,y0=a.y||0,w0=a.w||230;
+    const mv=ev=>{
+      if(how==="move"){a.x=Math.round(x0+ev.clientX-sx);a.y=Math.round(Math.max(0,y0+ev.clientY-sy));
+        el.style.left=a.x+"px";el.style.top=a.y+"px";}
+      else{a.w=Math.round(Math.max(60,Math.min(1200,w0+ev.clientX-sx)));el.style.width=a.w+"px";}
+    };
+    const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
+      saveLibArt();if(SYNC.on)flushQueue();};
+    window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
+  };
+  qa(".libpic",layer).forEach(el=>{
+    const a=find(el.dataset.lp);if(!a)return;
+    el.addEventListener("pointerdown",drag(el,a,"move"));
+    const gr=q(".lpgrip",el);
+    if(gr)gr.addEventListener("pointerdown",drag(el,a,"resize"));
+  });
 }
 
 /* deleted books wait in the bin for 30 days before they're really gone */
@@ -2617,7 +2829,13 @@ function refreshImport(){
         <b style="font-size:14px">${label}</b><span class="none">${all.length}${add.length!==all.length?` · ${all.length-add.length} already on your shelf`:""}</span>
         ${add.length?`<button class="btn pri" data-impall="${sec}" style="margin-left:auto;padding:5px 11px">Add all ${add.length}</button>`:""}
       </div>
-      ${all.slice(0,IMP_SHOW).map(it=>`<div class="snap" style="padding:6px 10px">
+      ${(()=>{
+        /* ticked ones first, and never cut off — otherwise ticking a whole author
+           leaves them buried under "…and 1700 more" */
+        const ticked=all.filter(it=>impSel.has(it.id));
+        const rest=all.filter(it=>!impSel.has(it.id));
+        return [...ticked,...rest].slice(0,Math.max(IMP_SHOW,ticked.length));
+      })().map(it=>`<div class="snap" style="padding:6px 10px;${impSel.has(it.id)?"border-color:var(--teal)":""}">
         ${it.dupe?"":`<input type="checkbox" data-impc="${it.id}" ${impSel.has(it.id)?"checked":""}>`}
         <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(it.title)}</div>
           <div class="meta"><button data-impa="${esc(it.author||"")}" style="padding:0;color:inherit;text-decoration:underline dotted" title="Tick / untick everything by this author">${esc(it.author)||"Unknown author"}</button>${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}</div></div>
@@ -2625,7 +2843,8 @@ function refreshImport(){
           ? '<span class="none" style="font-size:12px">already on your shelf</span>'
           : `<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
       </div>`).join("")}
-      ${all.length>IMP_SHOW?`<div class="none" style="margin-top:5px">…and ${all.length-IMP_SHOW} more — search to narrow the list, or “Add all”.</div>`:""}
+      ${all.length>Math.max(IMP_SHOW,all.filter(it=>impSel.has(it.id)).length)
+        ?`<div class="none" style="margin-top:5px">…and ${all.length-Math.max(IMP_SHOW,all.filter(it=>impSel.has(it.id)).length)} more — anything you tick jumps up here. Search to narrow the list, or “Add all”.</div>`:""}
     </div>`;
   }
   if(!shown)html+='<div class="none" style="margin-top:10px">Nothing in the list matches that search.</div>';
@@ -3479,15 +3698,15 @@ function renderEditor(){
       </div>
     </div>
 
-    <div id="entWrap"></div>
-
     <div class="cap2" id="secSummary">Summary</div>
     <div class="rich" id="fSummary" contenteditable="true" data-ph="What is this book about, in your own words…"></div>
 
+    <div id="entWrap"></div>
+
     <div class="lists" id="secLists">
       <div class="lbox plus"><div class="lhead"><h3>+ What I liked</h3><button class="btn ordbtn" data-ord="pros" title="Put these in the order you want">⇅ Organize</button></div><div id="list-pros"></div><input class="addin" id="add-pros" placeholder="Add point… (Enter)"></div>
-      <div class="lbox minus"><div class="lhead"><h3>− What I didn't</h3><button class="btn ordbtn" data-ord="cons" title="Put these in the order you want">⇅ Organize</button></div><div id="list-cons"></div><input class="addin" id="add-cons" placeholder="Add point… (Enter)"></div>
       <div class="lbox meh"><div class="lhead"><h3>~ Meh</h3><button class="btn ordbtn" data-ord="meh" title="Put these in the order you want">⇅ Organize</button></div><div id="list-meh"></div><input class="addin" id="add-meh" placeholder="Neither here nor there… (Enter)"></div>
+      <div class="lbox minus"><div class="lhead"><h3>− What I didn't</h3><button class="btn ordbtn" data-ord="cons" title="Put these in the order you want">⇅ Organize</button></div><div id="list-cons"></div><input class="addin" id="add-cons" placeholder="Add point… (Enter)"></div>
     </div>
     <div class="lbox quote" id="secQuotes"><div class="lhead"><h3>Quotes</h3><button class="btn ordbtn" data-ord="quotes" title="Put your quotes in the order you want">⇅ Organize</button></div><div id="list-quotes"></div><input class="addin" id="add-quotes" placeholder="Add a quote… (Enter)"></div>
 
@@ -3745,7 +3964,6 @@ function renderEditor(){
     const hadCover=en?!!curEnt[en.id]:!!curCover;
     const hadSummary=!!stripHtml((en?en.summary:cur.summary)||"").trim();
     const curPages=en?en.pages:cur.pages;
-    const myRating=en?en.rating:cur.rating;
     box.innerHTML=head+`
       ${covers.length?`<div id="fpCovRow">
         <div class="lbl" style="display:block;margin-bottom:4px">Cover${covers.length>1?` — ${covers.length} to choose from`:""}</div>
@@ -3755,10 +3973,6 @@ function renderEditor(){
         </div>
         <div class="hrow2" style="margin-top:7px"><button class="btn" id="fpCover">${hadCover?"Replace the cover":"Use as cover"}</button></div>
         <div class="hint" id="fpCovMsg" style="margin:4px 0 0"></div></div>`:""}
-      ${info.rating?`<div class="lbl" style="display:block;margin:12px 0 4px">What everyone else gives it</div>
-        <div class="hrow2"><span class="rate">★ ${info.rating.avg10.toFixed(1)}</span>
-          <span class="none" style="font-size:12px">${info.rating.count?info.rating.count.toLocaleString()+" ratings · ":""}${esc(info.rating.from)}</span>
-          <button class="btn" id="fpRate" style="margin-left:auto">${myRating!=null?"Use it instead of mine":"Use as my rating"}</button></div>`:""}
       ${blurbs.length?`<div class="lbl" style="display:block;margin:12px 0 3px">Blurb${blurbs.length>1?` <span id="fpBlurbN">1 of ${blurbs.length}</span>`:""}</div>
         ${blurbs.length>1?`<div class="hrow2" style="margin-bottom:5px">
           <button class="btn" id="fpPrev" style="padding:3px 9px">◀</button>
@@ -3806,13 +4020,6 @@ function renderEditor(){
     const pv=q("#fpPrev",box),nx=q("#fpNext",box);
     if(pv)pv.onclick=()=>{blurbI=(blurbI-1+blurbs.length)%blurbs.length;showBlurb();};
     if(nx)nx.onclick=()=>{blurbI=(blurbI+1)%blurbs.length;showBlurb();};
-    const fr=q("#fpRate",box);
-    if(fr)fr.onclick=()=>{
-      const v=Math.min(10,Math.max(0,info.rating.avg10));
-      if(en){en.rating=v;renderEntries();}
-      else{cur.rating=v;const el=q("#fRate");if(el)el.value=v;}
-      scheduleSave();fr.textContent="Rating set ✓";fr.disabled=true;
-    };
     qa("[data-fpg]",box).forEach(b=>b.onclick=()=>{
       const g=b.dataset.fpg;
       genSel.has(g)?genSel.delete(g):genSel.add(g);
@@ -5025,7 +5232,7 @@ async function buildBackup(){
   const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
   return {app:"my-shelf",version:1,exported:new Date().toISOString(),
     index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
-    backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,covers,images};
+    backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,libArt,covers,images};
 }
 function downloadJson(json,name){
   const blob=new Blob([json],{type:"application/json"});
@@ -5087,7 +5294,9 @@ async function applyBackup(data){
   for(const k in gaIn)if(!groupArt[k])groupArt[k]=gaIn[k];
   const kcIn=data.kwColors||{};
   for(const k in kcIn)if(!kwColors[k])kwColors[k]=kcIn[k];
-  saveBgList();savePadList();saveFandoms();saveGroupArt();saveKwColors();
+  const haveLa=new Set(libArt.map(a=>a.id));
+  (data.libArt||[]).forEach(a=>{if(a&&a.id&&!haveLa.has(a.id))libArt.push(a);});
+  saveBgList();savePadList();saveFandoms();saveGroupArt();saveKwColors();saveLibArt();
   saveMeta();
   if(SYNC.on){
     for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
@@ -5134,12 +5343,22 @@ const cleanDate=s=>{const m=String(s||"").match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](
   return m?`${m[1]}-${String(m[2]).padStart(2,"0")}-${String(m[3]).padStart(2,"0")}`:"";};
 const splitTags=s=>String(s||"").split(",").map(x=>x.trim()).filter(Boolean);
 
+/* exports don't always use the column name you'd expect, and capitalisation drifts */
+function pickCol(o,...names){
+  for(const n of names)if(o[n]!=null&&String(o[n]).trim()!=="")return o[n];
+  const keys=Object.keys(o);
+  for(const n of names){
+    const k=keys.find(x=>x.toLowerCase().replace(/\s+/g,"")===n.toLowerCase().replace(/\s+/g,""));
+    if(k&&String(o[k]).trim()!=="")return o[k];
+  }
+  return "";
+}
 const DNF_SHELF=/^(dnf|did-not-finish|did_not_finish|didnotfinish|abandoned|unfinished|not-finished|gave-up|stopped-reading)$/;
 function fromGoodreads(o){
   const shelf=(o["Exclusive Shelf"]||"").toLowerCase();
   /* shelves are a comma-separated list — test each one, don't pattern-match the whole string */
   const dnf=DNF_SHELF.test(shelf)||splitTags(o["Bookshelves"]).some(s=>DNF_SHELF.test(s.toLowerCase()));
-  const r=parseFloat(o["My Rating"]||"0")||0;
+  const r=parseFloat(pickCol(o,"My Rating","Rating","Star Rating")||"0")||0;
   return {id:uid(),title:o["Title"]||"",author:o["Author"]||"",
     isbn:cleanIsbn(o["ISBN13"]||o["ISBN"]),
     status:shelf==="currently-reading"?"reading":shelf==="to-read"?"want":"finished",dnf,
@@ -5152,7 +5371,7 @@ function fromGoodreads(o){
 }
 function fromStorygraph(o){
   const st=(o["Read Status"]||"").toLowerCase();
-  const r=parseFloat(o["Star Rating"]||"0")||0;
+  const r=parseFloat(pickCol(o,"Star Rating","Rating","My Rating")||"0")||0;
   return {id:uid(),title:o["Title"]||"",author:o["Authors"]||o["Author"]||"",
     isbn:cleanIsbn(o["ISBN/UID"]||o["ISBN"]),
     status:st==="currently-reading"?"reading":st==="to-read"?"want":"finished",
@@ -5272,8 +5491,6 @@ async function fetchBookInfo(title,author,isbn){
       const u=String(im2.thumbnail||im2.smallThumbnail||"").replace(/^http:/,"https:").replace(/&edge=curl/,"");
       if(u)out.gCovers.push(u);
       (v.categories||[]).forEach(c=>String(c).split("/").forEach(p=>{const t=p.trim();if(t)out.genres.push(t);}));
-      if(v.averageRating&&!out.rating)
-        out.rating={avg10:Math.round(v.averageRating*2*10)/10,count:v.ratingsCount||0,from:"Google Books"};
     });
   }catch(e){gErr=true;}
   try{
@@ -5292,8 +5509,6 @@ async function fetchBookInfo(title,author,isbn){
       if(d.key)out.links.push({name:"Open Library",url:"https://openlibrary.org"+d.key});
       /* Google's keyless quota is shared and often runs dry — the Open Library
          work record has a blurb of its own */
-      if(d.ratings_average&&!out.rating)
-        out.rating={avg10:Math.round(d.ratings_average*2*10)/10,count:d.ratings_count||0,from:"Open Library"};
       if(d.key){
         try{
           const w=await fetchJson("https://openlibrary.org"+d.key+".json",2);
