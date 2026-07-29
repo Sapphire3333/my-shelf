@@ -464,6 +464,12 @@
   @media(hover:none){.covx{opacity:1}}
   /* six tabs still fit on a phone */
   @media(max-width:640px){.tab{font-size:10.5px;padding:7px 1px}}
+
+  /* a collection entry's position is an editable number */
+  input.entnum{width:30px;border:1px solid var(--line);border-radius:6px;background:#fff;
+    text-align:center;padding:3px 0;-moz-appearance:textfield}
+  input.entnum::-webkit-outer-spin-button,input.entnum::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  [data-theme="dark"] input.entnum{background:var(--card);color:var(--ink);border-color:var(--line)}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
@@ -2528,6 +2534,7 @@ function renderEditor(){
     <div class="bgpanel" id="cutPanel" hidden></div>
     <div class="bgpanel" id="fetchPanel" hidden></div>
     <div class="bgpanel" id="foldPanel" hidden></div>
+    <div class="bgpanel" id="orderPanel" hidden></div>
 
     <div class="edhead">
       <div class="coverbox" id="coverBox"></div>
@@ -2941,11 +2948,12 @@ function renderEditor(){
         <div class="hrow2" style="margin-top:4px">
           <button class="btn pri" id="entAdd">＋ Add a book / story</button>
           <button class="btn" id="entFold" title="Move a book that has its own page into this collection">⤵ Fold in a book from your shelf…</button>
+          <button class="btn" id="entOrder" ${cur.entries.length>1?"":"disabled"} title="Tap the titles in the order you want them">⇅ Reorder…</button>
         </div></div>`;
     const list=q("#entList");
     list.innerHTML=cur.entries.map((en,i)=>`
       <div class="ent">
-        <span class="entnum">${i+1}</span>
+        <input class="entnum" data-en="${en.id}" type="number" min="1" max="${cur.entries.length}" value="${i+1}" title="Type a position and press Enter — it moves there">
         <div class="entcov" data-ec="${en.id}" title="Add a cover">${curEnt[en.id]?`<img src="${curEnt[en.id]}">`:"🖼"}</div>
         <div class="entmain">
           <div class="inrow">
@@ -2988,11 +2996,61 @@ function renderEditor(){
     };
     qa("[data-eu]",list).forEach(el=>el.onclick=()=>move(el.dataset.eu,-1));
     qa("[data-ed]",list).forEach(el=>el.onclick=()=>move(el.dataset.ed,1));
+    /* type a position into the number and the story jumps there */
+    qa("[data-en]",list).forEach(el=>el.addEventListener("change",()=>{
+      const i=cur.entries.findIndex(x=>x.id===el.dataset.en);
+      if(i<0)return;
+      let p=Math.round(parseFloat(el.value));
+      if(!p||p-1===i){renderEntries();return;}
+      p=Math.max(0,Math.min(cur.entries.length-1,p-1));
+      const [en]=cur.entries.splice(i,1);
+      cur.entries.splice(p,0,en);
+      renderEntries();scheduleSave();
+    }));
     q("#entAdd").onclick=()=>{
       cur.entries.push(blankEntry());renderEntries();scheduleSave();
       const ins=qa("[data-et]",q("#entList"));if(ins.length)ins[ins.length-1].focus();
     };
     q("#entFold").onclick=openFoldPanel;
+    q("#entOrder").onclick=openOrderPanel;
+  }
+  /* tap the titles 1, 2, 3… then Save — the friendliest way to reorder a long list */
+  function openOrderPanel(){
+    const box=q("#orderPanel");box.hidden=false;
+    let seq=[];   /* entry ids in tap order */
+    const draw=()=>{
+      box.innerHTML=`
+        <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">⇅ Tap in the order you want</b>
+          <button class="btn" id="odClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+        <div class="hint" style="margin:0 0 7px">Tap the titles one by one — they're numbered 1, 2, 3… as you go. Tap a numbered one to take it back out. Anything left unnumbered keeps its current order, after the numbered ones.</div>
+        ${cur.entries.map(en=>{
+          const n=seq.indexOf(en.id);
+          return `<button class="snap" data-od="${en.id}" style="width:100%;cursor:pointer;${n>=0?"border-color:var(--teal)":""}">
+            <b class="cnt" style="flex:none;${n>=0?"background:var(--teal);color:#fff":""}">${n>=0?n+1:"·"}</b>
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;text-align:left">${esc(en.title)||"Untitled"}</span>
+          </button>`;}).join("")}
+        <div class="hrow2" style="margin-top:9px">
+          <button class="btn pri" id="odSave" ${seq.length?"":"disabled"}>Save this order</button>
+          <button class="btn" id="odReset" ${seq.length?"":"disabled"}>Start over</button>
+        </div>`;
+      q("#odClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+      q("#odReset",box).onclick=()=>{seq=[];draw();};
+      qa("[data-od]",box).forEach(b=>b.onclick=()=>{
+        const id=b.dataset.od;
+        const i=seq.indexOf(id);
+        if(i>=0)seq.splice(i,1);else seq.push(id);
+        draw();
+      });
+      q("#odSave",box).onclick=()=>{
+        if(!seq.length)return;
+        const picked=seq.map(id=>cur.entries.find(e=>e.id===id)).filter(Boolean);
+        const rest=cur.entries.filter(e=>!seq.includes(e.id));
+        cur.entries=[...picked,...rest];
+        box.hidden=true;box.innerHTML="";
+        renderEntries();scheduleSave();
+      };
+    };
+    draw();
   }
   /* pick a book that has its own page and fold it into this collection */
   function openFoldPanel(){
