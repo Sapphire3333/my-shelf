@@ -2761,13 +2761,14 @@ function renderEditor(){
     }
     const tagSel=new Set();
     const newTags=info.tags.filter(t=>!cur.keywords.some(k=>k.toLowerCase()===t.toLowerCase()));
-    const cov=info.olCover||info.coverUrl;
+    const cov=(info.covers||[])[0];
     const hadCover=en?!!curEnt[en.id]:!!curCover;
     const hadSummary=!!stripHtml((en?en.summary:cur.summary)||"").trim();
     const curPages=en?en.pages:cur.pages;
     box.innerHTML=head+`
       ${cov?`<div class="hrow2" style="margin-bottom:9px"><img src="${esc(cov)}" alt="" style="width:56px;height:80px;object-fit:cover;border-radius:6px;border:1px solid var(--line)">
-        <button class="btn" id="fpCover">${hadCover?"Replace the cover":"Use as cover"}</button></div>`:""}
+        <div><button class="btn" id="fpCover">${hadCover?"Replace the cover":"Use as cover"}</button>
+        <div class="hint" id="fpCovMsg" style="margin:4px 0 0"></div></div></div>`:""}
       ${info.summary?`<div class="lbl" style="display:block;margin-bottom:3px">Blurb</div>
         <div style="font-size:13px;max-height:130px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">${esc(info.summary)}</div>
         <button class="btn" id="fpSum" style="margin-top:6px">${hadSummary?"Replace my summary":"Use as summary"}</button>`:""}
@@ -2781,7 +2782,7 @@ function renderEditor(){
     if(fc)fc.onclick=async()=>{
       fc.disabled=true;fc.textContent="Fetching…";
       try{
-        const data=await urlToDataURL(info.olCover||info.coverUrl,600);
+        const data=await fetchCoverData(info.covers,600);
         if(en){
           en.cover=true;en.coverV=Date.now();
           await dbPut("images",{key:cur.id+"|"+en.id,data,v:en.coverV});
@@ -2797,7 +2798,11 @@ function renderEditor(){
         }
         scheduleSave();
         fc.textContent="Cover set ✓";
-      }catch(e){fc.disabled=false;fc.textContent="Couldn't fetch that cover";}
+      }catch(e){
+        fc.disabled=false;fc.textContent=hadCover?"Replace the cover":"Use as cover";
+        const cm=q("#fpCovMsg",box);
+        if(cm)cm.innerHTML=`Whoever hosts this picture won't let the app download it. You can still have it: <a href="${esc(cov)}" target="_blank" rel="noopener" style="color:var(--teal)">open the picture</a>, save it, then use ${en?"the story's cover box":"the cover box"} to add it.`;
+      }
     };
     const fs=q("#fpSum",box);
     if(fs)fs.onclick=()=>{
@@ -3863,7 +3868,7 @@ async function importCollection(items,name){
 /* Both are free, keyless and CORS-friendly. StoryGraph/Goodreads have no public
    API — this is the honest way to auto-fill a blurb, tags, pages and a cover. */
 async function fetchBookInfo(title,author,isbn){
-  const out={summary:"",tags:[],pages:"",coverUrl:"",olCover:"",year:"",source:[]};
+  const out={summary:"",tags:[],pages:"",coverUrl:"",olCover:"",isbn:"",year:"",source:[],covers:[]};
   try{
     const qs=isbn?`isbn:${isbn}`:`intitle:"${title}"${author?` inauthor:"${author}"`:""}`;
     /* an own key in config.js skips the shared (often exhausted) keyless quota */
@@ -3877,8 +3882,13 @@ async function fetchBookInfo(title,author,isbn){
       out.tags=(vi.categories||[]).flatMap(c=>String(c).split("/").map(s=>s.trim())).filter(Boolean);
       out.pages=vi.pageCount||"";
       const im=vi.imageLinks||{};
-      out.coverUrl=String(im.thumbnail||im.smallThumbnail||"").replace(/^http:/,"https:");
+      out.coverUrl=String(im.thumbnail||im.smallThumbnail||"")
+        .replace(/^http:/,"https:").replace(/&edge=curl/,"");
       out.year=String(vi.publishedDate||"").slice(0,4);
+      /* Google's own image host forbids downloads (no CORS header), but its ISBN
+         lets us ask Open Library — which allows them — for the same cover */
+      out.isbn=((vi.industryIdentifiers||[]).map(x=>String(x.identifier||"")).find(x=>x.length===13)
+        ||(vi.industryIdentifiers||[]).map(x=>String(x.identifier||"")).find(x=>x.length===10)||"");
       out.source.push("Google Books");
     }
   }catch(e){}
@@ -3909,14 +3919,29 @@ async function fetchBookInfo(title,author,isbn){
   }catch(e){}
   out.tags=[...new Set(out.tags.map(t=>t.replace(/\s+/g," ").trim()))]
     .filter(t=>t&&t.length<=30&&!/^(fiction|general)$/i.test(t)).slice(0,15);
-  return (out.summary||out.tags.length||out.pages||out.olCover||out.coverUrl)?out:null;
+  /* cover candidates, most-downloadable first — Open Library serves them with the
+     header browsers need; Google's host doesn't, so it's only a last resort */
+  const isbnForCover=cleanIsbn(isbn||out.isbn);
+  out.covers=[out.olCover,
+    isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
+    out.coverUrl].filter((u,i,a)=>u&&a.indexOf(u)===i);
+  return (out.summary||out.tags.length||out.pages||out.covers.length)?out:null;
 }
 async function urlToDataURL(url,maxDim){
   const r=await fetch(url);
   if(!r.ok)throw new Error("cover fetch failed");
   const bl=await r.blob();
   if(!bl.type.startsWith("image/"))throw new Error("not an image");
+  if(bl.size<1200)throw new Error("blank cover");   /* OL sends a 1px placeholder */
   return compressImage(bl,maxDim||600,.85);
+}
+/* try each candidate until one actually downloads */
+async function fetchCoverData(urls,maxDim){
+  let last=null;
+  for(const u of urls||[]){
+    try{return await urlToDataURL(u,maxDim);}catch(e){last=e;}
+  }
+  throw last||new Error("no cover");
 }
 
 /* =============== quick add — a book from pasted text or a photo =============== */
