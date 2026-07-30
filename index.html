@@ -404,7 +404,9 @@
   .vtitle{font-size:27px;margin:0;line-height:1.2}
   .vauthor{font-size:15px;color:var(--mut);display:flex;align-items:center;gap:7px;flex-wrap:wrap}
   .vline2{font-size:13px;color:var(--faint)}
-  .vbadges{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:1px}
+  .vbadges{position:relative;display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:1px}
+  .vpick{left:0;top:calc(100% + 5px)}
+  .vst:hover,.vfav:hover{border-color:#2dd4bf}
   .vst{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:700;border-radius:7px;
     padding:3px 10px;background:#f5f5f4;color:#57534e;border:1px solid var(--line)}
   .vst.finished{background:#ecfdf5;border-color:#a7f3d0;color:#047857}
@@ -414,7 +416,10 @@
   [data-theme="dark"] .vst{background:#3a3532;border-color:#57534e;color:#d6d3d1}
   .vfav{font-size:12.5px;font-weight:700;color:var(--rose);border:1px solid #fda4af;background:#fff1f2;
     border-radius:7px;padding:3px 10px}
-  [data-theme="dark"] .vfav{background:#2b1417;border-color:#7f1d1d}
+  [data-theme="dark"] .vfav.on{background:#2b1417;border-color:#7f1d1d}
+  /* not a favourite: there, but quiet about it */
+  .vfav:not(.on){color:var(--faint);border-color:var(--line);background:transparent;font-weight:400}
+  .vfav:not(.on):hover{color:var(--rose)}
   .vprog{display:flex;align-items:center;gap:9px}
   .vfacts{font-size:13px;color:var(--mut)}
   .vgen,.vkw{margin-top:2px}
@@ -3877,6 +3882,23 @@ function scheduleSave(){
 /* ---------- the book, read rather than edited ----------
    Everything empty simply isn't here: no pickers, no "Add… (Enter)", no boxes
    waiting to be filled. What you did fill in is gathered close together. */
+let vStatusOpen=false;
+/* the two things worth changing without opening the form. Saved and undoable
+   exactly like an edit made inside it. */
+async function quickEdit(mut){
+  const stored=books.find(x=>x.id===cur.id);
+  const before=stored?JSON.parse(JSON.stringify(stored)):null;
+  mut(cur);
+  cur.touched=true;
+  cur.modified=Math.max(Date.now(),(cur.modified||0)+1,(SYNC.seen[cur.id]||0)+1);
+  const after=JSON.parse(JSON.stringify(cur));
+  pushOp({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))});
+  try{await dbPut("books",after);}catch(e){alert("Couldn't save — storage may be full.");return;}
+  const i=books.findIndex(x=>x.id===cur.id);
+  if(i>=0)books[i]=after;else books.unshift(after);
+  if(SYNC.on){enqueue({kind:"book",id:cur.id});flushQueue();}
+  renderBookView();
+}
 function renderBookView(){
   const b=cur;
   const L=linkLabel(b.link);
@@ -3926,9 +3948,13 @@ function renderBookView(){
         ${(b.fandoms||[]).length?`<div class="vline2">${(b.fandoms||[]).map(esc).join(", ")}${(b.characters||[]).length?" · "+(b.characters||[]).map(esc).join(", "):""}</div>`:""}
         ${seriesLine?`<div class="vline2">${seriesLine}</div>`:""}
         <div class="vbadges">
-          <span class="vst ${b.dnf?"dnf":statusOf(b)}">${stSym(b)} ${esc(stName(b))}</span>
+          <button class="vst ${b.dnf?"dnf":statusOf(b)}" id="vStatus" title="Change what stage it's at">${stSym(b)} ${esc(stName(b))} ▾</button>
+          ${vStatusOpen?`<div class="stpick vpick">
+            ${STATUSES.map(([k,l])=>`<button data-vst="${k}" class="${!b.dnf&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
+            <button data-vst="dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
+          </div>`:""}
           ${b.rating!=null?rateHtml(b.rating):""}
-          ${b.favorite?'<span class="vfav">♥ Favourite</span>':""}
+          <button class="vfav ${b.favorite?"on":""}" id="vFav" title="${b.favorite?"One of your favourites":"Mark as a favourite"}">${b.favorite?"♥ Favourite":"♡"}</button>
         </div>
         ${statusOf(b)==="reading"&&pct!=null?`<div class="vprog"><span class="prog" style="flex:1"><i style="width:${pct}%"></i></span>
           <span class="rr">${pct}% · p.${esc(String(b.progress))} of ${esc(String(b.pages))}</span></div>`:""}
@@ -3969,8 +3995,24 @@ function renderBookView(){
   wireSizeCtrl();
   q("#edBack").onclick=()=>{view="library";render();};
   q("#edDel").onclick=()=>deleteBookById(cur.id);
-  q("#toEdit").onclick=()=>setBookMode("edit");
+  q("#toEdit").onclick=()=>{vStatusOpen=false;setBookMode("edit");};
   const t2=q("#toEdit2");if(t2)t2.onclick=()=>setBookMode("edit");
+  q("#vStatus").onclick=e=>{e.stopPropagation();vStatusOpen=!vStatusOpen;renderBookView();};
+  qa("[data-vst]",page).forEach(x=>x.onclick=e=>{
+    e.stopPropagation();
+    const what=x.dataset.vst;
+    vStatusOpen=false;
+    quickEdit(bk=>{if(what==="dnf")bk.dnf=!bk.dnf;else{bk.status=what;bk.dnf=false;}});
+  });
+  q("#vFav").onclick=e=>{e.stopPropagation();quickEdit(bk=>{bk.favorite=!bk.favorite;});};
+  if(vStatusOpen)setTimeout(()=>{
+    const shut=ev=>{
+      if(ev.target.closest&&ev.target.closest(".vpick,#vStatus"))return;
+      document.removeEventListener("pointerdown",shut);
+      if(vStatusOpen){vStatusOpen=false;if(view==="book"&&bookMode==="view")renderBookView();}
+    };
+    document.addEventListener("pointerdown",shut);
+  },0);
   q("#uBtn").onclick=doUndo;q("#rBtn").onclick=doRedo;refreshHistBtns();
 
   /* the scrapbook is content too — shown, just not draggable */
