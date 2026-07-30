@@ -396,7 +396,19 @@
   /* ---- reading a book rather than editing it ---- */
   /* cover on the left, everything about the book beside it in the space that was
      going spare. Only a genuinely narrow screen stacks them. */
-  .vhead{display:grid;grid-template-columns:auto minmax(0,1fr);gap:22px;align-items:start;margin-top:8px}
+  /* cover · the book itself · what it's tagged with — three columns, so the right
+     hand side carries the labels instead of sitting empty */
+  .vhead{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(140px,auto);
+    gap:14px 26px;align-items:start;margin-top:8px}
+  .vside{display:flex;flex-direction:column;gap:12px;min-width:0}
+  .vsectitle{font-size:10.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;
+    color:var(--faint);margin-bottom:4px}
+  .vside .rgen,.vside .chiprow{justify-content:flex-start}
+  @media(max-width:900px){
+    .vhead{grid-template-columns:auto minmax(0,1fr)}
+    .vside{grid-column:1/-1;flex-direction:row;flex-wrap:wrap;gap:18px}
+    .vside .vsec{flex:1;min-width:180px}
+  }
   .vcover{width:132px;height:186px;flex:none;border:1px solid var(--line);border-radius:10px;background:#f5f5f4;
     overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:34px;color:#d6d3d1;
     box-shadow:0 2px 8px rgba(0,0,0,.1)}
@@ -433,6 +445,15 @@
     border-radius:12px;padding:14px 16px}
   .vtext.small{font-size:13.5px;padding:9px 11px}
   .vtext img{max-width:100%;height:auto}
+  /* moving things about while still reading */
+  #edPage.varr .scrap,#edPage.varr .pad{pointer-events:auto;cursor:move;touch-action:none}
+  #edPage.varr .scrap img,#edPage.varr .padshape{outline:2px solid #2dd4bf}
+  #edPage.varr .scrap.bh{opacity:.6}
+  .varrgrip{position:absolute;right:-7px;bottom:-7px;width:17px;height:17px;background:#14b8a6;
+    border-radius:5px;cursor:nwse-resize;touch-action:none;z-index:6;box-shadow:0 1px 3px rgba(0,0,0,.35)}
+  .varrdel{position:absolute;top:-10px;right:-10px;width:23px;height:23px;border-radius:50%;
+    background:#292524;color:#fff;font-size:11px;z-index:6;display:flex;align-items:center;justify-content:center}
+  .varrdel:hover{background:var(--rose)}
   /* fit-to-screen is about the scrapbook, not this — it was stacking the header
      even on a wide window, which is why the title sat under the cover */
   @media(max-width:560px){
@@ -3922,7 +3943,25 @@ function scheduleSave(){
 /* ---------- the book, read rather than edited ----------
    Everything empty simply isn't here: no pickers, no "Add… (Enter)", no boxes
    waiting to be filled. What you did fill in is gathered close together. */
-let vStatusOpen=false;
+let vStatusOpen=false,viewArrange=false;
+/* a picture pasted straight onto the page you're reading */
+async function viewAddPicture(file){
+  if(!file||!file.type.startsWith("image/")||!cur)return;
+  let data;try{data=await compressImage(file);}catch(e){alert("That image couldn't be read.");return;}
+  const n=(cur.images||[]).length;
+  const im={id:uid(),x:30+(n*26)%180,y:260+(n*22)%140,w:240,behind:false};
+  try{await dbPut("images",{key:cur.id+"|"+im.id,data});}catch(e){alert("That picture couldn't be saved — storage may be full.");return;}
+  curImgs[im.id]=data;
+  if(SYNC.on)enqueue({kind:"img",key:cur.id+"|"+im.id});
+  viewArrange=true;
+  await quickEdit(bk=>{bk.images=bk.images||[];bk.images.push(im);});
+}
+document.addEventListener("paste",e=>{
+  if(view!=="book"||bookMode!=="view"||!viewArrange||!cur)return;
+  for(const it of e.clipboardData?.items||[]){
+    if(it.type.startsWith("image/")){e.preventDefault();viewAddPicture(it.getAsFile());return;}
+  }
+});
 /* the two things worth changing without opening the form. Saved and undoable
    exactly like an edit made inside it. */
 async function quickEdit(mut){
@@ -3977,6 +4016,7 @@ function renderBookView(){
       <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
       <span class="savemsg ok" id="saveMsg"></span>
       <span class="sizectl">${sizeCtrlHtml()}</span>
+      <button class="sm ${viewArrange?"on":""}" id="vArr" title="Drag your pictures and notes where you want them — you can paste one in too">✥ Move${viewArrange?"…":""}</button>
       <button class="btn pri" id="toEdit" title="Change anything about this book">✎ Edit</button>
       <button class="delbtn" id="edDel">🗑</button>
     </div></div>
@@ -4001,12 +4041,16 @@ function renderBookView(){
         ${statusOf(b)==="reading"&&pct!=null?`<div class="vprog"><span class="prog" style="flex:1"><i style="width:${pct}%"></i></span>
           <span class="rr">${pct}% · p.${esc(String(b.progress))} of ${esc(String(b.pages))}</span></div>`:""}
         ${facts.length?`<dl class="vfactgrid">${facts.map(f=>`<dt>${f[0]}</dt><dd>${f[1]}</dd>`).join("")}</dl>`:""}
-        ${(b.genres||[]).length?`<div class="rgen vgen">${(()=>{const br=new Set(b.genreBreaks||[]);
-          return (b.genres||[]).map(g=>chipHtml(g,false)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div>`:""}
-        ${(b.keywords||[]).length?`<div class="chiprow vkw">${(()=>{const br=new Set(b.kwBreaks||[]);
-          return (b.keywords||[]).map(k=>`<span class="kw" style="${kwStyle(k)}">${esc(k)}</span>`
-            +(br.has(k)?'<span class="rowbreak"></span>':"")).join("");})()}</div>`:""}
         ${b.dnf&&(b.dnfReasons||[]).length?`<div class="vfacts">Set aside: ${(b.dnfReasons||[]).map(esc).join(", ")}</div>`:""}
+      </div>
+      <div class="vside">
+        ${(b.genres||[]).length?`<div class="vsec"><div class="vsectitle">Genres</div>
+          <div class="rgen vgen">${(()=>{const br=new Set(b.genreBreaks||[]);
+            return (b.genres||[]).map(g=>chipHtml(g,false)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div></div>`:""}
+        ${(b.keywords||[]).length?`<div class="vsec"><div class="vsectitle">Tags</div>
+          <div class="chiprow vkw">${(()=>{const br=new Set(b.kwBreaks||[]);
+            return (b.keywords||[]).map(k=>`<span class="kw" style="${kwStyle(k)}">${esc(k)}</span>`
+              +(br.has(k)?'<span class="rowbreak"></span>':"")).join("");})()}</div></div>`:""}
       </div>
     </div>
 
@@ -4089,7 +4133,50 @@ function renderBookView(){
     if(hs.length&&!fitScreen)page.style.minHeight=Math.max(...hs)+"px";
   });
   page.classList.toggle("fit",fitScreen);
+  page.classList.toggle("varr",viewArrange);
+  q("#vArr").onclick=()=>{viewArrange=!viewArrange;renderBookView();};
+  if(viewArrange)wireViewArrange(page);
   applyBg();closeFabMenu();updateFab();
+}
+/* dragging, resizing and removing pictures and notes without opening the form */
+function wireViewArrange(page){
+  const save=()=>quickEdit(()=>{});
+  qa(".scrap,.pad",page).forEach(el=>{
+    const isPad=el.classList.contains("pad");
+    const obj=isPad?(cur.pads||[]).find(p=>p.id===el.dataset.pad)
+                   :(cur.images||[]).find(i=>i.id===el.dataset.im);
+    if(!obj)return;
+    const start=(e,how)=>{
+      e.preventDefault();e.stopPropagation();
+      const sx=e.clientX,sy=e.clientY,x0=obj.x||0,y0=obj.y||0,w0=obj.w||240,h0=obj.h||0;
+      const mv=ev=>{
+        if(how==="move"){
+          obj.x=Math.round(x0+ev.clientX-sx);obj.y=Math.round(Math.max(0,y0+ev.clientY-sy));
+          el.style.left=obj.x+"px";el.style.top=obj.y+"px";
+        }else{
+          obj.w=Math.round(Math.max(60,Math.min(1400,w0+ev.clientX-sx)));el.style.width=obj.w+"px";
+          if(isPad){obj.h=Math.round(Math.max(70,Math.min(1400,h0+ev.clientY-sy)));el.style.height=obj.h+"px";}
+        }
+      };
+      const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);save();};
+      window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
+    };
+    const grip=document.createElement("div");grip.className="varrgrip";el.appendChild(grip);
+    grip.addEventListener("pointerdown",e=>start(e,"resize"));
+    el.addEventListener("pointerdown",e=>{if(!e.target.closest(".varrgrip,.varrdel"))start(e,"move");});
+    const del=document.createElement("button");del.className="varrdel";del.textContent="✕";
+    del.title="Take it off the page";el.appendChild(del);
+    del.onclick=async e=>{
+      e.stopPropagation();
+      if(!confirm("Take this off the page?"))return;
+      if(isPad)await quickEdit(bk=>{bk.pads=(bk.pads||[]).filter(p=>p.id!==obj.id);});
+      else{
+        if(SYNC.on)enqueue({kind:"imgDel",key:cur.id+"|"+obj.id});
+        delete curImgs[obj.id];
+        await quickEdit(bk=>{bk.images=(bk.images||[]).filter(i=>i.id!==obj.id);});
+      }
+    };
+  });
 }
 
 function renderEditor(){
