@@ -383,6 +383,9 @@
   .kwpick{display:flex;flex-wrap:wrap;gap:3px;max-height:132px;overflow:auto;
     border:1px solid var(--line);border-radius:9px;padding:7px;background:var(--card)}
   .kwpick .kw:hover{border-color:#2dd4bf}
+  .kwfam{display:flex;flex-wrap:wrap;gap:3px;align-items:center;width:100%}
+  .kwfamname{width:100%;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
+    color:var(--faint);margin:5px 0 1px}
   /* the way in to wherever the book actually is — deliberately hard to miss */
   .openbook{flex:none;width:52px;height:64px;border-radius:9px;border:1px solid #99f6e4;background:#f0fdfa;
     color:var(--teal);text-decoration:none;display:flex;flex-direction:column;align-items:center;
@@ -1047,10 +1050,20 @@ let metaDel={};
 function saveMetaDel(){dbPut("meta",{k:"metaDel",v:metaDel});enqueue({kind:"meta",key:"metaDel"});}
 function markMetaDel(k){metaDel[k]=Date.now();saveMetaDel();}
 function unmarkMetaDel(k){if(metaDel[k]){delete metaDel[k];saveMetaDel();}}
+let kwCats={};                 /* keyword -> which family it belongs to */
+let catColors={};              /* family -> its colour, which its keywords inherit */
+/* a keyword's own colour wins; failing that it takes its family's; failing that it
+   stays plain, which is what most of them should be */
+const kwColor=k=>kwColors[k]||catColors[kwCats[k]]||"";
 const kwStyle=k=>{
-  const c=kwColors[k];
+  const c=kwColor(k);
   return c?`background:${c};border-color:${c};color:${inkOn(c)}`:"";
 };
+function saveKwCats(){
+  dbPut("meta",{k:"kwCats",v:kwCats});dbPut("meta",{k:"catColors",v:catColors});
+  enqueue({kind:"meta",key:"kwCats"});enqueue({kind:"meta",key:"catColors"});
+}
+const allCats=()=>[...new Set(Object.values(kwCats).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
 let settings={autoBackup:true,keepAuto:3,bg:{id:"none",opacity:100},theme:"auto"};
 let groupArt={};               /* "genre|Fantasy" -> {img:<id>,h:<px>}; picture at "__gart|<id>" */
 const gartCache=new Map();
@@ -1170,7 +1183,7 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="trashCloud"?trashCloud:op.key==="libArt"?libArt:null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="trashCloud"?trashCloud:op.key==="libArt"?libArt:op.key==="kwCats"?kwCats:op.key==="catColors"?catColors:null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
@@ -1226,6 +1239,10 @@ async function pullAll(){
             for(const k in rv)if(!trashCloud[k]&&!(deletions[k]&&!rv[k]))trashCloud[k]=rv[k];}
           else if(row.key==="libArt"){const have=new Set(libArt.map(a=>a.id));
             (row.value||[]).forEach(a=>{if(a&&a.id&&!have.has(a.id)&&!gone("libart:"+a.id))libArt.push(a);});}
+          else if(row.key==="kwCats"){const rv=row.value||{};
+            for(const k in rv)if(!kwCats[k]&&!gone("kw:"+k))kwCats[k]=rv[k];}
+          else if(row.key==="catColors"){const rv=row.value||{};
+            for(const c in rv)if(!catColors[c])catColors[c]=rv[c];}
         }
         /* anything deleted here must go from the merged copies too */
         for(const k in metaDel){
@@ -1237,8 +1254,10 @@ async function pullAll(){
           else if(kind==="bg")bgList=bgList.filter(x=>x.id!==nm);
           else if(kind==="pad")padList=padList.filter(x=>x.id!==nm);
           else if(kind==="libart")libArt=libArt.filter(x=>x.id!==nm);
+          else if(kind==="kw")delete kwCats[nm];
         }
         dbPut("meta",{k:"libArt",v:libArt});
+        dbPut("meta",{k:"kwCats",v:kwCats});dbPut("meta",{k:"catColors",v:catColors});
         dbPut("meta",{k:"metaDel",v:metaDel});dbPut("meta",{k:"kwColors",v:kwColors});dbPut("meta",{k:"trashCloud",v:trashCloud});
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
         dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});dbPut("meta",{k:"groupArt",v:groupArt});dbPut("meta",{k:"kwColors",v:kwColors});
@@ -1446,6 +1465,8 @@ async function initSync(){
   const md=await dbGet("meta","metaDel");metaDel=md&&md.v?md.v:{};
   const tc=await dbGet("meta","trashCloud");trashCloud=tc&&tc.v?tc.v:{};
   const la=await dbGet("meta","libArt");libArt=la&&Array.isArray(la.v)?la.v:[];
+  const kct=await dbGet("meta","kwCats");kwCats=kct&&kct.v?kct.v:{};
+  const cc=await dbGet("meta","catColors");catColors=cc&&cc.v?cc.v:{};
   const iq=await dbGet("meta","importQueue");importQueue=iq&&Array.isArray(iq.v)?iq.v:[];
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   /* first run on a small screen starts simple; after that it's whatever you chose */
@@ -2822,7 +2843,8 @@ async function renderHub(){
     </div>
     <div class="sec">
       <div class="heading"><h2 class="serif">Tidying up</h2><span class="n" id="dupN"></span></div>
-      <div class="hcard"><div id="dupBox"><span class="none">Checking for duplicates…</span></div></div>
+      <div class="hcard"><div id="dupBox"><span class="none">Checking for duplicates…</span></div>
+        <div id="kwDupBox"></div></div>
     </div>
     <div class="sec">
       <div class="heading"><h2 class="serif">Settings</h2>
@@ -2912,7 +2934,7 @@ async function renderHub(){
     const v=q("#fontScaleV");if(v)v.textContent=settings.fontScale+"%";
     applySimple();saveSettings();
   };
-  refreshDupes();
+  refreshDupes();refreshKwDupes();
   q("#expBtn").onclick=exportBackup;
   q("#impBtn").onclick=()=>q("#importFile").click();
   qa("[data-th]").forEach(b=>b.onclick=()=>{settings.theme=b.dataset.th;saveSettings();applyTheme();renderHub();});
@@ -3098,6 +3120,54 @@ function refreshDupes(){
         ${g.map((b,i)=>`<button class="btn" data-dup="${b.id}" style="padding:3px 9px">Open ${i+1}${b.rating!=null?` · ★${Number(b.rating).toFixed(1)}`:""}</button>`).join("")}
       </div></div>`).join("");
   qa("[data-dup]",box).forEach(b=>b.onclick=()=>openBook(b.dataset.dup,false));
+}
+
+/* A keyword that repeats one of your genres says nothing the genre didn't. Exact
+   repeats are ticked for you; near ones are only offered, since "God/Jesus" may
+   well be a finer thing than the genre "God". */
+function refreshKwDupes(){
+  const box=q("#kwDupBox");if(!box)return;
+  const gs=Object.keys(genres);
+  const kws=[...new Set(books.flatMap(b=>b.keywords||[]))];
+  const hits=[];
+  kws.forEach(k=>{
+    const kl=k.toLowerCase();
+    const exact=gs.find(g=>g.toLowerCase()===kl);
+    if(exact){hits.push({k,g:exact,exact:true});return;}
+    /* three letters is enough — "God" ought to catch "God/Jesus". Near matches are
+       only ever offered, never ticked for you, so a stray one costs nothing. */
+    const near=gs.find(g=>g.length>=3&&kl.includes(g.toLowerCase()));
+    if(near)hits.push({k,g:near,exact:false});
+  });
+  if(!hits.length){box.innerHTML="";return;}
+  const count=k=>books.filter(b=>(b.keywords||[]).includes(k)).length;
+  box.innerHTML=`<div class="grouphead" style="margin:16px 0 8px"><h2 class="serif" style="margin:0;font-size:15px">Keywords that repeat a genre</h2>
+      <span class="n">${hits.length}</span><span class="ghline"></span></div>
+    <div class="hint" style="margin:0 0 8px">Tick the ones the genre already covers and remove them from every book at once. The genres themselves aren't touched.</div>
+    ${hits.map((h,i)=>`<label class="snap" style="padding:6px 10px;cursor:pointer">
+      <input type="checkbox" data-kdup="${i}" ${h.exact?"checked":""}>
+      <div style="flex:1;min-width:0"><div class="when" style="font-size:13px">${esc(h.k)}</div>
+        <div class="meta">on ${count(h.k)} book${count(h.k)===1?"":"s"} · ${h.exact?"the same as":"looks like"} your genre “${esc(h.g)}”</div></div>
+    </label>`).join("")}
+    <button class="btn danger" id="kdupGo" style="margin-top:8px">🗑 Remove the ticked keywords everywhere</button>`;
+  q("#kdupGo",box).onclick=async()=>{
+    const chosen=[...box.querySelectorAll("[data-kdup]:checked")].map(c=>hits[+c.dataset.kdup].k);
+    if(!chosen.length)return;
+    if(!confirm(`Remove ${chosen.length} keyword${chosen.length===1?"":"s"} from every book?\n\n${chosen.join(", ")}\n\nThe genres stay as they are.`))return;
+    const gone=new Set(chosen);
+    for(const b of books){
+      if(!(b.keywords||[]).some(k=>gone.has(k)))continue;
+      b.keywords=b.keywords.filter(k=>!gone.has(k));
+      b.kwBreaks=(b.kwBreaks||[]).filter(k=>!gone.has(k));
+      b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
+      await dbPut("books",b);
+      if(SYNC.on)enqueue({kind:"book",id:b.id});
+    }
+    chosen.forEach(k=>{delete kwColors[k];delete kwCats[k];markMetaDel("kw:"+k);});
+    saveKwColors();saveKwCats();
+    if(SYNC.on)flushQueue();
+    render();
+  };
 }
 
 async function refreshTrash(){
@@ -4705,9 +4775,16 @@ function renderEditor(){
     const pool=knownKeywords().filter(k=>!mine.has(k.toLowerCase()));
     const shown=typed?pool.filter(k=>k.toLowerCase().includes(typed)):pool;
     const exact=typed&&knownKeywords().some(k=>k.toLowerCase()===typed);
+    /* gathered by family, so a long list stays navigable */
+    const fams={};
+    shown.forEach(k=>{const c=kwCats[k]||"";(fams[c]=fams[c]||[]).push(k);});
+    const named=Object.keys(fams).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+    const chips=list=>list.map(k=>`<span class="kw" data-ks="${esc(k)}" style="cursor:pointer;${kwStyle(k)}">${esc(k)}</span>`).join("");
     box.innerHTML=(shown.length
         ?`<div class="lbl" style="display:block;margin:6px 0 3px">${typed?`Matching (${shown.length})`:`Already in use (${shown.length}) — tap to add`}</div>
-          <div class="kwpick">${shown.map(k=>`<span class="kw" data-ks="${esc(k)}" style="cursor:pointer;${kwStyle(k)}">${esc(k)}</span>`).join("")}</div>`
+          <div class="kwpick">${named.map(c=>
+              `<div class="kwfam"><span class="kwfamname"${catColors[c]?` style="color:${catColors[c]}"`:""}>${esc(c)}</span>${chips(fams[c])}</div>`).join("")
+            }${fams[""]&&fams[""].length?`<div class="kwfam">${named.length?'<span class="kwfamname">Loose</span>':""}${chips(fams[""])}</div>`:""}</div>`
         :(typed?`<div class="lbl" style="margin-top:6px">Nothing like that yet — press Enter to make it.</div>`:""))
       +(typed&&!exact&&shown.length?`<div class="lbl" style="margin-top:4px">…or press Enter for a new one.</div>`:"");
     qa("[data-ks]",box).forEach(x=>x.onclick=()=>addKw(x.dataset.ks));
@@ -4836,19 +4913,47 @@ function renderEditor(){
     const isG=kind==="genre";
     const used=books.filter(b=>(isG?(b.genres||[]):(b.keywords||[])).indexOf(name)>=0).length;
     let color=isG?(genres[name]||"#78716c"):(kwColors[name]||"");
+    let cat=isG?"":(kwCats[name]||"");
     box.innerHTML=`
       <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">✎ ${isG?"Genre":"Keyword"}</b>
         <button class="btn" id="teClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
       <div class="hint" style="margin:0 0 7px">On ${used} book${used===1?"":"s"} — what you change here changes all of them.</div>
       <input class="field" id="teName" value="${esc(name)}" placeholder="Name">
+      ${isG?"":`<div class="lbl" style="display:block;margin:12px 0 4px">Which family it belongs to</div>
+        <div id="teCats">${allCats().map(c=>`<button class="rsn ${kwCats[name]===c?"on":""}" data-tecat="${esc(c)}">${kwCats[name]===c?"✓ ":""}${esc(c)}</button>`).join("")}
+          <input id="teCatNew" class="addin" style="width:170px;display:inline-block;margin:2px 0 0 2px" placeholder="New family… (Enter)"></div>
+        <div class="hint" style="margin:5px 0 0">A family gathers keywords of a kind — Setting, Characters, Themes — and can carry one colour for all of them.</div>`}
       <div class="lbl" style="display:block;margin:12px 0 6px">Colour</div>
       <div id="teCol"></div>
+      ${isG?"":`<label class="chk" style="margin-top:8px;font-size:13px"><input type="checkbox" id="teCatCol"> Give this colour to the whole family</label>`}
       ${isG?"":`<div class="hint" style="margin:8px 0 0">Leave it be and this keyword stays plain grey — <button class="btn" id="tePlain" style="padding:2px 8px;font-size:12px">make it plain again</button></div>`}
       <div class="hrow2" style="margin-top:12px"><button class="btn pri" id="teSave">Save</button>
         <button class="btn danger" id="teDel" title="Take it off every book and out of the list">🗑 Remove everywhere</button></div>`;
     q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
     /* opens on whatever it already is — a colour if it has one, plain if it doesn't */
-    drawColorPicker(q("#teCol",box),color,c=>{color=c;},!isG);
+    drawColorPicker(q("#teCol",box),color||catColors[cat]||"",c=>{color=c;},!isG);
+    const paintCats=()=>{
+      qa("[data-tecat]",box).forEach(x=>{
+        const on=x.dataset.tecat===cat;
+        x.classList.toggle("on",on);
+        x.textContent=(on?"✓ ":"")+x.dataset.tecat;
+      });
+    };
+    qa("[data-tecat]",box).forEach(x=>x.onclick=()=>{
+      cat=(cat===x.dataset.tecat)?"":x.dataset.tecat;paintCats();});
+    const cn=q("#teCatNew",box);
+    if(cn)cn.addEventListener("keydown",e=>{
+      if(e.key!=="Enter"||!e.target.value.trim())return;
+      cat=titleCase(e.target.value.trim());e.target.value="";
+      const wrap=q("#teCats",box);
+      if(!qa("[data-tecat]",box).some(x=>x.dataset.tecat===cat)){
+        const b2=document.createElement("button");
+        b2.className="rsn";b2.dataset.tecat=cat;b2.textContent=cat;
+        b2.onclick=()=>{cat=(cat===b2.dataset.tecat)?"":b2.dataset.tecat;paintCats();};
+        wrap.insertBefore(b2,cn);
+      }
+      paintCats();
+    });
     const tp=q("#tePlain",box);
     if(tp)tp.onclick=async()=>{
       delete kwColors[name];saveKwColors();
@@ -4867,15 +4972,24 @@ function renderEditor(){
       scheduleSave();
     };
     q("#teSave",box).onclick=async()=>{
+      /* read everything off the panel before emptying it */
       const nn=titleCase(q("#teName",box).value.trim());
+      const wholeFamily=!!(q("#teCatCol",box)&&q("#teCatCol",box).checked);
       box.hidden=true;box.innerHTML="";
       if(isG)await renameGenre(name,nn,color);
       else{
-        /* the colour travels with the name — and "no colour" really means none */
         const key=nn||name;
-        if(color)kwColors[key]=color;else delete kwColors[key];
+        /* the family and the colour travel with the name */
+        if(cat)kwCats[key]=cat;else delete kwCats[key];
+        if(nn&&nn!==name)delete kwCats[name];
+        if(wholeFamily&&cat&&color){
+          catColors[cat]=color;
+          delete kwColors[key];        /* let it take the family's colour */
+        }else{
+          if(color&&color!==catColors[cat])kwColors[key]=color;else delete kwColors[key];
+        }
         if(nn&&nn!==name)delete kwColors[name];
-        saveKwColors();
+        saveKwColors();saveKwCats();
         await renameKeyword(name,nn);
         renderKw();
       }
@@ -5523,7 +5637,7 @@ async function buildBackup(){
   const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
   return {app:"my-shelf",version:1,exported:new Date().toISOString(),
     index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
-    backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,libArt,covers,images};
+    backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,kwCats,catColors,libArt,covers,images};
 }
 function downloadJson(json,name){
   const blob=new Blob([json],{type:"application/json"});
@@ -5585,6 +5699,11 @@ async function applyBackup(data){
   for(const k in gaIn)if(!groupArt[k])groupArt[k]=gaIn[k];
   const kcIn=data.kwColors||{};
   for(const k in kcIn)if(!kwColors[k])kwColors[k]=kcIn[k];
+  const kcatIn=data.kwCats||{};
+  for(const k in kcatIn)if(!kwCats[k])kwCats[k]=kcatIn[k];
+  const ccIn=data.catColors||{};
+  for(const c in ccIn)if(!catColors[c])catColors[c]=ccIn[c];
+  saveKwCats();
   const haveLa=new Set(libArt.map(a=>a.id));
   (data.libArt||[]).forEach(a=>{if(a&&a.id&&!haveLa.has(a.id))libArt.push(a);});
   saveBgList();savePadList();saveFandoms();saveGroupArt();saveKwColors();saveLibArt();
