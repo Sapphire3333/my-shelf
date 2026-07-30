@@ -387,6 +387,9 @@
   #edPage.tagedit #genChips .chip,#edPage.tagedit #genSug .chip,#edPage.tagedit #kwWrap .kw{
     cursor:pointer;outline:2px dashed var(--amber);outline-offset:2px}
   #edPage.tagedit #tagEditTog{background:var(--amber);border-color:var(--amber);color:#43290b;font-weight:700}
+  /* chips can be dragged into the order you want while you're editing them */
+  #edPage.tagedit #genChips .chip,#edPage.tagedit #kwWrap .kw{cursor:grab;touch-action:none;user-select:none}
+  #edPage.tagedit #genChips .chip:active,#edPage.tagedit #kwWrap .kw:active{cursor:grabbing}
   .sm.tag-on{background:#fbbf24;border-color:#f59e0b;color:#78350f;font-weight:700}
 
   /* auth + sync */
@@ -832,6 +835,25 @@ const mutedOf=hex=>{const c=hexToHsl(hex);return hslToHex(c.h,Math.max(16,c.s*.4
 const shadeOf=(hex,pct)=>{const c=hexToHsl(hex);return hslToHex(c.h,c.s,Math.max(8,Math.min(95,c.l*pct/100)));};
 /* dark text on a pale chip, white on a deep one */
 const inkOn=hex=>hexToHsl(hex).l>62?"#292524":"#ffffff";
+/* Tidy a label as you type it: "epic fantasy" -> "Epic Fantasy", but the little
+   joining words stay down, and anything you've already capitalised yourself is
+   left exactly as it is — so YA, iPhone and McGuire survive untouched. */
+const SMALL_WORDS=new Set(["a","an","and","as","at","but","by","for","from","in","into",
+  "nor","of","on","onto","or","over","per","the","to","via","vs","with"]);
+function titleCase(s){
+  const parts=String(s||"").split(/(\s+)/);
+  const total=parts.filter(p=>p.trim()).length;
+  let n=0;
+  return parts.map(p=>{
+    if(!p.trim())return p;
+    n++;
+    if(/[A-Z]/.test(p))return p;                       /* already styled — leave it */
+    const bare=p.toLowerCase().replace(/[^a-z]/g,"");
+    if(n>1&&n<total&&SMALL_WORDS.has(bare))return p;   /* not first, not last */
+    return p.replace(/^([a-z])/,(m,c)=>c.toUpperCase())
+            .replace(/([-\/])([a-z])/g,(m,d,c)=>d+c.toUpperCase());
+  }).join("");
+}
 const hexToRgba=(hex,a)=>{
   const m=String(hex||"").replace("#","");
   const v=m.length===3?m.split("").map(c=>c+c).join(""):m;
@@ -2365,7 +2387,7 @@ function renderLibrary(){
       qa("[data-selopt]",panel).forEach(b=>b.onclick=()=>{panel.innerHTML="";onPick(b.dataset.selopt);});
       const ni=q("#selNew",panel);
       if(ni)ni.addEventListener("keydown",e=>{
-        if(e.key==="Enter"&&e.target.value.trim()){const v=e.target.value.trim();panel.innerHTML="";onPick(v);}});
+        if(e.key==="Enter"&&e.target.value.trim()){const v=titleCase(e.target.value.trim());panel.innerHTML="";onPick(v);}});
       q("#selCancel",panel).onclick=()=>{panel.innerHTML="";};
     };
     const sg=q("#selGen",m);
@@ -4183,7 +4205,7 @@ function renderEditor(){
     });
     q("#fdIn",w).addEventListener("keydown",e=>{
       if(e.key!=="Enter"||!e.target.value.trim())return;
-      const f=e.target.value.trim();
+      const f=titleCase(e.target.value.trim());
       if(!fandoms[f]){fandoms[f]=[];saveFandoms();}
       if(!cur.fandoms.includes(f))cur.fandoms.push(f);
       renderFF();scheduleSave();
@@ -4191,7 +4213,7 @@ function renderEditor(){
     const ci=q("#chIn",w);
     if(ci)ci.addEventListener("keydown",e=>{
       if(e.key!=="Enter"||!e.target.value.trim())return;
-      const c=e.target.value.trim();
+      const c=titleCase(e.target.value.trim());
       fandoms[firstF]=fandoms[firstF]||[];
       if(!fandoms[firstF].includes(c)){fandoms[firstF].push(c);saveFandoms();}
       if(!cur.characters.includes(c))cur.characters.push(c);
@@ -4544,7 +4566,7 @@ function renderEditor(){
 
   /* keywords */
   function addKw(t){
-    const v=(t||"").trim();if(!v)return;
+    const v=titleCase((t||"").trim());if(!v)return;
     if(cur.keywords.some(k=>k.toLowerCase()===v.toLowerCase()))return;
     cur.keywords.push(v);renderKw();scheduleSave();
   }
@@ -4586,10 +4608,43 @@ function renderEditor(){
     qa("[data-kedit]",w).forEach(x=>x.onclick=e=>{
       if(e.target.closest("[data-kx],[data-kmv],[data-kbr]")||!tagEdit)return;
       openTagEditor("keyword",x.dataset.kedit);});
+    makeChipsDraggable(w,"[data-kedit]",
+      ()=>cur.keywords,l=>{cur.keywords=l;renderKw();},scheduleSave);
     qa("[data-ks]",w).forEach(x=>x.onclick=()=>addKw(x.dataset.ks));
     q("#kwIn",w).addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target.value.trim()){addKw(e.target.value);e.target.value="";}});
   }
   renderKw();
+
+  /* Drag a chip to where you want it. The list itself is reordered as you pass
+     over the others and redrawn each time, so we follow the chip by name rather
+     than by element — the element you grabbed stops existing almost at once. */
+  function makeChipsDraggable(root,sel,getList,setList,onDone){
+    qa(sel,root).forEach(el=>el.addEventListener("pointerdown",e=>{
+      if(!tagEdit)return;
+      if(e.target.closest("[data-gx],[data-kx],[data-gmv],[data-kmv],[data-gbr],[data-kbr]"))return;
+      e.preventDefault();
+      const held=el.getAttribute(sel.replace(/[\[\]]/g,""));
+      if(held==null)return;
+      let moved=false;
+      const mv=ev=>{
+        const t=document.elementFromPoint(ev.clientX,ev.clientY);
+        const over=t&&t.closest&&t.closest(sel);
+        if(!over)return;
+        const name=over.getAttribute(sel.replace(/[\[\]]/g,""));
+        if(name==null||name===held)return;
+        const list=getList();
+        const from=list.indexOf(held),to=list.indexOf(name);
+        if(from<0||to<0)return;
+        list.splice(to,0,list.splice(from,1)[0]);
+        moved=true;setList(list);
+      };
+      const up=()=>{
+        window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
+        if(moved&&onDone)onDone();
+      };
+      window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
+    }));
+  }
 
   /* ---- editing a genre or keyword everywhere it appears ---- */
   const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,((b&&SYNC.seen[b.id])||0)+1);
@@ -4665,7 +4720,7 @@ function renderEditor(){
       scheduleSave();
     };
     q("#teSave",box).onclick=async()=>{
-      const nn=q("#teName",box).value.trim();
+      const nn=titleCase(q("#teName",box).value.trim());
       box.hidden=true;box.innerHTML="";
       if(isG)await renameGenre(name,nn,color);
       else{
@@ -4719,6 +4774,8 @@ function renderEditor(){
     qa("[data-gedit]").forEach(x=>x.onclick=e=>{
       if(e.target.closest("[data-gx],[data-gmv],[data-gbr]")||!tagEdit)return;
       openTagEditor("genre",x.dataset.gedit);});
+    makeChipsDraggable(q("#genChips"),"[data-gedit]",
+      ()=>cur.genres,l=>{cur.genres=l;renderGenres();},scheduleSave);
     /* every genre you've already made is on show — typing just narrows it */
     const v=q("#fGenre").value.trim();
     const pool=Object.keys(genres).filter(g=>!cur.genres.includes(g)).sort((a,b)=>a.localeCompare(b));
@@ -4741,7 +4798,7 @@ function renderEditor(){
     }
   }
   function addGenre(name,color){
-    const clean=(name||"").trim();if(!clean)return;
+    const clean=titleCase((name||"").trim());if(!clean)return;
     if(!genres[clean]){
       if(!color){pendingGenre=clean;renderGenres();return;}
       genres[clean]=color;unmarkMetaDel("genre:"+clean);saveMeta();
