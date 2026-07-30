@@ -2320,11 +2320,27 @@ async function makeSeriesFrom(ids,name){
   return sel.length;
 }
 
-let authSel=new Set(),authVarSel=new Set(),authSimOpen=false;
+let authSel=new Set(),authVarSel=new Set(),authFindQ="";
+/* Two spellings of one person. The surname alone isn't enough: "C.S. Lewis" and
+   "C.S. Lewis, Walter Hooper" share no last word, yet one plainly contains the
+   other — which is exactly what a co-author tacked on looks like. */
+function looksLikeSameAuthor(a,b){
+  const A=String(a||"").trim().toLowerCase(),B=String(b||"").trim().toLowerCase();
+  if(!A||!B||A===B)return false;
+  if(A.length>=4&&B.includes(A))return true;
+  if(B.length>=4&&A.includes(B))return true;
+  const sa=surnameOf(a),sb=surnameOf(b);
+  if(sa&&sa===sb)return true;
+  /* or they share a long word — "Lewis" in both, however the rest is arranged */
+  const words=s=>new Set(s.replace(/[.,]/g," ").split(/\s+/).filter(w=>w.length>3));
+  const wa=words(A);
+  for(const w of words(B))if(wa.has(w))return true;
+  return false;
+}
 function openAuthorPanel(name){
   name=(name||"").trim();
   if(!name)return;
-  authSel=new Set();authVarSel=new Set();authSimOpen=false;
+  authSel=new Set();authVarSel=new Set();authFindQ="";
   renderAuthorPanel(name);
 }
 function closeAuthorPanel(){const box=q("#authPanel");box.hidden=true;box.innerHTML="";}
@@ -2333,11 +2349,13 @@ function renderAuthorPanel(name){
   const mine=books.filter(b=>(b.author||"").trim()===name)
     .sort((a,b)=>(a.series||"").localeCompare(b.series||"")||(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0)||(a.title||"").localeCompare(b.title||""));
   authSel=new Set([...authSel].filter(id=>mine.some(b=>b.id===id)));
-  const sn=surnameOf(name);
   const variants={};
-  if(sn)books.forEach(b=>{const a=(b.author||"").trim();
-    if(a&&a!==name&&surnameOf(a)===sn)(variants[a]=variants[a]||[]).push(b);});
-  const vNames=Object.keys(variants).sort((a,b)=>a.localeCompare(b));
+  books.forEach(b=>{const a=(b.author||"").trim();
+    if(a&&a!==name)(variants[a]=variants[a]||[]).push(b);});
+  const likely=Object.keys(variants).filter(a=>looksLikeSameAuthor(name,a)).sort((a,b)=>a.localeCompare(b));
+  const fq=(authFindQ||"").trim().toLowerCase();
+  /* the likely ones by default; anything at all once you search */
+  const vNames=fq?Object.keys(variants).filter(a=>a.toLowerCase().includes(fq)).sort((a,b)=>a.localeCompare(b)):likely;
   authVarSel=new Set([...authVarSel].filter(v=>variants[v]));
   const row=b=>`<label class="snap" style="padding:6px 10px;cursor:pointer">
       <input type="checkbox" data-apb="${b.id}" ${authSel.has(b.id)?"checked":""}>
@@ -2355,16 +2373,17 @@ function renderAuthorPanel(name){
       <button class="btn" id="apSer" ${authSel.size>1?"":"disabled"}>🔗 Link as a series…</button>
     </div>
     <div class="hint" style="margin-top:5px">A <b>collection</b> folds the ticked books into one entry — their own pages move to Recently deleted, notes and covers carry over. A <b>series</b> keeps every page and links them under one name.</div>
-    ${vNames.length?`
-      <button class="btn" id="apSim" style="margin-top:13px;width:100%;text-align:left">${authSimOpen?"▾":"▸"} Similar names — same surname (${vNames.length})</button>
-      ${authSimOpen?`<div style="margin-top:7px">
-        <div class="hint" style="margin:0 0 6px">Imports sometimes write the same person differently. Tick the ones that are really ${esc(name)} and combine them:</div>
-        ${vNames.map(v=>`<label class="snap" style="padding:6px 10px;cursor:pointer">
-          <input type="checkbox" data-apv="${esc(v)}" ${authVarSel.has(v)?"checked":""}>
-          <div style="flex:1;min-width:0"><div class="when" style="font-size:13px">${esc(v)}</div>
-          <div class="meta">${variants[v].length} book${variants[v].length===1?"":"s"}${variants[v][0]?": "+esc(variants[v].slice(0,3).map(b=>b.title||"Untitled").join(", "))+(variants[v].length>3?"…":""):""}</div></div></label>`).join("")}
-        <button class="btn pri" id="apMerge" style="margin-top:6px" ${authVarSel.size?"":"disabled"}>Rename ticked to “${esc(name)}”</button>
-      </div>`:""}`:""}`;
+    <div class="grouphead" style="margin:18px 0 8px"><h2 class="serif" style="margin:0;font-size:15px">Same person, written differently?</h2><span class="ghline"></span></div>
+    <div class="hint" style="margin:0 0 7px">Imports write people differently — an extra co-author, initials, a surname first. Tick every spelling that is really ${esc(name)} and they become one author.</div>
+    <input class="field" id="apFind" placeholder="Search all your authors…" value="${esc(authFindQ)}" style="font-size:13px;padding:7px 11px;margin-bottom:7px">
+    ${vNames.length?vNames.map(v=>`<label class="snap" style="padding:6px 10px;cursor:pointer">
+        <input type="checkbox" data-apv="${esc(v)}" ${authVarSel.has(v)?"checked":""}>
+        <div style="flex:1;min-width:0"><div class="when" style="font-size:13px">${esc(v)}</div>
+        <div class="meta">${variants[v].length} book${variants[v].length===1?"":"s"}: ${esc(variants[v].slice(0,3).map(b=>b.title||"Untitled").join(", "))}${variants[v].length>3?"…":""}</div></div></label>`).join("")
+      :`<div class="none">${fq?"No author matches that.":"Nothing here looks like another spelling of this name — search above if you know of one."}</div>`}
+    <button class="btn pri" id="apMerge" style="margin-top:7px" ${authVarSel.size?"":"disabled"}>${authVarSel.size
+      ?`Make ${authVarSel.size} ${authVarSel.size===1?"spelling":"spellings"} into “${esc(name)}”`
+      :"Tick a spelling above"}</button>`;
   q("#apClose",box).onclick=closeAuthorPanel;
   qa("[data-apb]",box).forEach(c=>c.onchange=()=>{
     c.checked?authSel.add(c.dataset.apb):authSel.delete(c.dataset.apb);
@@ -2374,11 +2393,15 @@ function renderAuthorPanel(name){
     e.preventDefault();e.stopPropagation();
     finishSaveThen(()=>openBook(b.dataset.apo,false));
   });
-  const sim=q("#apSim",box);
-  if(sim)sim.onclick=()=>{authSimOpen=!authSimOpen;renderAuthorPanel(name);};
+  const find=q("#apFind",box);
+  if(find)find.oninput=()=>{
+    authFindQ=find.value;renderAuthorPanel(name);
+    const f2=q("#apFind",box);
+    if(f2){f2.focus();f2.setSelectionRange(f2.value.length,f2.value.length);}
+  };
   qa("[data-apv]",box).forEach(c=>c.onchange=()=>{
     c.checked?authVarSel.add(c.dataset.apv):authVarSel.delete(c.dataset.apv);
-    const mb=q("#apMerge",box);if(mb)mb.disabled=!authVarSel.size;
+    renderAuthorPanel(name);   /* so the button says how many you've ticked */
   });
   const mb=q("#apMerge",box);
   if(mb)mb.onclick=async()=>{
