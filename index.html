@@ -394,7 +394,9 @@
   /* the way in to wherever the book actually is — deliberately hard to miss */
   .linkchip{text-decoration:none}
   /* ---- reading a book rather than editing it ---- */
-  .vhead{display:flex;gap:18px;flex-wrap:wrap;margin-top:6px}
+  /* cover on the left, everything about the book beside it in the space that was
+     going spare. Only a genuinely narrow screen stacks them. */
+  .vhead{display:grid;grid-template-columns:auto minmax(0,1fr);gap:22px;align-items:start;margin-top:8px}
   .vcover{width:132px;height:186px;flex:none;border:1px solid var(--line);border-radius:10px;background:#f5f5f4;
     overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:34px;color:#d6d3d1;
     box-shadow:0 2px 8px rgba(0,0,0,.1)}
@@ -422,13 +424,22 @@
   .vfav:not(.on):hover{color:var(--rose)}
   .vprog{display:flex;align-items:center;gap:9px}
   .vfacts{font-size:13px;color:var(--mut)}
-  .vgen,.vkw{margin-top:2px}
+  .vfactgrid{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 14px;margin:6px 0 2px;font-size:13.5px}
+  .vfactgrid dt{color:var(--faint);font-size:11px;font-weight:700;letter-spacing:.6px;
+    text-transform:uppercase;align-self:center}
+  .vfactgrid dd{margin:0;color:var(--ink)}
+  .vgen,.vkw{margin-top:4px}
   .vtext{font-size:15px;line-height:1.6;background:var(--card);border:1px solid var(--line);
     border-radius:12px;padding:14px 16px}
   .vtext.small{font-size:13.5px;padding:9px 11px}
   .vtext img{max-width:100%;height:auto}
-  #edPage.fit .vhead{flex-direction:column}
-  @media(max-width:640px){.vcover{width:104px;height:148px}.vtitle{font-size:23px}}
+  /* fit-to-screen is about the scrapbook, not this — it was stacking the header
+     even on a wide window, which is why the title sat under the cover */
+  @media(max-width:560px){
+    .vhead{grid-template-columns:1fr;gap:14px;justify-items:start}
+    .vcover{width:104px;height:148px}
+    .vtitle{font-size:22px}
+  }
   .prog{display:inline-block;height:7px;border-radius:999px;background:var(--line);overflow:hidden;vertical-align:middle}
   .prog i{display:block;height:100%;background:var(--teal);border-radius:999px;transition:width .2s}
   .ovh{display:flex;align-items:center;gap:8px;margin:0 0 8px}
@@ -1957,6 +1968,34 @@ async function doUndo(){const op=HIST.undo.pop();if(!op)return;HIST.redo.push(op
 async function doRedo(){const op=HIST.redo.pop();if(!op)return;HIST.undo.push(op);await applyOp(op,false);}
 
 /* =============== router =============== */
+/* The phone's back button and the browser's arrow are the same gesture, and both
+   used to leave the app outright. Each screen is now a step in the browser's own
+   history, so back walks the app: form -> the book -> where you came from. */
+let navRestoring=false;
+function syncHistory(){
+  if(navRestoring)return;
+  const st={v:view,b:view==="book"&&cur?cur.id:null,m:view==="book"?bookMode:null};
+  const h=history.state;
+  if(h&&h.v===st.v&&h.b===st.b&&h.m===st.m)return;
+  try{h?history.pushState(st,""):history.replaceState(st,"");}catch(e){}
+}
+window.addEventListener("popstate",async e=>{
+  const st=e.state;
+  navRestoring=true;
+  /* backing out of the form is still leaving it — save what was typed */
+  if(view==="book"&&bookMode==="edit"&&cur){clearTimeout(saveTimer);try{await commitCur();}catch(err){}}
+  try{
+    if(st&&st.v==="book"&&st.b&&books.some(x=>x.id===st.b)){
+      if(!cur||cur.id!==st.b)await openBook(st.b,false);
+      view="book";bookMode=st.m||"view";renderBook();
+    }else{
+      view=(st&&st.v&&st.v!=="book")?st.v:"library";
+      cur=null;render();
+    }
+  }catch(err){console.warn("[shelf] back",err);}
+  finally{navRestoring=false;}
+});
+
 function render(){
   if(view==="book"){renderBook();return;}
   const favN=books.filter(b=>b.favorite).length,dnfN=books.filter(b=>b.dnf).length;
@@ -2003,6 +2042,7 @@ function render(){
   if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else if(view==="insights")renderInsights();else if(view==="pick")renderPick();else renderSearchView();
   closeFabMenu();   /* a jump list from the previous page would point at nothing */
   updateFab();
+  syncHistory();
 }
 
 /* =============== jump-to & back-to-top =============== */
@@ -3832,7 +3872,7 @@ document.addEventListener("selectionchange",saveSel);
 /* "view" shows only what's filled in; "edit" is the form. A book you've never
    touched opens in the form, since it's waiting to be filled in. */
 let bookMode="view";
-function renderBook(){bookMode==="edit"?renderEditor():renderBookView();}
+function renderBook(){bookMode==="edit"?renderEditor():renderBookView();syncHistory();}
 function setBookMode(m){bookMode=m;renderBook();}
 async function openBook(id,fresh){
   const found=books.find(b=>b.id===id);
@@ -3904,12 +3944,14 @@ function renderBookView(){
   const L=linkLabel(b.link);
   const auds=audsOf(b);
   const pct=pctOf(b);
+  /* label / value, so they line up in a column instead of running together */
   const facts=[];
-  if(b.pages)facts.push(`<b>${esc(String(b.pages))}</b> pages`);
-  if(b.dateFinished)facts.push(`finished ${esc(fmtEdited(b.dateFinished+"T12:00"))}`);
-  if((b.rereads||0)>0)facts.push(`read ${(b.rereads||0)+1}×`);
-  if(auds.length)facts.push(`for ${auds.map(esc).join(", ")}`);
-  if(kindOf(b)!=="book")facts.push(kindLabel(kindOf(b)));
+  if(b.pages)facts.push(["Length",`${esc(String(b.pages))} pages`]);
+  if(b.dateFinished)facts.push(["Finished",esc(fmtEdited(b.dateFinished+"T12:00"))]);
+  if((b.rereads||0)>0)facts.push(["Read",`${(b.rereads||0)+1} times`]);
+  if(auds.length)facts.push(["For",auds.map(esc).join(", ")]);
+  if(kindOf(b)!=="book")facts.push(["Kind",kindLabel(kindOf(b))]);
+  if(b.isbn)facts.push(["ISBN",esc(b.isbn)]);
   const seriesLine=isColl(b)
     ?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>${b.series?" "+esc(b.series):""}`
     :(b.series?`${esc(b.series)}${b.seriesNum?` <b>#${esc(b.seriesNum)}</b>`:""}${b.seriesTotal?` of ${esc(b.seriesTotal)}`:""}`:"");
@@ -3958,7 +4000,7 @@ function renderBookView(){
         </div>
         ${statusOf(b)==="reading"&&pct!=null?`<div class="vprog"><span class="prog" style="flex:1"><i style="width:${pct}%"></i></span>
           <span class="rr">${pct}% · p.${esc(String(b.progress))} of ${esc(String(b.pages))}</span></div>`:""}
-        ${facts.length?`<div class="vfacts">${facts.join(" · ")}</div>`:""}
+        ${facts.length?`<dl class="vfactgrid">${facts.map(f=>`<dt>${f[0]}</dt><dd>${f[1]}</dd>`).join("")}</dl>`:""}
         ${(b.genres||[]).length?`<div class="rgen vgen">${(()=>{const br=new Set(b.genreBreaks||[]);
           return (b.genres||[]).map(g=>chipHtml(g,false)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div>`:""}
         ${(b.keywords||[]).length?`<div class="chiprow vkw">${(()=>{const br=new Set(b.kwBreaks||[]);
