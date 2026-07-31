@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>My Shelf — layout check</title>
+<!-- A developer tool, not part of the app. It opens index.html at a row of
+     widths, walks every screen, and fails loudly if anything makes the page
+     scroll sideways — the bug class that has bitten three times (a leftover
+     min-width on .vmain, another on .edfields, and a button row with nowhere
+     to wrap). Run it after any change that touches layout.
+
+     It reads your real library but never writes: settings are assigned in
+     memory only and no save is ever called. -->
+<style>
+  body{font:14px/1.5 "Segoe UI",system-ui,sans-serif;margin:24px;background:#faf7f2;color:#292524}
+  h1{font-family:Georgia,serif;font-size:22px}
+  button{font:inherit;padding:8px 16px;border:1px solid #d6d3d1;border-radius:9px;background:#fff;cursor:pointer}
+  button:hover{border-color:#2dd4bf}
+  table{border-collapse:collapse;margin-top:18px}
+  th,td{border:1px solid #e7e5e4;padding:6px 12px;text-align:center;font-size:13px}
+  th{background:#f5f5f4;font-weight:600}
+  td.ok{background:#ecfdf5;color:#047857}
+  td.bad{background:#fff1f2;color:#be123c;cursor:pointer;font-weight:600}
+  td.skip{color:#a8a29e}
+  #detail{white-space:pre-wrap;font-size:12.5px;background:#fff;border:1px solid #e7e5e4;
+    border-radius:9px;padding:12px;margin-top:14px;display:none}
+  #frame{border:2px solid #d6d3d1;border-radius:6px;margin-top:18px;background:#fff;height:760px}
+  .mut{color:#78716c;font-size:13px}
+</style>
+</head>
+<body>
+<h1>Layout check</h1>
+<p class="mut">Every screen, at every width, must not scroll sideways. A red cell names what pokes out — click it for details.
+Widths marked ⛶ run in Full mode, the rest in Simple, matching how each size is really used.</p>
+<button id="go">Run the sweep</button>
+<span class="mut" id="prog"></span>
+<div id="out"></div>
+<div id="detail"></div>
+<iframe id="frame" width="253"></iframe>
+
+<script>
+/* width, and whether that pass runs the app in simple mode */
+const PASSES=[
+  {w:253,simple:true, label:"253 (phone at 160%)"},
+  {w:253,simple:false,label:"253 ⛶"},
+  {w:330,simple:true, label:"330"},
+  {w:430,simple:true, label:"430 (phone)"},
+  {w:430,simple:false,label:"430 ⛶"},
+  {w:700,simple:false,label:"700 ⛶"},
+  {w:1200,simple:false,label:"1200 ⛶"},
+];
+const VIEWS=["overview","library","insights","pick","history","search","reading","editing","collection"];
+const results={};   /* "label|view" -> {ok,offenders} */
+
+const frame=document.getElementById("frame");
+const prog=document.getElementById("prog");
+const detail=document.getElementById("detail");
+
+function freshLoad(w){
+  return new Promise(res=>{
+    frame.width=w;
+    frame.onload=()=>setTimeout(res,900);           /* let the app boot */
+    frame.src="index.html?devcheck="+Date.now();
+  });
+}
+
+/* the app's top-level lets (settings, books, view…) are not window properties,
+   so the runner must be injected as a script INTO the page, not poked from here */
+function runInFrame(code){
+  return new Promise((res,rej)=>{
+    const W=frame.contentWindow,D=frame.contentDocument;
+    delete W.__devResult;
+    const s=D.createElement("script");
+    s.textContent="(async()=>{try{window.__devResult=await(async()=>{"+code+"})()}catch(e){window.__devResult={ERROR:e.message}}})();";
+    D.body.appendChild(s);
+    let n=0;
+    const t=setInterval(()=>{
+      if(W.__devResult){clearInterval(t);res(W.__devResult);}
+      else if(++n>120){clearInterval(t);rej(new Error("timed out"));}
+    },250);
+  });
+}
+
+const SWEEP=`
+  const wait=ms=>new Promise(s=>setTimeout(s,ms));
+  /* past the sign-in screen without an account */
+  const au=document.querySelector("#auLocal");
+  if(au){au.click();await wait(1200);}
+  /* in memory only — saveSettings is never called, so nothing sticks */
+  settings.fontScale=100;settings.simple=SIMPLE;settings.bookEdit=false;applySimple();
+  await wait(400);
+  const out={};
+  const CW=()=>document.documentElement.clientWidth;
+  const look=async name=>{
+    await wait(450);
+    const over=[...document.querySelectorAll("body *")].filter(e=>{
+      const q=e.getBoundingClientRect();return q.width>0&&q.right>CW()+3;});
+    const set=new Set(over);
+    out[name]={ok:document.documentElement.scrollWidth<=CW()+3,
+      offenders:over.filter(e=>![...e.children].some(c=>set.has(c)))
+        .map(e=>e.tagName+(e.id?"#"+e.id:"")+"."+(e.className||"").toString().split(" ")[0]
+          +"  sticks out to "+Math.round(e.getBoundingClientRect().right)+"px of "+CW()).slice(0,8)};
+  };
+  for(const v of ["overview","library","insights","pick","history","search"]){
+    try{view=v;render();await look(v);}catch(e){out[v]={ok:false,offenders:["view crashed: "+e.message]};}
+  }
+  const bk=books[0];
+  const col=books.find(b=>(b.entries||[]).length>1);
+  if(bk){
+    try{settings.bookEdit=false;await openBook(bk.id,false);await look("reading");}
+    catch(e){out.reading={ok:false,offenders:["crashed: "+e.message]};}
+    try{settings.bookEdit=true;await openBook(bk.id,false);await look("editing");}
+    catch(e){out.editing={ok:false,offenders:["crashed: "+e.message]};}
+  }else out.reading=out.editing={skip:true};
+  if(col){
+    try{settings.bookEdit=false;await openBook(col.id,false);await look("collection");
+      out.collection.opensAtTop=window.scrollY===0;}
+    catch(e){out.collection={ok:false,offenders:["crashed: "+e.message]};}
+  }else out.collection={skip:true};
+  return out;
+`;
+
+function draw(){
+  let h="<table><tr><th></th>"+VIEWS.map(v=>"<th>"+v+"</th>").join("")+"</tr>";
+  for(const p of PASSES){
+    h+="<tr><th>"+p.label+"</th>";
+    for(const v of VIEWS){
+      const r=results[p.label+"|"+v];
+      h+=!r?"<td></td>"
+        :r.skip?'<td class="skip">–</td>'
+        :r.ok?'<td class="ok">✓</td>'
+        :'<td class="bad" data-k="'+p.label+"|"+v+'">✗</td>';
+    }
+    h+="</tr>";
+  }
+  h+="</table>";
+  document.getElementById("out").innerHTML=h;
+  document.querySelectorAll("td.bad").forEach(td=>td.onclick=()=>{
+    const r=results[td.dataset.k];
+    detail.style.display="block";
+    detail.textContent=td.dataset.k+"\n\n"+(r.offenders||[]).join("\n");
+  });
+}
+
+document.getElementById("go").onclick=async()=>{
+  document.getElementById("go").disabled=true;
+  for(const p of PASSES){
+    prog.textContent=" testing "+p.label+"…";
+    await freshLoad(p.w);
+    try{
+      const out=await runInFrame(SWEEP.replace("SIMPLE",String(p.simple)));
+      if(out.ERROR)for(const v of VIEWS)results[p.label+"|"+v]={ok:false,offenders:[out.ERROR]};
+      else for(const v of VIEWS)results[p.label+"|"+v]=out[v]||{skip:true};
+    }catch(e){
+      for(const v of VIEWS)results[p.label+"|"+v]={ok:false,offenders:[String(e)]};
+    }
+    draw();
+  }
+  prog.textContent=" done.";
+  document.getElementById("go").disabled=false;
+};
+</script>
+</body>
+</html>

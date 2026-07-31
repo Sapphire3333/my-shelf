@@ -208,6 +208,7 @@ open it in a browser, done.
 | `config.js` | Your Supabase URL + anon key. Placeholders = local-only mode. |
 | `schema.sql` | Paste-once Supabase setup (tables, bucket, security rules). |
 | `sw.js` | Service worker so the app itself opens offline. |
+| `dev-check.html` | Developer tool, not part of the app — opens every screen at a row of widths and fails loudly if anything scrolls sideways. |
 | `manifest.json`, `icon.svg`, `icon.png` | Home-screen install bits. |
 
 *Vanilla JS, no build step, no framework, no npm. The only runtime dependencies are
