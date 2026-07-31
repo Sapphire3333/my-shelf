@@ -1524,6 +1524,16 @@ async function pullAll(){
   if(!SYNC.on||!SYNC.user||SYNC.pulling)return;
   if(!navigator.onLine){setSync("offline");return;}
   SYNC.pulling=true;setSync("syncing");
+  /* what the screen is built from right now. A pull that brings back exactly what
+     we already have must not redraw: rebuilding the page throws away every cover
+     and picture and fetches them again, which reads as the whole app blinking. */
+  const shape=()=>JSON.stringify([genres,kwColors,kwCats,catColors,groupArt,fandoms,
+    bgList,padList,libArt,dnfCustom,audCustom,
+    /* the shared bin by name and time only — its entries carry whole books, and
+       this runs on every pull */
+    Object.keys(trashCloud).map(k=>k+":"+((trashCloud[k]||{}).at||0)).sort()]);
+  const wasShape=shape();
+  let touched=false;
   try{
     const s=SYNC.supa,uid=SYNC.user.id;
     // meta first (additive merge, local edits win)
@@ -1635,7 +1645,7 @@ async function pullAll(){
     for(const id of Object.keys(deletions)){
       if(heldBack(id))continue;
       const lb=books.find(b=>b.id===id);
-      if(lb&&deletions[id]>=(lb.modified||0)){await dbDel("books",id);books=books.filter(b=>b.id!==id);}
+      if(lb&&deletions[id]>=(lb.modified||0)){await dbDel("books",id);books=books.filter(b=>b.id!==id);touched=true;}
     }
     // push up any local-only books the cloud hasn't seen yet (e.g. made offline or before first sync)
     for(const b of books){
@@ -1646,7 +1656,10 @@ async function pullAll(){
     }
     dbPut("meta",{k:"seenMod",v:SYNC.seen});
     setSync("synced");
-    if(view!=="book")render();
+    /* a pull that changed nothing leaves the screen alone. Coming back to the tab
+       pulls, and on a phone that is every few minutes — each one used to rebuild
+       the page whether or not a single word had changed anywhere. */
+    if((changed.length||touched||shape()!==wasShape)&&view!=="book")render();
   }catch(e){
     console.warn("[shelf] pull failed",e);setSync(navigator.onLine?"error":"offline");
   }finally{SYNC.pulling=false;}
@@ -1810,6 +1823,12 @@ async function initSync(){
      whether this phone's browser has ever been backed up */
   const le=await dbGet("meta","lastExport");lastExport=le&&le.v?le.v:0;
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
+  /* the scopes you last searched in — kept, but sieved through the list this
+     version knows, so a name that has gone away can't leave you searching nowhere */
+  if(Array.isArray(settings.scopes)){
+    const keep=settings.scopes.filter(s=>SCOPES.some(([id])=>id===s));
+    if(keep.length)S.scopes=keep;
+  }
   /* first run on a small screen starts simple; after that it's whatever you chose */
   if(settings.simple===undefined){
     settings.simple=window.innerWidth<700;
@@ -2465,7 +2484,7 @@ function rowHtml(b,withDel,edited){
       ${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
       <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
     </div>`:""}
-    <div class="thumb" data-cover="${b.id}">${genCoverHtml(b,false)}${withDel?`<button class="stdot ${b.dnf?"dnf":statusOf(b)}" data-cyc="${b.id}" title="${stName(b)} — tap to change">${stSym(b)}</button>`:""}${b.favorite?'<span class="favdot">♥</span>':""}</div>
+    <div class="thumb" data-cover="${b.id}">${coverInner(b,false)}${withDel?`<button class="stdot ${b.dnf?"dnf":statusOf(b)}" data-cyc="${b.id}" title="${stName(b)} — tap to change">${stSym(b)}</button>`:""}${b.favorite?'<span class="favdot">♥</span>':""}</div>
     <div class="rmain">
       <div class="rtitle serif">${esc(b.title)||"Untitled"} ${(()=>{const L=linkLabel(b.link);
         return L?`<a class="tlink" data-ext href="${esc(L.url)}" target="_blank" rel="noopener" title="Read it — ${esc(L.name)}">📖</a>`:"";})()} ${isColl(b)?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':""}</div>
@@ -2482,7 +2501,7 @@ function rowHtml(b,withDel,edited){
 function gridHtml(b){
   const s=statusOf(b);
   return `<div class="gcard" data-open="${b.id}">
-    <div class="gcov" data-cover="${b.id}">${genCoverHtml(b,true)}
+    <div class="gcov" data-cover="${b.id}">${coverInner(b,true)}
       ${b.favorite?'<span class="gfav">♥</span>':""}
       ${s!=="finished"?`<span class="gst ${s}">${s==="reading"?"READING":"WANT"}</span>`:""}
       ${b.rating!=null?`<span class="grate ${rateBand(Number(b.rating))}">★ ${Number(b.rating).toFixed(1)}</span>`:""}
@@ -2505,6 +2524,13 @@ function genCoverHtml(b,withAuthor){
   }
   return `<span class="gencov" style="background:linear-gradient(160deg,${col}e6,${col})"><i></i><b>${esc(t)}</b>${withAuthor&&b.author?`<em>${esc(b.author)}</em>`:""}</span>`;
 }
+/* A cover we already hold goes straight into the markup. Waiting for the
+   hydrate pass meant every redraw showed the drawn stand-in for a moment and
+   then swapped — a blink across the whole shelf on every render. */
+function coverInner(b,withAuthor){
+  const c=coverCache.get(b.id);
+  return typeof c==="string"&&c?`<img src="${c}">`:genCoverHtml(b,withAuthor);
+}
 async function hydrateCovers(root){
   const els=qa("[data-cover]",root);
   const one=async el=>{
@@ -2516,8 +2542,14 @@ async function hydrateCovers(root){
       try{const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(id));
         if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);}}catch(e){}
     }
-    /* the drawn stand-in must not survive a real cover arriving */
-    if(src){const overlays=[...el.children].filter(c=>!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");el.innerHTML=`<img src="${src}">`+overlays;}
+    /* the drawn stand-in must not survive a real cover arriving — but if this
+       cover is already on screen, leave the DOM alone: replacing it re-decodes
+       the picture and makes the shelf blink for no reason */
+    const shown=el.querySelector("img");
+    if(src&&(!shown||shown.getAttribute("src")!==src)){
+      const overlays=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
+      el.innerHTML=`<img src="${src}">`+overlays;
+    }
   };
   /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
   for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
@@ -3474,14 +3506,6 @@ async function renderHub(){
       </div>
     </div>
     <div class="sec">
-      <div class="heading"><h2 class="serif">Recently deleted</h2><span class="n" id="trashN"></span>
-        <button class="btn foldbtn" data-fold="trash">${settings.trashOpen?"▾ Hide":"▸ Show"}</button></div>
-      <div class="hcard" id="fold-trash" ${settings.trashOpen?"":"hidden"}>
-        <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good.${SYNC.on?" Anything you delete can be put back from any of your devices.":""}</div>
-        <div id="trashList"></div>
-      </div>
-    </div>
-    <div class="sec">
       <div class="heading"><h2 class="serif">Export &amp; import</h2></div>
       <div class="hcard">
         <div class="hrow2">
@@ -3493,6 +3517,14 @@ async function renderHub(){
           lastExport?(()=>{const d=Math.floor((Date.now()-lastExport)/864e5);
             return "Last exported backup: "+(d===0?"today":d===1?"yesterday":d+" days ago")+(d>=30?" — worth making a fresh one":"");})()
           :"No backup has ever been exported from this browser — the automatic ones live in the same browser as your books, so they can't help if it loses them."}</div>`:""}
+      </div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Recently deleted</h2><span class="n" id="trashN"></span>
+        <button class="btn foldbtn" data-fold="trash">${settings.trashOpen?"▾ Hide":"▸ Show"}</button></div>
+      <div class="hcard" id="fold-trash" ${settings.trashOpen?"":"hidden"}>
+        <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good.${SYNC.on?" Anything you delete can be put back from any of your devices.":""}</div>
+        <div id="trashList"></div>
       </div>
     </div>
     </div>`;
@@ -3878,6 +3910,9 @@ function renderSearchView(){
     qa("[data-sc]").forEach(b=>b.onclick=()=>{const id=b.dataset.sc;const on=S.scopes.includes(id);
       if(on&&S.scopes.length===1)return;
       S.scopes=on?S.scopes.filter(x=>x!==id):[...S.scopes,id];
+      /* where you search is a choice you made, not a default to be handed back
+         to you every time the page loads */
+      settings.scopes=S.scopes.slice();saveSettings();
       renderScopes();renderSearchBody();});
   }
   renderScopes();
