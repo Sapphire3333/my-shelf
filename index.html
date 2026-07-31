@@ -705,6 +705,9 @@
   .gavph{display:flex;align-items:center;justify-content:center;color:#fff;font:600 27px/1 Georgia,serif;border-color:transparent}
   .gavatar:hover img,.gavatar:hover .gavph{border-color:var(--teal);transform:translateY(-2px);
     box-shadow:0 5px 14px rgba(0,0,0,.22)}
+  /* the one you have singled out, so it is obvious why the rest are missing */
+  .gavatar.on img,.gavatar.on .gavph{border-color:var(--teal);box-shadow:0 0 0 3px rgba(45,212,191,.35)}
+  .gavatar.on .gavname{color:var(--teal)}
   .gavname{font-size:11.5px;font-weight:600;line-height:1.25;text-align:center;color:var(--ink);
     max-width:88px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   .gavname b{color:var(--faint);font-weight:600}
@@ -1375,6 +1378,7 @@ let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="no
 let libFind="";                               /* the library's type-to-narrow box; forgotten on reload */
 let kindFilter=["book","fanfic","ai"];        /* which kinds show in the Library */
 let libSelMode=false,libSel=new Set();        /* ticking books to group them */
+let gavPick=null;                             /* showing one group on its own; forgotten on reload */
 let onlyRaw=false;                            /* show only imports you haven't worked on */
 /* came from a Goodreads/StoryGraph import and hasn't been opened and edited since */
 const isRaw=b=>!!b.imported&&!b.touched;
@@ -2794,6 +2798,28 @@ function sortCmp(a,b){
   return 0;
 }
 /* -> [{label,color?,items[]}] in display order */
+/* Both of the avatar row's switches are remembered per grouping, not once for
+   the whole library: the pictures are worth having under Genre, where you have
+   set them yourself, and usually not under Author, where every avatar is a
+   borrowed cover. An older single answer, from before this was split, still
+   counts for every grouping until you change one. */
+const gavShutFor=()=>{const v=settings.gavShutBy;
+  return v&&typeof v==="object"?!!v[groupBy]:!!settings.gavShut;};
+const gavActFor=()=>{const v=settings.gavActBy;
+  return (v&&typeof v==="object"?v[groupBy]:settings.gavAct)==="filter";};
+const setGavShut=on=>{const v=settings.gavShutBy=(typeof settings.gavShutBy==="object"&&settings.gavShutBy)||{};
+  v[groupBy]=on;saveSettings();};
+const setGavAct=filter=>{const v=settings.gavActBy=(typeof settings.gavActBy==="object"&&settings.gavActBy)||{};
+  v[groupBy]=filter?"filter":"jump";saveSettings();};
+
+/* A heading with no picture of its own borrows one from inside it: the cover of
+   its best book. Several candidates are offered rather than one, because whether
+   a book actually has a cover is only known once the database answers — the
+   hydrator walks them in order and takes the first that does. */
+const coverPicks=items=>items.slice()
+  .sort((a,b)=>(b.rating||0)-(a.rating||0)||(b.favorite?1:0)-(a.favorite?1:0)||(b.created||0)-(a.created||0))
+  .slice(0,6).map(b=>b.id).join(",");
+
 function groupsFor(list){
   const out=[];
   if(groupBy==="genre"){
@@ -2896,25 +2922,44 @@ function renderLibrary(){
     }else html+=booksHtml(list,true);
   }
   else{
-    const gs=groupsFor(list);
+    const gsAll=groupsFor(list);
     const collapsed=new Set(settings.collapsed||[]);
-    const allShut=gs.length&&gs.every(g=>collapsed.has(groupBy+"|"+g.label));
-    html+=`<div class="pills"><button class="pill" id="collAll">${allShut?"▾ Open every group":"▸ Close every group"}</button>
-      <span class="lbl">Tap a heading to fold it away${groupBy==="genre"?" · give a group its own picture with 🖼":""}</span></div>`;
+    const allShut=gsAll.length&&gsAll.every(g=>collapsed.has(groupBy+"|"+g.label));
+    /* Tapping one of these does one of two things, and which is your choice: it
+       either skips you down to that group or shows that group on its own. The
+       choice is a setting; the group currently singled out is deliberately not,
+       so reopening the app never leaves you staring at a library that looks like
+       it has lost most of its books. */
+    const picking=gavActFor();
+    if(!picking)gavPick=null;
+    if(gavPick&&!gsAll.some(g=>g.label===gavPick))gavPick=null;   /* it was emptied or renamed */
+    const gs=gavPick?gsAll.filter(g=>g.label===gavPick):gsAll;
     /* Once a heading has a picture, that picture becomes the way to it: the row
        along the top turns into avatars, with the name underneath. Headings
-       without one get a coloured disc so the row still reads as a set. */
-    const anyArt=gs.some(g=>groupArt[groupBy+"|"+g.label]);
-    if(gs.length>1)html+=anyArt
-      ?`<div class="gavatars">${gs.map((g,i)=>{
+       without one borrow a cover from inside themselves, so the row reads as a
+       set of pictures rather than photographs with a disc among them.
+       That row is tall, so it folds: folded, it becomes the same compact pills
+       the no-picture case already uses, which keeps every jump target reachable
+       instead of taking the shortcuts away along with the pictures. */
+    const anyArt=gsAll.some(g=>groupArt[groupBy+"|"+g.label]);
+    const avShut=gavShutFor();
+    const many=gsAll.length>1;
+    html+=`<div class="pills"><button class="pill" id="collAll">${allShut?"▾ Open every group":"▸ Close every group"}</button>
+      ${anyArt&&many?`<button class="pill" id="gavTog">${avShut?"▸ Show the pictures":"▾ Hide the pictures"}</button>`:""}
+      ${many?`<button class="pill${picking?" on":""}" id="gavAct" title="What tapping one of these does">${picking?"▽ Tap shows only that":"⤓ Tap skips to it"}</button>`:""}
+      ${gavPick?`<button class="pill on2" id="gavClear" title="Show every group again">✕ ${esc(gavPick)} only</button>`:""}
+      <span class="lbl">Tap a heading to fold it away${groupBy==="genre"?" · give a group its own picture with 🖼":""}</span></div>`;
+    if(many)html+=(anyArt&&!avShut)
+      ?`<div class="gavatars">${gsAll.map((g,i)=>{
           const art=groupArt[groupBy+"|"+g.label];
           const col=g.color||"#78716c";
-          return `<button class="gavatar" data-jump="${i}" title="Skip to ${esc(g.label)}">
-            ${art?`<img data-gartimg="${esc(art.img)}" data-gavcol="${col}" data-gavinit="${esc((g.label||"?").trim().charAt(0).toUpperCase())}" alt="">`
-                 :`<span class="gavph" style="background:${col}">${esc((g.label||"?").trim().charAt(0).toUpperCase())}</span>`}
+          const init=esc((g.label||"?").trim().charAt(0).toUpperCase());
+          return `<button class="gavatar${gavPick===g.label?" on":""}" data-jump="${i}" data-glabel="${esc(g.label)}" title="${picking?"Show only":"Skip to"} ${esc(g.label)}">
+            ${art?`<img data-gartimg="${esc(art.img)}" data-gavcol="${col}" data-gavinit="${init}" alt="">`
+                 :`<img data-gavbook="${coverPicks(g.items)}" data-gavcol="${col}" data-gavinit="${init}" alt="">`}
             <span class="gavname">${esc(g.label)} <b>${g.items.length}</b></span></button>`;}).join("")}</div>`
-      :`<div class="pills" style="margin-bottom:10px">${gs.map((g,i)=>
-          `<button class="pill" data-jump="${i}" title="Skip to ${esc(g.label)}"${g.color?` style="border-color:${g.color}"`:""}>${esc(g.label)} <b>${g.items.length}</b></button>`).join("")}</div>`;
+      :`<div class="pills" style="margin-bottom:10px">${gsAll.map((g,i)=>
+          `<button class="pill${gavPick===g.label?" on":""}" data-jump="${i}" data-glabel="${esc(g.label)}" title="${picking?"Show only":"Skip to"} ${esc(g.label)}"${g.color&&gavPick!==g.label?` style="border-color:${g.color}"`:""}>${esc(g.label)} <b>${g.items.length}</b></button>`).join("")}</div>`;
     html+=gs.map(g=>{
       const key=groupBy+"|"+g.label;
       const shut=collapsed.has(key);
@@ -2942,7 +2987,7 @@ function renderLibrary(){
     if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
     renderLibrary();});
   qa("[data-sort]",m).forEach(b=>b.onclick=()=>{sortBy=b.dataset.sort;renderLibrary();});
-  qa("[data-gb]",m).forEach(b=>b.onclick=()=>{groupBy=b.dataset.gb;renderLibrary();});
+  qa("[data-gb]",m).forEach(b=>b.onclick=()=>{groupBy=b.dataset.gb;gavPick=null;renderLibrary();});
   const lt=q("#layTog",m);if(lt)lt.onclick=()=>{layout=layout==="list"?"grid":"list";renderLibrary();};
   /* ---- group headings: fold away, and give one its own picture ---- */
   const shutSet=()=>new Set(settings.collapsed||[]);
@@ -2962,6 +3007,12 @@ function renderLibrary(){
     keys.forEach(k=>allShut?s.delete(k):s.add(k));
     saveShut(s);renderLibrary();
   };
+  const gt=q("#gavTog",m);
+  if(gt)gt.onclick=()=>{setGavShut(!gavShutFor());renderLibrary();};
+  const ga=q("#gavAct",m);
+  if(ga)ga.onclick=()=>{setGavAct(!gavActFor());gavPick=null;renderLibrary();};
+  const gc=q("#gavClear",m);
+  if(gc)gc.onclick=()=>{gavPick=null;renderLibrary();};
   qa("[data-gart]",m).forEach(b=>b.onclick=e=>{
     e.stopPropagation();
     pendingGart=b.dataset.gart;
@@ -2991,6 +3042,12 @@ function renderLibrary(){
   }));
   renderLibArt(m);
   qa("[data-jump]",m).forEach(b=>b.onclick=()=>{
+    if(gavActFor()){
+      const l=b.dataset.glabel;
+      gavPick=gavPick===l?null:l;      /* tapping the one you are already in shows them all again */
+      renderLibrary();window.scrollTo(0,0);
+      return;
+    }
     const h=qa("[data-gh]",m)[+b.dataset.jump];
     if(h)h.scrollIntoView({behavior:"smooth",block:"start"});
   });
@@ -3184,23 +3241,37 @@ function cropLibArt(a){
   };
 }
 let pendingGart=null;
+/* the picture hasn't reached this device — an empty frame says nothing, so
+   fall back to the same lettered disc the others use */
+function gavFallback(el){
+  if(el.dataset.gavinit!=null){
+    const disc=document.createElement("span");
+    disc.className="gavph";
+    disc.style.background=el.dataset.gavcol||"#a8a29e";
+    disc.textContent=el.dataset.gavinit;
+    el.replaceWith(disc);
+  }else{
+    const box=el.closest(".gartbox");if(box)box.hidden=true;
+  }
+}
 async function hydrateGroupArt(root){
   for(const el of qa("[data-gartimg]",root)){
     const id=el.dataset.gartimg;
     let d=gartCache.get(id);
     if(d===undefined){d=await loadImgData(gartKey(id));gartCache.set(id,d);}
     if(d){el.src=d;continue;}
-    /* the picture hasn't reached this device — an empty frame says nothing, so
-       fall back to the same lettered disc the others use */
-    if(el.dataset.gavinit!=null){
-      const disc=document.createElement("span");
-      disc.className="gavph";
-      disc.style.background=el.dataset.gavcol||"#a8a29e";
-      disc.textContent=el.dataset.gavinit;
-      el.replaceWith(disc);
-    }else{
-      const box=el.closest(".gartbox");if(box)box.hidden=true;
+    gavFallback(el);
+  }
+  /* a heading with no picture of its own: the first of its best books that
+     turns out to have a cover stands in for it, and the disc is the last resort */
+  for(const el of qa("[data-gavbook]",root)){
+    let src=null;
+    for(const id of (el.dataset.gavbook||"").split(",").filter(Boolean)){
+      let c=coverCache.get(id);
+      if(c===undefined){const r=await dbGet("covers",id);c=r?r.data:null;coverCache.set(id,c);}
+      if(c){src=c;break;}
     }
+    if(src)el.src=src;else gavFallback(el);
   }
 }
 q("#libArtFile").addEventListener("change",async e=>{
