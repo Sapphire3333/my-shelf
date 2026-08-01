@@ -5,8 +5,9 @@ server required, no build step, no framework — open `index.html` in a browser 
 you have a full reading journal that works completely offline. If you want the same
 library on your PC and your phone, add a free Supabase project and it syncs too.
 
-Track what you've read, rate it, keep quotes and notes, decorate each book's page
-like a scrapbook, and pull your history in from Goodreads or StoryGraph.
+Track what you've read — and every time you've read it — rate it, keep quotes and
+notes, decorate each book's page like a scrapbook, and pull your history in from
+Goodreads or StoryGraph.
 
 ---
 
@@ -30,18 +31,28 @@ like a scrapbook, and pull your history in from Goodreads or StoryGraph.
 - Statuses: *Finished · Reading now · Want to read*, plus **DNF** with your own
   reasons ("slow pacing", "didn't connect with the characters"…)
 - Ratings out of 10, favorites, page counts
-- A **readings list** per book: every time you've read it, each with a start and a
-  finish date. Tapping *Reading now* opens a reading, *Finished* closes it, and
-  tapping *Reading now* again months later is the reread — no extra button, and
-  the dates are yours to correct or delete on the book's own page
+- A **readings list** on every book: each time you've read it, with a start date
+  and a finish date. Choosing *Reading now* opens a reading, *Finished* closes
+  it, and choosing *Reading now* again months later is the reread — no extra
+  button and nothing to confirm. Every date is yours to correct, and any reading
+  can be struck off, right on the book's own page
 - Reading progress with a live progress bar while a book is "Reading now"
-- Series (book 3 of 7 — sibling books link up automatically) and **collections**
-  (one entry holding many stories, each with its own cover, rating and notes)
+- Series — book 3 of 7, with sibling books linking up automatically
+- **Collections**: one entry holding many stories, where each story is a thing in
+  its own right. It can have its own cover, rating, notes, favourite, genres,
+  author, stage and readings — each of them defaulting to *same as the
+  collection*, so you only fill in what actually differs. A story that does
+  differ steps out onto the shelf in the view its difference is about: its own
+  genre under Genre, its own stage under Reading now. A collection's rating is
+  the average of its stories until you set one yourself
 - Not just books: track **fanfics** and **AI stories**, with fandoms, characters
   and a link to the source
 - Genres with per-genre colors, keywords, audience ("Middle Grade", "Adult"…)
 
 **The book page**
+- Books open ready to read or ready to write in — your choice (👁 / 📖✎) — and the
+  page swaps either way with ✎ Edit / 👁 Done. Reading it, you can still change
+  its stage, its rating, its readings and its favourite without opening the form
 - Rich-text summary, free notes, *what I liked / what I didn't* lists, quotes
 - Cover images, plus any number of pictures you can **drag, tilt, flip, layer,
   resize** and fade anywhere on the page
@@ -52,16 +63,31 @@ like a scrapbook, and pull your history in from Goodreads or StoryGraph.
 - A **background-remover** for pictures (magic-wand style, all in the browser)
 - Custom page backgrounds — presets or your own images, per book or app-wide
 
-**Finding things again**
-- Search across titles, authors, series, genres, keywords, quotes, summaries,
-  notes and fandoms — you choose the scopes
-- Browse by author, series, genre combinations, rating buckets, book length
-- Stats corner: averages, most-read author, highest-rated genre, books per year
-- 🎲 *Pick for me* — its own tab: tick genres and tags for the mood, get a
-  random suggestion from your want-to-read pile
+**Getting books in**
+- ⚡ *From text / photo* — paste a blurb, or drop a photo of a cover or a page,
+  and the title, author and details are read off it. The text recognition runs
+  in your browser; nothing is uploaded
 - 🔎 *Auto-fill* — one click looks a book up (Google Books + Open Library) and
   offers its blurb, tags, page count and cover for you to apply
-- Library views: list or cover grid, sorted and grouped how you like
+- Import a **Goodreads** or **StoryGraph** export — see below
+- Fold books you already have into a collection, or link them as a series,
+  without retyping anything
+
+**Finding things again**
+- Six tabs: 🗂 Overview, 📚 Library, 🔍 Search, ✨ Insights, 🎲 Pick, 🕘 History
+- Search across titles, authors, series, genres, keywords, quotes, summaries,
+  notes and fandoms — you choose the scopes
+- The Library as a list or a cover grid, grouped by genre, author, series, kind
+  or stage, with a picture above each group; every choice is remembered per
+  grouping
+- Browse by author, series, genre combinations, rating buckets, book length
+- ✨ **Insights** — what your shelf says about you, in plain sentences: what you
+  read most against what you rate highest, your finish rate and why you stop,
+  books per year counted from your readings, pages read with rereads counted.
+  It also says plainly where your records are thin, and lists which books to fix
+- 🎲 *Pick for me* — tick genres and tags for the mood, get a random suggestion
+  from your want-to-read pile
+- 🕘 *History* — everything you've changed lately, newest first
 
 **Safety nets**
 - Automatic daily backups kept inside the browser, plus one-click manual backups
@@ -70,11 +96,6 @@ like a scrapbook, and pull your history in from Goodreads or StoryGraph.
   they're really gone
 - Undo/redo for everything, including deletes (Ctrl+Z works app-wide)
 - Light/dark theme, and a phone-friendly "Fit" layout
-
-**Import**
-- Bring your history in from a **Goodreads** or **StoryGraph** CSV export — you
-  preview the list and pick what to add; duplicates (by ISBN, or title + author)
-  are detected and skipped
 
 ---
 
@@ -154,6 +175,12 @@ icon, and works offline.
    DNF). Nothing is added until you pick it — add books one by one or a whole
    section at once. Ratings, page counts, dates read, rereads, reviews and shelves
    all come across; titles already on your shelf are marked and skipped.
+4. You can also land a set of them as **one collection** — pick a series, name it,
+   and each book becomes a story inside a single entry, keeping its own rating,
+   stage and finish date.
+
+Imported books are marked as untouched until you open and edit one, so you can
+always find the ones you haven't been through yet.
 
 ## Backups — please make them
 
