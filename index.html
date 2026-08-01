@@ -1309,7 +1309,11 @@ const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
   dateFinished:entDateOf(coll,en),favorite:!!en.favorite,summary:en.summary||"",
   kind:coll.kind||"book",series:coll.series||"",
   created:coll.created||0,modified:coll.modified||0,
-  _story:en.id,_in:coll.title||"a collection"});
+  _story:en.id,_in:coll.title||"a collection",
+  /* its own picture if it has one — a story standing on its own deserves its
+     own face. Without one it falls back to the collection's, which is still
+     truer than an empty frame. */
+  _cover:en.cover?coll.id+"|"+en.id:""});
 const strayStories=()=>books.flatMap(b=>!isColl(b)?[]
   :((b.entries)||[]).filter(storyDiverges).map(en=>storyProxy(b,en)));
 /* A collection's own mark can come from its stories. 0 is a real rating here —
@@ -2688,7 +2692,7 @@ function rowHtml(b,withDel,edited){
       ${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
       <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
     </div>`:""}
-    <div class="thumb" data-cover="${b.id}">${coverInner(b,false)}${withDel?`<button class="stdot ${b.dnf?"dnf":statusOf(b)}" data-cyc="${b.id}" title="${stName(b)} — tap to change">${stSym(b)}</button>`:""}${b.favorite?`<span class="favdot${b._story?" story":""}">♥</span>`:""}</div>
+    <div class="thumb" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}>${coverInner(b,false)}${withDel?`<button class="stdot ${b.dnf?"dnf":statusOf(b)}" data-cyc="${b.id}" title="${stName(b)} — tap to change">${stSym(b)}</button>`:""}${b.favorite?`<span class="favdot${b._story?" story":""}">♥</span>`:""}</div>
     <div class="rmain">
       <div class="rtitle serif">${esc(b.title)||"Untitled"} ${(()=>{const L=linkLabel(b.link);
         return L?`<a class="tlink" data-ext href="${esc(L.url)}" target="_blank" rel="noopener" title="Read it — ${esc(L.name)}">📖</a>`:"";})()} ${isColl(b)?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>`:""} ${b._story?`<span class="bst instory" title="A story inside ${esc(b._in)} — opening it takes you to the collection">📚 in ${esc(b._in)}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':""}</div>
@@ -2705,7 +2709,7 @@ function rowHtml(b,withDel,edited){
 function gridHtml(b){
   const s=statusOf(b);
   return `<div class="gcard" data-open="${b.id}">
-    <div class="gcov" data-cover="${b.id}">${coverInner(b,true)}
+    <div class="gcov" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}>${coverInner(b,true)}
       ${b.favorite?`<span class="gfav${b._story?" story":""}">♥</span>`:""}
       ${s!=="finished"?`<span class="gst ${s}">${s==="reading"?"READING":"WANT"}</span>`:""}
       ${b.rating!=null?`<span class="grate ${rateBand(Number(b.rating))}">★ ${Number(b.rating).toFixed(1)}</span>`:""}
@@ -2738,6 +2742,21 @@ function coverInner(b,withAuthor){
 async function hydrateCovers(root){
   const els=qa("[data-cover]",root);
   const one=async el=>{
+    /* a story that has stepped out of its collection keeps its own picture,
+       which lives among the images rather than the covers */
+    const key=el.dataset.covkey;
+    if(key){
+      let s2=coverCache.get(key);
+      if(s2===undefined){s2=await loadImgData(key);coverCache.set(key,s2||null);}
+      if(s2){
+        const shown0=el.querySelector("img");
+        if(!shown0||shown0.getAttribute("src")!==s2){
+          const keep=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
+          el.innerHTML=`<img src="${s2}">`+keep;
+        }
+        return;
+      }
+    }
     const id=el.dataset.cover;
     let src=coverCache.get(id);
     if(src===undefined){const r=await dbGet("covers",id);src=r?r.data:null;coverCache.set(id,src);}
@@ -2985,6 +3004,8 @@ const TYPES=[["standalone","Standalone"],["series","Part of a series"],["collect
 function sortCmp(a,b){
   if(sortBy==="newest")return(b.created||0)-(a.created||0);
   if(sortBy==="rating")return(b.rating??-1)-(a.rating??-1);
+  /* favourites first, and a favourited story sits among them on its own */
+  if(sortBy==="favorites")return(b.favorite?1:0)-(a.favorite?1:0)||(a.title||"").localeCompare(b.title||"");
   if(sortBy==="title")return(a.title||"").localeCompare(b.title||"");
   if(sortBy==="author")return(a.author||"").localeCompare(b.author||"");
   if(sortBy==="status"){const rk=x=>x.dnf?1:statusOf(x)==="finished"?0:statusOf(x)==="want"?2:3;
@@ -3099,7 +3120,7 @@ function renderLibrary(){
       html+=`<div class="pills"><span class="lbl">Show:</span>${KINDS.map(([k,l])=>{const on=kindFilter.includes(k);
         return `<button class="mg ${on?"on":""}" data-kf="${k}" style="${on?"background:var(--teal);border-color:var(--teal)":""}"><span class="bx">${on?"✓":""}</span>${l} <b>${kc[k]}</b></button>`;}).join("")}</div>`;
     if(settings.libTools){
-      html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","title","author","status","genre","type"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}">${s}</button>`).join("")}
+      html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","favorites","title","author","status","genre","type"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}">${s}</button>`).join("")}
         <button class="laybtn" id="layTog">${layout==="list"?"▦ Grid":"☰ List"}</button></div>`;
       html+=`<div class="pills"><span class="lbl">Group under headings:</span>${GROUPS.map(([id,l])=>`<button class="pill ${groupBy===id?"on":""}" data-gb="${id}">${l}</button>`).join("")}</div>`;
       html+=`<div class="pills"><button class="pill ${libSelMode?"on":""}" id="selTog" title="Tick several books, then group them or give them genres">☑ Select books</button>
