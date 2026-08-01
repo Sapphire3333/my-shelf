@@ -4180,6 +4180,7 @@ function refreshImport(){
       <div class="hrow2" style="margin-bottom:6px">
         <b style="font-size:14px">${label}</b><span class="none">${all.length}${add.length!==all.length?` · ${all.length-add.length} already on your shelf`:""}</span>
         ${add.length?`<button class="btn pri" data-impall="${sec}" style="margin-left:auto;padding:5px 11px">Add all ${add.length}</button>`:""}
+        ${all.length-add.length?`<button class="btn" data-impfillall="${sec}" style="${add.length?"":"margin-left:auto;"}padding:5px 11px" title="Fill the blanks on the ${all.length-add.length} you already have, then take them off this list">↳ Fill in all ${all.length-add.length}</button>`:""}
       </div>
       ${(()=>{
         /* ticked ones first, and never cut off — otherwise ticking a whole author
@@ -4187,14 +4188,23 @@ function refreshImport(){
         const ticked=all.filter(it=>impSel.has(it.id));
         const rest=all.filter(it=>!impSel.has(it.id));
         return [...ticked,...rest].slice(0,Math.max(IMP_SHOW,ticked.length));
-      })().map(it=>`<div class="snap" style="padding:6px 10px;${impSel.has(it.id)?"border-color:var(--teal)":""}">
+      })().map(it=>{
+        /* a row already on the shelf says where it is and what it could still
+           hand over, so pressing the button is never a guess */
+        const t=it.dupe?importTarget(it):null;
+        const fills=t?importFills(it,t.b,t.en):[];
+        const where=t?(t.en?`already inside “${t.b.title||"a collection"}”`:"already on your shelf"):"already on your shelf";
+        return `<div class="snap" style="padding:6px 10px;${impSel.has(it.id)?"border-color:var(--teal)":""}">
         ${it.dupe?"":`<input type="checkbox" data-impc="${it.id}" ${impSel.has(it.id)?"checked":""}>`}
         <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(it.title)}</div>
-          <div class="meta"><button data-impa="${esc(it.author||"")}" style="padding:0;color:inherit;text-decoration:underline dotted" title="Tick / untick everything by this author">${esc(it.author)||"Unknown author"}</button>${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}</div></div>
+          <div class="meta"><button data-impa="${esc(it.author||"")}" style="padding:0;color:inherit;text-decoration:underline dotted" title="Tick / untick everything by this author">${esc(it.author)||"Unknown author"}</button>${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}</div>
+          ${it.dupe?`<div class="meta" style="color:var(--teal)">${esc(where)}${fills.length?` · adds ${esc(fills.map(f=>f.label).join(", "))}`:" · nothing new to take from it"}</div>`:""}</div>
         <div class="sp">${it.dupe
-          ? '<span class="none" style="font-size:12px">already on your shelf</span>'
+          ? (fills.length
+            ? `<button class="btn" data-impfill="${it.id}" title="Fill in only what's blank there — nothing you've written is touched">↳ Fill it in</button>`
+            : `<button class="btn" data-impdrop="${it.id}" title="Take this row off the list — your book already has everything it holds">✕ Drop it</button>`)
           : `<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
-      </div>`).join("")}
+      </div>`;}).join("")}
       ${all.length>Math.max(IMP_SHOW,all.filter(it=>impSel.has(it.id)).length)
         ?`<div class="none" style="margin-top:5px">…and ${all.length-Math.max(IMP_SHOW,all.filter(it=>impSel.has(it.id)).length)} more — anything you tick jumps up here. Search to narrow the list, or “Add all”.</div>`:""}
     </div>`;
@@ -4247,6 +4257,32 @@ function refreshImport(){
     const it=importQueue.find(x=>x.id===b.dataset.impone);if(!it)return;
     b.disabled=true;
     await importOne(it);saveImportQueue();
+    render();
+  });
+  qa("[data-impfill]",box).forEach(b=>b.onclick=async()=>{
+    const it=importQueue.find(x=>x.id===b.dataset.impfill);if(!it)return;
+    b.disabled=true;
+    await importMerge(it);
+    saveImportQueue();
+    if(SYNC.on)flushQueue();
+    render();
+  });
+  qa("[data-impdrop]",box).forEach(b=>b.onclick=()=>{
+    importQueue=importQueue.filter(x=>x.id!==b.dataset.impdrop);
+    saveImportQueue();refreshImport();
+  });
+  qa("[data-impfillall]",box).forEach(b=>b.onclick=async()=>{
+    const sec=b.dataset.impfillall;
+    const batch=importQueue.filter(it=>secOf(it)===sec&&match(it)&&it.dupe);
+    if(!batch.length)return;
+    const n=batch.filter(it=>{const t=importTarget(it);return t&&importFills(it,t.b,t.en).length;}).length;
+    if(!confirm(`Fill in the blanks on ${n} book${n===1?"":"s"} you already have, and take all ${batch.length} off this list?\n\nNothing you have written is overwritten, and the stage each book is at is left alone. Rows with nothing new to give simply go.`))return;
+    b.disabled=true;b.textContent="Filling in…";
+    const msg=q("#busyMsg");if(msg)msg.textContent=`Filling in ${batch.length}…`;
+    for(const it of batch)await importMerge(it);
+    saveImportQueue();
+    if(SYNC.on)flushQueue();
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
     render();
   });
   qa("[data-impall]",box).forEach(b=>b.onclick=async()=>{
@@ -7587,10 +7623,99 @@ function fromStorygraph(o){
 
 let importQueue=[];
 function saveImportQueue(){dbPut("meta",{k:"importQueue",v:importQueue});}
+/* A staged row can already be on your shelf as a book of its own — or as one of
+   the stories inside a collection. The second case is the common one and used to
+   be invisible: ten entries can hold a hundred stories, and a series exported
+   book by book matches none of them until something looks inside. A story is
+   matched on its own title as well as on title + author, because the export
+   names the author of the book while the story usually leaves that to the
+   collection around it. */
 function markDupes(){
-  const have=new Set(books.map(b=>dupeKey(b.title,b.author)));
-  const haveIsbn=new Set(books.map(b=>b.isbn).filter(Boolean));
-  importQueue.forEach(it=>it.dupe=(!!it.isbn&&haveIsbn.has(it.isbn))||have.has(dupeKey(it.title,it.author)));
+  const byKey=new Map(),byIsbn=new Map();
+  const put=(m,k,v)=>{if(k&&!m.has(k))m.set(k,v);};
+  for(const b of books){
+    put(byKey,dupeKey(b.title,b.author),{b,en:null});
+    put(byIsbn,b.isbn,{b,en:null});
+    if(!isColl(b))continue;
+    for(const en of ((b.entries)||[])){
+      put(byKey,dupeKey(en.title,entAuthorOf(b,en)),{b,en});
+      put(byKey,dupeKey(en.title,""),{b,en});
+    }
+  }
+  importQueue.forEach(it=>{
+    const hit=(it.isbn?byIsbn.get(it.isbn):null)||byKey.get(dupeKey(it.title,it.author));
+    it.dupe=!!hit;
+    it.hitB=hit?hit.b.id:"";
+    it.hitE=(hit&&hit.en)?hit.en.id:"";
+  });
+}
+/* find the book — and the story inside it — a staged row already matches */
+function importTarget(it){
+  const b=books.find(x=>x.id===it.hitB);
+  if(!b)return null;
+  const en=it.hitE?(((b.entries)||[]).find(e=>e.id===it.hitE)||null):null;
+  return {b,en};
+}
+/* What this row could add to what you already have, without touching anything
+   you have already put there. Filling a blank is safe; overwriting is not, so
+   nothing here overwrites. The stage a book is at is never touched at all — your
+   shelf knows where you are up to and an export of it does not. */
+function importFills(it,b,en){
+  const T=en||b,f=[];
+  const filled=s=>!!stripHtml(s||"").trim();
+  const date=String(it.dateFinished||"").trim(),rr=Math.max(0,parseInt(it.rereads)||0);
+  if(!readsOf(T).length&&(date||rr>0))
+    f.push({k:"readings",label:rr>0?`${rr+1} readings`:"a finish date"});
+  if(T.rating==null&&it.rating!=null)f.push({k:"rating",label:"a rating"});
+  if(!parseInt(T.pages)&&parseInt(it.pages))f.push({k:"pages",label:"the page count"});
+  if(!en&&!b.isbn&&it.isbn)f.push({k:"isbn",label:"the ISBN"});
+  if(!filled(T.summary)&&it.summary)f.push({k:"summary",label:"the review"});
+  if(!filled(en?en.notes:b.canvasText)&&it.notes)f.push({k:"notes",label:"your notes"});
+  const auth=String(it.author||"").trim();
+  /* a story is only given an author of its own where it differs from the
+     collection's — otherwise it would step out onto the shelf for saying the
+     same thing the book it sits in already says */
+  if(auth&&!String(T.author||"").trim()&&(!en||auth!==String(b.author||"").trim()))
+    f.push({k:"author",label:"the author"});
+  if(!en){
+    const have=new Set(((b.keywords)||[]).map(k=>String(k).toLowerCase()));
+    const add=((it.tags)||[]).filter(t=>t&&!have.has(String(t).toLowerCase()));
+    if(add.length)f.push({k:"tags",label:add.length===1?"a tag":`${add.length} tags`,v:add});
+  }
+  return f;
+}
+function applyImportFills(it,b,en,fills){
+  const T=en||b;
+  for(const f of fills){
+    if(f.k==="readings"){
+      T.readings=initialReadings({dateFinished:it.dateFinished,rereads:it.rereads,status:"finished",dnf:false});
+      syncReads(T);
+    }
+    else if(f.k==="rating"){T.rating=it.rating;if(en)syncCollRating(b);}
+    else if(f.k==="pages")T.pages=parseInt(it.pages);
+    else if(f.k==="isbn")b.isbn=it.isbn;
+    else if(f.k==="summary")T.summary=esc(it.summary);
+    else if(f.k==="notes"){if(en)en.notes=esc(it.notes);else b.canvasText=esc(it.notes);}
+    else if(f.k==="author")T.author=String(it.author||"").trim();
+    else if(f.k==="tags")b.keywords=[...((b.keywords)||[]),...f.v].slice(0,20);
+  }
+  return b;
+}
+/* fill in the blanks on the book you already have, then take the row off the
+   list — dealt with is dealt with, and the rest of the list stays as it was */
+async function importMerge(it){
+  const t=importTarget(it);
+  if(t){
+    const fills=importFills(it,t.b,t.en);
+    if(fills.length){
+      applyImportFills(it,t.b,t.en,fills);
+      t.b.modified=Math.max(Date.now(),(t.b.modified||0)+1,(SYNC.seen[t.b.id]||0)+1);
+      try{await dbPut("books",t.b);}catch(e){return false;}
+      if(SYNC.on)enqueue({kind:"book",id:t.b.id});
+    }
+  }
+  importQueue=importQueue.filter(x=>x.id!==it.id);
+  return true;
 }
 async function loadCsvFile(file){
   const {head,items}=csvObjects(await file.text());
