@@ -4148,6 +4148,30 @@ async function renderHub(){
 
 const IMP_SHOW=40;   /* how many titles to list per section before summarising */
 let impSel=new Set(),impQ="";
+let impIntoOpen=false,impIntoQ="";            /* the "into a collection you already have" picker */
+/* every collection on the shelf, by name — the list you choose from */
+const collsOnShelf=()=>books.filter(isColl)
+  .sort((a,b)=>String(a.title||"").localeCompare(String(b.title||""),undefined,{sensitivity:"base"}));
+/* Folded away by default and searchable, because a shelf can hold eighty of
+   these and a list that long in the way of the buttons above it is worse than
+   no list at all. */
+function intoPanelHtml(){
+  const q2=impIntoQ.trim().toLowerCase();
+  const all=collsOnShelf();
+  const list=q2?all.filter(b=>String(b.title||"").toLowerCase().includes(q2)
+    ||String(b.author||"").toLowerCase().includes(q2)):all;
+  return `<div class="dnfbox" style="margin-top:7px">
+    <div class="cap">Put the ${impSel.size} ticked inside…</div>
+    ${all.length>6?`<input class="field" id="impIntoSearch" placeholder="Search your collections…" value="${esc(impIntoQ)}" style="font-size:13px;padding:7px 11px;margin-bottom:7px">`:""}
+    <div style="max-height:230px;overflow:auto">
+      ${list.map(b=>`<button class="snap" data-into="${b.id}" style="width:100%;cursor:pointer;text-align:left">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">${esc(b.title)||"Untitled"}</span>
+        <span class="none" style="font-size:12px;flex:none">${((b.entries)||[]).length} inside</span>
+      </button>`).join("")||'<span class="none">Nothing matches that.</span>'}
+    </div>
+    <div class="hint" style="margin:7px 0 0">Each one becomes a story inside it, keeping its own rating, pages, dates and writing. A stage that matches the collection's is left unsaid, so the collection stays one row on your shelf.</div>
+  </div>`;
+}
 function refreshImport(){
   const box=q("#impList");if(!box)return;
   markDupes();
@@ -4167,8 +4191,10 @@ function refreshImport(){
       <button class="btn pri" id="impSelAdd" style="padding:5px 11px">＋ Add as books</button>
       <button class="btn" id="impSelSer" style="padding:5px 11px">🔗 As a series…</button>
       <button class="btn" id="impSelColl" style="padding:5px 11px">📚 As one collection…</button>
+      ${collsOnShelf().length?`<button class="btn ${impIntoOpen?"on":""}" id="impSelInto" style="padding:5px 11px" title="Put them inside a collection you already have">📥 Into a collection…</button>`:""}
       <button class="btn" id="impSelNo" style="padding:5px 11px">Untick</button>
-    </div>`:""}
+    </div>
+    ${impIntoOpen?intoPanelHtml():""}`:""}
   </div>`;
   let shown=0;
   for(const [sec,label] of IMPORT_SECTIONS){
@@ -4251,8 +4277,25 @@ function refreshImport(){
     await importCollection(items,nm.trim());
     doneSel();
   };
+  const bInto=q("#impSelInto",box);
+  if(bInto)bInto.onclick=()=>{impIntoOpen=!impIntoOpen;refreshImport();};
+  const iSe=q("#impIntoSearch",box);
+  if(iSe)iSe.oninput=()=>{impIntoQ=iSe.value;refreshImport();
+    const s2=q("#impIntoSearch");if(s2){s2.focus();s2.setSelectionRange(s2.value.length,s2.value.length);}};
+  qa("[data-into]",box).forEach(b=>b.onclick=async()=>{
+    const coll=books.find(x=>x.id===b.dataset.into);
+    const items=selItems();
+    if(!coll||!items.length)return;
+    if(!confirm(`Put ${items.length} book${items.length===1?"":"s"} inside “${coll.title||"Untitled"}” as stories?\n\nEach keeps its own rating, pages, dates and writing. The collection itself is not otherwise changed.`))return;
+    b.disabled=true;
+    const msg=q("#busyMsg");if(msg)msg.textContent=`Filing ${items.length}…`;
+    await importIntoCollection(items,coll);
+    impIntoOpen=false;impIntoQ="";
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    doneSel();
+  });
   const bNo=q("#impSelNo",box);
-  if(bNo)bNo.onclick=()=>{impSel.clear();refreshImport();};
+  if(bNo)bNo.onclick=()=>{impSel.clear();impIntoOpen=false;refreshImport();};
   qa("[data-impone]",box).forEach(b=>b.onclick=async()=>{
     const it=importQueue.find(x=>x.id===b.dataset.impone);if(!it)return;
     b.disabled=true;
@@ -7741,6 +7784,31 @@ async function importOne(it,extra){
   books.unshift(b);
   if(SYNC.on)enqueue({kind:"book",id:b.id});
   importQueue=importQueue.filter(x=>x.id!==it.id);
+}
+/* several staged entries -> stories inside a collection you already have. The
+   companion to landing a series as one new collection: once the collection
+   exists, its books arrive one export at a time and belong inside it rather
+   than beside it. Each story keeps its own rating, pages, dates and writing;
+   its stage is recorded only where it differs from the collection's, so a
+   series you have simply finished stays one row on the shelf. */
+async function importIntoCollection(items,coll){
+  coll.entries=coll.entries||[];
+  const collSt=statusOf(coll);
+  for(const it of items){
+    coll.entries.push(Object.assign(blankEntry(),{
+      title:it.title,rating:it.rating,pages:it.pages,
+      dateFinished:it.dateFinished||"",
+      status:it.status===collSt?"":(it.status||""),dnf:!!it.dnf,
+      summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""}));
+  }
+  /* a mark of your own stays yours; one that was the stories' average follows
+     the stories it now has */
+  syncCollRating(coll);
+  coll.modified=Math.max(Date.now(),(coll.modified||0)+1,(SYNC.seen[coll.id]||0)+1);
+  await dbPut("books",coll);
+  if(SYNC.on)enqueue({kind:"book",id:coll.id});
+  const ids=new Set(items.map(x=>x.id));
+  importQueue=importQueue.filter(x=>!ids.has(x.id));
 }
 /* several staged entries -> ONE collection book, each as a story inside it */
 /* Each story keeps the day it was read and the stage it was at. Goodreads and
