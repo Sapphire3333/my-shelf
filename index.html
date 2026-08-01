@@ -514,6 +514,14 @@
   /* rate it where you read it — the star strip under the ★ badge */
   .vrate0{font-size:12.5px;color:var(--faint);border:1px solid var(--line);border-radius:7px;padding:3px 10px}
   .vrate0:hover{color:#b45309;border-color:#fcd34d}
+  /* stories still missing a mark, and the note saying whose the mark is */
+  .rgap{border:1px solid #fcd34d;background:#fffbeb;color:#b45309;font-weight:800;
+    border-radius:8px;padding:3px 10px;font-size:13px;line-height:1.2}
+  .rgap:hover{background:#fef3c7;border-color:#f59e0b}
+  [data-theme="dark"] .rgap{background:#44341a;border-color:#a16207;color:#fcd34d}
+  .ratepanel{position:fixed;z-index:60;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:min(430px,92vw);max-height:78vh;overflow:auto;background:var(--card);
+    border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 10px 34px rgba(0,0,0,.28)}
   .ratepick{min-width:0}
   .ratestars{display:flex;flex-wrap:wrap;gap:0;padding:2px}
   .ratestars button{padding:6px 3px;font-size:20px;line-height:1;color:#d6d3d1;text-align:center}
@@ -1221,12 +1229,68 @@ const setAuds=(b,list)=>{b.audienceList=[...list];b.audience=list.join(", ");};
 const typeOf=b=>b.type||((b.series||"").trim()?"series":"standalone");
 const isColl=b=>typeOf(b)==="collection";
 const blankEntry=()=>({id:uid(),title:"",rating:null,pages:"",summary:"",notes:"",cover:false});
+/* A collection's own mark can come from its stories. 0 is a real rating here —
+   the boxes run 0 to 10 — so "has been rated" is always `!=null` and never a
+   truthiness test, or a story deliberately given 0 would read as an empty one
+   and the average would never complete. */
+const entUnrated=b=>((b&&b.entries)||[]).filter(en=>en.rating==null);
+const entAvg=b=>{const rs=((b&&b.entries)||[]).filter(en=>en.rating!=null).map(en=>Number(en.rating));
+  return rs.length?Math.round(rs.reduce((s,n)=>s+n,0)/rs.length*10)/10:null;};
+const entAvgReady=b=>isColl(b)&&((b&&b.entries)||[]).length>0&&!entUnrated(b).length;
+/* keep the mark in step with the stories, unless you have set one of your own */
+function syncCollRating(b){
+  if(!b||!isColl(b)||b.ratingOwn||!entAvgReady(b))return false;
+  const a=entAvg(b);
+  if(a==null||Number(b.rating)===a)return false;
+  b.rating=a;return true;
+}
+/* The stories still without a mark, rateable from here, so filling the gaps
+   never means a trip into the editor. Saved on change rather than on every
+   keystroke: the list redraws as each one is filled, and redrawing under a
+   half-typed number would take the focus away mid-digit. */
+function openRatePanel(){
+  const old=document.getElementById("ratePanel");if(old)old.remove();
+  const wrap=document.createElement("div");
+  wrap.id="ratePanel";wrap.className="ratepanel";
+  const draw=()=>{
+    const gaps=entUnrated(cur);
+    wrap.innerHTML=`<div class="hrow2" style="margin-bottom:9px">
+        <b style="font-size:13px">★ Stories with no rating yet</b>
+        <button class="btn" id="rpClose" style="margin-left:auto;padding:4px 10px">Done</button></div>
+      ${gaps.length?gaps.map(en=>`<div class="hrow2" style="margin:5px 0">
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">${esc(en.title)||"Untitled"}</span>
+          <span class="ratebox" style="padding:3px 9px">★ <input type="number" data-rp="${esc(en.id)}" min="0" max="10" step="0.1" placeholder="–" style="width:54px;font-size:14px"></span>
+        </div>`).join(""):'<span class="none">Every story has a rating now.</span>'}
+      <div class="hint" style="margin-top:9px">${entAvgReady(cur)
+        ? `They average ★ ${entAvg(cur).toFixed(1)}${cur.ratingOwn?", and your own mark stands until you press ↺ Use the average.":", which is now the collection's mark."}`
+        : "Once every one of them has a mark, the collection takes their average."}</div>`;
+    q("#rpClose",wrap).onclick=()=>{
+      wrap.remove();
+      if(view==="book")bookMode==="edit"?renderEditor():renderBookView();
+    };
+    qa("[data-rp]",wrap).forEach(el=>el.addEventListener("change",()=>{
+      const en=(cur.entries||[]).find(x=>x.id===el.dataset.rp);if(!en)return;
+      const v=el.value;
+      en.rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));
+      syncCollRating(cur);scheduleSave();draw();
+    }));
+  };
+  draw();
+  document.body.appendChild(wrap);
+}
+/* what to say beside the mark: whose it is, and what the stories come to */
+const collRateNote=b=>{
+  if(!isColl(b)||!((b&&b.entries)||[]).length)return "";
+  const a=entAvg(b);
+  if(b.ratingOwn)return a==null?"your own":`yours · stories ${entAvgReady(b)?"average":"so far"} ${a.toFixed(1)}`;
+  return entAvgReady(b)?"averaged from the stories":"";
+};
 /* every image key a book owns: its page pictures + its stories' covers */
 const imgKeysOf=b=>!b?[]:[...((b.images)||[]).map(im=>b.id+"|"+im.id),
   ...((b.entries)||[]).filter(en=>en.cover).map(en=>b.id+"|"+en.id)];
 const q=(sel,root=document)=>root.querySelector(sel);
 const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
-const blankBook=id=>({id,title:"",author:"",rating:null,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",progress:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],kind:"book",fandoms:[],characters:[],link:"",summary:"",pros:[],cons:[],meh:[],quotes:[],canvasText:"",images:[],pads:[],draw:[],created:Date.now()});
+const blankBook=id=>({id,title:"",author:"",rating:null,ratingOwn:false,favorite:false,dnf:false,dnfReasons:[],genres:[],audience:"",keywords:[],pages:"",progress:"",status:"finished",dateFinished:"",rereads:0,type:"standalone",series:"",seriesNum:"",seriesTotal:"",entries:[],kind:"book",fandoms:[],characters:[],link:"",summary:"",pros:[],cons:[],meh:[],quotes:[],canvasText:"",images:[],pads:[],draw:[],created:Date.now()});
 
 function compressImage(file,maxDim=1000,quality=.82){
   return new Promise((res,rej)=>{
@@ -4623,6 +4687,8 @@ function renderBookView(){
               ${b.rating!=null?'<button data-vr="clear">Take the rating off</button>':""}
               <span class="rr">Decimals live in ✎ Edit</span></div>
           </div>`:""}
+          ${isColl(b)&&entUnrated(b).length?`<button class="rgap" id="vGaps" title="${entUnrated(b).length} ${entUnrated(b).length===1?"story has":"stories have"} no rating yet — tap to fill them in">!</button>`:""}
+          ${collRateNote(b)?`<span class="lbl">${esc(collRateNote(b))}</span>`:""}
           <button class="vfav ${b.favorite?"on":""}" id="vFav" title="${b.favorite?"One of your favourites":"Mark as a favourite"}">${b.favorite?"♥ Favourite":"♡"}</button>
         </div>
         ${statusOf(b)==="reading"&&pct!=null?`<div class="vprog"><span class="prog" style="flex:1"><i style="width:${pct}%"></i></span>
@@ -4681,6 +4747,7 @@ function renderBookView(){
   q("#vFav").onclick=e=>{e.stopPropagation();quickEdit(bk=>{bk.favorite=!bk.favorite;});};
   /* rating without the editor — the most common thing to do after finishing */
   q("#vRate").onclick=e=>{e.stopPropagation();vRateOpen=!vRateOpen;vStatusOpen=false;renderBookView();};
+  const vg=q("#vGaps");if(vg)vg.onclick=e=>{e.stopPropagation();openRatePanel();};
   qa("[data-vr]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
     const v=x.dataset.vr;
@@ -4887,6 +4954,9 @@ function renderEditor(){
         <div id="audWrap"></div>
         <div class="inrow">
           <span class="ratebox">★ <input type="number" id="fRate" min="0" max="10" step="0.1" placeholder="–" value="${b.rating??""}"><span class="lbl">/ 10</span></span>
+          <button class="rgap" id="fGaps" hidden>!</button>
+          <span class="lbl" id="rateNote"></span>
+          <button class="boxbtn" id="fRateAuto" hidden title="Go back to the average of the stories">↺ Use the average</button>
           <button class="boxbtn ${b.favorite?"favon":""}" id="fFav">♥ Favorite</button>
           <button class="boxbtn ${b.dnf?"dnfon":""}" id="fDnf">DNF</button>
         </div>
@@ -5121,7 +5191,17 @@ function renderEditor(){
   const bind=(id,key,filter)=>{const el=q(id);el.addEventListener("input",()=>{cur[key]=filter?filter(el.value):el.value;scheduleSave();});};
   bind("#fTitle","title");
   bind("#fDate","dateFinished");
-  q("#fRate").addEventListener("input",e=>{const v=e.target.value;cur.rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));scheduleSave();});
+  q("#fRate").addEventListener("input",e=>{const v=e.target.value;
+    cur.rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));
+    /* setting a mark by hand on a collection takes it off the automatic
+       average — the ↺ button hands it back */
+    cur.ratingOwn=isColl(cur)&&cur.rating!=null;
+    refreshRate();scheduleSave();});
+  const fg=q("#fGaps");if(fg)fg.onclick=()=>openRatePanel();
+  const fa=q("#fRateAuto");if(fa)fa.onclick=()=>{
+    cur.ratingOwn=false;syncCollRating(cur);
+    const f=q("#fRate");if(f)f.value=cur.rating??"";
+    refreshRate();scheduleSave();};
   q("#fPages").addEventListener("input",e=>{const v=e.target.value;cur.pages=v===""?"":Math.max(1,parseInt(v)||0);renderProgress();scheduleSave();});
   q("#fFav").onclick=e=>{cur.favorite=!cur.favorite;e.currentTarget.classList.toggle("favon",cur.favorite);scheduleSave();};
   q("#fDnf").onclick=e=>{cur.dnf=!cur.dnf;e.currentTarget.classList.toggle("dnfon",cur.dnf);renderDnf();scheduleSave();};
@@ -5474,6 +5554,15 @@ function renderEditor(){
     if(SYNC.on)enqueue({kind:"img",key});
     renderEntries();scheduleSave();
   };
+  /* the mark beside a collection: whose it is, and whether stories still lack one */
+  function refreshRate(){
+    const gaps=isColl(cur)?entUnrated(cur):[];
+    const gb=q("#fGaps"),note=q("#rateNote"),auto=q("#fRateAuto");
+    if(gb){gb.hidden=!gaps.length;
+      gb.title=gaps.length?`${gaps.length} ${gaps.length===1?"story has":"stories have"} no rating yet — tap to fill them in`:"";}
+    if(auto)auto.hidden=!(isColl(cur)&&cur.ratingOwn&&entAvg(cur)!=null);
+    if(note)note.textContent=collRateNote(cur);
+  }
   /* a collection's own page count is the sum of its stories, once they all have one */
   function sumEntryPages(){
     const note=q("#pagesNote");
@@ -5489,7 +5578,7 @@ function renderEditor(){
   }
   function renderEntries(){
     const w=q("#entWrap");
-    if(!isColl(cur)){w.innerHTML="";const n=q("#pagesNote");if(n)n.hidden=true;return;}
+    if(!isColl(cur)){w.innerHTML="";const n=q("#pagesNote");if(n)n.hidden=true;refreshRate();return;}
     cur.entries=cur.entries||[];
     w.innerHTML=`<div class="cap2">What's inside${cur.series?" — "+esc(cur.series):""}</div>
       <div class="hint">Each book or story this one entry covers, with its own title, rating, summary, notes and cover.</div>
@@ -5521,7 +5610,9 @@ function renderEditor(){
     const find=id=>cur.entries.find(x=>x.id===id);
     qa("[data-et]",list).forEach(el=>el.addEventListener("input",()=>{find(el.dataset.et).title=el.value;scheduleSave();}));
     qa("[data-er]",list).forEach(el=>el.addEventListener("input",()=>{const v=el.value;
-      find(el.dataset.er).rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));scheduleSave();}));
+      find(el.dataset.er).rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));
+      if(syncCollRating(cur)){const f=q("#fRate");if(f)f.value=cur.rating;}
+      refreshRate();scheduleSave();}));
     qa("[data-ep]",list).forEach(el=>el.addEventListener("input",()=>{const v=el.value;
       find(el.dataset.ep).pages=v===""?"":Math.max(1,parseInt(v)||0);sumEntryPages();scheduleSave();}));
     qa("[data-es]",list).forEach(el=>{el.innerHTML=find(el.dataset.es).summary||"";
@@ -5565,6 +5656,9 @@ function renderEditor(){
     q("#entFold").onclick=openFoldPanel;
     q("#entOrder").onclick=openOrderPanel;
     sumEntryPages();
+    syncCollRating(cur);
+    const fr=q("#fRate");if(fr&&!cur.ratingOwn&&cur.rating!=null)fr.value=cur.rating;
+    refreshRate();
   }
   /* tap the rows 1, 2, 3… then Save — used for a collection's stories and for
      the +/−/quote lists */
