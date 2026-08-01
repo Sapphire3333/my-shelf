@@ -5403,9 +5403,13 @@ function renderEditor(){
     if(fc)fc.onclick=async()=>{
       fc.disabled=true;fc.textContent="Fetching…";
       try{
-        /* try the chosen one first, then the rest as fallbacks */
-        const order=[covers[covI],...covers.filter((u,i)=>i!==covI)].filter(Boolean);
-        const data=await fetchCoverData(order,600);
+        /* Exactly the one you picked, and nothing else. This used to try the
+           chosen cover first and then quietly fall back to every other
+           candidate, so choosing any of Google's — whose host sends no CORS
+           header and can never be downloaded — fetched the first Open Library
+           one instead and reported success. It looked as though only the first
+           choice in the row ever worked. */
+        const data=await fetchCoverData([covers[covI]].filter(Boolean),600);
         if(en){
           en.cover=true;en.coverV=Date.now();
           await dbPut("images",{key:cur.id+"|"+en.id,data,v:en.coverV});
@@ -5423,6 +5427,9 @@ function renderEditor(){
         fc.textContent="Cover set ✓";
       }catch(e){
         fc.disabled=false;fc.textContent=hadCover?"Replace the cover":"Use as cover";
+        /* mark the one that refused, so the row stops offering it as a choice */
+        const shot=q(`[data-fpcov="${covI}"]`,box);
+        if(shot){shot.style.opacity=".3";shot.title="This picture's host won't allow the app to download it";}
         const cm=q("#fpCovMsg",box);
         if(cm)cm.innerHTML=`Whoever hosts this picture won't let the app download it. You can still have it: <a href="${esc(covers[covI]||covers[0]||"")}" target="_blank" rel="noopener" style="color:var(--teal)">open the picture</a>, save it, then use ${en?"the story's cover box":"the cover box"} to add it.`;
       }
@@ -7071,7 +7078,14 @@ async function fetchBookInfo(title,author,isbn){
       +(isbn?"q="+encodeURIComponent(isbn)
       :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):""));
     const j=await fetchJson(u);
-    const d=(j.docs||[])[0];
+    const docs=j.docs||[];
+    const d=docs[0];
+    /* a cover from every edition the search returned, not only the first.
+       Open Library allows downloads and Google's host does not, so these are
+       the candidates that can actually be applied — collecting all of them is
+       what gives a real choice rather than a row of pictures that refuse. */
+    out.olCovers=docs.map(x=>x&&x.cover_i).filter(Boolean)
+      .map(id=>"https://covers.openlibrary.org/b/id/"+id+"-L.jpg");
     if(d){
       out.tags=[...new Set([...out.tags,...(d.subject||[]).map(s=>String(s).trim())])];
       if(!out.pages&&d.number_of_pages_median)out.pages=d.number_of_pages_median;
@@ -7124,6 +7138,7 @@ async function fetchBookInfo(title,author,isbn){
   const isbnForCover=isbnLink;
   out.covers=[out.olCover,
     isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
+    ...(out.olCovers||[]),
     ...out.gCovers].filter((u,i,a)=>u&&a.indexOf(u)===i).slice(0,6);
   if(out.summary||out.tags.length||out.pages||out.covers.length)return out;
   /* nothing to show: say which it was, so "not found" doesn't mean "flaky wifi" */
