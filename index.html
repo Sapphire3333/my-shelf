@@ -1405,7 +1405,12 @@ const entStatusOf=(coll,en)=>String((en&&en.status)||"").trim()||statusOf(coll||
    A story you set aside is set aside; one you have given any status of its own
    is not; one you have said nothing about is whatever its collection is. */
 const entDnfOf=(coll,en)=>(en&&en.dnf)?true:((en&&String(en.status||"").trim())?false:!!(coll&&coll.dnf));
-const entDateOf=(coll,en)=>String((en&&en.dateFinished)||"").trim()||String((coll&&coll.dateFinished)||"");
+/* A story finished on the same day as the collection around it need not say so
+   twice. But one you are still reading, or have not started, or set aside, has
+   no finish date to borrow — that date was the collection's, and handing it over
+   said a book was finished on a day you had not finished it. */
+const entDateOf=(coll,en)=>String((en&&en.dateFinished)||"").trim()
+  ||((entStatusOf(coll,en)==="finished"&&!entDnfOf(coll,en))?String((coll&&coll.dateFinished)||""):"");
 const entOwnGenres=en=>((en&&en.genres)||[]).length>0;
 /* the stories inside that no longer sit under the collection's own headings */
 /* the stories inside that no longer sit under the collection's own genres */
@@ -2971,10 +2976,20 @@ function wireOpen(root,withDel){
    pages and covers become the collection's stories; their own pages go to the
    bin (30 days, restorable) so nothing shows up twice. */
 /* turn an existing book into a collection entry — cover copied under the collection */
-async function bookToEntry(b,collId){
+/* What it was is kept, not thrown away. A book folded in used to lose the stage
+   it was at and the day it was finished, so a book you were halfway through
+   came out the other side saying it was finished on some other book's date —
+   the collection's, which is the only date there was left. It keeps its own
+   now. The stage is written down only where it differs from the collection's,
+   because a story that agrees with the book it sits in should stay inside it
+   rather than step out onto the shelf on its own. */
+async function bookToEntry(b,collId,collStatus){
   const en=blankEntry();
   en.title=b.title;en.rating=b.rating;en.pages=b.pages;
   en.summary=b.summary||"";en.notes=b.canvasText||"";
+  en.dateFinished=lastEnd(b)||String(b.dateFinished||"");
+  en.status=statusOf(b)===(collStatus||"finished")?"":statusOf(b);
+  en.dnf=!!b.dnf;
   let coverData=null;
   const cov=await dbGet("covers",b.id);
   if(cov&&cov.data){
@@ -3008,7 +3023,7 @@ async function makeCollectionFrom(ids,name,author){
   nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":sel.some(b=>statusOf(b)==="reading")?"reading":"want";
   nb.dateFinished=sel.map(b=>b.dateFinished||"").sort().pop()||"";
   nb.entries=[];
-  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id)).en);
+  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id,nb.status)).en);
   nb.modified=Date.now();
   await dbPut("books",nb);
   books.unshift(nb);
@@ -6254,9 +6269,9 @@ function renderEditor(){
         const s2=q("#fdSearch",box);if(s2){s2.focus();s2.setSelectionRange(s2.value.length,s2.value.length);}};
       qa("[data-fb]",box).forEach(btn=>btn.onclick=async()=>{
         const b=books.find(x=>x.id===btn.dataset.fb);if(!b)return;
-        if(!confirm(`Fold “${b.title||"Untitled"}” into this collection?\n\nIts own page moves to Recently deleted — notes, rating, pages and cover carry over.`))return;
+        if(!confirm(`Fold “${b.title||"Untitled"}” into this collection?\n\nIts own page moves to Recently deleted — notes, rating, pages, cover, the stage it's at and the day you finished it all carry over.`))return;
         btn.disabled=true;
-        const {en,coverData}=await bookToEntry(b,cur.id);
+        const {en,coverData}=await bookToEntry(b,cur.id,statusOf(cur));
         cur.entries.push(en);
         if(coverData)curEnt[en.id]=coverData;
         await retireBook(b);
@@ -7476,15 +7491,23 @@ async function importOne(it,extra){
   importQueue=importQueue.filter(x=>x.id!==it.id);
 }
 /* several staged entries -> ONE collection book, each as a story inside it */
+/* Each story keeps the day it was read and the stage it was at. Goodreads and
+   StoryGraph give a date per book, and landing a whole series as one collection
+   used to throw all but the latest of them away — the stories came out with no
+   dates at all and quietly borrowed the collection's. The stage is recorded only
+   where it differs from the collection's, so a series you have simply finished
+   stays one entry instead of scattering its books back across the shelf. */
 async function importCollection(items,name){
+  const status=items.every(it=>it.status==="finished"&&!it.dnf)?"finished":items.some(it=>it.status==="reading")?"reading":"want";
   const nb=Object.assign(blankBook(uid()),{
     type:"collection",title:name,series:name,
     author:items[0].author||"",
-    status:items.every(it=>it.status==="finished"&&!it.dnf)?"finished":items.some(it=>it.status==="reading")?"reading":"want",
+    status,
     dateFinished:items.map(it=>it.dateFinished||"").sort().pop()||"",
     keywords:[...new Set(items.flatMap(it=>it.tags||[]))].slice(0,12),
     entries:items.map(it=>Object.assign(blankEntry(),{
       title:it.title,rating:it.rating,pages:it.pages,
+      dateFinished:it.dateFinished||"",status:it.status===status?"":(it.status||""),dnf:!!it.dnf,
       summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""})),
     modified:Date.now()});
   await dbPut("books",nb);
