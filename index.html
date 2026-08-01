@@ -284,6 +284,23 @@
   .ratebox input{width:60px;border:none;text-align:center;font-weight:600;font-size:15px}
   .cnt{width:24px;height:24px;border-radius:7px;background:#f5f5f4;font-weight:700;color:#57534e}
   .cnt:hover{background:#e7e5e4}
+  /* the readings list. Each line wraps between its two dates rather than at the
+     page edge, so the narrowest phone shows Started above Finished instead of
+     pushing the whole page sideways. */
+  .readlist{display:flex;flex-direction:column;gap:5px;margin:2px 0}
+  .readrow{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
+  .readrow .n{font-size:11px;font-weight:700;color:var(--faint);min-width:13px;text-align:right}
+  .readrow .boxbtn{padding:6px 10px;font-size:12.5px;gap:5px;max-width:100%}
+  .readrow input[type=date]{border:none;background:transparent;font:inherit;font-size:12.5px;
+    color:var(--ink);width:102px;min-width:0;padding:0}
+  .readrow.now .boxbtn{border-color:var(--teal);background:#f0fdfa}
+  /* visible without being hovered for: this ✕ is how a mis-tapped re-read is
+     undone, so it has to be findable the first time you look for it */
+  .readx{width:24px;height:24px;border-radius:7px;color:var(--faint);flex:none}
+  .readx:hover{color:var(--rose);background:#fff1f2}
+  .vreads{margin:4px 0 2px}
+  .rdtog{font-size:12px;color:var(--faint);padding:2px 0}
+  .rdtog:hover{color:var(--teal)}
   .dnfbox{border:1px solid #d6d3d1;background:#fafaf9;border-radius:10px;padding:12px}
   .dnfbox .cap{font-size:11px;font-weight:700;letter-spacing:.7px;color:var(--mut);text-transform:uppercase;margin-bottom:7px}
   .rsn{border:1px solid #d6d3d1;background:#fff;border-radius:999px;font-size:12px;padding:3px 10px;color:#57534e;margin:2px}
@@ -1267,6 +1284,105 @@ const stripHtml=s=>String(s||"").replace(/<[^>]*>/g," ")
   .replace(/&quot;/gi,'"').replace(/&#39;/gi,"'").replace(/&amp;/gi,"&")
   .replace(/\s+/g," ").trim();
 const statusOf=b=>b.status||"finished";
+
+/* ---- the readings list: every time you read it, not only the last one ----
+   A book used to record one finish date and a number. A book read four times
+   therefore had one date and the number 3, and the other three readings existed
+   nowhere. Now it keeps a list, each reading with a start and an end. Either can
+   be blank — a date that was never written down must not be invented — and
+   `open:true` marks the one you are in the middle of, which is the only thing
+   that tells an unfinished reading apart from a finished one whose dates nobody
+   kept. */
+/* today where you are, not in Greenwich: an evening east of London would
+   otherwise be filed under yesterday */
+const todayStr=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);};
+/* Books written before the list existed grow one the first time anyone asks,
+   here, in memory — nothing is saved and nothing is uploaded until you next
+   change that book yourself, so the update costs you no waiting and no retyping.
+   Whatever was recorded is carried over exactly: the finish date it had becomes
+   the end of its last reading, and each re-read it counted becomes a reading of
+   its own with no dates, because none were ever kept for them. */
+function initialReadings(b){
+  const out=[],fin=String(b.dateFinished||"").trim(),rr=Math.max(0,parseInt(b.rereads)||0);
+  if(fin||rr>0){
+    for(let i=0;i<rr;i++)out.push({id:uid(),start:"",end:""});
+    out.push({id:uid(),start:"",end:fin});
+  }
+  if(statusOf(b)==="reading"&&!b.dnf)out.push({id:uid(),start:"",end:"",open:true});
+  return out;
+}
+/* an id per reading, given here rather than trusted, so a list that came out of
+   a hand-edited backup can still be pointed at by the buttons on the page */
+const readsOf=b=>{if(b&&!Array.isArray(b.readings))b.readings=initialReadings(b);
+  const rs=(b&&b.readings)||[];rs.forEach(r=>{if(r&&!r.id)r.id=uid();});return rs;};
+const openRead=b=>readsOf(b).find(r=>r&&r.open)||null;
+const doneReads=b=>readsOf(b).filter(r=>r&&!r.open);
+const lastEnd=b=>doneReads(b).map(r=>String(r.end||"")).filter(Boolean).sort().pop()||"";
+/* The reading whose dates belong in the book's own information: the first one
+   that has a date at all. On a book carried over from before the list existed
+   that is its last reading — the only one whose date was ever written down —
+   which is exactly the date the page used to show. */
+const firstRead=b=>{const rs=readsOf(b);return rs.find(r=>r&&(r.start||r.end))||rs[0]||null;};
+/* How many times you have been through it. A book you marked finished long
+   before any of this and never dated still counts as read once — its shelf says
+   so even though its list is empty. */
+const timesRead=b=>Math.max(doneReads(b).length,(statusOf(b)==="finished"&&!b.dnf)?1:0);
+/* `dateFinished` and `rereads` are kept in step behind the list, so an older
+   copy of the app — and every backup this one writes — still reads the book.
+   The list is what is true; those two are its shadow. */
+function syncReads(b){
+  if(!b||!Array.isArray(b.readings))return b;
+  b.dateFinished=lastEnd(b);
+  b.rereads=Math.max(0,doneReads(b).length-1);
+  return b;
+}
+/* Choosing a stage is also what records a reading — there is no separate button
+   for a re-read and no dialog asking whether you meant it. Reading now opens a
+   reading dated today; Finished closes it; Reading now again months later opens
+   the next one. A mis-tap is undone by deleting that reading on the book's own
+   page, which is cheaper than being asked every time. */
+function markStatus(b,what){
+  const wasFin=statusOf(b)==="finished"&&!b.dnf;
+  const reads=readsOf(b);
+  if(what==="dnf")b.dnf=!b.dnf;
+  else{b.status=what;b.dnf=false;}
+  const nowReading=statusOf(b)==="reading"&&!b.dnf;
+  let open=openRead(b);
+  if(nowReading&&!open){
+    /* going back into a book you had already finished without ever dating it:
+       keep that first reading as one with no dates rather than lose the count */
+    if(wasFin&&!doneReads(b).length)reads.push({id:uid(),start:"",end:""});
+    reads.push({id:uid(),start:todayStr(),end:"",open:true});
+  }
+  if(!nowReading&&open){
+    if(statusOf(b)==="finished"&&!b.dnf){delete open.open;if(!open.end)open.end=todayStr();}
+    /* back to the pile means you had not started after all */
+    else if(statusOf(b)==="want")reads.splice(reads.indexOf(open),1);
+    /* set aside: the reading stays open and keeps its start, in case you return */
+  }
+  /* marked finished outright, with nothing on its list — record today, once */
+  if(!nowReading&&!openRead(b)&&statusOf(b)==="finished"&&!b.dnf&&!doneReads(b).length)
+    reads.push({id:uid(),start:"",end:todayStr()});
+  return syncReads(b);
+}
+/* One line per reading: its two dates, yours to correct, and a ✕ that takes the
+   whole reading off. This is why nothing asks you to confirm a re-read — undoing
+   one is cheaper than being questioned every time you pick a book up again. The
+   same list serves the book you are reading and the book you are editing. */
+function readListHtml(b){
+  const rows=readsOf(b);
+  return `<div class="readlist">${rows.map((r,i)=>`<div class="readrow${r.open?" now":""}">
+      <span class="n">${i+1}</span>
+      <span class="boxbtn">Started <input type="date" data-rst="${esc(r.id)}" value="${esc(r.start||"")}"></span>
+      ${r.open?'<span class="lbl">still reading</span>'
+        :`<span class="boxbtn">Finished <input type="date" data-ren="${esc(r.id)}" value="${esc(r.end||"")}"></span>`}
+      <button class="readx" data-rdel="${esc(r.id)}" title="Take this reading off the list">✕</button>
+    </div>`).join("")}
+    <div class="readrow"><button class="boxbtn" data-radd="1">+ Add a reading</button>
+      <span class="lbl">${rows.length?"Leave a date blank if you don't know it — the reading still counts."
+        :"Nothing recorded yet. Tapping 📖 Reading now starts one for you."}</span></div>
+  </div>`;
+}
 /* a book can be for several audiences. `audience` stays a plain joined string so
    older versions and older backups still read it; `audienceList` is the real one */
 const audsOf=b=>Array.isArray(b.audienceList)&&b.audienceList.length
@@ -2749,7 +2865,7 @@ function rowHtml(b,withDel,edited){
       ${progHtml(b)}
     </div>
     <div class="rside">${rateHtml(b.rating)}${(b.genres||[]).length?`<div class="rgen">${(()=>{const br=new Set(b.genreBreaks||[]);
-      return (b.genres||[]).map(g=>chipHtml(g,true)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div>`:""}${edited?`<span class="rr">edited ${edited}</span>`:""}${(b.rereads||0)>0?`<span class="rr">read ×${(b.rereads||0)+1}</span>`:""}${withDel&&!b._story?`<button class="rdel" data-del="${b.id}">✕</button>`:""}</div>
+      return (b.genres||[]).map(g=>chipHtml(g,true)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div>`:""}${edited?`<span class="rr">edited ${edited}</span>`:""}${timesRead(b)>1?`<span class="rr">read ×${timesRead(b)}</span>`:""}${withDel&&!b._story?`<button class="rdel" data-del="${b.id}">✕</button>`:""}</div>
   </div>`;
 }
 function gridHtml(b){
@@ -2826,8 +2942,7 @@ async function hydrateCovers(root){
 /* pick the stage from a list — a single click was too easy to do by accident */
 async function setStatus(id,what){
   const b=books.find(x=>x.id===id);if(!b)return;
-  if(what==="dnf")b.dnf=!b.dnf;
-  else{b.status=what;b.dnf=false;}
+  markStatus(b,what);
   b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
@@ -4388,8 +4503,10 @@ function renderSearchBody(){
         let topG=null;
         Object.keys(gcount).forEach(g=>{const gr=books.filter(b=>(b.genres||[]).includes(g)&&b.rating!=null);
           if(gr.length){const a=gr.reduce((s,b)=>s+b.rating,0)/gr.length;if(!topG||a>topG.avg)topG={name:g,avg:a};}});
-        const mr=[...books].sort((a,b)=>(b.rereads||0)-(a.rereads||0))[0];
-        const years={};books.forEach(b=>{const y=(b.dateFinished||"").slice(0,4);if(y.length===4)years[y]=(years[y]||0)+1;});
+        const mr=[...books].sort((a,b)=>timesRead(b)-timesRead(a))[0];
+        /* a year counts the readings that ended in it, so a book read again in
+           2025 belongs to 2025 as well as to the year you first finished it */
+        const years={};books.forEach(b=>doneReads(b).forEach(r=>{const y=String(r.end||"").slice(0,4);if(y.length===4)years[y]=(years[y]||0)+1;}));
         const yl=Object.entries(years).sort((a,b)=>b[0].localeCompare(a[0]));
         const maxB=Math.max(1,...buckets.map(bCount));
         html+=`<div class="sec"><h2 class="serif">Stats corner</h2><div class="stats">
@@ -4397,7 +4514,7 @@ function renderSearchBody(){
           <div class="stat"><div class="v">${avg!=null?avg.toFixed(2):"–"}</div><div class="k">average rating (${rated.length} rated)</div></div>
           <div class="stat"><div class="v" style="font-size:16px">${topA?esc(topA[0]):"–"}</div><div class="k">most-read author${topA?` (${topA[1]} books)`:""}</div></div>
           <div class="stat"><div class="v" style="font-size:16px">${topG?esc(topG.name):"–"}</div><div class="k">highest-rated genre${topG?` (avg ${topG.avg.toFixed(1)})`:""}</div></div>
-          <div class="stat"><div class="v" style="font-size:16px">${mr&&(mr.rereads||0)>0?esc(mr.title):"–"}</div><div class="k">most reread${mr&&(mr.rereads||0)>0?` (×${mr.rereads+1})`:""}</div></div>
+          <div class="stat"><div class="v" style="font-size:16px">${mr&&timesRead(mr)>1?esc(mr.title):"–"}</div><div class="k">most reread${mr&&timesRead(mr)>1?` (×${timesRead(mr)})`:""}</div></div>
           <div class="stat">${yl.length?yl.slice(0,3).map(([y,n])=>`<div style="display:flex;justify-content:space-between;font-size:13px"><span style="color:var(--mut)">${y}</span><b>${n}</b></div>`).join(""):'<div class="v">–</div>'}<div class="k">finished per year</div></div>
         </div>
         <div class="spread"><div class="k" style="font-size:11px;font-weight:700;color:var(--mut);margin-bottom:6px">Rating spread</div>
@@ -4514,9 +4631,11 @@ function renderInsights(){
     :(parseInt(b.pages)?[parseInt(b.pages)]:[]);
   const totalPagesOf=b=>{const u=unitPages(b);
     return u.length?u.reduce((s,x)=>s+x,0):(isColl(b)?(parseInt(b.pages)||0):0);};
-  const pagesRead=fin.reduce((s,b)=>s+totalPagesOf(b)*(1+(b.rereads||0)),0);
-  const rereads=books.reduce((s,b)=>s+(b.rereads||0),0);
-  const years={};fin.forEach(b=>{const y=(b.dateFinished||"").slice(0,4);if(y.length===4)years[y]=(years[y]||0)+1;});
+  const pagesRead=fin.reduce((s,b)=>s+totalPagesOf(b)*timesRead(b),0);
+  const rereads=books.reduce((s,b)=>s+Math.max(0,timesRead(b)-1),0);
+  /* every year a reading ended in, not only the year of the last one — this is
+     the whole reason the readings list exists */
+  const years={};books.forEach(b=>doneReads(b).forEach(r=>{const y=String(r.end||"").slice(0,4);if(y.length===4)years[y]=(years[y]||0)+1;}));
   const yl=Object.entries(years).sort((a,b)=>b[0].localeCompare(a[0]));
   const thisYear=String(new Date().getFullYear());
   const pace=yl.length?Math.round(yl.reduce((s,x)=>s+x[1],0)/yl.length):0;
@@ -4652,7 +4771,7 @@ function renderInsights(){
   /* the books behind each number, so "2 unrated" can say which two */
   const addGap=(list,label)=>{if(list.length){gaps.push(`${list.length} ${label}`);gapLists.push({label,books:list});}};
   addGap(books.filter(b=>b.rating==null),"unrated");
-  addGap(fin.filter(b=>!b.dateFinished),"finished without a date");
+  addGap(fin.filter(b=>!lastEnd(b)),"finished without a date");
   addGap(books.filter(b=>!isColl(b)&&!parseInt(b.pages)),"with no page count");
   addGap(books.filter(b=>!(b.genres||[]).length),"with no genre");
 
@@ -4819,7 +4938,7 @@ function scheduleSave(){
 /* ---------- the book, read rather than edited ----------
    Everything empty simply isn't here: no pickers, no "Add… (Enter)", no boxes
    waiting to be filled. What you did fill in is gathered close together. */
-let vStatusOpen=false,vRateOpen=false,viewArrange=false;
+let vStatusOpen=false,vRateOpen=false,viewArrange=false,vReadsOpen=false;
 /* a picture pasted straight onto the page you're reading */
 async function viewAddPicture(file){
   if(!file||!file.type.startsWith("image/")||!cur)return;
@@ -4862,8 +4981,14 @@ function renderBookView(){
   /* label / value, so they line up in a column instead of running together */
   const facts=[];
   if(b.pages)facts.push(["Length",`${esc(String(b.pages))} pages`]);
-  if(b.dateFinished)facts.push(["Finished",esc(fmtEdited(b.dateFinished+"T12:00"))]);
-  if((b.rereads||0)>0)facts.push(["Read",`${(b.rereads||0)+1} times`]);
+  /* the first time you read it sits here in the book's own information; the
+     re-reads keep to their list below, out of the way until you want them */
+  const day=d=>esc(fmtEdited(d+"T12:00"));
+  const fr=firstRead(b);
+  if(fr&&fr.start)facts.push(["Started",day(fr.start)]);
+  if(fr&&fr.end)facts.push(["Finished",day(fr.end)]);
+  else if(!fr&&b.dateFinished)facts.push(["Finished",day(b.dateFinished)]);
+  if(timesRead(b)>1)facts.push(["Read",`${timesRead(b)} times`]);
   if(auds.length)facts.push(["For",auds.map(esc).join(", ")]);
   if(kindOf(b)!=="book")facts.push(["Kind",kindLabel(kindOf(b))]);
   if(b.isbn)facts.push(["ISBN",esc(b.isbn)]);
@@ -4926,6 +5051,10 @@ function renderBookView(){
         ${statusOf(b)==="reading"&&pct!=null?`<div class="vprog"><span class="prog" style="flex:1"><i style="width:${pct}%"></i></span>
           <span class="rr">${pct}% · p.${esc(String(b.progress))} of ${esc(String(b.pages))}</span></div>`:""}
         ${facts.length?`<dl class="vfactgrid">${facts.map(f=>`<dt>${f[0]}</dt><dd>${f[1]}</dd>`).join("")}</dl>`:""}
+        ${readsOf(b).length||(statusOf(b)==="finished"&&!b.dnf)?`<div class="vreads">
+          <button class="rdtog" id="vReads" title="Every time you've read this — correct a date, add one, or take a reading off">${vReadsOpen?"▾":"▸"} ${readsOf(b).length?`${readsOf(b).length} reading${readsOf(b).length===1?"":"s"}`:"no dates recorded"}</button>
+          ${vReadsOpen?readListHtml(b):""}
+        </div>`:""}
         ${b.dnf&&(b.dnfReasons||[]).length?`<div class="vfacts">Set aside: ${(b.dnfReasons||[]).map(esc).join(", ")}</div>`:""}
       </div>
       ${(b.genres||[]).length||(b.keywords||[]).length?`<div class="vside">
@@ -4992,9 +5121,31 @@ function renderBookView(){
     e.stopPropagation();
     const what=x.dataset.vst;
     vStatusOpen=false;
-    quickEdit(bk=>{if(what==="dnf")bk.dnf=!bk.dnf;else{bk.status=what;bk.dnf=false;}});
+    quickEdit(bk=>markStatus(bk,what));
   });
   q("#vFav").onclick=e=>{e.stopPropagation();quickEdit(bk=>{bk.favorite=!bk.favorite;});};
+  /* the readings, corrected where you read rather than only where you edit —
+     a re-read opened by a mis-tap has to be one tap away from gone */
+  const vrd=q("#vReads");if(vrd)vrd.onclick=e=>{e.stopPropagation();vReadsOpen=!vReadsOpen;renderBookView();};
+  qa("[data-rst],[data-ren]",page).forEach(el=>el.onchange=()=>{
+    const rid=el.dataset.ren||el.dataset.rst,isEnd=!!el.dataset.ren,v=el.value;
+    quickEdit(bk=>{const r=readsOf(bk).find(x=>x.id===rid);if(!r)return;
+      if(isEnd)r.end=v;else r.start=v;syncReads(bk);});
+  });
+  qa("[data-rdel]",page).forEach(el=>el.onclick=e=>{
+    e.stopPropagation();
+    quickEdit(bk=>{const rs=readsOf(bk),i=rs.findIndex(x=>x.id===el.dataset.rdel);
+      if(i<0)return;
+      const gone=rs.splice(i,1)[0];
+      /* the reading you were in the middle of is gone, so the book is not
+         being read — this is the one tap that undoes a mis-tapped re-read */
+      if(gone&&gone.open&&statusOf(bk)==="reading"&&!bk.dnf)bk.status=doneReads(bk).length?"finished":"want";
+      syncReads(bk);});
+  });
+  qa("[data-radd]",page).forEach(el=>el.onclick=e=>{
+    e.stopPropagation();
+    quickEdit(bk=>{readsOf(bk).push({id:uid(),start:"",end:""});syncReads(bk);});
+  });
   /* rating without the editor — the most common thing to do after finishing */
   q("#vRate").onclick=e=>{e.stopPropagation();vRateOpen=!vRateOpen;vStatusOpen=false;renderBookView();};
   const vg=q("#vGaps");if(vg)vg.onclick=e=>{e.stopPropagation();openRatePanel();};
@@ -5249,9 +5400,8 @@ function renderEditor(){
           <button class="boxbtn ${b.favorite?"favon":""}" id="fFav">♥ Favorite</button>
           <button class="boxbtn ${b.dnf?"dnfon":""}" id="fDnf">DNF</button>
         </div>
+        <div id="readWrap"></div>
         <div class="inrow">
-          <span class="boxbtn" style="cursor:default">Finished on <input type="date" id="fDate" value="${esc(b.dateFinished)}" style="border:none;font-size:13px"></span>
-          <span class="boxbtn" style="cursor:default">Rereads <button class="cnt" id="rrDn">−</button> <b id="rrN" style="width:18px;text-align:center">${b.rereads||0}</b> <button class="cnt" id="rrUp">+</button></span>
           <span class="boxbtn" style="cursor:default">Pages <input type="number" id="fPages" min="1" placeholder="–" value="${esc(b.pages)}" style="border:none;width:64px;text-align:center;font-weight:600"></span>
           <span class="lbl" id="pagesNote" hidden>added up from the stories</span>
         </div>
@@ -5479,7 +5629,6 @@ function renderEditor(){
   /* simple fields */
   const bind=(id,key,filter)=>{const el=q(id);el.addEventListener("input",()=>{cur[key]=filter?filter(el.value):el.value;scheduleSave();});};
   bind("#fTitle","title");
-  bind("#fDate","dateFinished");
   q("#fRate").addEventListener("input",e=>{const v=e.target.value;
     cur.rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));
     /* setting a mark by hand on a collection takes it off the automatic
@@ -5493,9 +5642,7 @@ function renderEditor(){
     refreshRate();scheduleSave();};
   q("#fPages").addEventListener("input",e=>{const v=e.target.value;cur.pages=v===""?"":Math.max(1,parseInt(v)||0);renderProgress();scheduleSave();});
   q("#fFav").onclick=e=>{cur.favorite=!cur.favorite;e.currentTarget.classList.toggle("favon",cur.favorite);scheduleSave();};
-  q("#fDnf").onclick=e=>{cur.dnf=!cur.dnf;e.currentTarget.classList.toggle("dnfon",cur.dnf);renderDnf();scheduleSave();};
-  q("#rrUp").onclick=()=>{cur.rereads=(cur.rereads||0)+1;q("#rrN").textContent=cur.rereads;scheduleSave();};
-  q("#rrDn").onclick=()=>{cur.rereads=Math.max(0,(cur.rereads||0)-1);q("#rrN").textContent=cur.rereads;scheduleSave();};
+  q("#fDnf").onclick=e=>{markStatus(cur,"dnf");e.currentTarget.classList.toggle("dnfon",cur.dnf);renderDnf();renderReads();scheduleSave();};
 
   /* autocomplete (author + series) */
   function autoComplete(inputId,sugId,key,poolFn,after){
@@ -6128,9 +6275,45 @@ function renderEditor(){
       const on=statusOf(cur)===id;
       const cls=on?(id==="finished"?"fin":id==="reading"?"rea":"wan"):"";
       return `<button class="${cls}" data-st="${id}">${l}</button>`;}).join("");
-    qa("[data-st]").forEach(x=>x.onclick=()=>{cur.status=x.dataset.st;renderStatus();renderProgress();scheduleSave();});
+    /* choosing a stage here opens or closes a reading, exactly as it does on the
+       shelf and on the book's own page — one rule, wherever you happen to be */
+    qa("[data-st]").forEach(x=>x.onclick=()=>{
+      markStatus(cur,x.dataset.st);
+      /* saying it is finished says it is not set aside — the DNF button here has
+         to agree, as the one on the shelf and on the book's own page already do */
+      const d=q("#fDnf");if(d)d.classList.toggle("dnfon",!!cur.dnf);
+      renderStatus();renderProgress();renderDnf();renderReads();scheduleSave();});
   }
   renderStatus();
+
+  /* the readings themselves — the dates behind the stage you just chose */
+  function renderReads(){
+    const w=q("#readWrap");if(!w)return;
+    const n=timesRead(cur);
+    w.innerHTML=`<div class="lbl" style="margin:2px 0 4px">Readings${n>1?` — you've been through it ${n} times`:""}</div>`+readListHtml(cur);
+    qa("[data-rst],[data-ren]",w).forEach(el=>el.addEventListener("input",()=>{
+      const r=readsOf(cur).find(x=>x.id===(el.dataset.ren||el.dataset.rst));
+      if(!r)return;
+      if(el.dataset.ren)r.end=el.value;else r.start=el.value;
+      syncReads(cur);scheduleSave();
+    }));
+    qa("[data-rdel]",w).forEach(el=>el.onclick=()=>{
+      const rs=readsOf(cur),i=rs.findIndex(x=>x.id===el.dataset.rdel);
+      if(i<0)return;
+      const gone=rs.splice(i,1)[0];
+      /* strike off the reading you were in the middle of and you are no longer in
+         the middle of it — otherwise the shelf would still say READING */
+      if(gone&&gone.open&&statusOf(cur)==="reading"&&!cur.dnf){
+        cur.status=doneReads(cur).length?"finished":"want";renderStatus();renderProgress();
+      }
+      syncReads(cur);renderReads();scheduleSave();
+    });
+    qa("[data-radd]",w).forEach(el=>el.onclick=()=>{
+      readsOf(cur).push({id:uid(),start:"",end:""});
+      syncReads(cur);renderReads();scheduleSave();
+    });
+  }
+  renderReads();
 
   /* how far in — only while you're actually reading it */
   function progBarUI(){

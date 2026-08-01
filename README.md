@@ -29,7 +29,11 @@ like a scrapbook, and pull your history in from Goodreads or StoryGraph.
 **Tracking**
 - Statuses: *Finished · Reading now · Want to read*, plus **DNF** with your own
   reasons ("slow pacing", "didn't connect with the characters"…)
-- Ratings out of 10, favorites, rereads, page counts, finish dates
+- Ratings out of 10, favorites, page counts
+- A **readings list** per book: every time you've read it, each with a start and a
+  finish date. Tapping *Reading now* opens a reading, *Finished* closes it, and
+  tapping *Reading now* again months later is the reread — no extra button, and
+  the dates are yours to correct or delete on the book's own page
 - Reading progress with a live progress bar while a book is "Reading now"
 - Series (book 3 of 7 — sibling books link up automatically) and **collections**
   (one entry holding many stories, each with its own cover, rating and notes)
