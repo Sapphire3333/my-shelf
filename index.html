@@ -1254,6 +1254,28 @@ function syncCollRating(b){
   if(a==null||Number(b.rating)===a)return false;
   b.rating=a;return true;
 }
+/* One pass over the shelf at startup, so a collection's mark is its stories'
+   average everywhere it should be — the Library rows, sorting and Insights all
+   read the stored rating, and until now only a collection opened in the editor
+   ever got one.
+   Marks made before any of this existed are treated as yours and left exactly
+   as they are: `ratingOwn` was not a field then, so an undefined flag on a
+   collection that already has a rating means you put it there. ↺ Use the
+   average opts one in whenever you want. */
+async function backfillCollRatings(){
+  let n=0;
+  for(const b of books){
+    if(!isColl(b))continue;
+    let touched=false;
+    if(b.ratingOwn===undefined){b.ratingOwn=b.rating!=null;touched=true;}
+    if(syncCollRating(b))touched=true;
+    if(!touched)continue;
+    b.modified=Math.max(Date.now(),(b.modified||0)+1);
+    try{await dbPut("books",b);enqueue({kind:"book",id:b.id});}catch(e){}
+    n++;
+  }
+  return n;
+}
 /* The stories still without a mark, rateable from here, so filling the gaps
    never means a trip into the editor. Saved on change rather than on every
    keystroke: the list redraws as each one is filled, and redrawing under a
@@ -1880,6 +1902,7 @@ async function initSync(){
      "best-effort" IndexedDB (books, covers AND the in-browser backups) can be wiped */
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
   books=await dbAll("books");
+  await backfillCollRatings();   /* before the first paint, so the rows show it straight away */
   const g=await dbGet("meta","genres");genres=g?g.v:{};
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
@@ -2436,7 +2459,31 @@ window.addEventListener("popstate",async e=>{
   finally{navRestoring=false;}
 });
 
+/* A reload should leave you where you were standing. syncHistory already writes
+   the spot into history.state on every render, and the browser keeps that across
+   a reload — a hard one included — so the same shape popstate restores works
+   here. Opening the app fresh, from the home screen or a new tab, carries no
+   state at all and still starts on the Overview, which is the wanted difference
+   between reloading and launching.
+   It runs once, on the first render of the session, whichever way the app got
+   there: straight in, or out the far side of the sign-in screen. */
+let bootRestored=false;
+function restoreFromHistory(){
+  const st=history.state;
+  if(!st||!st.v)return false;
+  if(st.v==="book"&&st.b&&books.some(x=>x.id===st.b)){
+    navRestoring=true;
+    openBook(st.b,false)
+      .then(()=>{view="book";bookMode=st.m||"view";renderBook();})
+      .catch(()=>{view="overview";render();})
+      .finally(()=>{navRestoring=false;});
+    return true;   /* this render is being taken over */
+  }
+  if(st.v!=="book")view=st.v;
+  return false;
+}
 function render(){
+  if(!bootRestored){bootRestored=true;if(restoreFromHistory())return;}
   if(view==="book"){renderBook();return;}
   const favN=books.filter(b=>b.favorite).length,dnfN=books.filter(b=>b.dnf).length;
   q("#app").innerHTML=`
