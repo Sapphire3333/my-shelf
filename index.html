@@ -549,6 +549,10 @@
   .ratepanel{position:fixed;z-index:60;left:50%;top:50%;transform:translate(-50%,-50%);
     width:min(430px,92vw);max-height:78vh;overflow:auto;background:var(--card);
     border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 10px 34px rgba(0,0,0,.28)}
+  /* Sits behind a panel and catches everything else. Without it, a click meant
+     to dismiss the panel also lands on whatever was underneath — opening a book
+     you only wanted to click past. */
+  .ratebackdrop{position:fixed;inset:0;z-index:59;background:rgba(28,25,23,.18)}
   .ratepick{min-width:0}
   .ratestars{display:flex;flex-wrap:wrap;gap:0;padding:2px}
   .ratestars button{padding:6px 3px;font-size:20px;line-height:1;color:#d6d3d1;text-align:center}
@@ -1569,9 +1573,36 @@ async function backfillCollRatings(){
    The collection still sits under its own headings; this only says that some of
    what is inside it is filed elsewhere as well, which is otherwise invisible
    from the shelf. */
+/* A panel that floats over the page closes the way anything floating should:
+   Esc, or a click anywhere off it — the ✕ or Done stays for whoever looks for a
+   button, but nobody should have to hunt for one. The backdrop is what the
+   outside click lands on, so dismissing a panel cannot also press whatever was
+   sitting underneath it. */
+function dismissable(wrap,onClose){
+  const back=document.createElement("div");
+  back.className="ratebackdrop";
+  const close=()=>{
+    document.removeEventListener("keydown",key,true);
+    back.remove();wrap.remove();
+    if(onClose)onClose();
+  };
+  const key=e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close();}};
+  back.onmousedown=close;
+  document.addEventListener("keydown",key,true);
+  document.body.appendChild(back);
+  wrap.__close=close;
+  return close;
+}
+/* already open? the same tap that opened it takes it away again */
+function panelOpen(id){
+  const old=document.getElementById(id);
+  if(!old)return false;
+  if(old.__close)old.__close();else old.remove();
+  return true;
+}
 function openStrayPanel(id){
   const b=books.find(x=>x.id===id);if(!b)return;
-  const old=document.getElementById("strayPanel");if(old)old.remove();
+  if(panelOpen("strayPanel"))return;
   const wrap=document.createElement("div");
   wrap.id="strayPanel";wrap.className="ratepanel";
   const st=collStrays(b);
@@ -1585,17 +1616,20 @@ function openStrayPanel(id){
           `<span class="chip" style="${chipStyle(genres[g])}">${esc(g)}</span>`).join("")}</span>
       </div>`).join("")||'<span class="none">None any more.</span>'}
     <div class="hint" style="margin:10px 0 0">Change these on the collection's own page, under What's inside.</div>`;
-  q("#spClose",wrap).onclick=()=>wrap.remove();
   document.body.appendChild(wrap);
+  const close=dismissable(wrap);
+  q("#spClose",wrap).onclick=close;
 }
 /* The stories still without a mark, rateable from here, so filling the gaps
    never means a trip into the editor. Saved on change rather than on every
    keystroke: the list redraws as each one is filled, and redrawing under a
    half-typed number would take the focus away mid-digit. */
 function openRatePanel(){
-  const old=document.getElementById("ratePanel");if(old)old.remove();
+  if(panelOpen("ratePanel"))return;
   const wrap=document.createElement("div");
   wrap.id="ratePanel";wrap.className="ratepanel";
+  /* whatever was filled in shows on the page behind it, however it was closed */
+  let close=()=>wrap.remove();
   const draw=()=>{
     const gaps=entUnrated(cur);
     wrap.innerHTML=`<div class="hrow2" style="margin-bottom:9px">
@@ -1608,10 +1642,7 @@ function openRatePanel(){
       <div class="hint" style="margin-top:9px">${entAvgReady(cur)
         ? `They average ★ ${entAvg(cur).toFixed(1)}${cur.ratingOwn?", and your own mark stands until you press ↺ Use the average.":", which is now the collection's mark."}`
         : "Once every one of them has a mark, the collection takes their average."}</div>`;
-    q("#rpClose",wrap).onclick=()=>{
-      wrap.remove();
-      if(view==="book")bookMode==="edit"?renderEditor():renderBookView();
-    };
+    q("#rpClose",wrap).onclick=()=>close();
     qa("[data-rp]",wrap).forEach(el=>el.addEventListener("change",()=>{
       const en=(cur.entries||[]).find(x=>x.id===el.dataset.rp);if(!en)return;
       const v=el.value;
@@ -1621,6 +1652,9 @@ function openRatePanel(){
   };
   draw();
   document.body.appendChild(wrap);
+  close=dismissable(wrap,()=>{
+    if(view==="book")bookMode==="edit"?renderEditor():renderBookView();
+  });
 }
 /* what to say beside the mark: whose it is, and what the stories come to */
 const collRateNote=b=>{
@@ -6233,17 +6267,20 @@ function renderEditor(){
      up under a heading the collection does not belong to. */
   function openEntGenres(id){
     const en=(cur.entries||[]).find(x=>x.id===id);if(!en)return;
-    const old=document.getElementById("entGenPanel");if(old)old.remove();
+    if(panelOpen("entGenPanel"))return;
     const wrap=document.createElement("div");
     wrap.id="entGenPanel";wrap.className="ratepanel";
     let sel=new Set(en.genres||[]);
     const also=new Set();
     const all=[...new Set([...Object.keys(genres),...(cur.genres||[])])].sort((a,b)=>a.localeCompare(b));
+    /* this one asks to be saved, so closing it any other way is a cancel — the
+       same as pressing Cancel, which is what it has always meant */
+    let close=()=>wrap.remove();
     const apply=()=>{
       const list=[...sel];
       en.genres=list;
       also.forEach(i=>{const o=(cur.entries||[]).find(x=>x.id===i);if(o)o.genres=[...list];});
-      wrap.remove();renderEntries();scheduleSave();
+      close();renderEntries();scheduleSave();
     };
     const draw=()=>{
       wrap.innerHTML=`<div class="hrow2" style="margin-bottom:9px">
@@ -6260,7 +6297,7 @@ function renderEditor(){
           <button class="btn pri" id="egSave">Save</button>
           <button class="btn" id="egClear">Back to the collection's</button>
         </div>`;
-      q("#egClose",wrap).onclick=()=>wrap.remove();
+      q("#egClose",wrap).onclick=()=>close();
       qa("[data-eg]",wrap).forEach(b=>b.onclick=()=>{const g=b.dataset.eg;sel.has(g)?sel.delete(g):sel.add(g);draw();});
       qa("[data-ea]",wrap).forEach(b=>b.onclick=()=>{const i=b.dataset.ea;also.has(i)?also.delete(i):also.add(i);draw();});
       q("#egClear",wrap).onclick=()=>{sel=new Set();apply();};
@@ -6268,6 +6305,7 @@ function renderEditor(){
     };
     draw();
     document.body.appendChild(wrap);
+    close=dismissable(wrap);
   }
   function renderEntries(){
     const w=q("#entWrap");
