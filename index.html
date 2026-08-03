@@ -2048,7 +2048,10 @@ async function pullAll(){
             if(cloudNewer("kwColors"))kwColors=takeWhole(row.value,kwColors,"kw:");
             else{const rv=row.value||{};for(const k in rv)if(!kwColors[k]&&!gone("kw:"+k))kwColors[k]=rv[k];}}
           else if(row.key==="trashCloud"){const rv=row.value||{};
-            for(const k in rv)if(!trashCloud[k]&&!(deletions[k]&&!rv[k]))trashCloud[k]=rv[k];}
+            /* skip entries for books alive here and edited since that deletion —
+               they were restored, and the bin entry is another device's leftover */
+            for(const k in rv)if(!trashCloud[k]&&!(deletions[k]&&!rv[k])
+              &&!books.some(b=>b.id===k&&(b.modified||0)>((rv[k]&&rv[k].at)||0)))trashCloud[k]=rv[k];}
           else if(row.key==="libArt"){const have=new Set(libArt.map(a=>a.id));
             (row.value||[]).forEach(a=>{if(a&&a.id&&!have.has(a.id)&&!gone("libart:"+a.id))libArt.push(a);});}
           else if(row.key==="kwCats"){
@@ -2062,13 +2065,14 @@ async function pullAll(){
         for(const k in metaDel){
           const [kind,...rest]=k.split(":");const nm=rest.join(":");
           if(kind==="genre")delete genres[nm];
-          else if(kind==="kw")delete kwColors[nm];
+          /* one prefix covers both maps — the second kw branch this used to have
+             could never be reached, so category assignments outlived the keyword */
+          else if(kind==="kw"){delete kwColors[nm];delete kwCats[nm];}
           else if(kind==="fandom")delete fandoms[nm];
           else if(kind==="gart")delete groupArt[nm];
           else if(kind==="bg")bgList=bgList.filter(x=>x.id!==nm);
           else if(kind==="pad")padList=padList.filter(x=>x.id!==nm);
           else if(kind==="libart")libArt=libArt.filter(x=>x.id!==nm);
-          else if(kind==="kw")delete kwCats[nm];
         }
         dbPut("meta",{k:"libArt",v:libArt});
         dbPut("meta",{k:"kwCats",v:kwCats});dbPut("meta",{k:"catColors",v:catColors});
@@ -2100,6 +2104,9 @@ async function pullAll(){
       if(heldBack(row.id))continue;
       const lb=localMap.get(row.id);
       if(!lb||(rb.modified||0)>(lb.modified||0)){
+        /* same scrub a backup file gets: cloud rows are the only other input
+           that arrives from outside this page and is rendered as rich HTML */
+        try{sanitizeBook(rb);}catch(e){}
         await dbPut("books",rb);
         const i=books.findIndex(b=>b.id===row.id);
         if(i>=0)books[i]=rb;else books.push(rb);
@@ -2116,6 +2123,15 @@ async function pullAll(){
       const lb=books.find(b=>b.id===id);
       if(lb&&deletions[id]>=(lb.modified||0)){await dbDel("books",id);books=books.filter(b=>b.id!==id);touched=true;}
     }
+    /* bin entries for books that are alive again are stale: restoring removes the
+       entry only on the restoring device, so every other device drops its copy
+       here — otherwise its 30-day purge would delete the living book's pictures */
+    {let binStale=false;
+     for(const k of Object.keys(trashCloud)){
+       const lb=books.find(b=>b.id===k);
+       if(lb&&(lb.modified||0)>((trashCloud[k]&&trashCloud[k].at)||0)){delete trashCloud[k];binStale=true;}
+     }
+     if(binStale)saveTrashCloud();}
     // push up any local-only books the cloud hasn't seen yet (e.g. made offline or before first sync)
     for(const b of books){
       if(!remoteIds.has(b.id)&&!(deletions[b.id]>=(b.modified||0))){
@@ -2328,12 +2344,16 @@ let lastFocusPull=0;
 function onHidden(){
   if(view==="book"&&cur){clearTimeout(saveTimer);commitCur();}
 }
+let lastMaint=0;
 document.addEventListener("visibilitychange",()=>{
   if(document.visibilityState==="hidden"){onHidden();return;}
   if(SYNC.on&&SYNC.user&&navigator.onLine&&Date.now()-lastFocusPull>60000){
     lastFocusPull=Date.now();
     flushQueue().then(pullAll);
   }
+  /* the "daily" backup and the 30-day bin used to be checked only at launch — a
+     tab or installed app left open for a week never did either */
+  if(Date.now()-lastMaint>3600000){lastMaint=Date.now();maybeAutoBackup();purgeTrash();}
 });
 window.addEventListener("pagehide",onHidden);
 
@@ -2346,7 +2366,9 @@ document.addEventListener("keydown",e=>{
   const t=e.target;
   if(t&&(t.isContentEditable||/^(input|textarea|select)$/i.test(t.tagName||"")))return;
   e.preventDefault();
-  if(k==="y"||e.shiftKey)doRedo();else doUndo();
+  /* through finishSaveThen, like the ↶ button: a half-second-old edit still on
+     the autosave timer must land before the undo counts back from it */
+  if(k==="y"||e.shiftKey)finishSaveThen(doRedo);else finishSaveThen(doUndo);
 });
 
 let metaSnap=null;
@@ -2766,6 +2788,10 @@ async function applyOp(op,inv){
     const knownKeys=imgKeysOf((op.t==="del"?op.body:op.after)||null);
     if(body){
       const clone=JSON.parse(JSON.stringify(body));
+      /* stamped as edited-now, same as restoreTrash: an undo carrying its old time
+         would lose the sync race to the version it undid — the other device still
+         holds that newer copy and would quietly put it back */
+      clone.modified=Math.max(Date.now(),(clone.modified||0)+1,(SYNC.seen[id]||0)+1);
       await dbPut("books",clone);
       const i=books.findIndex(x=>x.id===id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
@@ -2890,8 +2916,13 @@ function render(){
   </div>`;
   q("#addBook").onclick=()=>openBook(uid(),true);
   q("#quickAdd").onclick=openQuickAdd;
-  qa(".tab").forEach(t=>t.onclick=()=>{view=t.dataset.v;render();window.scrollTo(0,0);});
-  q("#uBtn").onclick=doUndo;q("#rBtn").onclick=doRedo;refreshHistBtns();
+  qa(".tab").forEach(t=>t.onclick=async()=>{
+    /* leaving a book by tab: save what was typed, then let go of the editor's
+       copy — a stale one left behind could be written back over later edits */
+    if(view==="book"&&cur){clearTimeout(saveTimer);try{await commitCur();}catch(e){}cur=null;}
+    view=t.dataset.v;render();window.scrollTo(0,0);
+  });
+  q("#uBtn").onclick=()=>finishSaveThen(doUndo);q("#rBtn").onclick=()=>finishSaveThen(doRedo);refreshHistBtns();
   wireSizeCtrl();
   const so=q("#signOut");if(so)so.onclick=signOut;updateSyncUI();
   applyBg();
@@ -3959,7 +3990,9 @@ async function purgeTrash(){
   for(const id of Object.keys(trashCloud)){
     const e=trashCloud[id];
     if(!e||(e.at||0)>=cutoff)continue;
-    if(SYNC.on){
+    /* restored on another device? This device still carries the stale bin entry —
+       deleting the cloud pictures now would strip them off the living book */
+    if(SYNC.on&&!books.some(b=>b.id===id)){
       enqueue({kind:"coverDel",id});
       imgKeysOf(e.book).forEach(key=>enqueue({kind:"imgDel",key}));
     }
@@ -4019,6 +4052,9 @@ async function deleteBookById(id){
   const b=books.find(x=>x.id===id);
   if(!confirm(`Delete “${(b&&b.title)||"Untitled"}” and all its pictures?\n\nIt waits in Recently deleted (on the Overview tab) for ${TRASH_DAYS} days, so you can get it back.`))return;
   if(b)pushOp({t:"del",body:JSON.parse(JSON.stringify(b))});
+  /* the copy in the editor must die with the book — a pending autosave or a later
+     "Save now" would write it straight back onto the shelf */
+  if(cur&&cur.id===id){clearTimeout(saveTimer);cur=null;}
   await toTrash(b);
   await dbDel("books",id);
   books=books.filter(x=>x.id!==id);
@@ -4524,8 +4560,10 @@ async function refreshTrash(){
     if(!confirm(`Delete “${(t.book&&t.book.title)||"Untitled"}” for good? This can't be undone.`))return;
     await dbDel("trash",id);
     if(trashCloud[id]){
-      /* its pictures were being kept only so it could come back — let them go */
-      if(SYNC.on){enqueue({kind:"coverDel",id});imgKeysOf(trashCloud[id].book).forEach(key=>enqueue({kind:"imgDel",key}));}
+      /* its pictures were being kept only so it could come back — let them go.
+         Unless the book is alive again (restored elsewhere): then this entry is
+         stale and the pictures belong to the living book. */
+      if(SYNC.on&&!books.some(b=>b.id===id)){enqueue({kind:"coverDel",id});imgKeysOf(trashCloud[id].book).forEach(key=>enqueue({kind:"imgDel",key}));}
       delete trashCloud[id];saveTrashCloud();
       if(SYNC.on)flushQueue();
     }
@@ -5145,8 +5183,12 @@ async function openBook(id,fresh){
 
 function setSaved(ok){const el=q("#saveMsg");if(el){el.textContent=ok?"Saved":"Saving…";el.className="savemsg "+(ok?"ok":"no");}}
 async function commitCur(){
+  if(!cur){setSaved(true);return;}
   const after=JSON.parse(JSON.stringify(cur));
   const i=books.findIndex(b=>b.id===cur.id);
+  /* not on the shelf and not being created right now = deleted while it was still
+     open somewhere. Writing it anyway would resurrect it — on every device. */
+  if(i<0&&!isNew){setSaved(true);return;}
   const before=i>=0?JSON.parse(JSON.stringify(books[i])):null;
   const strip=o=>{const c={...o};delete c.modified;return JSON.stringify(c);};
   if(before&&strip(before)===strip(after)){setSaved(true);return;}
@@ -5353,7 +5395,7 @@ function renderBookView(){
 
   const page=q("#edPage");
   wireSizeCtrl();
-  q("#edBack").onclick=()=>{view=cameFrom||"library";render();};
+  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();});};
   q("#edDel").onclick=()=>deleteBookById(cur.id);
   q("#toEdit").onclick=()=>{vStatusOpen=false;setBookMode("edit");};
   const t2=q("#toEdit2");if(t2)t2.onclick=()=>setBookMode("edit");
@@ -5793,7 +5835,7 @@ function renderEditor(){
   });
 
   wireSizeCtrl();
-  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";render();});};
+  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();});};
   q("#uBtn").onclick=()=>finishSaveThen(doUndo);
   q("#rBtn").onclick=()=>finishSaveThen(doRedo);
   refreshHistBtns();
@@ -8207,8 +8249,13 @@ async function maybeAutoBackup(){
 
 q("#importFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
+  /* the snapshot-restore button warns and takes a safety copy first; opening a
+     file is the same rewind and deserves the same care — an old export opened
+     "just to look" would otherwise turn back every matching book, everywhere */
+  if(books.length&&!confirm(`Bring in “${f.name}”?\n\nBooks only in the file are added. A book that is both on your shelf and in the file goes back to the file's version — on every device.\n\nA backup of right now is taken first, so you can undo this.`))return;
   const msg=q("#busyMsg");if(msg)msg.textContent="Restoring from backup…";
   try{
+    if(books.length)await makeSnapshot(true);
     const n=await applyBackup(JSON.parse(await f.text()));
     render();
     alert(`Restored ${n} book${n===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`);
