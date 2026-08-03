@@ -2966,6 +2966,21 @@ function render(){
   updateFab();
   syncHistory();
 }
+/* redraw only what sits under the tabs. Opening the little stage disc on a
+   cover used to rebuild the entire page — header, tabs and all — twice per
+   tap, and with every cover embedded in the HTML that was the whole shelf
+   parsed again for a 180px popover. */
+function renderMain(){
+  if(view==="book"){renderBook();return;}
+  if(!q("#main")){render();return;}
+  if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else if(view==="insights")renderInsights();else if(view==="pick")renderPick();else renderSearchView();
+  updateFab();
+}
+/* the header's counts, refreshed without rebuilding the header */
+function refreshShelfSub(){
+  const el=q("header .sub");
+  if(el)el.textContent=`${shelfUnits()} on the shelf · ${favUnits()} favorites · ${books.filter(b=>b.dnf).length} DNF`;
+}
 
 /* =============== jump-to & back-to-top =============== */
 /* what's worth jumping to depends on where you are: a book's parts, or the
@@ -3015,7 +3030,7 @@ q("#fabJump").onclick=()=>{
 document.addEventListener("pointerdown",e=>{
   if(!e.target.closest)return;
   if(!e.target.closest("#fab"))closeFabMenu();
-  if(stPickFor&&!e.target.closest(".stpick,[data-cyc]")){stPickFor=null;render();}
+  if(stPickFor&&!e.target.closest(".stpick,[data-cyc]")){stPickFor=null;renderMain();}
 });
 
 /* =============== shared row / card html =============== */
@@ -3147,7 +3162,7 @@ async function setStatus(id,what){
   b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
-  stPickFor=null;render();
+  stPickFor=null;refreshShelfSub();renderMain();
 }
 function wireOpen(root,withDel){
   root.onclick=e=>{
@@ -3156,7 +3171,7 @@ function wireOpen(root,withDel){
     const set=e.target.closest("[data-setst]");
     if(set){e.stopPropagation();const [id,what]=set.dataset.setst.split("|");setStatus(id,what);return;}
     const cyc=e.target.closest("[data-cyc]");
-    if(cyc){e.stopPropagation();stPickFor=stPickFor===cyc.dataset.cyc?null:cyc.dataset.cyc;render();return;}
+    if(cyc){e.stopPropagation();stPickFor=stPickFor===cyc.dataset.cyc?null:cyc.dataset.cyc;renderMain();return;}
     const del=e.target.closest("[data-del]");
     if(del){e.stopPropagation();deleteBookById(del.dataset.del);return;}
     /* the ! sits inside the row, so it has to answer before the row does */
@@ -3952,8 +3967,18 @@ function renderLibArt(m){
   const shut=new Set(settings.collapsed||[]);
   /* one tied to a heading folds away with it; a loose one always stays */
   const shown=libArt.filter(a=>!a.group||!shut.has(a.group));
-  layer.innerHTML=shown.map(a=>`
-    <div class="libpic" data-lp="${a.id}" style="left:${a.x||0}px;top:${a.y||0}px;width:${a.w||230}px">
+  /* clamped into view at draw time, exactly like the scraps on a book's page:
+     a picture parked in the PC's wide right margin kept its stored spot, and on
+     a phone that spot is past the edge — the one thing left that could still
+     make the library scroll sideways. The stored place is never rewritten. */
+  const LW=m.clientWidth||0;
+  const fit=a=>{
+    const w=LW?Math.min(a.w||230,LW):a.w||230;
+    const x=LW?Math.max(0,Math.min(a.x||0,LW-w)):(a.x||0);
+    return {x,w};
+  };
+  layer.innerHTML=shown.map(a=>{const f=fit(a);return `
+    <div class="libpic" data-lp="${a.id}" style="left:${f.x}px;top:${a.y||0}px;width:${f.w}px">
       <img data-lpimg="${a.id}" alt="">
       ${a.group?`<span class="lptag" title="Folds away with this heading">🔗 ${esc(a.group.split("|").slice(1).join("|"))}</span>`:""}
       <div class="lpbar">
@@ -3962,7 +3987,7 @@ function renderLibArt(m){
         <button data-lpx="${a.id}" title="Remove it">✕</button>
       </div>
       <div class="lpgrip" data-lpr="${a.id}" title="Drag to resize"></div>
-    </div>`).join("");
+    </div>`;}).join("");
   /* pictures live in the browser, so fill them in after the markup */
   (async()=>{
     for(const el of qa("[data-lpimg]",layer)){
@@ -4002,7 +4027,9 @@ function renderLibArt(m){
     if(e.target.closest(".lpbar"))return;
     if(how==="move"&&e.target.closest(".lpgrip"))return;
     e.preventDefault();e.stopPropagation();
-    const sx=e.clientX,sy=e.clientY,x0=a.x||0,y0=a.y||0,w0=a.w||230;
+    /* start from where it is SHOWN — on a narrow screen that may be the clamped
+       spot, and starting from the stored one made the picture jump on grab */
+    const sx=e.clientX,sy=e.clientY,x0=parseInt(el.style.left)||a.x||0,y0=a.y||0,w0=parseInt(el.style.width)||a.w||230;
     const mv=ev=>{
       if(how==="move"){a.x=Math.round(x0+ev.clientX-sx);a.y=Math.round(Math.max(0,y0+ev.clientY-sy));
         el.style.left=a.x+"px";el.style.top=a.y+"px";}
@@ -4692,7 +4719,11 @@ function renderSearchView(){
     <div class="deep" id="scopeRow" style="flex-wrap:wrap;margin-bottom:18px"></div>
     <div id="sbody"></div>`;
   const sq=q("#sq");
-  sq.oninput=()=>{S.q=sq.value;S.filter=null;S.multi=[];renderSearchBody();};
+  /* the same 160ms breather the library's find box has: every keystroke here
+     reads through every summary, note and quote on the shelf */
+  let sqT=null;
+  sq.oninput=()=>{S.q=sq.value;S.filter=null;S.multi=[];
+    clearTimeout(sqT);sqT=setTimeout(renderSearchBody,160);};
   function renderScopes(){
     q("#scopeRow").innerHTML=`<span>Search in:</span>`+SCOPES.map(([id,l])=>{
       const on=S.scopes.includes(id);
@@ -7250,10 +7281,22 @@ function renderEditor(){
     const s={t:drawTool,c:drawColor,w:drawWidth,pts:[surfPt(surf,e.clientX,e.clientY)]};
     if(drawTool==="hl")s.o=hlAlpha;      /* each highlight keeps the dimness it was drawn with */
     store.push(s);
+    /* while the pen is down, repaint only the stroke being drawn on only its own
+       surface — everything already drawn is rendered once, here, and reused.
+       Redrawing every mark on the page for every point made the pen lag behind
+       the finger in exact proportion to how much was already drawn. */
+    const isPage=surf.kind==="page";
+    const others=store.filter(x=>x!==s);
+    const sW=isPage?1:(surf.el.clientWidth||1),sH=isPage?1:(surf.el.clientHeight||1);
+    const base=drawSvgHtml(others,sW,sH);
+    const paintOne=()=>{
+      if(isPage){const dl=q("#drawLayer");if(dl)dl.innerHTML=base+drawSvgHtml([s],1,1);}
+      else{const svg=q(".dsvg",surf.el);if(svg){svg.setAttribute("viewBox",`0 0 ${sW} ${sH}`);svg.innerHTML=base+drawSvgHtml([s],sW,sH);}}
+    };
     const mv=ev=>{
       const p=surfPt(surf,ev.clientX,ev.clientY);
       if(s.t==="pen"||s.t==="hl")s.pts.push(p);else s.pts[1]=p;
-      syncDraw();
+      paintOne();
     };
     const up=()=>{
       window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
