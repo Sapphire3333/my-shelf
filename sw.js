@@ -6,7 +6,7 @@
    Deliberately never touches Supabase traffic — API and Storage requests always
    go to the network, so you can't be served a stale library. */
 const CACHE = "my-shelf-v2";
-const SHELL = ["./", "./index.html", "./config.js", "./manifest.json", "./icon.svg", "./icon.png"];
+const SHELL = ["./", "./index.html", "./config.js", "./manifest.json", "./icon.svg", "./icon.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(

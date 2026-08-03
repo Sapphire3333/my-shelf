@@ -2370,6 +2370,26 @@ async function initSync(){
   purgeTrash();
 })();
 
+/* Two copies of the app in one browser quietly overwrite each other's saves
+   and upload queue — each tab holds its own picture of the shelf and writes it
+   whole. There is no safe way to referee that, so at least say it out loud. */
+try{
+  const tabBC=new BroadcastChannel("my-shelf-tab");
+  const warnTwoTabs=()=>{
+    if(window.__twoTabs)return;window.__twoTabs=true;
+    const w=document.createElement("div");
+    w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:500;background:#7f1d1d;color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:90vw;text-align:center";
+    w.textContent="My Shelf is open in another tab. Two tabs overwrite each other's saves — please keep just one.";
+    document.body.appendChild(w);
+    setTimeout(()=>{w.remove();window.__twoTabs=false;},12000);
+  };
+  tabBC.onmessage=e=>{
+    if(e.data==="hello"){warnTwoTabs();tabBC.postMessage("here");}
+    else if(e.data==="here")warnTwoTabs();
+  };
+  tabBC.postMessage("hello");
+}catch(e){}
+
 /* Phones kill background tabs without warning and throttle timers, so the 700ms
    autosave may never fire — commit the open book the moment the tab goes hidden.
    Coming back is the natural moment to fetch what other devices did meanwhile. */
@@ -3059,7 +3079,7 @@ const stName=b=>b.dnf?"Did not finish":statusOf(b)==="finished"?"Finished":statu
 let stPickFor=null;   /* which row has its stage chooser open */
 
 function rowHtml(b,withDel,edited){
-  return `<div class="row" data-open="${b.id}">
+  return `<div class="row" data-open="${b.id}" tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}${b.author?" — "+esc(b.author):""}">
     ${stPickFor===b.id&&!b._story?`<div class="stpick">
       ${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
       <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
@@ -3076,12 +3096,12 @@ function rowHtml(b,withDel,edited){
       ${progHtml(b)}
     </div>
     <div class="rside">${rateHtml(b.rating)}${(b.genres||[]).length?`<div class="rgen">${(()=>{const br=new Set(b.genreBreaks||[]);
-      return (b.genres||[]).map(g=>chipHtml(g,true)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div>`:""}${edited?`<span class="rr">edited ${edited}</span>`:""}${timesRead(b)>1?`<span class="rr">read ×${timesRead(b)}</span>`:""}${withDel&&!b._story?`<button class="rdel" data-del="${b.id}">✕</button>`:""}</div>
+      return (b.genres||[]).map(g=>chipHtml(g,true)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div>`:""}${edited?`<span class="rr">edited ${edited}</span>`:""}${timesRead(b)>1?`<span class="rr">read ×${timesRead(b)}</span>`:""}${withDel&&!b._story?`<button class="rdel" data-del="${b.id}" title="Delete this book — it waits in Recently deleted for 30 days" aria-label="Delete ${esc(b.title)||"this book"}">✕</button>`:""}</div>
   </div>`;
 }
 function gridHtml(b){
   const s=statusOf(b);
-  return `<div class="gcard" data-open="${b.id}">
+  return `<div class="gcard" data-open="${b.id}" tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}${b.author?" — "+esc(b.author):""}">
     <div class="gcov" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}>${coverInner(b,true)}
       ${b.favorite?`<span class="gfav${b._story?" story":""}">♥</span>`:""}
       ${s!=="finished"?`<span class="gst ${s}">${s==="reading"?"READING":"WANT"}</span>`:""}
@@ -3115,7 +3135,7 @@ function genCoverHtml(b,withAuthor){
    then swapped — a blink across the whole shelf on every render. */
 function coverInner(b,withAuthor){
   const c=coverCache.get(b.id);
-  return typeof c==="string"&&c?`<img src="${c}">`:genCoverHtml(b,withAuthor);
+  return typeof c==="string"&&c?`<img src="${c}" alt="">`:genCoverHtml(b,withAuthor);
 }
 async function hydrateCovers(root){
   const els=qa("[data-cover]",root);
@@ -3130,7 +3150,7 @@ async function hydrateCovers(root){
         const shown0=el.querySelector("img");
         if(!shown0||shown0.getAttribute("src")!==s2){
           const keep=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
-          el.innerHTML=`<img src="${s2}">`+keep;
+          el.innerHTML=`<img src="${s2}" alt="">`+keep;
         }
         return;
       }
@@ -3149,7 +3169,7 @@ async function hydrateCovers(root){
     const shown=el.querySelector("img");
     if(src&&(!shown||shown.getAttribute("src")!==src)){
       const overlays=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
-      el.innerHTML=`<img src="${src}">`+overlays;
+      el.innerHTML=`<img src="${src}" alt="">`+overlays;
     }
   };
   /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
@@ -3165,6 +3185,13 @@ async function setStatus(id,what){
   stPickFor=null;refreshShelfSub();renderMain();
 }
 function wireOpen(root,withDel){
+  /* rows and cards are divs, so the keyboard needs telling they are buttons —
+     without this a keyboard user could not open a book at all */
+  root.onkeydown=e=>{
+    if(e.key!=="Enter"&&e.key!==" ")return;
+    const op=e.target.closest&&e.target.closest("[data-open]");
+    if(op&&e.target===op){e.preventDefault();openBook(op.dataset.open,false);}
+  };
   root.onclick=e=>{
     /* the little ↗ opens the book's own link instead of the book's page */
     if(e.target.closest("a[data-ext]")){e.stopPropagation();return;}
@@ -4648,15 +4675,18 @@ async function refreshStorage(){
   const nCov=(await dbAllKeys("covers")).length,nImg=(await dbAllKeys("images")).length;
   const counts=`${books.length} book${books.length===1?"":"s"} · ${nCov} cover${nCov===1?"":"s"} · ${nImg} picture${nImg===1?"":"s"} · ${snaps.length} backup${snaps.length===1?"":"s"} (${fmtBytes(snapBytes)})`;
   if(!q("#stoCard"))return;
+  /* a failed automatic backup used to whisper to the console and nowhere else —
+     the one person who needed to know was the one who would never see it */
+  const bkWarn=window.__backupFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The automatic backup could not be made — storage may be full. Export a backup file now to be safe.</div>':"";
   if(si&&si.quota){
     const pct=si.usage/si.quota*100;
     q("#stoCard").innerHTML=`
       <div class="hrow2"><span class="bignum">${fmtBytes(si.usage)}</span><span class="none">used of ${fmtBytes(si.quota)} available on this device</span></div>
       <div class="bar"><i class="${pct>90?"full":pct>70?"warn":""}" style="width:${Math.max(1,Math.min(100,pct))}%"></i></div>
       <div class="none">${counts}</div>
-      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}`;
+      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}`;
   }else{
-    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>`;
+    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}`;
   }
 }
 async function refreshSnaps(){
@@ -5381,7 +5411,7 @@ function renderBookView(){
       <span class="sizectl">${sizeCtrlHtml()}</span>
       <button class="sm ${viewArrange?"on":""}" id="vArr" title="Drag your pictures and notes where you want them — you can paste one in too">✥ Move${viewArrange?"…":""}</button>
       <button class="btn pri" id="toEdit" title="Change anything about this book">✎ Edit</button>
-      <button class="delbtn" id="edDel">🗑</button>
+      <button class="delbtn" id="edDel" title="Delete this book — it waits in Recently deleted for 30 days" aria-label="Delete this book">🗑</button>
     </div></div>
 
     <div class="vhead" id="secDetails">
@@ -5700,7 +5730,7 @@ function renderEditor(){
         <button class="sm" id="edFit" title="Stack everything to fit your screen (best on a phone)">📱 Fit</button>
         <button class="sm" id="edSave" title="Save this book right now">✓ Save now</button>
         <button class="btn pri" id="toView" title="Stop editing — show only what's filled in">👁 Done</button>
-        <button class="delbtn" id="edDel">🗑</button>
+        <button class="delbtn" id="edDel" title="Delete this book — it waits in Recently deleted for 30 days" aria-label="Delete this book">🗑</button>
       </div>
       <div class="r2" id="tbar">
         <span id="fmtGrp">
@@ -6865,7 +6895,7 @@ function renderEditor(){
           +esc(k)
           +(tagEdit?`<button class="chmv" data-kmv="${i}|1" title="Move it right">▶</button>`
             +`<button class="chmv ${kbr.has(k)?"on":""}" data-kbr="${esc(k)}" title="${kbr.has(k)?"Let the next one sit beside this":"Start a new row after this"}">↵</button>`:"")
-          +` <span class="x" data-kx="${i}" style="cursor:pointer;opacity:.6">✕</span></span>`
+          +` <button class="x" data-kx="${i}" style="cursor:pointer;opacity:.6;background:none;border:none;color:inherit;font:inherit;padding:0" title="Remove this keyword">✕</button></span>`
           +(kbr.has(k)?'<span class="rowbreak"></span>':"")).join("");})()}</div>
       <input id="kwIn" class="addin" placeholder='Search your keywords, or type a new one… (Enter)'>
       <div id="kwSug"></div>
@@ -7086,7 +7116,7 @@ function renderEditor(){
       +esc(g)
       +(tagEdit?`<button class="chmv" data-gmv="${i}|1" title="Move it right">▶</button>`
         +`<button class="chmv ${gbr.has(g)?"on":""}" data-gbr="${esc(g)}" title="${gbr.has(g)?"Let the next one sit beside this":"Start a new row after this"}">↵</button>`:"")
-      +` <span class="x" data-gx="${esc(g)}">✕</span></span>`
+      +` <button class="x" data-gx="${esc(g)}" style="cursor:pointer;background:none;border:none;color:inherit;font:inherit;padding:0" title="Take this genre off">✕</button></span>`
       +(gbr.has(g)?'<span class="rowbreak"></span>':"")).join("");
     qa("[data-gx]").forEach(x=>x.onclick=e=>{e.stopPropagation();
       cur.genres=cur.genres.filter(g=>g!==x.dataset.gx);
@@ -8306,7 +8336,9 @@ async function quickOcr(file){
     msg("Loading the text reader…");
     await loadOcr();
     msg("Reading the photo — this can take a little while…");
-    const worker=await Tesseract.createWorker("eng");
+    /* English AND Latvian — a cover with diacritics came out mangled before.
+       The Latvian language file is a one-time extra download, kept locally. */
+    const worker=await Tesseract.createWorker("eng+lav");
     let text="";
     try{const r=await worker.recognize(file);text=(r.data&&r.data.text)||"";}
     finally{try{worker.terminate();}catch(e){}}
@@ -8377,7 +8409,8 @@ async function maybeAutoBackup(){
   if(!settings.autoBackup||!books.length)return;
   const last=(await dbAll("snapshots")).filter(s=>s.auto).sort((a,b)=>b.at-a.at)[0];
   if(last&&Date.now()-last.at<24*3600*1000)return;
-  try{await makeSnapshot(true);}catch(e){console.warn("[shelf] auto-backup skipped",e);}
+  try{await makeSnapshot(true);window.__backupFail=0;}
+  catch(e){console.warn("[shelf] auto-backup skipped",e);window.__backupFail=Date.now();}
 }
 
 q("#importFile").addEventListener("change",async e=>{
