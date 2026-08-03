@@ -994,7 +994,9 @@
   input.entnum::-webkit-outer-spin-button,input.entnum::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
   [data-theme="dark"] input.entnum{background:var(--card);color:var(--ink);border-color:var(--line)}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- crossorigin matters: without it the service worker sees an "opaque" response
+     it can never verify, so the library was never actually saved for offline -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin="anonymous"></script>
 <script src="config.js"></script>
 <script>
 /* lets the app open with no connection; harmless (and skipped) on file:// */
@@ -4357,7 +4359,7 @@ function refreshImport(){
   if(bSel)bSel.onclick=async()=>{
     const items=selItems();if(!items.length)return;
     if(!confirm(`Add ${items.length} book${items.length===1?"":"s"} to your shelf?`))return;
-    for(const it of items)await importOne(it);
+    await runBatch(items,it=>importOne(it),"Adding");
     doneSel();
   };
   const bSer=q("#impSelSer",box);
@@ -4366,7 +4368,7 @@ function refreshImport(){
     const nm=prompt("Series name — each book gets its own page, linked under this name:","");
     if(nm==null||!nm.trim())return;
     let i=1;
-    for(const it of items)await importOne(it,{type:"series",series:nm.trim(),seriesNum:String(i++),seriesTotal:String(items.length)});
+    await runBatch(items,it=>importOne(it,{type:"series",series:nm.trim(),seriesNum:String(i++),seriesTotal:String(items.length)}),"Adding");
     doneSel();
   };
   const bColl=q("#impSelColl",box);
@@ -4375,7 +4377,8 @@ function refreshImport(){
     const nm=prompt("Name for the collection — ONE entry holds all of these as its stories:",
       (items[0].author?items[0].author+" — ":"")+"collection");
     if(nm==null||!nm.trim())return;
-    await importCollection(items,nm.trim());
+    try{await importCollection(items,nm.trim());}
+    catch(e){alert("The collection couldn't be saved — storage may be full. Export a backup from the Overview tab and free some space.");}
     doneSel();
   };
   const bInto=q("#impSelInto",box);
@@ -4390,7 +4393,8 @@ function refreshImport(){
     if(!confirm(`Put ${items.length} book${items.length===1?"":"s"} inside “${coll.title||"Untitled"}” as stories?\n\nEach keeps its own rating, pages, dates and writing. The collection itself is not otherwise changed.`))return;
     b.disabled=true;
     const msg=q("#busyMsg");if(msg)msg.textContent=`Filing ${items.length}…`;
-    await importIntoCollection(items,coll);
+    try{await importIntoCollection(items,coll);}
+    catch(e){alert("They couldn't be saved into the collection — storage may be full. Export a backup from the Overview tab and free some space.");}
     impIntoOpen=false;impIntoQ="";
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     doneSel();
@@ -4423,7 +4427,7 @@ function refreshImport(){
     if(!confirm(`Fill in the blanks on ${n} book${n===1?"":"s"} you already have, and take all ${batch.length} off this list?\n\nNothing you have written is overwritten, and the stage each book is at is left alone. Rows with nothing new to give simply go.`))return;
     b.disabled=true;b.textContent="Filling in…";
     const msg=q("#busyMsg");if(msg)msg.textContent=`Filling in ${batch.length}…`;
-    for(const it of batch)await importMerge(it);
+    await runBatch(batch,it=>importMerge(it),"Filling in");
     saveImportQueue();
     if(SYNC.on)flushQueue();
     if(q("#busyMsg"))q("#busyMsg").textContent="";
@@ -4436,7 +4440,7 @@ function refreshImport(){
     if(!confirm(`Add ${batch.length} book${batch.length===1?"":"s"} to your shelf?`))return;
     b.disabled=true;b.textContent="Adding…";
     const msg=q("#busyMsg");if(msg)msg.textContent=`Adding ${batch.length}…`;
-    for(const it of batch)await importOne(it);
+    await runBatch(batch,it=>importOne(it),"Adding");
     saveImportQueue();
     if(SYNC.on)flushQueue();
     if(q("#busyMsg"))q("#busyMsg").textContent="";
@@ -7794,7 +7798,9 @@ function markDupes(){
   const put=(m,k,v)=>{if(k&&!m.has(k))m.set(k,v);};
   for(const b of books){
     put(byKey,dupeKey(b.title,b.author),{b,en:null});
-    put(byIsbn,b.isbn,{b,en:null});
+    /* staged rows carry digits-only ISBNs — a hand-typed hyphenated one on the
+       shelf never matched until it was cleaned the same way */
+    put(byIsbn,cleanIsbn(b.isbn),{b,en:null});
     if(!isColl(b))continue;
     for(const en of ((b.entries)||[])){
       put(byKey,dupeKey(en.title,entAuthorOf(b,en)),{b,en});
@@ -7877,17 +7883,38 @@ async function importMerge(it){
   return true;
 }
 async function loadCsvFile(file){
-  const {head,items}=csvObjects(await file.text());
+  const text=await file.text();
+  /* a file re-saved through Excel comes out in the wrong encoding, and every
+     accented letter in it is already the � character — warn, don't guess */
+  if(text.includes("�"))
+    alert("Some letters in this file didn't survive — it was probably re-saved by another program on the way here. It still loads, but accented names may look wrong. For a clean copy, download the export again and use that file as it is.");
+  const {head,items}=csvObjects(text);
   const src=csvSource(head);
   if(!src)throw new Error("That doesn't look like a Goodreads or StoryGraph export.");
   const map=src==="goodreads"?fromGoodreads:fromStorygraph;
   const staged=items.map(map).filter(it=>it.title);
+  /* the same book listed twice in one file stages once */
+  const inFile=new Set();
+  const once=staged.filter(it=>{
+    const k=it.isbn?("i:"+it.isbn):dupeKey(it.title,it.author);
+    if(inFile.has(k))return false;inFile.add(k);return true;
+  });
   const seenK=new Set(importQueue.map(it=>dupeKey(it.title,it.author)));
   const seenI=new Set(importQueue.map(it=>it.isbn).filter(Boolean));
-  importQueue=[...importQueue,...staged.filter(it=>
+  importQueue=[...importQueue,...once.filter(it=>
     !((it.isbn&&seenI.has(it.isbn))||seenK.has(dupeKey(it.title,it.author))))];
   markDupes();saveImportQueue();
   return {src,n:staged.length};
+}
+/* a batch that dies half-way — storage full is the realistic way — used to leave
+   the button frozen on "Adding…" with no word of how far it got */
+async function runBatch(items,fn,what){
+  let done=0;
+  try{for(const it of items){await fn(it);done++;}return true;}
+  catch(e){
+    alert(`${what} stopped after ${done} of ${items.length} — storage may be full.\n\nThe ${done} already done are safe. Export a backup from the Overview tab, free some space, then try the rest again.`);
+    return false;
+  }
 }
 /* staged entry -> a real book on the shelf; `extra` lets a batch land as a series */
 async function importOne(it,extra){
@@ -7967,6 +7994,9 @@ async function fetchJson(url,tries){
       const r=await fetch(url,ac?{signal:ac.signal}:undefined);
       if(t)clearTimeout(t);
       if(r.status===429||r.status>=500)last=new Error("busy ("+r.status+")");
+      /* a 403 is Google saying "quota" — parsing its error body used to come back
+         as a normal answer with no items, which read as "nothing found" */
+      else if(!r.ok){last=new Error("refused ("+r.status+")");break;}
       else return await r.json();
     }catch(e){if(t)clearTimeout(t);last=e;}
     if(i<(tries||3)-1)await new Promise(s=>setTimeout(s,700*(i+1)));
@@ -7985,7 +8015,9 @@ async function fetchBookInfo(title,author,isbn){
     const items=(j.items||[]).map(x=>x.volumeInfo||{});
     const vi=items.find(v=>v.description)||items[0];
     if(vi){
-      out.summary=String(vi.description||"").trim();
+      /* Google blurbs sometimes arrive with <b> and <p> tags in them — shown as
+         literal angle brackets once escaped, so take them out at the door */
+      out.summary=stripHtml(String(vi.description||"")).trim();
       out.tags=(vi.categories||[]).flatMap(c=>String(c).split("/").map(s=>s.trim())).filter(Boolean);
       out.pages=vi.pageCount||"";
       const im=vi.imageLinks||{};
@@ -8003,7 +8035,7 @@ async function fetchBookInfo(title,author,isbn){
     /* every match, not just the best one: different editions carry different
        blurbs and covers, and one of them may be the one you want */
     items.forEach(v=>{
-      const d=String(v.description||"").trim();
+      const d=stripHtml(String(v.description||"")).trim();
       if(d.length>40)out.blurbs.push({text:d,from:"Google Books"+(v.publishedDate?" · "+String(v.publishedDate).slice(0,4):"")});
       const im2=v.imageLinks||{};
       const u=String(im2.thumbnail||im2.smallThumbnail||"").replace(/^http:/,"https:").replace(/&edge=curl/,"");
@@ -8085,7 +8117,11 @@ async function fetchBookInfo(title,author,isbn){
   return null;
 }
 async function urlToDataURL(url,maxDim){
-  const r=await fetch(url);
+  /* the same nine-second patience fetchJson has — covers.openlibrary.org can sit
+     for minutes, and this used to hold "Fetching…" hostage the whole time */
+  const ac=typeof AbortController!=="undefined"?new AbortController():null;
+  const t=ac?setTimeout(()=>ac.abort(),9000):null;
+  let r;try{r=await fetch(url,ac?{signal:ac.signal}:undefined);}finally{if(t)clearTimeout(t);}
   if(!r.ok)throw new Error("cover fetch failed");
   const bl=await r.blob();
   if(!bl.type.startsWith("image/"))throw new Error("not an image");
@@ -8108,8 +8144,9 @@ function loadOcr(){
   if(!ocrLoad)ocrLoad=new Promise((res,rej)=>{
     const s=document.createElement("script");
     s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    s.crossOrigin="anonymous";   /* lets the service worker keep a copy for offline */
     s.onload=res;
-    s.onerror=()=>{ocrLoad=null;rej(new Error("The text reader couldn't load — reading photos needs an internet connection the first time."));};
+    s.onerror=()=>{ocrLoad=null;rej(new Error("The text reader couldn't load — reading photos needs an internet connection."));};
     document.head.appendChild(s);
   });
   return ocrLoad;

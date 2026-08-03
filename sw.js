@@ -37,8 +37,10 @@ self.addEventListener("fetch", e => {
 
   // The supabase library from the CDN. The "@2" tag floats, so cached-forever would
   // pin one version for good — serve the cached copy for speed/offline, but refresh
-  // it in the background so updates do land eventually.
-  if (url.hostname === "cdn.jsdelivr.net") {
+  // it in the background so updates do land eventually. The photo-reader's language
+  // files live on tessdata.projectnaptha.com and get the same treatment, so reading
+  // a photo keeps working offline once it has worked online.
+  if (url.hostname === "cdn.jsdelivr.net" || url.hostname === "tessdata.projectnaptha.com") {
     e.respondWith(
       caches.match(req).then(hit => {
         const net = fetch(req).then(res => {
