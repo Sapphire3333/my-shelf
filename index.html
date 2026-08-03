@@ -1502,6 +1502,30 @@ function readUnits(){
   }
   return out;
 }
+/* What the shelf counts when it counts opinions — the same rule readUnits
+   follows for reading. A collection whose stories carry marks of their own is
+   counted as those stories: twelve stories you rated are twelve opinions, not
+   one averaged number standing in for all of them. One whose stories say
+   nothing is counted as itself, so a series you simply finished stays one
+   voice. Each unit carries the genres it is actually filed under, which for a
+   story with genres of its own are its own — that is what lets a story's mark
+   land on the genre it really belongs to. */
+function rateUnits(){
+  const out=[];
+  for(const b of books){
+    const ens=isColl(b)?((b.entries)||[]):[];
+    if(ens.some(en=>en.rating!=null)){
+      for(const en of ens)out.push({title:en.title||b.title,book:b,en,
+        rating:en.rating==null?null:Number(en.rating),
+        genres:entGenresOf(b,en),dnf:entDnfOf(b,en)});
+    }else{
+      out.push({title:b.title,book:b,en:null,
+        rating:b.rating==null?null:Number(b.rating),
+        genres:(b.genres||[]),dnf:!!b.dnf});
+    }
+  }
+  return out;
+}
 /* every year a reading ended in, across the whole shelf */
 function readYears(){
   const years={};
@@ -5002,12 +5026,20 @@ function renderInsights(){
   const fin=books.filter(b=>statusOf(b)==="finished"&&!b.dnf);
   const dnf=books.filter(b=>b.dnf);
   const want=books.filter(b=>statusOf(b)==="want");
-  const rated=books.filter(b=>b.rating!=null);
-  const avg=rated.length?rated.reduce((s,b)=>s+b.rating,0)/rated.length:null;
-  const sd=rated.length>1?Math.sqrt(rated.reduce((s,b)=>s+Math.pow(b.rating-avg,2),0)/rated.length):0;
+  /* every mark you have given, counted once each: a collection whose stories
+     carry their own is counted as those stories rather than as the one averaged
+     number that used to stand in for the lot of them */
+  const rUnits=rateUnits();
+  const rated=rUnits.filter(u=>u.rating!=null);
+  const unratedN=rUnits.length-rated.length;
+  const avg=rated.length?rated.reduce((s,u)=>s+u.rating,0)/rated.length:null;
+  const sd=rated.length>1?Math.sqrt(rated.reduce((s,u)=>s+Math.pow(u.rating-avg,2),0)/rated.length):0;
+  /* genres counted the same way, so the average and the tally beside it are
+     talking about the same things — and a story filed under a genre of its own
+     takes its mark there instead of leaving it with the collection */
   const gcount={},gsum={},gn={};
-  books.forEach(b=>(b.genres||[]).forEach(g=>{gcount[g]=(gcount[g]||0)+1;
-    if(b.rating!=null){gsum[g]=(gsum[g]||0)+b.rating;gn[g]=(gn[g]||0)+1;}}));
+  rUnits.forEach(u=>(u.genres||[]).forEach(g=>{gcount[g]=(gcount[g]||0)+1;
+    if(u.rating!=null){gsum[g]=(gsum[g]||0)+u.rating;gn[g]=(gn[g]||0)+1;}}));
   const topG=Object.entries(gcount).sort((a,b)=>b[1]-a[1]);
   const bestG=Object.keys(gsum).filter(g=>gn[g]>=2).map(g=>[g,gsum[g]/gn[g]]).sort((a,b)=>b[1]-a[1]);
   const aCount={};books.forEach(b=>{const a=(b.author||"").trim();if(a)aCount[a]=(aCount[a]||0)+1;});
@@ -5050,7 +5082,7 @@ function renderInsights(){
 
   const say=[];
   if(topG.length){
-    say.push(`Your shelf leans <b>${esc(topG[0][0])}</b>${topG[1]?` with a strong side of <b>${esc(topG[1][0])}</b>`:""} — ${topG[0][1]} book${topG[0][1]===1?"":"s"} carry that tag.`);
+    say.push(`Your shelf leans <b>${esc(topG[0][0])}</b>${topG[1]?` with a strong side of <b>${esc(topG[1][0])}</b>`:""} — ${topG[0][1]} title${topG[0][1]===1?"":"s"} carry that tag.`);
     if(bestG.length&&bestG[0][0]!==topG[0][0])say.push(`But the genre you actually <i>rate</i> highest is <b>${esc(bestG[0][0])}</b> (★ ${bestG[0][1].toFixed(1)} average) — maybe your shelf wants more of it.`);
     else if(bestG.length)say.push(`And it's not just volume — <b>${esc(bestG[0][0])}</b> is also your highest-rated genre (★ ${bestG[0][1].toFixed(1)} average). You know what you like.`);
   }
@@ -5106,7 +5138,7 @@ function renderInsights(){
       const spread=sd<1?"You rate consistently; most books land close to your average"
         :sd<2?"Your scores vary a fair amount, but not wildly"
         :"Your scores swing hard — you either love a book or you don't";
-      P.push(`HOW YOU RATE\nYour average is ${avg.toFixed(2)} out of 10 across ${n(rated.length,"rated book")}${books.length-rated.length?`, with ${books.length-rated.length} left unrated`:""}. ${spread}. ${avg>=8?"You're a generous marker, so a low score from you is worth paying attention to."
+      P.push(`HOW YOU RATE\nYour average is ${avg.toFixed(2)} out of 10 across ${n(rated.length,"rated title")}${unratedN?`, with ${unratedN} left unrated`:""}. ${spread}. ${avg>=8?"You're a generous marker, so a low score from you is worth paying attention to."
         :avg>=6.5?"That's an even-handed middle, which makes your high scores meaningful."
         :"You're a demanding reader; anything you rate highly has genuinely earned it."}`);
     }
@@ -5135,8 +5167,8 @@ function renderInsights(){
       const rs=Object.entries(dnfReasons).sort((a,b)=>b[1]-a[1]).slice(0,3);
       if(rs.length)s+=` When you stop, the reasons you give are: ${rs.map(x=>`${x[0]} (${x[1]})`).join(", ")}.`;
       if(dnf.length&&rated.length){
-        const dr=dnf.filter(b=>b.rating!=null);
-        if(dr.length)s+=` The books you abandoned still averaged ${(dr.reduce((a,b)=>a+b.rating,0)/dr.length).toFixed(1)}, so it isn't only quality that decides it.`;
+        const dr=rUnits.filter(u=>u.dnf&&u.rating!=null);
+        if(dr.length)s+=` The books you abandoned still averaged ${(dr.reduce((a,u)=>a+u.rating,0)/dr.length).toFixed(1)}, so it isn't only quality that decides it.`;
       }
       P.push(s);
     }
@@ -5153,7 +5185,7 @@ function renderInsights(){
     const advice=[];
     if(want.length>pace*2&&pace)advice.push("your want-to-read pile is growing faster than you can read it — worth a prune");
     if(bestG.length&&topG.length&&bestG[0][0]!==topG[0][0])advice.push(`you could read more ${bestG[0][0]}, which you rate above what you read most`);
-    if(books.length-rated.length>books.length*.3)advice.push("a lot of books are unrated, which is why some of the figures above are thinner than they could be");
+    if(unratedN>rUnits.length*.3)advice.push("a lot of books are unrated, which is why some of the figures above are thinner than they could be");
     if(avgLen!=null&&lenLove.length>=2&&lenLove[0][0]!==null)advice.push(`when in doubt, reach for something around ${lenLove[0][0]} pages`);
     if(advice.length)P.push("IF YOU WANT A STEER\nOn this evidence: "+advice.join("; ")+".");
     return P.join("\n\n");
@@ -5162,8 +5194,12 @@ function renderInsights(){
   /* say plainly what's missing rather than quietly producing thinner answers */
   const gaps=[],gapLists=[];
   /* the books behind each number, so "2 unrated" can say which two */
-  const addGap=(list,label)=>{if(list.length){gaps.push(`${list.length} ${label}`);gapLists.push({label,books:list});}};
-  addGap(books.filter(b=>b.rating==null),"unrated");
+  /* `count` differs from the list's length where several unrated stories live in
+     one collection: the number says how many marks are missing, the buttons open
+     the entries you fix them in */
+  const addGap=(list,label,count)=>{const n2=count==null?list.length:count;
+    if(n2){gaps.push(`${n2} ${label}`);gapLists.push({label,books:list});}};
+  addGap([...new Set(rUnits.filter(u=>u.rating==null).map(u=>u.book))],"unrated",unratedN);
   addGap(fin.filter(b=>!lastEnd(b)),"finished without a date");
   addGap(books.filter(b=>!isColl(b)&&!parseInt(b.pages)),"with no page count");
   addGap(books.filter(b=>!(b.genres||[]).length),"with no genre");
@@ -5209,7 +5245,7 @@ function renderInsights(){
         return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
           <span class="chip" style="${chipStyle(genres[g])}">${esc(g)}</span>
           <span class="prog" style="flex:1"><i style="width:${a!=null?a*10:0}%"></i></span>
-          <span class="rr" style="width:120px;text-align:right">${a!=null?"★ "+a.toFixed(1)+" avg":"unrated"} · ${x[1]} book${x[1]===1?"":"s"}</span></div>`;}).join(""):'<span class="none">No genres yet.</span>'}
+          <span class="rr" style="width:120px;text-align:right">${a!=null?"★ "+a.toFixed(1)+" avg":"unrated"} · ${x[1]} title${x[1]===1?"":"s"}</span></div>`;}).join(""):'<span class="none">No genres yet.</span>'}
       </div>
     </div>
     ${quoteWall.length?`<div class="sec"><div class="heading"><h2 class="serif">The quotes wall</h2><span class="n">(${quoteWall.length})</span></div>
