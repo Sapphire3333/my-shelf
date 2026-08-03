@@ -1816,6 +1816,10 @@ function openDb(){return new Promise((res,rej)=>{
 const st=(s,m)=>db.transaction(s,m).objectStore(s);
 const dbPut=(s,v)=>new Promise((res,rej)=>{const g=st(s,"readwrite").put(v);g.onsuccess=()=>res(true);g.onerror=()=>rej(g.error);});
 const dbGet=(s,k)=>new Promise(res=>{const g=st(s,"readonly").get(k);g.onsuccess=()=>res(g.result||null);g.onerror=()=>res(null);});
+/* the same read, but a failure is a failure rather than "there's nothing there".
+   Uploading uses this: a read that merely broke must leave the upload queued to
+   try again, where a book that is genuinely gone means the upload can be dropped. */
+const dbGetOrThrow=(s,k)=>new Promise((res,rej)=>{const g=st(s,"readonly").get(k);g.onsuccess=()=>res(g.result||null);g.onerror=()=>rej(g.error||new Error("read failed"));});
 const dbDel=(s,k)=>new Promise(res=>{const g=st(s,"readwrite").delete(k);g.onsuccess=()=>res();g.onerror=()=>res();});
 const dbAll=s=>new Promise(res=>{const g=st(s,"readonly").getAll();g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
 const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
@@ -1961,8 +1965,12 @@ async function flushQueue(){
     console.warn("[shelf] sync paused:",e&&e.message||e);
     if(op){
       op.fails=(op.fails||0)+1;
-      /* one stuck op mustn't hold everything behind it hostage */
-      if(op.fails>=3&&SYNC.queue.length>1&&SYNC.queue[0]===op)
+      /* one stuck op mustn't hold everything behind it hostage — but it may only
+         step aside when nothing else waiting concerns the same book or picture.
+         Letting a stuck delete drop behind a later re-add of the same id would
+         run them the wrong way round and delete what had just been uploaded. */
+      const sameThing=o=>o!==op&&(o.id||o.key||"")===(op.id||op.key||"");
+      if(op.fails>=3&&SYNC.queue.length>1&&SYNC.queue[0]===op&&!SYNC.queue.some(sameThing))
         SYNC.queue.push(SYNC.queue.shift());
       saveQueue();
     }
@@ -1974,7 +1982,7 @@ async function flushQueue(){
 async function runOp(op){
   const s=SYNC.supa,uid=SYNC.user.id;
   if(op.kind==="book"){
-    const b=await dbGet("books",op.id);if(!b)return;
+    const b=await dbGetOrThrow("books",op.id);if(!b)return;
     /* If the cloud holds an edit this device has never seen, both devices changed
        the book and this upload is about to erase the other one's work. Newest
        still wins — but the losing version goes to Recently deleted first, so
@@ -2008,13 +2016,13 @@ async function runOp(op){
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
   }else if(op.kind==="cover"){
-    const c=await dbGet("covers",op.id);
+    const c=await dbGetOrThrow("covers",op.id);
     if(c&&c.data){const bl=dataURLtoBlob(c.data);
       const {error}=await s.storage.from("shelf").upload(coverPath(op.id),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
   }else if(op.kind==="coverDel"){
     await s.storage.from("shelf").remove([coverPath(op.id)]);
   }else if(op.kind==="img"){
-    const im=await dbGet("images",op.key);
+    const im=await dbGetOrThrow("images",op.key);
     if(im&&im.data){const bl=dataURLtoBlob(im.data);
       const {error}=await s.storage.from("shelf").upload(imgPath(op.key),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
   }else if(op.kind==="imgDel"){
@@ -3507,6 +3515,10 @@ function booksHtml(list,withDel){
 }
 function renderLibrary(){
   const m=q("#main");
+  /* the headings actually drawn this time round, so "Close every group" acts on
+     exactly the ones its own label was counting — the find box, the just-imported
+     filter and the stories standing on their own all change that list */
+  let shownGroupKeys=[];
   /* the shelf as it reads: every book, plus the stories that have stepped out
      of their collections. The counts on the pills must agree with what the list
      below them actually shows, so both are worked out from the same thing. */
@@ -3574,6 +3586,7 @@ function renderLibrary(){
   }
   else{
     const gsAll=groupsFor(list);
+    shownGroupKeys=gsAll.map(g=>groupBy+"|"+g.label);
     const collapsed=new Set(settings.collapsed||[]);
     const allShut=gsAll.length&&gsAll.every(g=>collapsed.has(groupBy+"|"+g.label));
     /* Tapping one of these does one of two things, and which is your choice: it
@@ -3655,8 +3668,7 @@ function renderLibrary(){
   });
   const ca=q("#collAll",m);
   if(ca)ca.onclick=()=>{
-    const gs=groupsFor(books.filter(b=>(statusFilter==="all"||statusOf(b)===statusFilter)&&kindFilter.includes(kindOf(b))));
-    const keys=gs.map(g=>groupBy+"|"+g.label);
+    const keys=shownGroupKeys;
     const s=shutSet();
     const allShut=keys.every(k=>s.has(k));
     keys.forEach(k=>allShut?s.delete(k):s.add(k));
@@ -7793,6 +7805,10 @@ function sanitizeBook(b){
 /* merges a backup in: existing books kept, matching ones updated */
 async function applyBackup(data){
   if(!data||data.app!=="my-shelf"||!Array.isArray(data.books))throw new Error("not a shelf backup");
+  /* look the whole file over before writing a word of it. A book missing its id
+     used to be found halfway through, leaving the shelf half-restored and the
+     message saying only that the file couldn't be read. */
+  if(data.books.some(b=>!b||typeof b!=="object"||!b.id))throw new Error("not a shelf backup");
   /* stamp restored books as edited-now: "restore wins" then holds on every device,
      instead of losing a last-write race against newer cloud copies */
   const now=Date.now();
