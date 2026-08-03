@@ -1379,8 +1379,10 @@ function applyReading(x,st,dnf){
        the same reason: going quiet cannot leave a reading behind that is still
        in progress, or the story would sit there saying Finished with a reading
        that never ended. Readings that finished are records and stay. */
-    else if(st==="want"||st==="")reads.splice(reads.indexOf(open),1);
-    /* set aside: the reading stays open and keeps its start, in case you return */
+    else if((st==="want"||st==="")&&!dnf)reads.splice(reads.indexOf(open),1);
+    /* set aside: the reading stays open and keeps its start, in case you return.
+       A story's set-aside clears its stage, so without the dnf test above its
+       open reading — and its start date — vanished, which a book's never did. */
   }
   /* marked finished outright, with nothing on its list — record today, once */
   if(!nowReading&&!openRead(x)&&st==="finished"&&!dnf&&!doneReads(x).length)
@@ -1462,8 +1464,9 @@ const entTimesRead=(coll,en)=>Math.max(doneReads(en).length,
   (entStatusOf(coll,en)==="finished"&&!entDnfOf(coll,en))?1:0);
 function markEntStatus(coll,en,what){
   /* setting a story aside is its own flag and clears the stage, as the list of
-     stages here has always worked */
-  if(what==="dnf"){en.dnf=true;en.status="";}
+     stages here has always worked. Tapping it again takes it back off — the
+     same toggle the identical-looking button on a book has always been. */
+  if(what==="dnf"){if(en.dnf)en.dnf=false;else{en.dnf=true;en.status="";}}
   else{en.dnf=false;en.status=what;}
   return applyReading(en,en.status,en.dnf);
 }
@@ -1621,6 +1624,22 @@ function panelOpen(id){
   if(old.__close)old.__close();else old.remove();
   return true;
 }
+/* Esc reaches every floating panel, not only the ones built on dismissable().
+   Each panel's Close button already carries its own tidying-up, so Esc simply
+   presses that button rather than reinventing it. Click-outside is deliberately
+   NOT added here: panels like Auto-fill exist to stay open while you work the
+   fields beside them, and a stray click must not take them away. */
+document.addEventListener("keydown",e=>{
+  if(e.key!=="Escape")return;
+  const help=q("#helpSheet");
+  if(help){e.preventDefault();help.remove();return;}
+  if(document.querySelector(".ratepanel"))return;   /* dismissable() handles its own */
+  const open=[...document.querySelectorAll(".bgpanel")].filter(p=>!p.hidden&&p.innerHTML).pop();
+  if(!open)return;
+  e.preventDefault();e.stopPropagation();
+  const btn=[...open.querySelectorAll("button")].find(b=>/^(✕( Close)?|×|Close|Cancel|Done)$/.test((b.textContent||"").trim()));
+  if(btn)btn.click();else{open.hidden=true;open.innerHTML="";}
+},true);
 function openStrayPanel(id){
   const b=books.find(x=>x.id===id);if(!b)return;
   if(panelOpen("strayPanel"))return;
@@ -4842,6 +4861,9 @@ function renderSearchBody(){
 function renderPick(){
   const m=q("#main");
   if(!books.length){m.innerHTML='<div class="empty">📖<br>Add some books first — then I can pick one for you.</div>';return;}
+  /* the pick is a snapshot from pick-time — if that book was deleted or edited
+     since, showing the stale copy offered a row that opened a ghost */
+  if(S.picked&&S.picked!=="none")S.picked=books.find(b=>b.id===S.picked.id)||null;
   const allG=Object.keys(genres).sort((a,b)=>a.localeCompare(b));
   const allKw=[...new Set(books.flatMap(b=>b.keywords||[]))].sort((a,b)=>a.localeCompare(b));
   m.innerHTML=`<div class="sec pickbox"><h2 class="serif" style="margin-bottom:8px">🎲 Pick for me</h2>
@@ -5164,9 +5186,16 @@ function setBookMode(m){bookMode=m;renderBook();}
    browser's own back button already did this properly; this is the app's button
    catching up with it. */
 let cameFrom="library";
+/* the back button says where it actually goes — arriving from Insights and
+   reading "‹ Library" made every trip back a small surprise */
+const BACK_NAMES={overview:"Overview",library:"Library",search:"Search",insights:"Insights",pick:"Pick",history:"History"};
+const backLabel=()=>"‹ "+(BACK_NAMES[cameFrom]||"Library");
 async function openBook(id,fresh){
   if(view!=="book")cameFrom=view;
   const found=books.find(b=>b.id===id);
+  /* asked to open a book that is gone (deleted since this row was drawn):
+     opening a blank page under its old id would create a ghost book */
+  if(!found&&!fresh)return;
   isNew=!found;
   bookMode=(!found||isRaw(found))?"edit":(settings.bookEdit?"edit":"view");
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
@@ -5295,7 +5324,7 @@ function renderBookView(){
   q("#app").innerHTML=`
   <div class="wrap" id="edPage" style="position:relative">
     <div class="edbar"><div class="r1">
-      <button class="backbtn" id="edBack">‹ Library</button>
+      <button class="backbtn" id="edBack">${backLabel()}</button>
       <button class="backbtn" id="uBtn" title="Undo" disabled>↶</button>
       <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
       <span class="savemsg ok" id="saveMsg"></span>
@@ -5613,7 +5642,7 @@ function renderEditor(){
   <div class="wrap" id="edPage" style="position:relative">
     <div class="edbar">
       <div class="r1">
-        <button class="backbtn" id="edBack">‹ Library</button>
+        <button class="backbtn" id="edBack">${backLabel()}</button>
         <button class="backbtn" id="uBtn" title="Undo" disabled>↶</button>
         <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
         <span class="savemsg ok" id="saveMsg">Saved</span>
@@ -5855,10 +5884,15 @@ function renderEditor(){
   q("#edDel").onclick=()=>deleteBookById(cur.id);
   const addMenu=q("#addMenu");
   q("#edAdd").onclick=e=>{e.stopPropagation();addMenu.hidden=!addMenu.hidden;};
-  document.addEventListener("pointerdown",e=>{
+  /* one listener, replaced on each render — the draw handler below already works
+     this way. Adding a fresh anonymous one every render left hundreds behind,
+     each keeping its dead copy of the page alive. */
+  if(window.__addMenuDown)document.removeEventListener("pointerdown",window.__addMenuDown);
+  window.__addMenuDown=e=>{
     if(!addMenu||!document.body.contains(addMenu))return;
     if(!e.target.closest||!e.target.closest("#addMenu,#edAdd"))addMenu.hidden=true;
-  });
+  };
+  document.addEventListener("pointerdown",window.__addMenuDown);
   qa("button",addMenu).forEach(b=>b.addEventListener("click",()=>{addMenu.hidden=true;}));
   q("#edImg").onclick=()=>q("#imgFile").click();
   /* take the colour off anything highlighted that the selection touches. Touching
