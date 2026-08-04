@@ -8718,11 +8718,11 @@ async function importCollection(items,name){
    API — this is the honest way to auto-fill a blurb, tags, pages and a cover. */
 /* Both sites are free and busy: they time out, rate-limit and hiccup. One attempt
    made Auto-fill look broken when it was only unlucky, so give it a few goes. */
-async function fetchJson(url,tries){
+async function fetchJson(url,tries,ms){
   let last=null;
   for(let i=0;i<(tries||3);i++){
     const ac=typeof AbortController==="function"?new AbortController():null;
-    const t=ac?setTimeout(()=>ac.abort(),9000):null;
+    const t=ac?setTimeout(()=>ac.abort(),ms||9000):null;
     try{
       const r=await fetch(url,ac?{signal:ac.signal}:undefined);
       if(t)clearTimeout(t);
@@ -8740,11 +8740,24 @@ async function fetchBookInfo(title,author,isbn){
   const out={summary:"",tags:[],pages:"",coverUrl:"",olCover:"",isbn:"",year:"",source:[],covers:[],links:[],
     blurbs:[],genres:[],gCovers:[],rating:null};
   let gErr=false,oErr=false;
+  /* Both sites are asked at the same moment, and neither is given as long to
+     answer. They used to be asked one after the other, each with three
+     attempts at a nine-second wait — so a Google that simply hung meant half a
+     minute of nothing before Open Library was so much as tried, which is the
+     whole of the wait people notice. Asked together, the slow one costs only
+     as long as itself. */
+  const qs=isbn?`isbn:${isbn}`:`intitle:"${title}"${author?` inauthor:"${author}"`:""}`;
+  /* an own key in config.js skips the shared (often exhausted) keyless quota */
+  const gk=CFG.googleBooksKey&&!/YOUR_/.test(CFG.googleBooksKey)?"&key="+encodeURIComponent(CFG.googleBooksKey):"";
+  const gP=fetchJson("https://www.googleapis.com/books/v1/volumes?maxResults=5&q="+encodeURIComponent(qs)+gk,2,6000);
+  const oP=fetchJson("https://openlibrary.org/search.json?limit=3&fields=key,subject,cover_i,number_of_pages_median,first_publish_year,ratings_average,ratings_count&"
+    +(isbn?"q="+encodeURIComponent(isbn)
+    :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):"")),2,6000);
+  /* both are awaited below; this only stops a rejection being called unhandled
+     while the other one is still being waited on */
+  gP.catch(()=>{});oP.catch(()=>{});
   try{
-    const qs=isbn?`isbn:${isbn}`:`intitle:"${title}"${author?` inauthor:"${author}"`:""}`;
-    /* an own key in config.js skips the shared (often exhausted) keyless quota */
-    const gk=CFG.googleBooksKey&&!/YOUR_/.test(CFG.googleBooksKey)?"&key="+encodeURIComponent(CFG.googleBooksKey):"";
-    const j=await fetchJson("https://www.googleapis.com/books/v1/volumes?maxResults=5&q="+encodeURIComponent(qs)+gk);
+    const j=await gP;
     const items=(j.items||[]).map(x=>x.volumeInfo||{});
     const vi=items.find(v=>v.description)||items[0];
     if(vi){
@@ -8777,11 +8790,9 @@ async function fetchBookInfo(title,author,isbn){
     });
   }catch(e){gErr=true;}
   try{
-    /* subjects only come back when asked for explicitly via `fields` */
-    const u="https://openlibrary.org/search.json?limit=3&fields=key,subject,cover_i,number_of_pages_median,first_publish_year,ratings_average,ratings_count&"
-      +(isbn?"q="+encodeURIComponent(isbn)
-      :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):""));
-    const j=await fetchJson(u);
+    /* subjects only come back when asked for explicitly via `fields` — the
+       asking already started, alongside Google's, up at the top */
+    const j=await oP;
     const docs=j.docs||[];
     const d=docs[0];
     /* a cover from every edition the search returned, not only the first.
