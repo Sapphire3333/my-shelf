@@ -2480,10 +2480,22 @@ let lastFocusPull=0;
 function onHidden(){
   if(view==="book"&&cur){clearTimeout(saveTimer);commitCur();}
 }
-let lastMaint=0;
+let lastMaint=0,hiddenAt=0;
+/* everything this device might not have heard about yet, asked for on purpose.
+   Pulling was only ever a side effect of arriving, coming back or coming
+   online, and none of those fire when a phone simply resumes an app it never
+   really closed — so there was no way to ask. */
+function syncNow(){
+  if(!SYNC.on||!SYNC.user)return Promise.resolve();
+  lastFocusPull=Date.now();
+  return flushQueue().then(pullAll).catch(e=>{console.warn("[shelf] sync now",e);});
+}
 document.addEventListener("visibilitychange",()=>{
-  if(document.visibilityState==="hidden"){onHidden();return;}
-  if(SYNC.on&&SYNC.user&&navigator.onLine&&Date.now()-lastFocusPull>60000){
+  if(document.visibilityState==="hidden"){hiddenAt=Date.now();onHidden();return;}
+  /* away for a moment is not the same as away since yesterday: a page that has
+     actually been put down is worth a fresh look however recently it last ran */
+  const wasAway=hiddenAt&&Date.now()-hiddenAt>10000;
+  if(SYNC.on&&SYNC.user&&navigator.onLine&&(wasAway||Date.now()-lastFocusPull>60000)){
     lastFocusPull=Date.now();
     flushQueue().then(pullAll);
   }
@@ -2492,6 +2504,11 @@ document.addEventListener("visibilitychange",()=>{
   if(Date.now()-lastMaint>3600000){lastMaint=Date.now();maybeAutoBackup();purgeTrash();}
 });
 window.addEventListener("pagehide",onHidden);
+/* a phone bringing the app back from its own memory fires this and often
+   nothing else — without it the shelf could sit for days showing yesterday */
+window.addEventListener("pageshow",e=>{
+  if(SYNC.on&&SYNC.user&&navigator.onLine&&(e.persisted||hiddenAt))syncNow();
+});
 
 /* Ctrl+Z / Ctrl+Y work app-wide when you're not inside a text field
    (inside one, the browser's own text undo stays in charge) */
@@ -4451,8 +4468,8 @@ async function renderHub(){
     <div class="sec">
       <div class="heading"><h2 class="serif">Saving</h2></div>
       <div class="hcard">
-        <div class="hrow2"><button class="btn pri" id="saveNow">Save now</button><span id="hubSave" class="none"></span></div>
-        <div class="hint" style="margin:9px 0 0">Everything saves by itself a moment after you stop typing${SYNC.on?", then syncs to your cloud":""}. Use this if you want to be certain before closing the tab.</div>
+        <div class="hrow2"><button class="btn pri" id="saveNow">${SYNC.on?"Save and check other devices":"Save now"}</button><span id="hubSave" class="none"></span></div>
+        <div class="hint" style="margin:9px 0 0">Everything saves by itself a moment after you stop typing${SYNC.on?", then syncs to your cloud":""}. Use this if you want to be certain before closing the tab${SYNC.on?" — it also fetches anything your other devices have done that hasn't reached here yet":""}.</div>
       </div>
     </div>
     <div class="sec">
@@ -4535,10 +4552,20 @@ async function renderHub(){
     const el=q("#hubSave");el.textContent="Saving…";
     clearTimeout(saveTimer);
     if(cur)await commitCur();
-    if(SYNC.on)await flushQueue();
-    if(!q("#hubSave"))return;
-    q("#hubSave").textContent=!SYNC.on?"All saved ✓":SYNC.status==="synced"?"All saved and synced ✓":"Saved here — sync will catch up";
-    setTimeout(()=>{const e2=q("#hubSave");if(e2)e2.textContent="";},4000);
+    let msg="All saved ✓";
+    /* pushing was only ever half of it — this is also the way to ask for what
+       another device has done, which nothing else let you do on purpose */
+    if(SYNC.on){
+      const before=books.length;
+      await syncNow();
+      const diff=books.length-before;
+      /* redraw first, or the redraw wipes the very message it is reporting */
+      if(diff!==0){await renderHub();msg=`Saved — and brought ${Math.abs(diff)} ${diff>0?"book":"change"}${Math.abs(diff)===1?"":"s"} back from your other devices ✓`;}
+      else msg=SYNC.status==="synced"?"All saved and synced ✓":"Saved here — sync will catch up";
+    }
+    const e2=q("#hubSave");if(!e2)return;
+    e2.textContent=msg;
+    setTimeout(()=>{const e3=q("#hubSave");if(e3)e3.textContent="";},5000);
   };
   q("#bkNow").onclick=async()=>{
     const b=q("#bkNow");b.disabled=true;b.textContent="Backing up…";
