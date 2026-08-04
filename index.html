@@ -1391,19 +1391,27 @@ function linkLabel(v){
    with the window, so the range is measured from where the page actually sits;
    the whole item has to stay inside the window, or the page grows sideways and
    the thing you were dragging ends up somewhere neither screen can reach. */
+/* Bigger text is a CSS zoom on #app, so a rect measured here is in screen pixels
+   while the width and the x we are bounding are in the page's own. Divide the
+   screen ones through — see the long note beside zoomNow. */
+const scrapZoom=pageEl=>{
+  const r=pageEl.getBoundingClientRect(),w=pageEl.offsetWidth||r.width||1;
+  const z=(r.width||w)/w;
+  return (z>0.05&&z<20)?z:1;
+};
 function scrapXRange(pageEl,w){
-  const r=pageEl.getBoundingClientRect();
-  const lo=-r.left+8,hi=window.innerWidth-r.left-(w||0)-8;
+  const r=pageEl.getBoundingClientRect(),z=scrapZoom(pageEl);
+  const lo=(-r.left)/z+8,hi=(window.innerWidth-r.left)/z-(w||0)-8;
   return [lo,Math.max(lo,hi)];
 }
 /* Where a NEWLY added one should land: clear of the bar fixed across the top,
    which used to cover whatever had just been added. Worked out in page
    coordinates from wherever you happen to be scrolled to. */
 function scrapDropY(pageEl){
-  const r=pageEl.getBoundingClientRect();
+  const r=pageEl.getBoundingClientRect(),z=scrapZoom(pageEl);
   const bar=document.querySelector(".edbar");
   const below=bar?bar.getBoundingClientRect().bottom:0;
-  return Math.round(Math.max(12,below-r.top+16));
+  return Math.round(Math.max(12,(below-r.top)/z+16));
 }
 /* Anything whose stored place is nonsense — dragged past the edge before the
    drag knew to stop. Judged against fixed bounds and NOT against this window:
@@ -4382,10 +4390,15 @@ function renderLibArt(m){
     /* start from where it is SHOWN — on a narrow screen that may be the clamped
        spot, and starting from the stored one made the picture jump on grab */
     const sx=e.clientX,sy=e.clientY,x0=parseInt(el.style.left)||a.x||0,y0=a.y||0,w0=parseInt(el.style.width)||a.w||230;
+    /* the pointer moves in screen pixels, this picture lives in the page's own —
+       and bigger text puts a zoom between them, so the two differ by a third at
+       130%. Same ruler mix that had marks landing away from the finger. */
+    const z=scrapZoom(el.offsetParent||el.parentElement||el);
     const mv=ev=>{
-      if(how==="move"){a.x=Math.round(x0+ev.clientX-sx);a.y=Math.round(Math.max(0,y0+ev.clientY-sy));
+      const mx=(ev.clientX-sx)/z,my=(ev.clientY-sy)/z;
+      if(how==="move"){a.x=Math.round(x0+mx);a.y=Math.round(Math.max(0,y0+my));
         el.style.left=a.x+"px";el.style.top=a.y+"px";}
-      else{a.w=Math.round(Math.max(60,Math.min(1200,w0+ev.clientX-sx)));el.style.width=a.w+"px";}
+      else{a.w=Math.round(Math.max(60,Math.min(1200,w0+mx)));el.style.width=a.w+"px";}
     };
     const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
       saveLibArt();if(SYNC.on)flushQueue();};
@@ -6419,17 +6432,43 @@ function wireScrapbook(page,host){
     if(sc)return {kind:"img",el:sc,obj:(cur.images||[]).find(x=>x.id===sc.dataset.im)};
     return {kind:"page",el:page,obj:null};
   }
-  /* layout size, not the tilted bounding box */
+  /* ---- the two kinds of pixel, and why they are not the same ----
+     Bigger text is done by putting a CSS zoom on #app, so at 130% everything
+     inside is drawn a third larger than it is measured. That leaves two rulers
+     in play. A pointer's clientX/clientY, and anything from
+     getBoundingClientRect, are SCREEN pixels — already multiplied by the zoom.
+     Everything stored and laid out inside — offsetWidth, a picture's x and y, a
+     mark's points — is in the page's own pixels, which are not.
+
+     Mixing them is what put marks away from the finger. A press 340 screen-pixels
+     from the page's corner was written down as 340 of the page's own pixels, and
+     the page then drew it 340 x 1.3 = 442 screen-pixels along. The error is a
+     third of however far you are from the top-left corner, which is why it was a
+     couple of millimetres near the corner — the miss in the video — and 103px
+     down beside the summary, and why it never once happened at 100%.
+
+     So: every distance taken from a pointer is divided by this before being
+     written down, and nothing measured with getBoundingClientRect is ever
+     compared against a stored number without passing through it. */
+  const zoomNow=()=>{
+    const r=page.getBoundingClientRect(),w=page.offsetWidth||r.width||1;
+    const z=(r.width||w)/w;
+    return (z>0.05&&z<20)?z:1;      /* a hidden page measures 0 — don't divide by that */
+  };
+  /* layout size, not the tilted bounding box — offsetWidth is already in the
+     page's own pixels, which is the ruler strokes are stored against */
   const surfScale=surf=>surf.kind==="page"?[1,1]:[surf.el.offsetWidth||1,surf.el.offsetHeight||1];
   /* undo the surface's tilt/flip so a mark lands under the pointer */
   function surfPt(surf,cx,cy){
-    const el=surf.el,r=el.getBoundingClientRect();
-    if(surf.kind==="page")return [cx-r.left,cy-r.top];
-    const w=el.offsetWidth||r.width||1,h=el.offsetHeight||r.height||1;
+    const el=surf.el,r=el.getBoundingClientRect(),z=zoomNow();
+    if(surf.kind==="page")return [(cx-r.left)/z,(cy-r.top)/z];
+    const w=el.offsetWidth||r.width/z||1,h=el.offsetHeight||r.height/z||1;
     const ox=r.left+r.width/2,oy=r.top+r.height/2;
     const o=surf.obj||{};
     const th=-(o.rot||0)*Math.PI/180;
-    const dx=cx-ox,dy=cy-oy;
+    /* screen pixels out of the pointer, the page's own pixels in — the turn and
+       the flips are angles and signs, which no amount of zoom changes */
+    const dx=(cx-ox)/z,dy=(cy-oy)/z;
     let lx=dx*Math.cos(th)-dy*Math.sin(th),ly=dx*Math.sin(th)+dy*Math.cos(th);
     if(o.flipH)lx=-lx;
     if(o.flipV)ly=-ly;
@@ -6596,9 +6635,12 @@ function wireScrapbook(page,host){
      margins either side. On a phone the margins are ~0, so it collapses to the
      column by itself and nothing ends up off-screen. */
   function xRange(w){
-    const r=page.getBoundingClientRect();
-    const lo=-r.left+8;
-    const hi=window.innerWidth-r.left-(w||0)-8;   /* whole item stays in view — no sideways scrollbar */
+    const r=page.getBoundingClientRect(),z=zoomNow();
+    /* r.left and innerWidth are screen pixels; w and the x we're bounding are the
+       page's own. Divide the screen ones through, or at 130% the margins are
+       reported a third wider than they are and things stray off the edge. */
+    const lo=(-r.left)/z+8;
+    const hi=(window.innerWidth-r.left)/z-(w||0)-8;   /* whole item stays in view — no sideways scrollbar */
     return [lo,Math.max(lo,hi)];
   }
   /* render-time only: keeps a desktop-placed item reachable on a narrow phone
@@ -6864,9 +6906,13 @@ function wireScrapbook(page,host){
         e.preventDefault();
         const sx=e.clientX,sy=e.clientY,x=cx(p.x,p.w),y=p.y,w=p.w,h=p.h;
         const [loX,hiX]=xRange(p.w);
+        /* how far the pointer has travelled, in the page's own pixels rather than
+           the screen's — otherwise at 130% a note runs a third ahead of the hand */
+        const z=zoomNow();
         const mv=ev=>{
-          if(how==="drag"){p.x=Math.min(hiX,Math.max(loX,x+ev.clientX-sx));p.y=Math.max(0,y+ev.clientY-sy);}
-          else{p.w=Math.max(90,Math.min(1200,w+ev.clientX-sx));p.h=Math.max(70,Math.min(1400,h+ev.clientY-sy));}
+          const mx=(ev.clientX-sx)/z,my=(ev.clientY-sy)/z;
+          if(how==="drag"){p.x=Math.min(hiX,Math.max(loX,x+mx));p.y=Math.max(0,y+my);}
+          else{p.w=Math.max(90,Math.min(1200,w+mx));p.h=Math.max(70,Math.min(1400,h+my));}
           el.style.left=p.x+"px";el.style.top=p.y+"px";el.style.width=p.w+"px";el.style.height=p.h+"px";};
         const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();syncDraw();scheduleSave();};
         window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);};
@@ -6934,9 +6980,12 @@ function wireScrapbook(page,host){
         e.preventDefault();
         const sx=e.clientX,sy=e.clientY,x=cx(im.x,im.w),y=im.y,w=im.w;
         const [loX,hiX]=xRange(im.w);
+        /* the page's own pixels, not the screen's — see zoomNow */
+        const z=zoomNow();
         const mv=ev=>{
-          if(how==="drag"){im.x=Math.min(hiX,Math.max(loX,x+ev.clientX-sx));im.y=Math.max(0,y+ev.clientY-sy);}
-          else im.w=Math.max(60,Math.min(1400,w+ev.clientX-sx));
+          const mx=(ev.clientX-sx)/z,my=(ev.clientY-sy)/z;
+          if(how==="drag"){im.x=Math.min(hiX,Math.max(loX,x+mx));im.y=Math.max(0,y+my);}
+          else im.w=Math.max(60,Math.min(1400,w+mx));
           el.style.left=im.x+"px";el.style.top=im.y+"px";el.style.width=im.w+"px";};
         const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();syncDraw();scheduleSave();};
         window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);};
