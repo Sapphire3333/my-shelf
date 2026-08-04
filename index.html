@@ -8318,19 +8318,41 @@ function authorsOverlap(a,b){
   for(const w of A)if(B.has(w))return true;
   return false;
 }
+/* The same book, titled differently. An export writes a book's full shelf name
+   — "Unicorn Academy #7: Rosa and Crystal" — where the entry inside a
+   collection is filed under the part that is actually its own, "Rosa and
+   Crystal", the series being the collection around it. Each title is reduced to
+   the handful of forms it might be recognised by, and both sides are compared
+   on all of them. */
+function titleVariants(t){
+  const out=new Set();
+  const add=s=>{s=String(s||"").toLowerCase().replace(/\s+/g," ").trim();if(s.length>2)out.add(s);};
+  const base=String(t||"").toLowerCase().replace(/\s+/g," ").trim();
+  add(base);
+  const noParen=base.replace(/\s*\([^)]*\)\s*$/,"");   /* "…Title (Series #3)" */
+  add(noParen);
+  [base,noParen].forEach(s=>{
+    const m=s.match(/^.*?#\s*\d+[^:]*:\s*(.+)$/);       /* "Series #7: Title" */
+    if(m)add(m[1]);
+    const c=s.indexOf(": ");
+    if(c>0)add(s.slice(c+2));
+  });
+  return [...out];
+}
 function markDupes(){
   const byKey=new Map(),byIsbn=new Map(),byTitle=new Map();
   const put=(m,k,v)=>{if(k&&!m.has(k))m.set(k,v);};
+  const putTitles=(t,v)=>titleVariants(t).forEach(x=>put(byTitle,x,v));
   for(const b of books){
     put(byKey,dupeKey(b.title,b.author),{b,en:null});
     /* staged rows carry digits-only ISBNs — a hand-typed hyphenated one on the
        shelf never matched until it was cleaned the same way */
     put(byIsbn,cleanIsbn(b.isbn),{b,en:null});
-    put(byTitle,dupeKey(b.title,""),{b,en:null});
+    putTitles(b.title,{b,en:null});
     if(!isColl(b))continue;
     for(const en of ((b.entries)||[])){
       put(byKey,dupeKey(en.title,entAuthorOf(b,en)),{b,en});
-      put(byTitle,dupeKey(en.title,""),{b,en});
+      putTitles(en.title,{b,en});
     }
   }
   importQueue.forEach(it=>{
@@ -8339,9 +8361,9 @@ function markDupes(){
        author is spelled differently in the export — which is most of them once
        a co-author is involved — came through as new, and "Add all" would have
        put a second copy on the shelf beside the one already there. */
-    if(!hit){
-      const t=byTitle.get(dupeKey(it.title,""));
-      if(t&&authorsOverlap(it.author,t.en?entAuthorOf(t.b,t.en):t.b.author))hit=t;
+    if(!hit)for(const v of titleVariants(it.title)){
+      const t=byTitle.get(v);
+      if(t&&authorsOverlap(it.author,t.en?entAuthorOf(t.b,t.en):t.b.author)){hit=t;break;}
     }
     it.dupe=!!hit;
     it.hitB=hit?hit.b.id:"";
