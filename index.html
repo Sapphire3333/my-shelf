@@ -4797,11 +4797,15 @@ q("#csvFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
   const msg=q("#busyMsg");if(msg)msg.textContent="Reading the file…";
   try{
-    const {src,n}=await loadCsvFile(f);
+    const {src,n,fresh,updated}=await loadCsvFile(f);
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     refreshImport();
     const pend=importQueue.filter(it=>!it.dupe).length;
-    alert(`Found ${n} book${n===1?"":"s"} in your ${src==="goodreads"?"Goodreads":"StoryGraph"} export.\n\n${pend} are new — pick the ones you want below, or add a whole section at once.`);
+    const dup=importQueue.filter(it=>it.dupe).length;
+    alert(`Found ${n} book${n===1?"":"s"} in your ${src==="goodreads"?"Goodreads":"StoryGraph"} export.`
+      +(updated?`\n\n${updated} were already waiting in the list and have been read again from the file, so anything it knows that they were missing is there now.`:"")
+      +`\n\n${pend} are new to your shelf — pick the ones you want below, or add a whole section at once.`
+      +(dup?`\n${dup} you already have: tick “Show only the ${dup} already on your shelf” to see what the file can still add to them.`:""));
   }catch(err){
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     alert(err.message||"That file couldn't be read.");
@@ -8396,12 +8400,24 @@ async function loadCsvFile(file){
     const k=it.isbn?("i:"+it.isbn):dupeKey(it.title,it.author);
     if(inFile.has(k))return false;inFile.add(k);return true;
   });
-  const seenK=new Set(importQueue.map(it=>dupeKey(it.title,it.author)));
-  const seenI=new Set(importQueue.map(it=>it.isbn).filter(Boolean));
-  importQueue=[...importQueue,...once.filter(it=>
-    !((it.isbn&&seenI.has(it.isbn))||seenK.has(dupeKey(it.title,it.author))))];
+  /* A row already waiting in the list is REPLACED by the one just read, not
+     skipped. The list is kept in the browser between visits, so rows staged by
+     an older version of the app sat there for good — and choosing the same file
+     again, which is exactly what you do when the reading of that file has been
+     improved, quietly added nothing at all. The file is what is true; the
+     staged row is only its shadow. The row keeps its id, so anything ticked
+     stays ticked. */
+  const keyOf=it=>it.isbn?("i:"+it.isbn):dupeKey(it.title,it.author);
+  const have=new Map(importQueue.map(it=>[keyOf(it),it]));
+  let fresh=0,updated=0;
+  once.forEach(it=>{
+    const old=have.get(keyOf(it));
+    if(old){Object.assign(old,it,{id:old.id});updated++;}
+    else{have.set(keyOf(it),it);fresh++;}
+  });
+  importQueue=[...have.values()];
   markDupes();saveImportQueue();
-  return {src,n:staged.length};
+  return {src,n:staged.length,fresh,updated};
 }
 /* a batch that dies half-way — storage full is the realistic way — used to leave
    the button frozen on "Adding…" with no word of how far it got */
