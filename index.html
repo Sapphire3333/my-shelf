@@ -2015,7 +2015,15 @@ async function loadSyncLocal(){
   for(const k of Object.keys(deletions))if(deletions[k]<cut){delete deletions[k];pruned=true;}
   if(pruned)dbPut("meta",{k:"deletions",v:deletions});
 }
-function saveQueue(){dbPut("meta",{k:"syncQueue",v:SYNC.queue});}
+/* The whole queue is written out at once, and importing a library puts
+   thousands of uploads in it — so writing it after every single one, which is
+   what flushing did, was the same list serialised over and over. It settles a
+   moment after the last change instead, and goes out in full the moment the tab
+   is put away. A queue written slightly late costs at worst an upload done
+   twice, which the upserts on the other end do not mind. */
+let qSaveT=null;
+function writeSyncQueue(){clearTimeout(qSaveT);qSaveT=null;dbPut("meta",{k:"syncQueue",v:SYNC.queue});}
+function saveQueue(){clearTimeout(qSaveT);qSaveT=setTimeout(writeSyncQueue,400);}
 const opKey=o=>o.kind+":"+(o.id||o.key||"");
 function enqueue(op){
   if(!SYNC.on)return;
@@ -2486,6 +2494,7 @@ let lastFocusPull=0;
 function onHidden(){
   if(view==="book"&&cur){clearTimeout(saveTimer);commitCur();}
   if(impSaveT)writeImportQueue();   /* a staged list waiting on its timer */
+  if(qSaveT)writeSyncQueue();       /* and the uploads still to go */
 }
 let lastMaint=0,hiddenAt=0;
 /* everything this device might not have heard about yet, asked for on purpose.
@@ -3343,7 +3352,7 @@ function wireOpen(root,withDel){
    now. The stage is written down only where it differs from the collection's,
    because a story that agrees with the book it sits in should stay inside it
    rather than step out onto the shelf on its own. */
-async function bookToEntry(b,collId,collStatus,collAuthor){
+async function bookToEntry(b,collId,collStatus,collAuthor,collDnf){
   const en=blankEntry();
   en.title=b.title;en.rating=b.rating;en.pages=b.pages;
   /* the author came across as nothing at all. A story says only what differs
@@ -3359,7 +3368,12 @@ async function bookToEntry(b,collId,collStatus,collAuthor){
   en.readings=readsOf(b).map(r=>Object.assign({},r,{id:uid()}));
   syncReads(en);
   en.dateFinished=lastEnd(b)||String(b.dateFinished||"");
-  en.status=statusOf(b)===(collStatus||"finished")?"":statusOf(b);
+  /* "same as the collection" has to mean the same in BOTH respects. A book you
+     finished, filed into a series you gave up on, said nothing about its own
+     stage and so inherited "did not finish" from the collection — turning a
+     book you read into one you abandoned. It only stays quiet where the stage
+     and the setting-aside both agree. */
+  en.status=(statusOf(b)===(collStatus||"finished")&&!!b.dnf===!!collDnf)?"":statusOf(b);
   en.dnf=!!b.dnf;
   let coverData=null;
   const cov=await dbGet("covers",b.id);
@@ -3397,7 +3411,7 @@ async function foldIntoCollection(ids,coll){
   for(const id of ids){
     const b=books.find(x=>x.id===id);
     if(!b||isColl(b)||b.id===coll.id)continue;
-    const {en}=await bookToEntry(b,coll.id,st,coll.author);
+    const {en}=await bookToEntry(b,coll.id,st,coll.author,coll.dnf);
     coll.entries.push(en);
     await retireBook(b);
     n++;
@@ -3424,7 +3438,7 @@ async function makeCollectionFrom(ids,name,author){
   nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":sel.some(b=>statusOf(b)==="reading")?"reading":"want";
   nb.dateFinished=sel.map(b=>b.dateFinished||"").sort().pop()||"";
   nb.entries=[];
-  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id,nb.status,nb.author)).en);
+  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id,nb.status,nb.author,nb.dnf)).en);
   nb.modified=Date.now();
   await dbPut("books",nb);
   books.unshift(nb);
@@ -4856,12 +4870,24 @@ function refreshImport(){
   qa("[data-impfill]",box).forEach(b=>b.onclick=async()=>{
     const it=importQueue.find(x=>x.id===b.dataset.impfill);if(!it)return;
     b.disabled=true;
+    /* timed in the open, because two goes at guessing where the wait was have
+       both been wrong. If it takes more than a moment it says which part took
+       it — and if it reports a fraction of a second while the app still feels
+       stuck, then the wait is something happening after this, not in it. */
+    const tA=performance.now();
     await importMerge(it);
+    const tB=performance.now();
     saveImportQueue();
     /* no flush here: filing the book already queued the upload, and queueing
        starts a flush of its own — asking twice only made the device do the
        whole backlog again for one row */
     refreshShelfSub();refreshImport();
+    const tC=performance.now();
+    if(tC-tA>800){
+      const el=q("#busyMsg");
+      if(el){el.textContent=`filled in ${((tC-tA)/1000).toFixed(1)}s — the book ${((tB-tA)/1000).toFixed(1)}s, the list ${((tC-tB)/1000).toFixed(1)}s`;
+        setTimeout(()=>{const e2=q("#busyMsg");if(e2&&/^filled in/.test(e2.textContent))e2.textContent="";},9000);}
+    }
   });
   /* "nothing new to take from it" is a conclusion, and a conclusion you cannot
      see the working of is indistinguishable from a bug. This shows both sides. */
@@ -7153,7 +7179,7 @@ function renderEditor(){
         /* the collection may have no author yet — take this book's, so nothing
            is lost into a "same as the collection" that means same as nothing */
         if(!String(cur.author||"").trim()&&String(b.author||"").trim())cur.author=String(b.author).trim();
-        const {en,coverData}=await bookToEntry(b,cur.id,statusOf(cur),cur.author);
+        const {en,coverData}=await bookToEntry(b,cur.id,statusOf(cur),cur.author,cur.dnf);
         cur.entries.push(en);
         if(coverData)curEnt[en.id]=coverData;
         await retireBook(b);
@@ -8642,7 +8668,10 @@ async function importIntoCollection(items,coll){
       title:it.title,rating:it.rating,pages:it.pages,
       dateFinished:it.dateFinished||"",
       readings:readingsFromRow(it),
-      status:it.status===collSt?"":(it.status||""),dnf:!!it.dnf,
+      /* the stage AND the setting-aside must both agree before a story goes
+         quiet, or a book you read lands inside a series you gave up on and
+         inherits "did not finish" from it */
+      status:(it.status===collSt&&!!it.dnf===!!coll.dnf)?"":(it.status||""),dnf:!!it.dnf,
       summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""});
     syncReads(en);
     coll.entries.push(en);
@@ -8674,7 +8703,7 @@ async function importCollection(items,name){
     entries:items.map(it=>syncReads(Object.assign(blankEntry(),{
       title:it.title,rating:it.rating,pages:it.pages,
       dateFinished:it.dateFinished||"",readings:readingsFromRow(it),
-      status:it.status===status?"":(it.status||""),dnf:!!it.dnf,
+      status:(it.status===status&&!it.dnf)?"":(it.status||""),dnf:!!it.dnf,
       summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""}))),
     modified:Date.now()});
   await dbPut("books",nb);
