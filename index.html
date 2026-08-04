@@ -8135,6 +8135,36 @@ const csvSource=head=>head.includes("Exclusive Shelf")?"goodreads"
 const cleanDate=s=>{const m=String(s||"").match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
   return m?`${m[1]}-${String(m[2]).padStart(2,"0")}-${String(m[3]).padStart(2,"0")}`:"";};
 const splitTags=s=>String(s||"").split(",").map(x=>x.trim()).filter(Boolean);
+/* StoryGraph's "Dates Read" carries one entry per reading, and each entry is
+   either a single date or a start-and-finish range — 2022/10/18-2022/10/18.
+   So the export has known the day you STARTED every book all along; the app
+   was reading the column with cleanDate, which takes the first date it can see
+   and throws the rest of the line away. */
+function parseDatesRead(s){
+  const out=[];
+  String(s||"").split(/[;,]/).forEach(part=>{
+    const ds=String(part).match(/\d{4}[\/\-.]\d{1,2}[\/\-.]\d{1,2}/g)||[];
+    if(!ds.length)return;
+    out.push(ds.length>1?{start:cleanDate(ds[0]),end:cleanDate(ds[1])}
+                        :{start:"",end:cleanDate(ds[0])});
+  });
+  return out;
+}
+/* the readings a staged row deserves: the ones the export actually dated, and
+   where it says you read the book more often than it kept dates for, undated
+   ones ahead of them to make up the count */
+function readingsFromRow(it){
+  const dated=((it&&it.readings)||[]).filter(r=>r&&(r.start||r.end));
+  /* the row's own stage, not a guess: a book the export says you are still on
+     needs its open reading, exactly as it got one before this function existed */
+  if(!dated.length)return initialReadings({dateFinished:it.dateFinished,rereads:it.rereads,status:it.status||"finished",dnf:!!it.dnf});
+  const out=dated.map(r=>({id:uid(),start:r.start||"",end:r.end||""}));
+  const total=Math.max(out.length,Math.max(0,parseInt(it.rereads)||0)+1);
+  while(out.length<total)out.unshift({id:uid(),start:"",end:""});
+  /* a book the export says you are still in the middle of keeps an open one */
+  if(String(it.status||"")==="reading"&&!it.dnf)out.push({id:uid(),start:"",end:"",open:true});
+  return out;
+}
 
 /* exports don't always use the column name you'd expect, and capitalisation drifts */
 function pickCol(o,...names){
@@ -8172,6 +8202,7 @@ function fromStorygraph(o){
     rating:r>0?Math.min(10,r*2):null,
     pages:parseInt(o["Number of Pages"]||o["Pages"]||"")||"",
     dateFinished:cleanDate(o["Last Date Read"]||o["Dates Read"]),
+    readings:parseDatesRead(o["Dates Read"]),
     rereads:Math.max(0,(parseInt(o["Read Count"]||"1")||1)-1),
     summary:o["Review"]||"",notes:o["Content Warning Description"]||"",
     tags:[...splitTags(o["Tags"]),...splitTags(o["Moods"])]};
@@ -8228,9 +8259,13 @@ function importFills(it,b,en){
      you read it, and treating them as one is why a book added by hand and then
      filled in from an export kept today's date and never got its real one. */
   const ownDates=readsOf(T).filter(r=>!r.auto&&String(r.end||"").trim());
-  if(!ownDates.length&&(date||rr>0))
-    f.push({k:"readings",label:rr>0?`${rr+1} readings`
+  const parsed=((it.readings)||[]).filter(r=>r&&(r.start||r.end));
+  if(!ownDates.length&&(date||rr>0||parsed.length)){
+    const n=Math.max(parsed.length,rr+1);
+    f.push({k:"readings",label:n>1?`${n} readings`
+      :parsed.some(r=>r.start)?`when it was started and finished${date?` (${fmtEdited(date+"T12:00")})`:""}`
       :`the day it was finished${date?` (${fmtEdited(date+"T12:00")})`:""}`});
+  }
   if(T.rating==null&&it.rating!=null)f.push({k:"rating",label:"a rating"});
   if(!parseInt(T.pages)&&parseInt(it.pages))f.push({k:"pages",label:"the page count"});
   if(!en&&!b.isbn&&it.isbn)f.push({k:"isbn",label:"the ISBN"});
@@ -8256,7 +8291,7 @@ function applyImportFills(it,b,en,fills){
       /* a reading still open is one you are in the middle of — the export can
          say when you finished it before, but not that you have stopped now */
       const open=readsOf(T).filter(r=>r.open);
-      T.readings=[...initialReadings({dateFinished:it.dateFinished,rereads:it.rereads,status:"finished",dnf:false}),...open];
+      T.readings=[...readingsFromRow({...it,status:"finished",dnf:false}),...open];
       syncReads(T);
     }
     else if(f.k==="rating"){T.rating=it.rating;if(en)syncCollRating(b);}
@@ -8324,8 +8359,10 @@ async function importOne(it,extra){
   const b=Object.assign(blankBook(uid()),{
     title:it.title,author:it.author,isbn:it.isbn||"",status:it.status,dnf:!!it.dnf,rating:it.rating,
     pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
+    readings:readingsFromRow(it),
     summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
     keywords:(it.tags||[]).slice(0,12),imported:Date.now(),modified:Date.now()},extra||{});
+  syncReads(b);   /* dateFinished and rereads follow the list the export gave */
   await dbPut("books",b);
   books.unshift(b);
   if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -8341,11 +8378,14 @@ async function importIntoCollection(items,coll){
   coll.entries=coll.entries||[];
   const collSt=statusOf(coll);
   for(const it of items){
-    coll.entries.push(Object.assign(blankEntry(),{
+    const en=Object.assign(blankEntry(),{
       title:it.title,rating:it.rating,pages:it.pages,
       dateFinished:it.dateFinished||"",
+      readings:readingsFromRow(it),
       status:it.status===collSt?"":(it.status||""),dnf:!!it.dnf,
-      summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""}));
+      summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""});
+    syncReads(en);
+    coll.entries.push(en);
   }
   /* a mark of your own stays yours; one that was the stories' average follows
      the stories it now has */
@@ -8371,10 +8411,11 @@ async function importCollection(items,name){
     status,
     dateFinished:items.map(it=>it.dateFinished||"").sort().pop()||"",
     keywords:[...new Set(items.flatMap(it=>it.tags||[]))].slice(0,12),
-    entries:items.map(it=>Object.assign(blankEntry(),{
+    entries:items.map(it=>syncReads(Object.assign(blankEntry(),{
       title:it.title,rating:it.rating,pages:it.pages,
-      dateFinished:it.dateFinished||"",status:it.status===status?"":(it.status||""),dnf:!!it.dnf,
-      summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""})),
+      dateFinished:it.dateFinished||"",readings:readingsFromRow(it),
+      status:it.status===status?"":(it.status||""),dnf:!!it.dnf,
+      summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""}))),
     modified:Date.now()});
   await dbPut("books",nb);
   books.unshift(nb);
