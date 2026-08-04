@@ -939,7 +939,23 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .pad{position:absolute;z-index:35}
   .padshape{position:absolute;inset:0;border-radius:10px;box-shadow:0 3px 10px rgba(0,0,0,.15);overflow:hidden;background-size:cover;background-position:center}
   .padshape.shaped{border-radius:0;box-shadow:none}
-  .padtext{outline:none;font-size:14px;height:100%;overflow:auto}
+  /* a note is a scrap of paper you jot on, not a page you set — centred reads
+     better on one, and centred is also what makes shaped notes sit right, since
+     the writing then hugs the middle of the star rather than one edge of it */
+  .padtext{outline:none;font-size:14px;height:100%;overflow:auto;text-align:center}
+  /* Writing that follows the outline of a shaped note was built here and taken
+     out again. For whoever tries next: CSS shape-inside is exactly this feature
+     and no browser implements it. The stand-in is two invisible floats carrying
+     shape-outside polygons, one down each side, scanned automatically out of the
+     clip paths above by asking each shape isPointInFill along a few dozen rows —
+     that part worked, and the outlines came out right (a star pinched to 90% at
+     its tip and opened to 16% at its shoulders). What defeats it is that a
+     browser narrows a line to fit between the floats but will NOT push the line
+     further DOWN to find a wider band, so the first line lands in the point of
+     the star and spills out both sides. Blocking the thin bands off completely,
+     so the band has no width at all, does not rescue it either. The next idea
+     worth trying is starting the writing vertically centred, where every shape
+     is at its widest, instead of at the top. */
   .padtext:empty:before{content:attr(data-ph);color:rgba(0,0,0,.28)}
   #edPage.arr .pad{cursor:move;outline:2px solid #2dd4bf}
   #edPage.arr .padtext{pointer-events:none;user-select:none}
@@ -1130,6 +1146,7 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
   <div id="fabMenu" hidden></div>
   <button id="fabJump" title="Jump to a part of this page">☰</button>
   <button id="fabTop" title="Back to the top">⬆</button>
+  <button id="fabBot" title="Down to the bottom">⬇</button>
 </div>
 <input type="file" id="qaFile" accept="image/*" hidden>
 <input type="file" id="bgFile" accept="image/*" hidden>
@@ -1169,6 +1186,8 @@ const DRAW_SWATCHES=["#dc2626","#ea580c","#ca8a04","#059669","#0d9488","#2563eb"
 /* the highlighter wants soft, washed-out inks — the pen's colours go muddy at low opacity */
 const HL_SWATCHES=["#fde68a","#fdba74","#fca5a5","#f9a8d4","#d8b4fe","#a5b4fc","#93c5fd","#99f6e4","#bbf7d0","#e5e7eb"];
 let drawTool="pen",drawColor="#dc2626",drawWidth=3,hlAlpha=.35,hlMode="free";
+/* the colour the text highlighter beside B/I/U lays down, kept between uses */
+let hlColor=HL_SWATCHES[0];
 const distToSeg=(p,a,b)=>{
   const dx=b[0]-a[0],dy=b[1]-a[1],L=dx*dx+dy*dy;
   if(!L)return Math.hypot(p[0]-a[0],p[1]-a[1]);
@@ -3241,17 +3260,24 @@ function fabSections(){
 function closeFabMenu(){const m=q("#fabMenu");if(m){m.hidden=true;m.innerHTML="";}}
 function updateFab(){
   const fab=q("#fab");if(!fab)return;
-  /* jumping is useful straight away; going back to the top only once you've left it */
-  const jb=q("#fabJump"),tb=q("#fabTop");
+  /* jumping is useful straight away; going back to the top only once you've left
+     it, and down to the bottom only while there is still page underneath you */
+  const jb=q("#fabJump"),tb=q("#fabTop"),bb=q("#fabBot");
   const canJump=fabSections().length>1;
+  const canTop=window.scrollY>=200;
+  const doc=document.documentElement;
+  const canBot=(doc.scrollHeight-window.scrollY-window.innerHeight)>=200;
   if(jb)jb.hidden=!canJump;
-  if(tb)tb.hidden=window.scrollY<200;
-  fab.hidden=!canJump&&window.scrollY<200;
+  if(tb)tb.hidden=!canTop;
+  if(bb)bb.hidden=!canBot;
+  fab.hidden=!canJump&&!canTop&&!canBot;
   if(!canJump)closeFabMenu();
 }
 window.addEventListener("scroll",updateFab,{passive:true});
 window.addEventListener("resize",updateFab);
 q("#fabTop").onclick=()=>{closeFabMenu();window.scrollTo({top:0,behavior:"smooth"});};
+q("#fabBot").onclick=()=>{closeFabMenu();
+  window.scrollTo({top:document.documentElement.scrollHeight,behavior:"smooth"});};
 q("#fabJump").onclick=()=>{
   const m=q("#fabMenu");
   if(!m.hidden){closeFabMenu();return;}
@@ -7079,6 +7105,15 @@ function renderEditor(){
           <button class="tbtn" data-cmd="bold">B</button>
           <button class="tbtn i" data-cmd="italic">I</button>
           <button class="tbtn u" data-cmd="underline">U</button>
+          <!-- Highlighting your words was always text formatting wearing a pen's
+               clothes: it lived behind Draw ▸ highlighter ▸ "Over text", and went
+               with the pen when the pen left this form. It belongs here, beside
+               bold and italic, where it needs no mode at all. -->
+          <span style="position:relative;display:inline-block">
+            <button class="tbtn" id="fmtHl" title="Highlight the words you've selected — press it again on highlighted words to take the colour off">🖍</button>
+            <button class="tbtn" id="fmtHlPick" title="Highlight colour" style="padding:2px 3px">▾</button>
+            <div class="dropmenu" id="hlMenu" hidden style="min-width:0;flex-direction:row;flex-wrap:wrap;width:130px"></div>
+          </span>
           <span class="vline"></span>
           <button class="tbtn" data-cmd="justifyLeft" title="Align left">${ALIGN_IC.left}</button>
           <button class="tbtn" data-cmd="justifyCenter" title="Center">${ALIGN_IC.center}</button>
@@ -7212,7 +7247,9 @@ function renderEditor(){
 
   /* toolbar */
   const tbar=q("#tbar");
-  tbar.addEventListener("mousedown",e=>{if(e.target.closest("[data-cmd],[data-col],[data-mode]"))e.preventDefault();});
+  /* keep the words selected while the button is pressed — a mousedown that
+     steals focus collapses the selection before the click ever lands */
+  tbar.addEventListener("mousedown",e=>{if(e.target.closest("[data-cmd],[data-col],[data-mode],#fmtHl,#fmtHlPick,[data-hlc]"))e.preventDefault();});
   qa("[data-cmd]",tbar).forEach(x=>x.onclick=()=>{document.execCommand("styleWithCSS",false,true);document.execCommand(x.dataset.cmd);});
   const tcol=q("#tcol");
   tcol.addEventListener("pointerdown",saveSel);
@@ -7272,29 +7309,50 @@ function renderEditor(){
     ed.normalize();
     return n;
   }
-  /* highlighter over text: paint what you selected, or rub the colour off it */
-  page.addEventListener("mouseup",e=>{
-    if(mode!=="draw"||drawTool!=="hl"||hlMode==="free")return;
-    if(e.target.closest(".edbar,.bgpanel"))return;
+  /* Highlighting words, as a formatting button rather than a mode. One press on
+     a selection: if any of it is already highlighted the colour comes off, and
+     otherwise it goes on. No mode to enter, nothing to remember to leave. */
+  function runHighlight(){
     const sel=window.getSelection();
-    if(!sel||!sel.rangeCount||sel.isCollapsed)return;
+    if(!sel||!sel.rangeCount||sel.isCollapsed){
+      alert("Select the words you want to highlight first.");return;
+    }
     const range=sel.getRangeAt(0);
     const n=range.commonAncestorContainer;
     const el=n.nodeType===1?n:n.parentElement;
     const ed=el&&el.closest&&el.closest('[contenteditable="true"]');
     if(!ed)return;
-    if(hlMode==="off"){
-      const hit=clearHighlight(range,ed);
+    /* already coloured? then this press is the undoing of it */
+    if(clearHighlight(range,ed)){
       sel.removeAllRanges();
-      if(hit)ed.dispatchEvent(new Event("input",{bubbles:true}));
+      ed.dispatchEvent(new Event("input",{bubbles:true}));
       return;
     }
-    const rgba=hexToRgba(drawColor,hlAlpha);
+    const rgba=hexToRgba(hlColor,hlAlpha);
     document.execCommand("styleWithCSS",false,true);
     if(!document.execCommand("hiliteColor",false,rgba))document.execCommand("backColor",false,rgba);
     sel.removeAllRanges();
     ed.dispatchEvent(new Event("input",{bubbles:true}));   /* let the field save itself */
-  });
+  }
+  const hlB=q("#fmtHl");
+  if(hlB)hlB.onclick=runHighlight;
+  const hlPick=q("#fmtHlPick"),hlMenu=q("#hlMenu");
+  if(hlPick&&hlMenu){
+    const paint=()=>{hlB.style.background=hexToRgba(hlColor,.9);};
+    paint();
+    hlMenu.innerHTML=HL_SWATCHES.map(c=>
+      `<button class="cdot" data-hlc="${c}" style="background:${c};margin:2px" title="Highlight in this"></button>`).join("");
+    qa("[data-hlc]",hlMenu).forEach(b=>b.onclick=()=>{
+      hlColor=b.dataset.hlc;hlMenu.hidden=true;paint();
+    });
+    hlPick.onclick=e=>{e.stopPropagation();hlMenu.hidden=!hlMenu.hidden;};
+    if(window.__hlMenuDown)document.removeEventListener("pointerdown",window.__hlMenuDown);
+    window.__hlMenuDown=ev=>{
+      if(!document.body.contains(hlMenu))return;
+      if(!ev.target.closest||!ev.target.closest("#hlMenu,#fmtHlPick"))hlMenu.hidden=true;
+    };
+    document.addEventListener("pointerdown",window.__hlMenuDown);
+  }
   page.addEventListener("mouseup",e=>{
     if(mode!=="tag")return;
     if(e.target.closest("button,input,select,.edbar,.sbar"))return;
