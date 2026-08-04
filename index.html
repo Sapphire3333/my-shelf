@@ -8150,6 +8150,34 @@ function parseDatesRead(s){
   });
   return out;
 }
+/* Fold what an export knows into the readings a book already has, without ever
+   contradicting one. A reading is recognised by the day it finished, so an
+   export can hand a start date to a reading that only had an end. The app's own
+   stand-in dated today, and any blank left to make up a re-read count, are the
+   only readings allowed to be written over — they say "read, date unknown", so
+   a real date is not a contradiction but an answer. Anything the export knows
+   about that has no counterpart here is added; nothing here is ever removed,
+   and a reading you have open is left strictly alone. */
+function mergeReadings(have,want){
+  const out=have.map(r=>Object.assign({},r));
+  const used=new Set();
+  const blank=r=>!r.open&&(r.auto||(!String(r.start||"").trim()&&!String(r.end||"").trim()));
+  (want||[]).forEach(w=>{
+    const wEnd=String(w.end||"").trim();
+    let i=wEnd?out.findIndex((r,ix)=>!used.has(ix)&&!r.open&&String(r.end||"").trim()===wEnd):-1;
+    if(i<0)i=out.findIndex((r,ix)=>!used.has(ix)&&blank(r));
+    if(i<0){out.push({id:uid(),start:w.start||"",end:w.end||""});return;}
+    used.add(i);
+    const r=out[i];
+    if(r.auto||(!String(r.start||"").trim()&&!String(r.end||"").trim())){
+      r.start=w.start||"";r.end=w.end||"";delete r.auto;
+    }else{
+      if(!String(r.start||"").trim()&&w.start)r.start=w.start;
+      if(!String(r.end||"").trim()&&w.end)r.end=w.end;
+    }
+  });
+  return out;
+}
 /* the readings a staged row deserves: the ones the export actually dated, and
    where it says you read the book more often than it kept dates for, undated
    ones ahead of them to make up the count */
@@ -8253,18 +8281,28 @@ function importFills(it,b,en){
   const T=en||b,f=[];
   const filled=s=>!!stripHtml(s||"").trim();
   const date=String(it.dateFinished||"").trim(),rr=Math.max(0,parseInt(it.rereads)||0);
-  /* Only a date you wrote down yourself counts as already having one. Tapping
-     Finished leaves the app's own stand-in dated today, and starting a book
-     leaves a reading with no finish date at all — neither is a record of when
-     you read it, and treating them as one is why a book added by hand and then
-     filled in from an export kept today's date and never got its real one. */
-  const ownDates=readsOf(T).filter(r=>!r.auto&&String(r.end||"").trim());
+  /* The readings are merged rather than weighed up as a whole. Asking "does it
+     already have dates?" was too blunt in both directions: it let the app's own
+     stand-in block a real date, and once that was fixed it still let a finish
+     date you already had block the START date arriving beside it. What the
+     export knows and you don't is filled in; what you have written stays. */
+  const have=readsOf(T);
   const parsed=((it.readings)||[]).filter(r=>r&&(r.start||r.end));
-  if(!ownDates.length&&(date||rr>0||parsed.length)){
-    const n=Math.max(parsed.length,rr+1);
-    f.push({k:"readings",label:n>1?`${n} readings`
-      :parsed.some(r=>r.start)?`when it was started and finished${date?` (${fmtEdited(date+"T12:00")})`:""}`
-      :`the day it was finished${date?` (${fmtEdited(date+"T12:00")})`:""}`});
+  const want=parsed.length?parsed:(date?[{start:"",end:date}]:[]);
+  const merged=mergeReadings(have,want);
+  const sig=rs=>rs.map(r=>(r.start||"")+"|"+(r.end||"")+"|"+(r.open?"o":"")).join(",");
+  if(sig(merged)!==sig(have)){
+    const byId=new Map(have.map(r=>[r.id,r]));
+    let gotStart=0,gotEnd=0;
+    merged.forEach(r=>{const o=byId.get(r.id);if(!o)return;
+      if(!String(o.start||"").trim()&&String(r.start||"").trim())gotStart++;
+      if(!String(o.end||"").trim()&&String(r.end||"").trim())gotEnd++;});
+    const added=merged.length-have.length;
+    const bits=[];
+    if(added>0)bits.push(added===1?"another reading":`${added} more readings`);
+    if(gotStart)bits.push(gotStart===1?"the day it was started":`${gotStart} start dates`);
+    if(gotEnd)bits.push(gotEnd===1?"the day it was finished":`${gotEnd} finish dates`);
+    f.push({k:"readings",label:bits.join(" and ")||"its reading dates",v:merged});
   }
   if(T.rating==null&&it.rating!=null)f.push({k:"rating",label:"a rating"});
   if(!parseInt(T.pages)&&parseInt(it.pages))f.push({k:"pages",label:"the page count"});
@@ -8287,13 +8325,7 @@ function importFills(it,b,en){
 function applyImportFills(it,b,en,fills){
   const T=en||b;
   for(const f of fills){
-    if(f.k==="readings"){
-      /* a reading still open is one you are in the middle of — the export can
-         say when you finished it before, but not that you have stopped now */
-      const open=readsOf(T).filter(r=>r.open);
-      T.readings=[...readingsFromRow({...it,status:"finished",dnf:false}),...open];
-      syncReads(T);
-    }
+    if(f.k==="readings"){T.readings=f.v;syncReads(T);}
     else if(f.k==="rating"){T.rating=it.rating;if(en)syncCollRating(b);}
     else if(f.k==="pages")T.pages=parseInt(it.pages);
     else if(f.k==="isbn")b.isbn=it.isbn;
