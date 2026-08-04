@@ -3346,6 +3346,11 @@ async function bookToEntry(b,collId,collStatus){
   const en=blankEntry();
   en.title=b.title;en.rating=b.rating;en.pages=b.pages;
   en.summary=b.summary||"";en.notes=b.canvasText||"";
+  /* every reading travels, not just the last date one of them ended on. Folding
+     a book in used to keep its finish date and quietly drop the day it was
+     started, along with every re-read it had recorded. */
+  en.readings=readsOf(b).map(r=>Object.assign({},r,{id:uid()}));
+  syncReads(en);
   en.dateFinished=lastEnd(b)||String(b.dateFinished||"");
   en.status=statusOf(b)===(collStatus||"finished")?"":statusOf(b);
   en.dnf=!!b.dnf;
@@ -3366,6 +3371,29 @@ async function retireBook(b){
   if(SYNC.on){deletions[b.id]=Date.now();saveDeletions();
     enqueue({kind:"bookDel",id:b.id});enqueue({kind:"coverDel",id:b.id});
     imgKeysOf(b).forEach(key=>enqueue({kind:"imgDel",key}));}
+}
+/* several books at once into a collection that already exists. The same two
+   steps folding one book from inside a collection has always taken — become a
+   story, then let the old page go to the bin — done for a ticked handful. */
+async function foldIntoCollection(ids,coll){
+  if(!coll||!isColl(coll))return 0;
+  coll.entries=coll.entries||[];
+  const st=statusOf(coll);
+  let n=0;
+  for(const id of ids){
+    const b=books.find(x=>x.id===id);
+    if(!b||isColl(b)||b.id===coll.id)continue;
+    const {en}=await bookToEntry(b,coll.id,st);
+    coll.entries.push(en);
+    await retireBook(b);
+    n++;
+  }
+  if(!n)return 0;
+  syncCollRating(coll);
+  coll.modified=Math.max(Date.now(),(coll.modified||0)+1,(SYNC.seen[coll.id]||0)+1);
+  await dbPut("books",coll);
+  if(SYNC.on){enqueue({kind:"book",id:coll.id});flushQueue();}
+  return n;
 }
 async function makeCollectionFrom(ids,name,author){
   const sel=ids.map(id=>books.find(b=>b.id===id)).filter(Boolean);
@@ -3676,6 +3704,7 @@ function renderLibrary(){
       <b style="font-size:13px">${libSel.size} ticked</b>
       <button class="btn" id="selSer" ${libSel.size>1?"":"disabled"}>🔗 Link as a series…</button>
       <button class="btn" id="selColl" ${libSel.size>1?"":"disabled"}>📚 Fold into one collection…</button>
+      ${collsOnShelf().length?`<button class="btn" id="selInto" ${libSel.size?"":"disabled"} title="Put them inside a collection you already have">📥 Into a collection…</button>`:""}
       <button class="btn" id="selNone" ${libSel.size?"":"disabled"}>Untick all</button></div>
       <div class="hrow2" style="margin-top:7px">
         <span class="lbl">Give them all:</span>
@@ -3949,6 +3978,49 @@ function renderLibrary(){
       if(!confirm(`Fold ${ids.length} book${ids.length===1?"":"s"} into “${nm.trim()}”?${skipped?`\n\n${skipped} collection${skipped===1?"":"s"} left alone.`:""}\n\nTheir own pages move to Recently deleted — notes, ratings, pages and covers carry into the collection.`))return;
       await makeCollectionFrom(ids,nm.trim(),first?first.author:"");
       libSel.clear();render();
+    };
+    /* Folding books into a collection that already exists could only be done
+       from inside that collection, one book at a time. Which is the wrong way
+       round for the common case: you are looking at the shelf, you can see the
+       four that belong together, and one of them is already the collection. */
+    const si=q("#selInto",m);
+    if(si)si.onclick=()=>{
+      const ids=[...libSel].filter(id=>{const b=books.find(x=>x.id===id);return b&&!isColl(b);});
+      const skipped=libSel.size-ids.length;
+      if(!ids.length){alert("Tick at least one ordinary book — a collection can't be folded into another collection.");return;}
+      const panel=q("#selApply",m);
+      let iq="";
+      const draw=()=>{
+        const ql=iq.trim().toLowerCase();
+        const pool=collsOnShelf().filter(c=>!ql||(c.title||"").toLowerCase().includes(ql)||(c.author||"").toLowerCase().includes(ql));
+        panel.innerHTML=`<div class="hcard" style="margin-top:8px;box-shadow:none">
+          <div class="lbl" style="display:block;margin-bottom:5px">Put ${ids.length} book${ids.length===1?"":"s"} inside…${skipped?` (${skipped} collection${skipped===1?"":"s"} ticked will be left alone)`:""}</div>
+          <input class="field" id="intoQ" placeholder="Search your collections…" value="${esc(iq)}" style="font-size:13px;padding:7px 10px;margin-bottom:7px">
+          ${pool.slice(0,20).map(c=>`<div class="snap" style="padding:6px 10px">
+            <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(c.title)||"Untitled"}</div>
+              <div class="meta">${esc(c.author)||"Unknown author"} · ${(c.entries||[]).length} inside</div></div>
+            <button class="btn" data-into2="${c.id}" style="padding:3px 9px">Put them in</button></div>`).join("")
+            ||'<div class="none">No collection matches that.</div>'}
+          ${pool.length>20?`<div class="none" style="margin-top:5px">…and ${pool.length-20} more — search to narrow it.</div>`:""}
+          <button class="btn" id="intoCancel" style="margin-top:7px;padding:3px 10px;font-size:12px">Cancel</button></div>`;
+        q("#intoCancel",panel).onclick=()=>{panel.innerHTML="";};
+        const se=q("#intoQ",panel);
+        se.oninput=()=>{iq=se.value;draw();
+          const s2=q("#intoQ",panel);if(s2){s2.focus();s2.setSelectionRange(s2.value.length,s2.value.length);}};
+        qa("[data-into2]",panel).forEach(btn=>btn.onclick=async()=>{
+          const coll=books.find(x=>x.id===btn.dataset.into2);if(!coll)return;
+          if(!confirm(`Put ${ids.length} book${ids.length===1?"":"s"} inside “${coll.title||"Untitled"}”?\n\nEach keeps its rating, pages, cover, dates and writing. Their own pages move to Recently deleted, where they can be brought back for ${TRASH_DAYS} days.`))return;
+          btn.disabled=true;
+          const msg=q("#busyMsg");if(msg)msg.textContent=`Filing ${ids.length}…`;
+          let n=0;
+          try{n=await foldIntoCollection(ids,coll);}
+          catch(e){alert("They couldn't all be filed — storage may be full. Anything already moved is safe.");}
+          if(q("#busyMsg"))q("#busyMsg").textContent="";
+          libSel.clear();render();
+          if(n)alert(`${n} book${n===1?"":"s"} now live inside “${coll.title||"Untitled"}”.`);
+        });
+      };
+      draw();
     };
   }
   wireOpen(m,true);
