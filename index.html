@@ -1298,6 +1298,53 @@ function linkLabel(v){
   for(const [re,icon,name] of LINK_SITES)if(re.test(host))return {url:u,icon,name,host};
   return {url:u,icon:"🔗",name:host||"link",host};
 }
+/* The little "Add… (Enter)" boxes, wired so a phone cannot swallow what you
+   typed. A phone's keyboard shows a "next" key rather than "enter" whenever
+   another field follows, and pressing it moves the focus on WITHOUT ever
+   sending an Enter — so every phrase typed into one of these was quietly
+   dropped. Two answers together: ask the keyboard for a "done" key, and take
+   whatever is in the box when it loses focus, however focus came to leave.
+   The box is emptied before the value is handed on, so the re-render that
+   usually follows can't hand the same phrase in twice. */
+/* Where a loose picture or note is allowed to be. The page's left edge moves
+   with the window, so the range is measured from where the page actually sits;
+   the whole item has to stay inside the window, or the page grows sideways and
+   the thing you were dragging ends up somewhere neither screen can reach. */
+function scrapXRange(pageEl,w){
+  const r=pageEl.getBoundingClientRect();
+  const lo=-r.left+8,hi=window.innerWidth-r.left-(w||0)-8;
+  return [lo,Math.max(lo,hi)];
+}
+/* Where a NEWLY added one should land: clear of the bar fixed across the top,
+   which used to cover whatever had just been added. Worked out in page
+   coordinates from wherever you happen to be scrolled to. */
+function scrapDropY(pageEl){
+  const r=pageEl.getBoundingClientRect();
+  const bar=document.querySelector(".edbar");
+  const below=bar?bar.getBoundingClientRect().bottom:0;
+  return Math.round(Math.max(12,below-r.top+16));
+}
+/* Anything whose stored place is off this screen entirely — dragged past the
+   edge before the drag knew to stop, or put down on a much wider window. They
+   are still on the page and still in your backups; they just cannot be got at. */
+const strayScraps=b=>{
+  const W=window.innerWidth;
+  return [...((b&&b.images)||[]),...((b&&b.pads)||[])]
+    .filter(o=>(o.x||0)>W-40||(o.x||0)<-((o.w||240)-40));
+};
+/* put them back somewhere you can see, stacked so they don't land on each other */
+function gatherStrays(b){
+  const list=strayScraps(b);
+  list.forEach((o,i)=>{o.x=18+(i*24)%120;o.y=Math.max(70,Math.round(o.y||0));});
+  return list.length;
+}
+function wireAddIn(el,commit){
+  if(!el)return;
+  el.setAttribute("enterkeyhint","done");
+  const go=()=>{const v=el.value.trim();if(!v)return;el.value="";commit(v);};
+  el.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();go();}});
+  el.addEventListener("blur",go);
+}
 const hexToRgba=(hex,a)=>{
   const m=String(hex||"").replace("#","");
   const v=m.length===3?m.split("").map(c=>c+c).join(""):m;
@@ -5532,7 +5579,8 @@ async function viewAddPicture(file){
   if(!file||!file.type.startsWith("image/")||!cur)return;
   let data;try{data=await compressImage(file);}catch(e){alert("That image couldn't be read.");return;}
   const n=(cur.images||[]).length;
-  const im={id:uid(),x:30+(n*26)%180,y:260+(n*22)%140,w:240,behind:false};
+  const pg=q("#edPage");
+  const im={id:uid(),x:30+(n*26)%180,y:(pg?scrapDropY(pg):70)+(n*22)%140,w:240,behind:false};
   try{await dbPut("images",{key:cur.id+"|"+im.id,data});}catch(e){alert("That picture couldn't be saved — storage may be full.");return;}
   curImgs[im.id]=data;
   if(SYNC.on)enqueue({kind:"img",key:cur.id+"|"+im.id});
@@ -5606,6 +5654,7 @@ function renderBookView(){
       <span class="savemsg ok" id="saveMsg"></span>
       <span class="sizectl">${sizeCtrlHtml()}</span>
       <button class="sm ${viewArrange?"on":""}" id="vArr" title="Drag your pictures and notes where you want them — you can paste one in too">✥ Move${viewArrange?"…":""}</button>
+      ${strayScraps(b).length?`<button class="sm" id="vStray" title="Something is sitting off the side of this screen — this brings it back where you can see it">⤾ Bring back ${strayScraps(b).length}</button>`:""}
       <button class="btn pri" id="toEdit" title="Change anything about this book">✎ Edit</button>
       <button class="delbtn" id="edDel" title="Delete this book — it waits in Recently deleted for 30 days" aria-label="Delete this book">🗑</button>
     </div></div>
@@ -5874,6 +5923,13 @@ function renderBookView(){
   });
   page.classList.toggle("fit",fitScreen);
   page.classList.toggle("varr",viewArrange);
+  const vs=q("#vStray");
+  if(vs)vs.onclick=async()=>{
+    const n=gatherStrays(cur);
+    viewArrange=true;
+    await quickEdit(()=>{});
+    if(n)alert(`Brought ${n} back onto the page — ${n===1?"it's":"they're"} near the top left. Drag ${n===1?"it":"them"} wherever you like.`);
+  };
   q("#vArr").onclick=()=>{
     viewArrange=!viewArrange;
     /* same reason: stacked pictures sit in a column and can't be placed */
@@ -5894,9 +5950,14 @@ function wireViewArrange(page){
     const start=(e,how)=>{
       e.preventDefault();e.stopPropagation();
       const sx=e.clientX,sy=e.clientY,x0=obj.x||0,y0=obj.y||0,w0=obj.w||240,h0=obj.h||0;
+      /* the editor's drag has always stopped at the window's edge; this one
+         never did, so a picture pushed off the right went on going, took the
+         page's width with it, and could not be got back on either screen */
+      const [loX,hiX]=scrapXRange(page,obj.w||240);
       const mv=ev=>{
         if(how==="move"){
-          obj.x=Math.round(x0+ev.clientX-sx);obj.y=Math.round(Math.max(0,y0+ev.clientY-sy));
+          obj.x=Math.round(Math.min(hiX,Math.max(loX,x0+ev.clientX-sx)));
+          obj.y=Math.round(Math.max(0,y0+ev.clientY-sy));
           el.style.left=obj.x+"px";el.style.top=obj.y+"px";
         }else{
           obj.w=Math.round(Math.max(60,Math.min(1400,w0+ev.clientX-sx)));el.style.width=obj.w+"px";
@@ -5936,6 +5997,7 @@ function renderEditor(){
         <span class="savemsg ok" id="saveMsg">Saved</span>
         <span class="sizectl">${sizeCtrlHtml()}</span>
         <button class="sm" id="edFit" title="Stack everything to fit your screen (best on a phone)">📱 Fit</button>
+        ${strayScraps(b).length?`<button class="sm" id="edStray" title="Something is sitting off the side of this screen — this brings it back where you can see it">⤾ Bring back ${strayScraps(b).length}</button>`:""}
         <button class="sm" id="edSave" title="Save this book right now">✓ Save now</button>
         <button class="btn pri" id="toView" title="Stop editing — show only what's filled in">👁 Done</button>
         <button class="delbtn" id="edDel" title="Delete this book — it waits in Recently deleted for 30 days" aria-label="Delete this book">🗑</button>
@@ -6170,6 +6232,12 @@ function renderEditor(){
   };
   q("#toView").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>setBookMode("view"));};
   q("#edDel").onclick=()=>deleteBookById(cur.id);
+  const es=q("#edStray");
+  if(es)es.onclick=()=>{
+    const n=gatherStrays(cur);
+    scheduleSave();renderEditor();
+    if(n)alert(`Brought ${n} back onto the page — ${n===1?"it's":"they're"} near the top left. Drag ${n===1?"it":"them"} wherever you like.`);
+  };
   const addMenu=q("#addMenu");
   q("#edAdd").onclick=e=>{e.stopPropagation();addMenu.hidden=!addMenu.hidden;};
   /* one listener, replaced on each render — the draw handler below already works
@@ -6522,17 +6590,14 @@ function renderEditor(){
       cur.characters=cur.characters.includes(c)?cur.characters.filter(y=>y!==c):[...cur.characters,c];
       renderFF();scheduleSave();
     });
-    q("#fdIn",w).addEventListener("keydown",e=>{
-      if(e.key!=="Enter"||!e.target.value.trim())return;
-      const f=titleCase(e.target.value.trim());
+    wireAddIn(q("#fdIn",w),v=>{
+      const f=titleCase(v);
       if(!fandoms[f]){fandoms[f]=[];saveFandoms();}
       if(!cur.fandoms.includes(f))cur.fandoms.push(f);
       renderFF();scheduleSave();
     });
-    const ci=q("#chIn",w);
-    if(ci)ci.addEventListener("keydown",e=>{
-      if(e.key!=="Enter"||!e.target.value.trim())return;
-      const c=titleCase(e.target.value.trim());
+    wireAddIn(q("#chIn",w),v=>{
+      const c=titleCase(v);
       fandoms[firstF]=fandoms[firstF]||[];
       if(!fandoms[firstF].includes(c)){fandoms[firstF].push(c);saveFandoms();}
       if(!cur.characters.includes(c))cur.characters.push(c);
@@ -7037,13 +7102,11 @@ function renderEditor(){
       const a=x.dataset.a,list=audsOf(cur);
       setAuds(cur,list.indexOf(a)>=0?list.filter(y=>y!==a):[...list,a]);
       renderAud();scheduleSave();});
-    q("#audIn",w).addEventListener("keydown",e=>{
-      if(e.key==="Enter"&&e.target.value.trim()){
-        const v=e.target.value.trim();
-        if(![...DEFAULT_AUD,...audCustom].includes(v)){audCustom.push(v);saveMeta();}
-        const list=audsOf(cur);
-        if(list.indexOf(v)<0)setAuds(cur,[...list,v]);
-        e.target.value="";renderAud();scheduleSave();}});
+    wireAddIn(q("#audIn",w),v=>{
+      if(![...DEFAULT_AUD,...audCustom].includes(v)){audCustom.push(v);saveMeta();}
+      const list=audsOf(cur);
+      if(list.indexOf(v)<0)setAuds(cur,[...list,v]);
+      renderAud();scheduleSave();});
   }
   renderAud();
 
@@ -7392,9 +7455,7 @@ function renderEditor(){
   ["pros","cons","meh","quotes"].forEach(k=>{
     cur[k]=cur[k]||[];
     renderList(k);
-    q("#add-"+k).addEventListener("keydown",e=>{
-      if(e.key==="Enter"&&e.target.value.trim()){
-        cur[k].push(esc(e.target.value.trim()));e.target.value="";renderList(k);scheduleSave();}});
+    wireAddIn(q("#add-"+k),v=>{cur[k].push(esc(v));renderList(k);scheduleSave();});
   });
 
   /* cover */
@@ -7434,8 +7495,7 @@ function renderEditor(){
   async function addPicture(file){
     if(!file||!file.type.startsWith("image/"))return;
     let data;try{data=await compressImage(file);}catch(err){alert("That image couldn't be read.");return;}
-    const rect=page.getBoundingClientRect();
-    const baseY=Math.max(20,-rect.top+160);
+    const baseY=scrapDropY(page);
     const im={id:uid(),x:30+(cur.images.length*26)%180,y:baseY+(cur.images.length*18)%90,w:240,behind:false};
     try{await dbPut("images",{key:cur.id+"|"+im.id,data});}catch(err){alert("That image couldn't be saved.");return;}
     curImgs[im.id]=data;cur.images.push(im);
@@ -7786,8 +7846,7 @@ function renderEditor(){
   /* notepad pages */
   function addPad(){
     cur.pads=cur.pads||[];
-    const rect=page.getBoundingClientRect();
-    const baseY=Math.max(20,-rect.top+160);
+    const baseY=scrapDropY(page);
     const n=cur.pads.length;
     const p={id:uid(),x:30+(n*26)%180,y:baseY+(n*18)%90,w:220,h:170,
       skin:settings.lastPadSkin||"yellow",shape:settings.lastPadShape||"none",html:""};
