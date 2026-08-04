@@ -953,6 +953,11 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   #edPage.fit .pad .padshape{position:relative;inset:auto;height:auto;min-height:120px}
   #edPage.fit .padtext{height:auto;min-height:96px}
   #edPage.fit #drawLayer{display:none}   /* whole-page marks can't map onto a stack */
+  /* ...and for the same reason they aren't shown in the form: a mark remembers a
+     place on the page, and the form puts entirely different things at that place
+     than the reading page does. Marks on a picture or a note still show here,
+     because those are held by the thing they were drawn on. */
+  #edPage.edform #drawLayer{display:none}
 
   #drawLayer{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:46;overflow:visible}
   .dsvg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible}
@@ -6264,10 +6269,28 @@ function wireScrapbook(page,host){
      "only while the scrapbook bar is open", so a stray tap on a note while you
      are simply reading can't start typing into it. */
   const padWritable=()=>host.editor?(mode!=="arrange"):(viewArrange&&mode!=="arrange");
+  /* A mark on the page itself is remembered as a place on the page — so far
+     across, so far down. The form and the reading page are not the same page:
+     the form stacks the cover, the title, the author, the checkboxes and the
+     ratings above the spot where the reading page has your summary. The same
+     remembered place is therefore a different place in each, and a mark drawn
+     beside your writing turned up beside the DNF button in the form.
+
+     Pictures and notes were taken out of this trap by standing them in a row in
+     the form, but you cannot stand a scribble in a row. So marks on the page
+     belong to the reading page, which is where they were drawn and where they
+     sit beside what they were drawn about. In the form they are not shown and
+     not drawn — the app already does exactly this in Fit mode, where the code
+     says a whole-page mark cannot be mapped onto a stack. Marks on a picture or
+     a note are a different matter entirely: those travel with the thing they are
+     on, so they show and can be drawn in both places. */
+  const pageMarks=()=>!host.editor;
   /* ---- modes: exactly one of write / arrange / draw / tag ---- */
   const MODE_HELP={
     arrange:["✥","Arranging — drag pictures and notes anywhere, even out into the margins. Amber handle tilts, ⋯ flips and layers."],
-    draw:["✏️","Drawing — marks stick to whatever you draw them on: the page, a picture, or a note."],
+    draw:["✏️",host.editor
+      ?"Drawing — draw on a picture or a note and the marks travel with it. Marks on the page itself are drawn where you read it."
+      :"Drawing — marks stick to whatever you draw them on: the page, a picture, or a note."],
     tag:["🏷","Tagging — click any word, or drag a phrase, to turn it into a keyword."]
   };
   function renderModeBar(){
@@ -6282,6 +6305,7 @@ function wireScrapbook(page,host){
     page.classList.toggle("arr",mode==="arrange");
     page.classList.toggle("draw",mode==="draw");
     page.classList.toggle("tagmode",mode==="tag");
+    page.classList.toggle("edform",!!host.editor);   /* hides the whole-page marks */
     qa("[data-mode]").forEach(b=>b.classList.toggle("on",b.dataset.mode===mode));
     const db=q("#dbar");if(db)db.hidden=mode!=="draw";
     renderModeBar();
@@ -6447,6 +6471,13 @@ function wireScrapbook(page,host){
     if(!store)return;
     const [sx,sy]=surfScale(surf);
     const where=SURF_NAME[surf.kind]||surf.kind;
+    /* the form doesn't show marks on the page, so it mustn't make them either —
+       drawing into something you can't see, at a spot that means somewhere else
+       entirely, is how the mark beside your summary ended up beside DNF */
+    if(surf.kind==="page"&&!pageMarks()){
+      sayDraw("Marks on the page itself are made where you read the book — they sit beside your writing there, and this form puts different things in the same spot. Pictures and notes you can draw on right here.");
+      return;
+    }
     if(drawTool==="erase"){
       const px=surfPt(surf,e.clientX,e.clientY);
       const at=[px[0]*sx,px[1]*sy];
@@ -6543,13 +6574,20 @@ function wireScrapbook(page,host){
   const dwIn=q("#dw");if(dwIn)dwIn.oninput=e=>{drawWidth=+e.target.value;};
   const hlIn=q("#hlDim");if(hlIn)hlIn.oninput=e=>{hlAlpha=+e.target.value/100;};
   const dcl=q("#dclear");
-  if(dcl)dcl.onclick=()=>{
-    if(!confirm("Rub out every mark on this page, its pictures and its notes? The Undo button can bring them back."))return;
-    cur.draw=[];
-    (cur.images||[]).forEach(im=>im.draw=[]);
-    (cur.pads||[]).forEach(p=>p.draw=[]);
-    syncDraw();scheduleSave();
-  };
+  if(dcl){
+    /* in the form this must not touch the marks on the page — they aren't shown
+       here, and rubbing out things you can't see is no kind of Clear all */
+    dcl.title=pageMarks()?"Rub out every mark in this book":"Rub out the marks on this book's pictures and notes";
+    dcl.onclick=()=>{
+      if(!confirm(pageMarks()
+        ?"Rub out every mark on this page, its pictures and its notes? The Undo button can bring them back."
+        :"Rub out the marks on this book's pictures and notes? The marks on the page itself are left alone — they belong to the page you read, and aren't shown here. The Undo button can bring these back."))return;
+      if(pageMarks())cur.draw=[];
+      (cur.images||[]).forEach(im=>im.draw=[]);
+      (cur.pads||[]).forEach(p=>p.draw=[]);
+      syncDraw();scheduleSave();
+    };
+  }
   setDrawUI();
 
   /* ---- how far left/right things may roam ----
