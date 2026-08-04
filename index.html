@@ -974,6 +974,17 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .dbar{display:flex;align-items:center;gap:6px;padding:6px 10px;flex-wrap:wrap;
     background:var(--bg);border:1px solid var(--line);border-top:none;
     border-radius:0 0 10px 10px;box-shadow:0 6px 16px rgba(0,0,0,.14)}
+  /* the reading page's scrapbook row rides in the floating stack, so it needs the
+     dropped-panel look the draw bar has rather than the seam that suits a row
+     sitting inside the bar */
+  .edbarfloat .r2{border-top:none;padding:6px 10px;margin:0 0 2px;
+    background:var(--bg);border:1px solid var(--line);border-top:none;
+    border-radius:0 0 10px 10px;box-shadow:0 6px 16px rgba(0,0,0,.14)}
+  /* what the pen or the rubber just did. Quiet, and only ever a sentence — it is
+     here because a mark landing away from the finger, and the rubber not biting,
+     could not be reproduced anywhere but on the owner's own machine. */
+  .drawsay{font-size:12px;color:var(--muted,#78716c);flex:1 1 100%;min-width:0;padding:1px 2px 0}
+  .drawsay:empty{display:none}
   /* which mode you're in, and how to leave it */
   .modebar{display:flex;align-items:center;gap:9px;padding:7px 11px;margin:0 0 2px;border-radius:0 0 10px 10px;
     background:#0f766e;color:#fff;font-size:12.5px}
@@ -1174,23 +1185,26 @@ function drawSvgHtml(strokes,sx,sy){
    11 pixels, measured against a line drawn 3 pixels wide, so rubbing something
    out meant hunting for the line rather than pointing at it. */
 const ERASE_GRAB=26;
-/* How far the pointer is from a mark, in the same pixels the mark is drawn in —
-   or Infinity for "not within reach". A distance rather than a yes/no, because
-   the rubber now takes the NEAREST mark within reach instead of the topmost one
-   that merely qualifies: widening the reach without that would let a big shape
-   swallow the pen line lying right across it. */
+/* how near this particular mark lets you get — a fat highlighter is easier to
+   catch than a hairline, so reach grows with the stroke */
+const strokeReach=s=>Math.max(ERASE_GRAB,(s.t==="hl"?s.w*4:s.w*2));
+/* How far the pointer really is from a mark, in the same pixels the mark is
+   drawn in. A true distance rather than a yes/no, for two reasons: the rubber
+   takes the NEAREST mark rather than the topmost one that merely qualifies
+   (widening the reach without that would let a big shape swallow the pen line
+   lying right across it), and when nothing is rubbed out the readout can say how
+   far away the nearest mark actually was instead of leaving you guessing. */
 function strokeDist(s,px,sx,sy){
   const p=(s.pts||[]).map(q2=>[q2[0]*sx,q2[1]*sy]);
   if(!p.length)return Infinity;
-  const grab=Math.max(ERASE_GRAB,(s.t==="hl"?s.w*4:s.w*2));
   let d;
   if(s.t==="pen"||s.t==="hl"){
     d=Math.hypot(p[0][0]-px[0],p[0][1]-px[1]);
     for(let i=1;i<p.length;i++)d=Math.min(d,distToSeg(px,p[i-1],p[i]));
-    return d<grab?d:Infinity;
+    return d;
   }
   const a=p[0],b=p[1]||p[0];
-  if(s.t==="line"||s.t==="arrow"){d=distToSeg(px,a,b);return d<grab?d:Infinity;}
+  if(s.t==="line"||s.t==="arrow")return distToSeg(px,a,b);
   const x0=Math.min(a[0],b[0]),x1=Math.max(a[0],b[0]),y0=Math.min(a[1],b[1]),y1=Math.max(a[1],b[1]);
   if(s.t==="rect"){
     d=Math.min(distToSeg(px,[x0,y0],[x1,y0]),distToSeg(px,[x1,y0],[x1,y1]),
@@ -1200,10 +1214,10 @@ function strokeDist(s,px,sx,sy){
     const th=Math.atan2((px[1]-my)/ry,(px[0]-mx)/rx);
     d=Math.hypot(px[0]-(mx+rx*Math.cos(th)),px[1]-(my+ry*Math.sin(th)));
   }
-  if(d<grab)return d;
   /* pointing into the middle of a big rectangle or ring still rubs it out, the
-     way it always has — but it now loses to any mark actually under the pointer */
-  return (px[0]>=x0&&px[0]<=x1&&px[1]>=y0&&px[1]<=y1)?grab:Infinity;
+     way it always has — but it loses to any mark actually under the pointer */
+  if(d>strokeReach(s)&&px[0]>=x0&&px[0]<=x1&&px[1]>=y0&&px[1]<=y1)return strokeReach(s);
+  return d;
 }
 
 /* notepad looks — CSS only, no assets */
@@ -5913,8 +5927,19 @@ function renderBookView(){
     </div>
     <!-- The scrapbook bar. It carries the same ids as the form's, because both
          faces run the same code and it looks its buttons up by name. It is only
-         here while the scrapbook is open, so reading a book stays reading. -->
-    ${viewArrange?`<div class="r2" id="tbar">
+         here while the scrapbook is open, so reading a book stays reading.
+
+         It FLOATS, inside .edbarfloat, and that is not a detail. The form's copy
+         of this row is always there, so it can sit in the bar and take up room.
+         This one comes and goes — and the bar is inside the page that pictures,
+         notes and marks are positioned against, so a row that took up room would
+         shove every word down by its own height while not one of them moved with
+         it. Measured before this: opening the scrapbook grew the bar from 57 to
+         97 and carried the title from 73 down to 113, while the marks stayed at
+         exactly 0. The mode banner and the draw bar float for the same reason,
+         and the comment above .edbarfloat has said so all along. -->
+    ${viewArrange?`<div class="edbarfloat">
+    <div class="r2" id="tbar">
       <span id="colStrip"></span>
       <input type="color" id="tcol" value="${drawColor}" title="Any colour you like">
       <span class="vline"></span>
@@ -5930,20 +5955,20 @@ function renderBookView(){
       <button class="sm" data-mode="arrange" title="Drag, tilt and layer your pictures and notes">✥ Arrange</button>
       <button class="sm" data-mode="draw" title="Draw on the page, on pictures and on notes">✏️ Draw</button>
     </div>
-    <div class="edbarfloat">
-      <div class="modebar" id="modeBar" hidden></div>
-      <div class="dbar" id="dbar" hidden>
-        <span class="lbl">Draw:</span>
-        ${DRAW_TOOLS.map(([id,ic,t])=>`<button class="sm dtool" data-dt="${id}" title="${t}">${ic}</button>`).join("")}
-        <span class="vline"></span>
-        <span id="hlModeWrap" hidden></span>
-        <span class="lbl">Thickness</span>
-        <input type="range" id="dw" min="1" max="18" value="${drawWidth}" title="Thickness">
-        <span id="hlWrap" hidden><span class="vline"></span><span class="lbl">Dimness</span>
-          <input type="range" id="hlDim" min="8" max="70" value="${Math.round(hlAlpha*100)}" title="How see-through the highlight is" style="width:78px;accent-color:var(--teal)"></span>
-        <span class="vline"></span>
-        <button class="sm" id="dclear" title="Rub out every mark in this book">Clear all</button>
-      </div>
+    <div class="modebar" id="modeBar" hidden></div>
+    <div class="dbar" id="dbar" hidden>
+      <span class="lbl">Draw:</span>
+      ${DRAW_TOOLS.map(([id,ic,t])=>`<button class="sm dtool" data-dt="${id}" title="${t}">${ic}</button>`).join("")}
+      <span class="vline"></span>
+      <span id="hlModeWrap" hidden></span>
+      <span class="lbl">Thickness</span>
+      <input type="range" id="dw" min="1" max="18" value="${drawWidth}" title="Thickness">
+      <span id="hlWrap" hidden><span class="vline"></span><span class="lbl">Dimness</span>
+        <input type="range" id="hlDim" min="8" max="70" value="${Math.round(hlAlpha*100)}" title="How see-through the highlight is" style="width:78px;accent-color:var(--teal)"></span>
+      <span class="vline"></span>
+      <button class="sm" id="dclear" title="Rub out every mark in this book">Clear all</button>
+      <span class="drawsay" id="drawSay"></span>
+    </div>
     </div>`:""}</div>
     ${viewArrange?`<div class="bgpanel" id="padPanel" hidden></div>
     <div class="bgpanel" id="cutPanel" hidden></div>
@@ -6405,11 +6430,23 @@ function wireScrapbook(page,host){
     if(pl)qa(".pad",pl).forEach(el=>{const p=(cur.pads||[]).find(x=>x.id===el.dataset.pad);if(p)paintSurface(el,p.draw);});
     if(dl)dl.innerHTML=drawSvgHtml(cur.draw,1,1);
   }
+  /* ---- the readout ----
+     Twice now a mark has been reported landing away from the finger, or the
+     rubber refusing to bite, and neither could be made to happen here — drawing
+     measured exact to the pixel, scrolled or not. Rather than ship a third guess,
+     the draw bar now says what actually happened on the machine it happened on:
+     which surface the mark went to, how far it ended up from where you pressed,
+     and — when nothing is rubbed out — how near the closest mark really was
+     against how near it needed to be. */
+  const SURF_NAME={page:"the page",img:"a picture",pad:"a note"};
+  function sayDraw(msg){const el=q("#drawSay");if(el)el.textContent=msg||"";}
+  const boxGap=(r,x,y)=>Math.round(Math.hypot(Math.max(r.left-x,0,x-r.right),Math.max(r.top-y,0,y-r.bottom)));
   function startStroke(e){
     const surf=surfaceOf(e);
     const store=strokeStore(surf);
     if(!store)return;
     const [sx,sy]=surfScale(surf);
+    const where=SURF_NAME[surf.kind]||surf.kind;
     if(drawTool==="erase"){
       const px=surfPt(surf,e.clientX,e.clientY);
       const at=[px[0]*sx,px[1]*sy];
@@ -6419,10 +6456,19 @@ function wireScrapbook(page,host){
         const d=strokeDist(store[i],at,sx,sy);
         if(d<best){best=d;hit=store[i];}
       }
-      if(hit){store.splice(store.indexOf(hit),1);syncDraw();scheduleSave();}
+      const reach=hit?strokeReach(hit):ERASE_GRAB;
+      if(hit&&best<=reach){
+        store.splice(store.indexOf(hit),1);syncDraw();scheduleSave();
+        sayDraw(`Rubbed out a mark on ${where} — it was ${Math.round(best)}px from your finger.`);
+      }else if(!store.length){
+        sayDraw(`Nothing to rub out: there are no marks on ${where}.`);
+      }else{
+        sayDraw(`Nothing rubbed out. ${store.length} mark${store.length>1?"s":""} on ${where}, nearest ${Math.round(best)}px away — needs to be within ${reach}px.`);
+      }
       return;
     }
     e.preventDefault();
+    const downX=e.clientX,downY=e.clientY;
     const s={t:drawTool,c:drawColor,w:drawWidth,pts:[surfPt(surf,e.clientX,e.clientY)]};
     if(drawTool==="hl")s.o=hlAlpha;      /* each highlight keeps the dimness it was drawn with */
     store.push(s);
@@ -6447,6 +6493,14 @@ function wireScrapbook(page,host){
       window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);
       if(s.pts.length<2)s.pts.push([...s.pts[0]]);
       syncDraw();scheduleSave();
+      /* measure the mark as drawn, on screen, against where the pen went down —
+         the one number that settles "it lands somewhere else" either way */
+      const svg=isPage?q("#drawLayer"):q(".dsvg",surf.el);
+      const kid=svg&&svg.children.length?svg.children[svg.children.length-1]:null;
+      const gap=kid?boxGap(kid.getBoundingClientRect(),downX,downY):null;
+      sayDraw(gap==null?`Drew on ${where}.`
+        :gap<=2?`Drew on ${where} — the mark is under your finger.`
+        :`Drew on ${where} — but the mark landed ${gap}px away from your finger.`);
     };
     window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
   }
@@ -6929,6 +6983,7 @@ function renderEditor(){
           <input type="range" id="hlDim" min="8" max="70" value="${Math.round(hlAlpha*100)}" title="How see-through the highlight is" style="width:78px;accent-color:var(--teal)"></span>
         <span class="vline"></span>
         <button class="sm" id="dclear" title="Rub out every mark in this book">Clear all</button>
+        <span class="drawsay" id="drawSay"></span>
       </div>
       </div>
     </div>
