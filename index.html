@@ -273,6 +273,10 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .tbtn{border:none;border-radius:6px;padding:4px 8px;color:#57534e;font-weight:700}
   .tbtn:hover{background:#e7e5e4}
   .tbtn.i{font-style:italic}.tbtn.u{text-decoration:underline}
+  /* a formatting button that stays pressed — the highlighter is a mode you leave
+     on while you work through a page, not a thing you press once per phrase */
+  .tbtn.on{background:var(--teal);color:#fff}
+  .tbtn.on:hover{background:#0d9488}
   .cdot{width:15px;height:15px;border-radius:50%;padding:0;border:1px solid rgba(0,0,0,.1)}
   .cdot:hover{transform:scale(1.2)}
   .vline{width:1px;height:16px;background:#d6d3d1;margin:0 3px}
@@ -500,6 +504,14 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   #main.artmode .lpgrip{display:block}
   .foot{margin-top:40px;font-size:11px;color:var(--faint);text-align:center}
   .kw{display:inline-flex;align-items:center;gap:3px;border:1px solid #d6d3d1;background:#fafaf9;color:#57534e;font-weight:700;font-size:10px;border-radius:5px;padding:0 5px;margin:1px}
+  /* The ✕ that takes a tag off. It was ten pixels wide at 60% opacity inside a
+     56-pixel chip, and the chip itself opens the tag for editing — so missing it
+     by a hair did something else entirely, and the whole thing read as "there is
+     no way to delete a tag". It is now a real target you can see and hit. */
+  .kw .x{cursor:pointer;background:none;border:none;color:inherit;font:inherit;
+    font-size:12px;line-height:1;opacity:.75;padding:2px 4px;margin:0 -2px 0 2px;
+    min-width:20px;border-radius:5px}
+  .kw .x:hover{opacity:1;background:var(--rose);color:#fff}
   /* chips you've arranged yourself: a break here means the next one starts a row,
      however much space is left on this one */
   .chiprow{display:flex;flex-wrap:wrap;align-items:center;gap:3px}
@@ -1186,8 +1198,10 @@ const DRAW_SWATCHES=["#dc2626","#ea580c","#ca8a04","#059669","#0d9488","#2563eb"
 /* the highlighter wants soft, washed-out inks — the pen's colours go muddy at low opacity */
 const HL_SWATCHES=["#fde68a","#fdba74","#fca5a5","#f9a8d4","#d8b4fe","#a5b4fc","#93c5fd","#99f6e4","#bbf7d0","#e5e7eb"];
 let drawTool="pen",drawColor="#dc2626",drawWidth=3,hlAlpha=.35,hlMode="free";
-/* the colour the text highlighter beside B/I/U lays down, kept between uses */
-let hlColor=HL_SWATCHES[0];
+/* the text highlighter beside B/I/U: the colour it lays down, and whether it is
+   currently out. Both kept between uses, so putting it down to type something and
+   picking it up again doesn't cost you the colour you'd chosen. */
+let hlColor=HL_SWATCHES[0],hlOn=false;
 const distToSeg=(p,a,b)=>{
   const dx=b[0]-a[0],dy=b[1]-a[1],L=dx*dx+dy*dy;
   if(!L)return Math.hypot(p[0]-a[0],p[1]-a[1]);
@@ -7309,41 +7323,70 @@ function renderEditor(){
     ed.normalize();
     return n;
   }
-  /* Highlighting words, as a formatting button rather than a mode. One press on
-     a selection: if any of it is already highlighted the colour comes off, and
-     otherwise it goes on. No mode to enter, nothing to remember to leave. */
-  function runHighlight(){
+  /* The highlighter is a pen you pick up and put down, not a button you press
+     once per phrase. Left on, every run of words you select gets coloured the
+     moment you let go — which is how you actually read through a page marking
+     things. Right-click a selection instead and the colour comes off, so taking
+     a highlight back never means hunting for another control. */
+  const hlSelection=(remove)=>{
     const sel=window.getSelection();
-    if(!sel||!sel.rangeCount||sel.isCollapsed){
-      alert("Select the words you want to highlight first.");return;
-    }
+    if(!sel||!sel.rangeCount||sel.isCollapsed)return false;
     const range=sel.getRangeAt(0);
     const n=range.commonAncestorContainer;
     const el=n.nodeType===1?n:n.parentElement;
     const ed=el&&el.closest&&el.closest('[contenteditable="true"]');
-    if(!ed)return;
-    /* already coloured? then this press is the undoing of it */
-    if(clearHighlight(range,ed)){
+    if(!ed)return false;
+    if(remove){
+      const hit=clearHighlight(range,ed);
       sel.removeAllRanges();
-      ed.dispatchEvent(new Event("input",{bubbles:true}));
-      return;
+      if(hit)ed.dispatchEvent(new Event("input",{bubbles:true}));
+      return true;
     }
     const rgba=hexToRgba(hlColor,hlAlpha);
     document.execCommand("styleWithCSS",false,true);
     if(!document.execCommand("hiliteColor",false,rgba))document.execCommand("backColor",false,rgba);
     sel.removeAllRanges();
     ed.dispatchEvent(new Event("input",{bubbles:true}));   /* let the field save itself */
-  }
+    return true;
+  };
+  page.addEventListener("mouseup",e=>{
+    if(!hlOn)return;
+    if(e.target.closest(".edbar,.bgpanel,.dropmenu"))return;   /* the bar is not the page */
+    setTimeout(()=>hlSelection(false),0);   /* let the selection settle first */
+  });
+  page.addEventListener("contextmenu",e=>{
+    if(!hlOn)return;
+    const sel=window.getSelection();
+    if(!sel||!sel.rangeCount||sel.isCollapsed)return;
+    if(e.target.closest(".edbar,.bgpanel,.dropmenu"))return;
+    e.preventDefault();          /* only while the highlighter is out */
+    hlSelection(true);
+  });
   const hlB=q("#fmtHl");
-  if(hlB)hlB.onclick=runHighlight;
+  const paintHl=()=>{
+    if(!hlB)return;
+    hlB.classList.toggle("on",hlOn);
+    /* off, the button wears the colour it would lay down; on, it wears the mode */
+    hlB.style.background=hlOn?"":hexToRgba(hlColor,.9);
+    hlB.title=hlOn
+      ? "Highlighter is out — select any words to colour them, right-click a selection to take the colour off. Press to put it away."
+      : "Highlighter — press to pick it up, then just select words to colour them";
+  };
+  if(hlB)hlB.onclick=()=>{
+    hlOn=!hlOn;
+    /* tagging also acts on whatever you select, so the two can't both be out */
+    if(hlOn&&mode==="tag")setMode("write");
+    paintHl();
+  };
   const hlPick=q("#fmtHlPick"),hlMenu=q("#hlMenu");
   if(hlPick&&hlMenu){
-    const paint=()=>{hlB.style.background=hexToRgba(hlColor,.9);};
-    paint();
+    paintHl();
     hlMenu.innerHTML=HL_SWATCHES.map(c=>
       `<button class="cdot" data-hlc="${c}" style="background:${c};margin:2px" title="Highlight in this"></button>`).join("");
     qa("[data-hlc]",hlMenu).forEach(b=>b.onclick=()=>{
-      hlColor=b.dataset.hlc;hlMenu.hidden=true;paint();
+      hlColor=b.dataset.hlc;hlMenu.hidden=true;
+      if(!hlOn)hlOn=true;      /* choosing a colour is picking the pen up */
+      paintHl();
     });
     hlPick.onclick=e=>{e.stopPropagation();hlMenu.hidden=!hlMenu.hidden;};
     if(window.__hlMenuDown)document.removeEventListener("pointerdown",window.__hlMenuDown);
@@ -7355,6 +7398,7 @@ function renderEditor(){
   }
   page.addEventListener("mouseup",e=>{
     if(mode!=="tag")return;
+    if(hlOn)return;            /* the highlighter has the selection */
     if(e.target.closest("button,input,select,.edbar,.sbar"))return;
     const sel=window.getSelection();
     if(!sel||!sel.rangeCount)return;
@@ -8215,7 +8259,7 @@ function renderEditor(){
           +esc(k)
           +(tagEdit?`<button class="chmv" data-kmv="${i}|1" title="Move it right">▶</button>`
             +`<button class="chmv ${kbr.has(k)?"on":""}" data-kbr="${esc(k)}" title="${kbr.has(k)?"Let the next one sit beside this":"Start a new row after this"}">↵</button>`:"")
-          +` <button class="x" data-kx="${i}" style="cursor:pointer;opacity:.6;background:none;border:none;color:inherit;font:inherit;padding:0" title="Remove this keyword">✕</button></span>`
+          +`<button class="x" data-kx="${i}" title="Take this tag off this book">✕</button></span>`
           +(kbr.has(k)?'<span class="rowbreak"></span>':"")).join("");})()}</div>
       <input id="kwIn" class="addin" placeholder='Search your keywords, or type a new one… (Enter)'>
       <div id="kwSug"></div>
