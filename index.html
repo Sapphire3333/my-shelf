@@ -2485,6 +2485,7 @@ try{
 let lastFocusPull=0;
 function onHidden(){
   if(view==="book"&&cur){clearTimeout(saveTimer);commitCur();}
+  if(impSaveT)writeImportQueue();   /* a staged list waiting on its timer */
 }
 let lastMaint=0,hiddenAt=0;
 /* everything this device might not have heard about yet, asked for on purpose.
@@ -3342,9 +3343,15 @@ function wireOpen(root,withDel){
    now. The stage is written down only where it differs from the collection's,
    because a story that agrees with the book it sits in should stay inside it
    rather than step out onto the shelf on its own. */
-async function bookToEntry(b,collId,collStatus){
+async function bookToEntry(b,collId,collStatus,collAuthor){
   const en=blankEntry();
   en.title=b.title;en.rating=b.rating;en.pages=b.pages;
+  /* the author came across as nothing at all. A story says only what differs
+     from its collection, and the name was never written down either way — so a
+     book folded into a collection that had no author lost its author entirely,
+     and "same as the collection" meant same as nothing. */
+  const ba=String(b.author||"").trim();
+  if(ba&&ba!==String(collAuthor||"").trim())en.author=ba;
   en.summary=b.summary||"";en.notes=b.canvasText||"";
   /* every reading travels, not just the last date one of them ended on. Folding
      a book in used to keep its finish date and quietly drop the day it was
@@ -3379,11 +3386,18 @@ async function foldIntoCollection(ids,coll){
   if(!coll||!isColl(coll))return 0;
   coll.entries=coll.entries||[];
   const st=statusOf(coll);
+  /* a collection with no author of its own takes the one its new books agree
+     on, rather than leaving every one of them saying "same as the collection"
+     and the collection saying nothing */
+  if(!String(coll.author||"").trim()){
+    const names=[...new Set(ids.map(id=>{const b=books.find(x=>x.id===id);return b?String(b.author||"").trim():"";}).filter(Boolean))];
+    if(names.length===1)coll.author=names[0];
+  }
   let n=0;
   for(const id of ids){
     const b=books.find(x=>x.id===id);
     if(!b||isColl(b)||b.id===coll.id)continue;
-    const {en}=await bookToEntry(b,coll.id,st);
+    const {en}=await bookToEntry(b,coll.id,st,coll.author);
     coll.entries.push(en);
     await retireBook(b);
     n++;
@@ -3410,7 +3424,7 @@ async function makeCollectionFrom(ids,name,author){
   nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":sel.some(b=>statusOf(b)==="reading")?"reading":"want";
   nb.dateFinished=sel.map(b=>b.dateFinished||"").sort().pop()||"";
   nb.entries=[];
-  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id,nb.status)).en);
+  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id,nb.status,nb.author)).en);
   nb.modified=Date.now();
   await dbPut("books",nb);
   books.unshift(nb);
@@ -3705,6 +3719,8 @@ function renderLibrary(){
       <button class="btn" id="selSer" ${libSel.size>1?"":"disabled"}>🔗 Link as a series…</button>
       <button class="btn" id="selColl" ${libSel.size>1?"":"disabled"}>📚 Fold into one collection…</button>
       ${collsOnShelf().length?`<button class="btn" id="selInto" ${libSel.size?"":"disabled"} title="Put them inside a collection you already have">📥 Into a collection…</button>`:""}
+      ${(()=>{const n=list.filter(b=>!b._story).length;
+        return n?`<button class="btn" id="selAll" title="Tick everything the shelf is showing right now — a filter or the find box narrows what that means">✓ Tick all ${n}</button>`:"";})()}
       <button class="btn" id="selNone" ${libSel.size?"":"disabled"}>Untick all</button></div>
       <div class="hrow2" style="margin-top:7px">
         <span class="lbl">Give them all:</span>
@@ -3958,6 +3974,10 @@ function renderLibrary(){
     if(sk)sk.onclick=()=>openApply("Which keyword",[...new Set(books.flatMap(b=>b.keywords||[]))].sort((a,b)=>a.localeCompare(b)),k=>{
       applyToSel(b=>{b.keywords=b.keywords||[];if(!b.keywords.some(x=>x.toLowerCase()===k.toLowerCase()))b.keywords.push(k);});
     },true);
+    /* everything the shelf is showing, which is not the same as everything on
+       it — a status pill or the find box is how you say what "all" means */
+    const sAll=q("#selAll",m);
+    if(sAll)sAll.onclick=()=>{list.forEach(b=>{if(!b._story)libSel.add(b.id);});renderLibrary();};
     const ss=q("#selSer",m);
     if(ss)ss.onclick=async()=>{
       const nm=prompt("Series name — every ticked book keeps its own page, linked under this name:","");
@@ -4828,15 +4848,20 @@ function refreshImport(){
     const it=importQueue.find(x=>x.id===b.dataset.impone);if(!it)return;
     b.disabled=true;
     await importOne(it);saveImportQueue();
-    render();
+    /* redraw the list and the shelf's tally, not the whole app. A full render
+       rebuilds Overview end to end — a storage scan, a duplicate scan and every
+       staged row re-sorted — for one row leaving a list of thousands. */
+    refreshShelfSub();refreshImport();
   });
   qa("[data-impfill]",box).forEach(b=>b.onclick=async()=>{
     const it=importQueue.find(x=>x.id===b.dataset.impfill);if(!it)return;
     b.disabled=true;
     await importMerge(it);
     saveImportQueue();
-    if(SYNC.on)flushQueue();
-    render();
+    /* no flush here: filing the book already queued the upload, and queueing
+       starts a flush of its own — asking twice only made the device do the
+       whole backlog again for one row */
+    refreshShelfSub();refreshImport();
   });
   /* "nothing new to take from it" is a conclusion, and a conclusion you cannot
      see the working of is indistinguishable from a bug. This shows both sides. */
@@ -7125,7 +7150,10 @@ function renderEditor(){
         const b=books.find(x=>x.id===btn.dataset.fb);if(!b)return;
         if(!confirm(`Fold “${b.title||"Untitled"}” into this collection?\n\nIts own page moves to Recently deleted — notes, rating, pages, cover, the stage it's at and the day you finished it all carry over.`))return;
         btn.disabled=true;
-        const {en,coverData}=await bookToEntry(b,cur.id,statusOf(cur));
+        /* the collection may have no author yet — take this book's, so nothing
+           is lost into a "same as the collection" that means same as nothing */
+        if(!String(cur.author||"").trim()&&String(b.author||"").trim())cur.author=String(b.author).trim();
+        const {en,coverData}=await bookToEntry(b,cur.id,statusOf(cur),cur.author);
         cur.entries.push(en);
         if(coverData)curEnt[en.id]=coverData;
         await retireBook(b);
@@ -8374,7 +8402,13 @@ function fromStorygraph(o){
 }
 
 let importQueue=[];
-function saveImportQueue(){dbPut("meta",{k:"importQueue",v:importQueue});}
+/* The staged list is written whole, and a big export makes it thousands of rows
+   long — so writing it after every single row dealt with was most of the wait.
+   It settles a moment after you stop instead, and is written out in full the
+   moment the tab is put away, so nothing is lost by waiting. */
+let impSaveT=null;
+function writeImportQueue(){clearTimeout(impSaveT);impSaveT=null;dbPut("meta",{k:"importQueue",v:importQueue});}
+function saveImportQueue(){clearTimeout(impSaveT);impSaveT=setTimeout(writeImportQueue,500);}
 /* A staged row can already be on your shelf as a book of its own — or as one of
    the stories inside a collection. The second case is the common one and used to
    be invisible: ten entries can hold a hundred stories, and a series exported
