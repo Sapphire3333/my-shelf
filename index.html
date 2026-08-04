@@ -7350,17 +7350,29 @@ function renderEditor(){
     return true;
   };
   page.addEventListener("mouseup",e=>{
-    if(!hlOn)return;
+    if(!hlOn||e.button!==0)return;      /* the left button draws; the right rubs out */
     if(e.target.closest(".edbar,.bgpanel,.dropmenu"))return;   /* the bar is not the page */
     setTimeout(()=>hlSelection(false),0);   /* let the selection settle first */
   });
+  /* Taking a highlight off, by POINTING at it rather than selecting it. Asking
+     for a selection was a trap of my own making: colouring a phrase clears the
+     selection afterwards, so by the time you right-clicked there was nothing
+     selected and the browser's own menu came up instead — and re-selecting to
+     fix that instantly coloured it again. Nothing to select now: right-click the
+     colour itself and it goes. Right-clicking anywhere else behaves normally,
+     menu and all, even with the pen out. */
   page.addEventListener("contextmenu",e=>{
     if(!hlOn)return;
-    const sel=window.getSelection();
-    if(!sel||!sel.rangeCount||sel.isCollapsed)return;
     if(e.target.closest(".edbar,.bgpanel,.dropmenu"))return;
-    e.preventDefault();          /* only while the highlighter is out */
-    hlSelection(true);
+    const hit=e.target.closest&&e.target.closest('[style*="background"],mark,[bgcolor]');
+    const ed=hit&&hit.closest&&hit.closest('[contenteditable="true"]');
+    if(!hit||!ed)return;               /* not on a highlight — leave the menu alone */
+    e.preventDefault();
+    const r=document.createRange();r.selectNode(hit);
+    if(clearHighlight(r,ed)){
+      const sel=window.getSelection();if(sel)sel.removeAllRanges();
+      ed.dispatchEvent(new Event("input",{bubbles:true}));
+    }
   });
   const hlB=q("#fmtHl");
   const paintHl=()=>{
@@ -8217,6 +8229,18 @@ function renderEditor(){
     if(cur.keywords.some(k=>k.toLowerCase()===v.toLowerCase()))return;
     cur.keywords.push(v);renderKw();scheduleSave();
   }
+  /* Getting rid of a tag altogether: off every book that carries it, out of the
+     vocabulary, and out of its family. Undoable like any other edit. */
+  async function deleteTagForGood(k){
+    const used=books.filter(b=>(b.keywords||[]).includes(k)).length;
+    if(!confirm(`Delete the tag “${k}” for good?\n\nIt comes off ${used} book${used===1?"":"s"} and out of your list of tags. The books themselves are untouched, and Undo can bring it back.`))return;
+    await relabel("keywords",k,"");      /* mapping it to nothing drops it everywhere */
+    markMetaDel("kw:"+k);
+    delete kwColors[k];delete kwCats[k];
+    saveKwColors();saveKwCats();
+    if(SYNC.on)flushQueue();
+    renderKw();renderKwSug();
+  }
   /* Every keyword the shelf knows, kept in one vocabulary so the same one gets
      reused rather than retyped: alphabetical, narrowed as you type, tap to add. */
   function knownKeywords(){
@@ -8235,7 +8259,15 @@ function renderEditor(){
     const fams={};
     shown.forEach(k=>{const c=kwCats[k]||"";(fams[c]=fams[c]||[]).push(k);});
     const named=Object.keys(fams).filter(Boolean).sort((a,b)=>a.localeCompare(b));
-    const chips=list=>list.map(k=>`<span class="kw" data-ks="${esc(k)}" style="cursor:pointer;${kwStyle(k)}">${esc(k)}</span>`).join("");
+    /* This is the only place your whole vocabulary of tags is listed, so it is
+       the only sensible place to get rid of one for good. Deleting used to be
+       reachable only by opening a tag that happened to be on the book in front
+       of you — which left any tag on some other book, or on none at all,
+       impossible to delete from anywhere. The ✕ appears while "Edit names &
+       colours" is on, so an ordinary tap still just adds the tag. */
+    const chips=list=>list.map(k=>`<span class="kw" data-ks="${esc(k)}" style="cursor:pointer;${kwStyle(k)}">${esc(k)}`
+      +(tagEdit?`<button class="x" data-kdel="${esc(k)}" title="Delete “${esc(k)}” for good — off every book and out of this list">✕</button>`:"")
+      +`</span>`).join("");
     box.innerHTML=(shown.length
         ?`<div class="lbl" style="display:block;margin:6px 0 3px">${typed?`Matching (${shown.length})`:`Already in use (${shown.length}) — tap to add`}</div>
           <div class="kwpick">${named.map(c=>
@@ -8243,7 +8275,13 @@ function renderEditor(){
             }${fams[""]&&fams[""].length?`<div class="kwfam">${named.length?'<span class="kwfamname">Loose</span>':""}${chips(fams[""])}</div>`:""}</div>`
         :(typed?`<div class="lbl" style="margin-top:6px">Nothing like that yet — press Enter to make it.</div>`:""))
       +(typed&&!exact&&shown.length?`<div class="lbl" style="margin-top:4px">…or press Enter for a new one.</div>`:"");
-    qa("[data-ks]",box).forEach(x=>x.onclick=()=>addKw(x.dataset.ks));
+    qa("[data-ks]",box).forEach(x=>x.onclick=e=>{
+      if(e.target.closest("[data-kdel]"))return;   /* that ✕ is a different job */
+      addKw(x.dataset.ks);});
+    qa("[data-kdel]",box).forEach(x=>x.onclick=async e=>{
+      e.stopPropagation();
+      await deleteTagForGood(x.dataset.kdel);
+    });
   }
   function renderKw(){
     const w=q("#kwWrap");
@@ -8433,7 +8471,10 @@ function renderEditor(){
       await relabel(isG?"genres":"keywords",name,"");   /* mapping to nothing drops it */
       markMetaDel((isG?"genre:":"kw:")+name);
       if(isG){delete genres[name];saveMeta();renderGenres();}
-      else{delete kwColors[name];saveKwColors();renderKw();}
+      /* its family too, or the tag is gone from every book and still quietly
+         filed under Themes, ready to come back the next time anything reads the
+         families out */
+      else{delete kwColors[name];delete kwCats[name];saveKwColors();saveKwCats();renderKw();renderKwSug();}
       if(SYNC.on)flushQueue();
       scheduleSave();
     };
@@ -8465,7 +8506,9 @@ function renderEditor(){
     tagEdit=!tagEdit;
     page.classList.toggle("tagedit",tagEdit);
     q("#tagEditTog").textContent=tagEdit?"✓ Done":"✎ Edit names & colours";
-    renderGenres();renderKw();
+    /* the list of every tag you own is redrawn too — that's where the ✕ that
+       deletes one for good lives, and it only shows while this is on */
+    renderGenres();renderKw();renderKwSug();
   };
 
   /* genres */
