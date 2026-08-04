@@ -1169,15 +1169,40 @@ function drawSvgHtml(strokes,sx,sy){
     return "";
   }).join("");
 }
-function nearStroke(s,px,sx,sy){
+/* how near you have to get before the rubber takes hold of a mark. It used to be
+   11 pixels, measured against a line drawn 3 pixels wide, so rubbing something
+   out meant hunting for the line rather than pointing at it. */
+const ERASE_GRAB=26;
+/* How far the pointer is from a mark, in the same pixels the mark is drawn in —
+   or Infinity for "not within reach". A distance rather than a yes/no, because
+   the rubber now takes the NEAREST mark within reach instead of the topmost one
+   that merely qualifies: widening the reach without that would let a big shape
+   swallow the pen line lying right across it. */
+function strokeDist(s,px,sx,sy){
   const p=(s.pts||[]).map(q2=>[q2[0]*sx,q2[1]*sy]);
-  if(!p.length)return false;
-  const tol=Math.max(11,(s.t==="hl"?s.w*4:s.w));
-  if(s.t==="pen"||s.t==="hl")return p.some((q2,i)=>i&&distToSeg(px,p[i-1],q2)<tol)||Math.hypot(p[0][0]-px[0],p[0][1]-px[1])<tol;
+  if(!p.length)return Infinity;
+  const grab=Math.max(ERASE_GRAB,(s.t==="hl"?s.w*4:s.w*2));
+  let d;
+  if(s.t==="pen"||s.t==="hl"){
+    d=Math.hypot(p[0][0]-px[0],p[0][1]-px[1]);
+    for(let i=1;i<p.length;i++)d=Math.min(d,distToSeg(px,p[i-1],p[i]));
+    return d<grab?d:Infinity;
+  }
   const a=p[0],b=p[1]||p[0];
-  if(s.t==="line"||s.t==="arrow")return distToSeg(px,a,b)<tol;
-  const x0=Math.min(a[0],b[0])-tol,x1=Math.max(a[0],b[0])+tol,y0=Math.min(a[1],b[1])-tol,y1=Math.max(a[1],b[1])+tol;
-  return px[0]>=x0&&px[0]<=x1&&px[1]>=y0&&px[1]<=y1;
+  if(s.t==="line"||s.t==="arrow"){d=distToSeg(px,a,b);return d<grab?d:Infinity;}
+  const x0=Math.min(a[0],b[0]),x1=Math.max(a[0],b[0]),y0=Math.min(a[1],b[1]),y1=Math.max(a[1],b[1]);
+  if(s.t==="rect"){
+    d=Math.min(distToSeg(px,[x0,y0],[x1,y0]),distToSeg(px,[x1,y0],[x1,y1]),
+               distToSeg(px,[x1,y1],[x0,y1]),distToSeg(px,[x0,y1],[x0,y0]));
+  }else{
+    const mx=(x0+x1)/2,my=(y0+y1)/2,rx=Math.max(1,(x1-x0)/2),ry=Math.max(1,(y1-y0)/2);
+    const th=Math.atan2((px[1]-my)/ry,(px[0]-mx)/rx);
+    d=Math.hypot(px[0]-(mx+rx*Math.cos(th)),px[1]-(my+ry*Math.sin(th)));
+  }
+  if(d<grab)return d;
+  /* pointing into the middle of a big rectangle or ring still rubs it out, the
+     way it always has — but it now loses to any mark actually under the pointer */
+  return (px[0]>=x0&&px[0]<=x1&&px[1]>=y0&&px[1]<=y1)?grab:Infinity;
 }
 
 /* notepad looks — CSS only, no assets */
@@ -6281,7 +6306,11 @@ function renderEditor(){
         <span id="hlModeWrap" hidden>
           <button class="sm" data-hlm="free" title="Draw highlight strokes freehand">✏️ Free</button>
           <button class="sm" data-hlm="text" title="Select words in your writing to highlight them">🔤 Over text</button>
-          <button class="sm" data-hlm="off" title="Select highlighted words to take the colour off them">🧽 Rub out</button>
+          <!-- NOT 🧽: that is the rubber in the row of tools above, which rubs out
+               a drawn mark. This one takes the colour off words you select, and
+               wearing the same icon made reaching for one and getting the other
+               the easiest mistake on this bar. -->
+          <button class="sm" data-hlm="off" title="Select highlighted words to take the colour off them">🚫 Colour off</button>
           <span class="vline"></span>
         </span>
         <span class="lbl">Thickness</span>
@@ -7812,7 +7841,13 @@ function renderEditor(){
     const [sx,sy]=surfScale(surf);
     if(drawTool==="erase"){
       const px=surfPt(surf,e.clientX,e.clientY);
-      const hit=[...store].reverse().find(s=>nearStroke(s,[px[0]*sx,px[1]*sy],sx,sy));
+      const at=[px[0]*sx,px[1]*sy];
+      /* topmost first, so two marks equally near resolve to the one lying on top */
+      let hit=null,best=Infinity;
+      for(let i=store.length-1;i>=0;i--){
+        const d=strokeDist(store[i],at,sx,sy);
+        if(d<best){best=d;hit=store[i];}
+      }
       if(hit){store.splice(store.indexOf(hit),1);syncDraw();scheduleSave();}
       return;
     }
