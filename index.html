@@ -321,6 +321,17 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .readrow input[type=date]{border:none;background:transparent;font:inherit;font-size:12.5px;
     color:var(--ink);width:102px;min-width:0;padding:0}
   .readrow.now .boxbtn{border-color:var(--teal);background:#f0fdfa}
+  /* the ⌄ beside a date, and the year/month rows it drops open. A full-width row
+     of real targets rather than a cramped dropdown — this exists for thumbs. */
+  .dqk{padding:0 4px;margin-left:2px;color:var(--faint);font-size:11px;border-radius:5px;line-height:1}
+  .dqk:hover{color:var(--mut);background:#e7e5e4}
+  .dqpanel{display:flex;flex-direction:column;gap:4px;padding:7px 8px;margin:1px 0 3px 16px;
+    border:1px solid var(--line);border-radius:10px;background:#fff}
+  .dqrow{display:flex;flex-wrap:wrap;gap:4px}
+  .dqrow button{border:1px solid var(--line);background:#fafaf9;color:var(--mut);
+    border-radius:8px;padding:6px 9px;font-size:12.5px;min-width:44px}
+  .dqrow button:hover{border-color:var(--teal);color:var(--ink)}
+  .dqrow button.on{background:var(--teal);border-color:var(--teal);color:#fff;font-weight:700}
   /* visible without being hovered for: this ✕ is how a mis-tapped re-read is
      undone, so it has to be findable the first time you look for it */
   .readx{width:24px;height:24px;border-radius:7px;color:var(--faint);flex:none}
@@ -1593,7 +1604,20 @@ function applyReading(x,st,dnf){
     reads.push({id:uid(),start:"",end:todayStr(),auto:true});
   return syncReads(x);
 }
+/* Re-reads go unquestioned on purpose — see the note above readListHtml — with
+   one exception, which is the only press here that is genuinely ambiguous:
+   "Reading now" on something you have already finished. It might mean you are
+   reading it again, or it might be a thumb landing in the wrong place. Every
+   other press says plainly what it means, and a first reading is never
+   questioned. Returns false if you say no, so the caller leaves it be. */
 function markStatus(b,what){
+  if(what==="reading"&&!b.dnf&&statusOf(b)!=="reading"&&!openRead(b)){
+    const done=readsOf(b).filter(r=>!r.open).length;
+    if(done){
+      const nm=(b.title||"").trim()||"this";
+      if(!confirm(`Start reading “${nm}” again?\n\nYou have finished it ${done} time${done===1?"":"s"} already. This begins a new reading dated today; the ones before it stay as they are.`))return false;
+    }
+  }
   if(what==="dnf")b.dnf=!b.dnf;
   else{b.status=what;b.dnf=false;}
   return applyReading(b,statusOf(b),b.dnf);
@@ -1622,9 +1646,9 @@ function readListHtml(x,hostId,hint){
   const rows=readsOf(x);
   return `<div class="readlist">${rows.map((r,i)=>`<div class="readrow${r.open?" now":""}">
       <span class="n">${i+1}</span>
-      <span class="boxbtn">Started <input type="date" data-rst="${esc(r.id)}" value="${esc(r.start||"")}"></span>
+      <span class="boxbtn">Started <input type="date" data-rst="${esc(r.id)}" value="${esc(r.start||"")}"><button class="dqk" data-dq title="Pick a year and month without scrolling a calendar">⌄</button></span>
       ${r.open?'<span class="lbl">still reading</span>'
-        :`<span class="boxbtn">Finished <input type="date" data-ren="${esc(r.id)}" value="${esc(r.end||"")}"></span>`}
+        :`<span class="boxbtn">Finished <input type="date" data-ren="${esc(r.id)}" value="${esc(r.end||"")}"><button class="dqk" data-dq title="Pick a year and month without scrolling a calendar">⌄</button></span>`}
       <button class="readx" data-rdel="${esc(r.id)}" title="Take this reading off the list">✕</button>
     </div>`).join("")}
     <div class="readrow"><button class="boxbtn" data-radd="${esc(hostId)}">+ Add a reading</button>
@@ -1632,6 +1656,53 @@ function readListHtml(x,hostId,hint){
         :"Nothing recorded yet. Tapping 📖 Reading now starts one for you."}</span>`}</div>
   </div>`;
 }
+/* ---- landing on a date in two taps ----
+   A date you half-remember is the normal case for a book — you know the year and
+   roughly the month, not the Tuesday. The phone's calendar wants a day and makes
+   you page back through months to reach one, so a reading from 2019 costs a
+   dozen taps. Year, then month, is two, and the day stays whatever it was.
+   Written straight into the date box, which then tells the page it changed in
+   the ordinary way — so the three separate places that listen for these boxes
+   (a book being read, a book being edited, a story inside a collection) need to
+   know nothing about this. */
+const DQ_MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+document.addEventListener("click",e=>{
+  if(!e.target.closest)return;
+  const btn=e.target.closest("[data-dq]");
+  if(btn){
+    e.preventDefault();
+    const row=btn.closest(".readrow"),inp=btn.parentElement.querySelector('input[type="date"]');
+    const wasOpen=row&&row.nextElementSibling&&row.nextElementSibling.classList.contains("dqpanel")
+      &&row.nextElementSibling.__forInput===inp;
+    qa(".dqpanel").forEach(p=>p.remove());
+    if(wasOpen||!row||!inp)return;
+    const nowY=new Date().getFullYear();
+    const had=+(inp.value||"").slice(0,4)||0;
+    const years=[...new Set([...(had?[had]:[]),...Array.from({length:8},(_,i)=>nowY-i)])].sort((a,b)=>b-a);
+    const p=document.createElement("div");
+    p.className="dqpanel";
+    p.innerHTML=`<div class="dqrow">${years.map(y=>`<button data-dqy="${y}">${y}</button>`).join("")}</div>`
+      +`<div class="dqrow">${DQ_MONTHS.map((m,i)=>`<button data-dqm="${i+1}">${m}</button>`).join("")}</div>`;
+    p.__forInput=inp;
+    row.parentNode.insertBefore(p,row.nextSibling);
+    return;
+  }
+  const yb=e.target.closest("[data-dqy]"),mb=e.target.closest("[data-dqm]");
+  if(!yb&&!mb){if(!e.target.closest(".dqpanel"))qa(".dqpanel").forEach(p=>p.remove());return;}
+  const panel=(yb||mb).closest(".dqpanel"),inp=panel&&panel.__forInput;
+  if(!inp)return;
+  const parts=(inp.value||"").split("-");
+  const Y=yb?yb.dataset.dqy:(parts[0]||String(new Date().getFullYear()));
+  const M=mb?String(mb.dataset.dqm).padStart(2,"0"):(parts[1]||"01");
+  const D=parts[2]||"01";
+  inp.value=`${Y}-${M}-${D}`;
+  inp.dispatchEvent(new Event("input",{bubbles:true}));
+  inp.dispatchEvent(new Event("change",{bubbles:true}));
+  qa("[data-dqy],[data-dqm]",panel).forEach(b=>b.classList.remove("on"));
+  if(yb)yb.classList.add("on");
+  /* year then month is the whole gesture, so the month closes it */
+  if(mb)panel.remove();
+});
 /* a book can be for several audiences. `audience` stays a plain joined string so
    older versions and older backups still read it; `audienceList` is the real one */
 const audsOf=b=>Array.isArray(b.audienceList)&&b.audienceList.length
@@ -3131,6 +3202,27 @@ async function doRedo(){const op=HIST.redo.pop();if(!op)return;HIST.undo.push(op
    used to leave the app outright. Each screen is now a step in the browser's own
    history, so back walks the app: form -> the book -> where you came from. */
 let navRestoring=false;
+/* ---- back to where you were ----
+   Coming out of a book dropped you at the top of the shelf, so finding the book
+   you had just been reading meant scrolling the whole way down again — which on
+   a phone, with a long library, is most of the reason leaving a book felt
+   expensive. Each screen remembers how far down it was, and going back to one
+   puts you there. Recorded as you scroll rather than as you leave, because there
+   are several ways out of a book and only one of them is the back button. */
+const scrollMem={};
+/* taken as you leave rather than as you scroll: a scroll listener is one more
+   thing that can quietly not fire, and it did not — measured, it recorded
+   nothing at all while the page scrolled 600px underneath it. Leaving is a
+   moment we control, so we take the reading there. */
+function keepMyPlace(){scrollMem[view==="book"?"book":view]=window.scrollY;}
+function restoreScroll(v){
+  const y=scrollMem[v]||0;
+  /* three times over: the page is still being laid out, and a page that has not
+     got its height back yet silently clamps a scroll to whatever it can reach */
+  window.scrollTo(0,y);
+  requestAnimationFrame(()=>window.scrollTo(0,y));
+  setTimeout(()=>window.scrollTo(0,y),80);
+}
 function syncHistory(){
   if(navRestoring)return;
   const st={v:view,b:view==="book"&&cur?cur.id:null,m:view==="book"?bookMode:null};
@@ -3226,7 +3318,8 @@ function render(){
     /* leaving a book by tab: save what was typed, then let go of the editor's
        copy — a stale one left behind could be written back over later edits */
     if(view==="book"&&cur){clearTimeout(saveTimer);try{await commitCur();}catch(e){}cur=null;}
-    view=t.dataset.v;render();window.scrollTo(0,0);
+    keepMyPlace();
+    view=t.dataset.v;render();restoreScroll(view);
   });
   q("#uBtn").onclick=()=>finishSaveThen(doUndo);q("#rBtn").onclick=()=>finishSaveThen(doRedo);refreshHistBtns();
   wireSizeCtrl();
@@ -3451,7 +3544,8 @@ async function hydrateCovers(root){
 /* pick the stage from a list — a single click was too easy to do by accident */
 async function setStatus(id,what){
   const b=books.find(x=>x.id===id);if(!b)return;
-  markStatus(b,what);
+  /* said no to starting it again — touch nothing, not even the edited-at stamp */
+  if(markStatus(b,what)===false){stPickFor=null;renderMain();return;}
   b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
@@ -5865,7 +5959,7 @@ const backLabel=()=>"‹ "+(BACK_NAMES[cameFrom]||"Library");
    the pen and jumping to the top of the page, so you were looking at a different
    screen when you went to check. */
 async function openBook(id,fresh,keepPlace){
-  if(view!=="book")cameFrom=view;
+  if(view!=="book"){cameFrom=view;keepMyPlace();}   /* so Back can bring you here again */
   const found=books.find(b=>b.id===id);
   /* asked to open a book that is gone (deleted since this row was drawn):
      opening a blank page under its old id would create a ghost book */
@@ -6148,7 +6242,7 @@ function renderBookView(){
 
   const page=q("#edPage");
   wireSizeCtrl();
-  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();});};
+  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();restoreScroll(view);});};
   q("#edDel").onclick=()=>deleteBookById(cur.id);
   q("#toEdit").onclick=()=>{vStatusOpen=false;setBookMode("edit");};
   const t2=q("#toEdit2");if(t2)t2.onclick=()=>setBookMode("edit");
@@ -7278,7 +7372,7 @@ function renderEditor(){
   });
 
   wireSizeCtrl();
-  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();});};
+  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();restoreScroll(view);});};
   q("#uBtn").onclick=()=>finishSaveThen(doUndo);
   q("#rBtn").onclick=()=>finishSaveThen(doRedo);
   refreshHistBtns();
