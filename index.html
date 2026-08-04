@@ -3009,7 +3009,7 @@ async function applyOp(op,inv){
       if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});knownKeys.forEach(key=>enqueue({kind:"imgDel",key}));}
     }
     if(view==="book"&&cur&&cur.id===id){
-      if(!body){view="library";render();}else{openBook(id,false);}
+      if(!body){view="library";render();}else{openBook(id,false,true);}
       refreshHistBtns();return;
     }
   }
@@ -3020,7 +3020,7 @@ async function applyOp(op,inv){
     metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
     dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});
     enqueue({kind:"meta",key:"genres"});enqueue({kind:"meta",key:"dnfReasons"});enqueue({kind:"meta",key:"audiences"});
-    if(view==="book"&&cur){openBook(cur.id,false);refreshHistBtns();return;}
+    if(view==="book"&&cur){openBook(cur.id,false,true);refreshHistBtns();return;}
   }
   render();refreshHistBtns();
 }
@@ -5741,14 +5741,22 @@ let cameFrom="library";
    reading "‹ Library" made every trip back a small surprise */
 const BACK_NAMES={overview:"Overview",library:"Library",search:"Search",insights:"Insights",pick:"Pick",history:"History"};
 const backLabel=()=>"‹ "+(BACK_NAMES[cameFrom]||"Library");
-async function openBook(id,fresh){
+/* `keepPlace` means "re-read this book from storage but leave me exactly where I
+   am" — which face of the page I'm on, which mode, whether it's stacked to fit,
+   and how far down I'd scrolled. Undo needs it: it reloads the book to show the
+   change, and reloading is what made an undo while drawing look like it had done
+   nothing at all. It had worked; it just answered by closing the form, dropping
+   the pen and jumping to the top of the page, so you were looking at a different
+   screen when you went to check. */
+async function openBook(id,fresh,keepPlace){
   if(view!=="book")cameFrom=view;
   const found=books.find(b=>b.id===id);
   /* asked to open a book that is gone (deleted since this row was drawn):
      opening a blank page under its old id would create a ghost book */
   if(!found&&!fresh)return;
+  const heldFace=bookMode,heldMode=mode,heldFit=fitScreen,heldScroll=window.scrollY;
   isNew=!found;
-  bookMode=(!found||isRaw(found))?"edit":(settings.bookEdit?"edit":"view");
+  bookMode=keepPlace?heldFace:((!found||isRaw(found))?"edit":(settings.bookEdit?"edit":"view"));
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
   const c=await dbGet("covers",id);curCover=c?c.data:null;
   curImgs={};
@@ -5756,13 +5764,19 @@ async function openBook(id,fresh){
   curEnt={};
   for(const en of cur.entries||[]){if(!en.cover)continue;const d=await loadImgData(id+"|"+en.id);if(d)curEnt[en.id]=d;}
   await preloadPads();
-  mode="write";
-  fitScreen=(settings.fit==null)?window.innerWidth<700:!!settings.fit;   /* auto on phones, else your choice */
+  mode=keepPlace?heldMode:"write";
+  fitScreen=keepPlace?heldFit:((settings.fit==null)?window.innerWidth<700:!!settings.fit);   /* auto on phones, else your choice */
   view="book";renderBook();
   /* a book opens at its beginning. Replacing the page kept whatever scroll the
      library was at, which on a long collection landed you in the middle of its
      list of stories. */
-  if(!navRestoring)window.scrollTo(0,0);
+  if(keepPlace){
+    /* twice: once now, and once after the page has been laid out, because a page
+       that hasn't got its full height back yet silently clamps the scroll */
+    window.scrollTo(0,heldScroll);
+    requestAnimationFrame(()=>window.scrollTo(0,heldScroll));
+  }
+  else if(!navRestoring)window.scrollTo(0,0);
 }
 
 function setSaved(ok){const el=q("#saveMsg");if(el){el.textContent=ok?"Saved":"Saving…";el.className="savemsg "+(ok?"ok":"no");}}
