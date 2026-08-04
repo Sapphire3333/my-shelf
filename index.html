@@ -8304,22 +8304,45 @@ function saveImportQueue(){dbPut("meta",{k:"importQueue",v:importQueue});}
    matched on its own title as well as on title + author, because the export
    names the author of the book while the story usually leaves that to the
    collection around it. */
+/* Two names for the same person, written differently. An export names every
+   author a book has — "Gina Detwiler, Priscilla Shirer" — while the book on
+   your shelf, or the entry inside a collection borrowing its collection's
+   author, may say only "Priscilla Evans Shirer". One word in common is enough
+   to believe it is the same person; nothing in common keeps two different
+   books that happen to share a title apart. */
+const authorWords=s=>new Set(String(s||"").toLowerCase().replace(/[^a-z\s]/g," ")
+  .split(/\s+/).filter(w=>w.length>2));
+function authorsOverlap(a,b){
+  const A=authorWords(a),B=authorWords(b);
+  if(!A.size||!B.size)return true;      /* one side says nothing — the title carries it */
+  for(const w of A)if(B.has(w))return true;
+  return false;
+}
 function markDupes(){
-  const byKey=new Map(),byIsbn=new Map();
+  const byKey=new Map(),byIsbn=new Map(),byTitle=new Map();
   const put=(m,k,v)=>{if(k&&!m.has(k))m.set(k,v);};
   for(const b of books){
     put(byKey,dupeKey(b.title,b.author),{b,en:null});
     /* staged rows carry digits-only ISBNs — a hand-typed hyphenated one on the
        shelf never matched until it was cleaned the same way */
     put(byIsbn,cleanIsbn(b.isbn),{b,en:null});
+    put(byTitle,dupeKey(b.title,""),{b,en:null});
     if(!isColl(b))continue;
     for(const en of ((b.entries)||[])){
       put(byKey,dupeKey(en.title,entAuthorOf(b,en)),{b,en});
-      put(byKey,dupeKey(en.title,""),{b,en});
+      put(byTitle,dupeKey(en.title,""),{b,en});
     }
   }
   importQueue.forEach(it=>{
-    const hit=(it.isbn?byIsbn.get(it.isbn):null)||byKey.get(dupeKey(it.title,it.author));
+    let hit=(it.isbn?byIsbn.get(it.isbn):null)||byKey.get(dupeKey(it.title,it.author));
+    /* The title-only key was being written down and never read, so a book whose
+       author is spelled differently in the export — which is most of them once
+       a co-author is involved — came through as new, and "Add all" would have
+       put a second copy on the shelf beside the one already there. */
+    if(!hit){
+      const t=byTitle.get(dupeKey(it.title,""));
+      if(t&&authorsOverlap(it.author,t.en?entAuthorOf(t.b,t.en):t.b.author))hit=t;
+    }
     it.dupe=!!hit;
     it.hitB=hit?hit.b.id:"";
     it.hitE=(hit&&hit.en)?hit.en.id:"";
