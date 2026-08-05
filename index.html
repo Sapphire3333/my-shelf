@@ -1894,7 +1894,17 @@ const storySurfaces=en=>{
     if(groupBy==="none"&&en.status==="reading"&&!en.dnf)return true;
   }
   if(en.favorite&&sortBy==="favorites")return true;
+  /* Looking for a story by name should find the story, not the book it happens to
+     live in. Searching "prince" used to return the whole Narnia collection with
+     nothing to say why, so you opened it and hunted for the one that matched.
+     Now Prince Caspian answers for itself, marked with the collection it is in. */
+  if(findMatchesStory(en))return true;
   return false;
+};
+/* the Library's find box, as a test one story can answer */
+const findMatchesStory=en=>{
+  const f=(libFind||"").trim().toLowerCase();
+  return !!f&&(en.title||"").toLowerCase().includes(f);
 };
 const strayStories=()=>books.flatMap(b=>!isColl(b)?[]
   :((b.entries)||[]).filter(storySurfaces).map(en=>storyProxy(b,en)));
@@ -3994,7 +4004,11 @@ function renderLibrary(){
   if(!rawN)onlyRaw=false;
   /* the find box narrows by name — title, author, series, even a story inside a collection */
   const flc=libFind.trim().toLowerCase();
-  const findHit=b=>!flc||[b.title,b.author,b.series,...(b.entries||[]).map(en=>en.title)]
+  /* A collection answers for its own name, author and series only. Its stories'
+     titles are no longer folded in here, because each matching story now stands
+     as its own row — folding them in as well would show the collection twice
+     over, once as itself and once for every story that matched. */
+  const findHit=b=>!flc||[b.title,b.author,b.series]
     .some(t=>(t||"").toLowerCase().includes(flc));
   /* the same rule the stage groups follow: a flag beats the stage underneath it,
      so a book you gave up on stops answering to Finished */
@@ -5585,7 +5599,9 @@ function renderSearchBody(){
 
   let results=null,heading="";
   const matchScope=(b,s)=>{switch(s){
-    case "title":return (b.title||"").toLowerCase().includes(qlc)||(b.entries||[]).some(en=>(en.title||"").toLowerCase().includes(qlc));
+    /* a collection answers for its own title; a story of its own that matches is
+       added to the results in its own right, just below */
+    case "title":return (b.title||"").toLowerCase().includes(qlc);
     case "author":return (b.author||"").toLowerCase().includes(qlc);
     case "series":return (b.series||"").toLowerCase().includes(qlc);
     case "genre":return (b.genres||[]).some(g=>g.toLowerCase().includes(qlc));
@@ -5598,6 +5614,20 @@ function renderSearchBody(){
   }return false;};
   if(qlc){
     results=books.filter(b=>S.scopes.some(s=>matchScope(b,s)));
+    /* A story whose title matches stands as its own result, marked with the
+       collection it lives in — searching "prince" should hand you Prince Caspian,
+       not the whole of Narnia with nothing said about why. */
+    if(S.scopes.includes("title")){
+      const seen=new Set(results.map(b=>b.id));
+      books.forEach(b=>{
+        if(!isColl(b))return;
+        (b.entries||[]).forEach(en=>{
+          if(!(en.title||"").toLowerCase().includes(qlc))return;
+          if(seen.has(b.id+"|"+en.id))return;
+          results.push(storyProxy(b,en));
+        });
+      });
+    }
     heading=`“${esc(S.q)}” in ${SCOPES.filter(([id])=>S.scopes.includes(id)).map(([,l])=>l).join(", ")}`;
   }else if(S.filter){
     const f=S.filter;
