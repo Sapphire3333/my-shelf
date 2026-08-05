@@ -4861,6 +4861,7 @@ async function renderHub(){
     <div class="sec">
       <div class="heading"><h2 class="serif">Tidying up</h2><span class="n" id="dupN"></span></div>
       <div class="hcard"><div id="dupBox"><span class="none">Checking for duplicates…</span></div>
+        <div id="nameDupBox"></div>
         <div id="kwDupBox"></div></div>
     </div>
     <div class="sec">
@@ -4971,7 +4972,7 @@ async function renderHub(){
     applySimple();saveSettings();
   };
   q("#simpChk").checked=!!settings.simple;
-  refreshDupes();refreshKwDupes();
+  refreshDupes();refreshNameDupes();refreshKwDupes();
   q("#expBtn").onclick=exportBackup;
   q("#impBtn").onclick=()=>q("#importFile").click();
   qa("[data-th]").forEach(b=>b.onclick=()=>{settings.theme=b.dataset.th;saveSettings();applyTheme();renderHub();});
@@ -5309,6 +5310,72 @@ function refreshDupes(){
         ${g.map((b,i)=>`<button class="btn" data-dup="${b.id}" style="padding:3px 9px">Open ${i+1}${b.rating!=null?` · ★${Number(b.rating).toFixed(1)}`:""}</button>`).join("")}
       </div></div>`).join("");
   qa("[data-dup]",box).forEach(b=>b.onclick=()=>openBook(b.dataset.dup,false));
+}
+
+/* ---- one name, spelled several ways ----
+   An import writes an author down however that site had it, so "C.S. Lewis",
+   "C. S. Lewis" and "CS Lewis" arrive as three different authors: three entries
+   in the author list, three groups when the shelf is grouped by author, and a
+   search for one that finds a third of the books. The same happens to series
+   names. Nothing in the app noticed, because to the app they genuinely are
+   different strings.
+
+   Two names are treated as the same one when they match with the punctuation and
+   spaces taken out — which catches every case above and, deliberately, nothing
+   cleverer. Near-misses are not guessed at: "Tolkien" and "Tolstoy" are not the
+   same author and no amount of fuzziness should be allowed to think so. */
+const nameKey=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
+function nameDupeGroups(){
+  const out=[];
+  [["author","Author",b=>[b.author]],["series","Series",b=>[b.series]]].forEach(([field,label,get])=>{
+    const map={};
+    books.forEach(b=>get(b).forEach(v=>{
+      const name=String(v||"").trim();if(!name)return;
+      const k=nameKey(name);if(!k)return;
+      (map[k]=map[k]||{}) ;
+      (map[k][name]=map[k][name]||[]).push(b);
+    }));
+    Object.values(map).forEach(spellings=>{
+      const names=Object.keys(spellings);
+      if(names.length<2)return;
+      /* the one used most often is the one to keep, unless you say otherwise */
+      names.sort((a,b)=>spellings[b].length-spellings[a].length||a.localeCompare(b));
+      out.push({field,label,names,spellings});
+    });
+  });
+  return out;
+}
+function refreshNameDupes(){
+  const box=q("#nameDupBox");if(!box)return;
+  const groups=nameDupeGroups();
+  if(!groups.length){box.innerHTML="";return;}
+  box.innerHTML=`<div class="grouphead" style="margin:16px 0 8px"><h2 class="serif" style="margin:0;font-size:15px">One name, spelled more than one way</h2>
+      <span class="n">${groups.length}</span><span class="ghline"></span></div>
+    <div class="hint" style="margin:0 0 8px">These look like the same name written differently — an import usually. Press the spelling you want to keep and the others are changed to match it, on every book at once.</div>`
+    +groups.map((g,i)=>`<div class="snap" style="align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <div class="meta">${g.label}</div>
+        <div class="sp" style="flex-wrap:wrap;gap:5px;margin-top:4px">
+          ${g.names.map(nm=>`<button class="btn" data-nmk="${i}" data-nmv="${esc(nm)}" style="padding:3px 9px" title="Keep this spelling and change the others to match">${esc(nm)} <b>${g.spellings[nm].length}</b></button>`).join("")}
+        </div>
+      </div></div>`).join("");
+  qa("[data-nmk]",box).forEach(btn=>btn.onclick=async()=>{
+    const g=groups[+btn.dataset.nmk],keep=btn.dataset.nmv;
+    const others=g.names.filter(n=>n!==keep);
+    if(!others.length)return;
+    const n=others.reduce((s,nm)=>s+g.spellings[nm].length,0);
+    if(!confirm(`Change ${others.map(o=>`“${o}”`).join(" and ")} to “${keep}”?\n\n${n} book${n===1?"":"s"} ${n===1?"is":"are"} affected. Nothing else about them changes, and Undo can put it back.`))return;
+    for(const nm of others){
+      for(const b of g.spellings[nm]){
+        b[g.field]=keep;
+        b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
+        await dbPut("books",b);
+        if(SYNC.on)enqueue({kind:"book",id:b.id});
+      }
+    }
+    if(SYNC.on)flushQueue();
+    refreshNameDupes();refreshDupes();
+  });
 }
 
 /* A keyword that repeats one of your genres says nothing the genre didn't. Exact
