@@ -3948,7 +3948,15 @@ function groupsFor(list){
   }else if(groupBy==="type"){
     TYPES.forEach(([k,l])=>{const items=list.filter(b=>typeOf(b)===k);if(items.length)out.push({label:l,items});});
   }else if(groupBy==="status"){
-    STATUSES.forEach(([k,l])=>{const items=list.filter(b=>statusOf(b)===k);if(items.length)out.push({label:l,items});});
+    /* Given up on and set down are flags rather than stages, and a book carrying
+       one keeps whatever stage it had underneath — so grouping by stage alone
+       filed a book you abandoned under Finished and one you paused under
+       Reading, which is worse than not grouping them at all. They come out
+       first and get groups of their own. */
+    const plain=list.filter(b=>!b.dnf&&!holdOf(b));
+    STATUSES.forEach(([k,l])=>{const items=plain.filter(b=>statusOf(b)===k);if(items.length)out.push({label:l,items});});
+    const held=list.filter(b=>holdOf(b));if(held.length)out.push({label:"⏸ On hold",items:held});
+    const gone=list.filter(b=>b.dnf);if(gone.length)out.push({label:"✕ Did not finish",items:gone});
   }
   return out;
 }
@@ -3965,7 +3973,9 @@ function renderLibrary(){
      of their collections. The counts on the pills must agree with what the list
      below them actually shows, so both are worked out from the same thing. */
   const shelf=[...books,...strayStories()];
-  const counts={all:shelf.length,finished:shelf.filter(b=>statusOf(b)==="finished").length,reading:shelf.filter(b=>statusOf(b)==="reading").length,want:shelf.filter(b=>statusOf(b)==="want").length};
+  const plainSt=k=>shelf.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
+  const counts={all:shelf.length,finished:plainSt("finished"),reading:plainSt("reading"),want:plainSt("want"),
+    hold:shelf.filter(b=>holdOf(b)).length,dnf:shelf.filter(b=>b.dnf).length};
   const kc={};KINDS.forEach(([k])=>kc[k]=books.filter(b=>kindOf(b)===k).length);
   repairGroupArt();
   const rawN=books.filter(isRaw).length;
@@ -3974,13 +3984,21 @@ function renderLibrary(){
   const flc=libFind.trim().toLowerCase();
   const findHit=b=>!flc||[b.title,b.author,b.series,...(b.entries||[]).map(en=>en.title)]
     .some(t=>(t||"").toLowerCase().includes(flc));
-  const list=shelf.filter(b=>(statusFilter==="all"||statusOf(b)===statusFilter)&&kindFilter.includes(kindOf(b))
+  /* the same rule the stage groups follow: a flag beats the stage underneath it,
+     so a book you gave up on stops answering to Finished */
+  const stFilterOk=b=>statusFilter==="all"?true
+    :statusFilter==="hold"?holdOf(b)
+    :statusFilter==="dnf"?!!b.dnf
+    :(statusOf(b)===statusFilter&&!b.dnf&&!holdOf(b));
+  const list=shelf.filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
     &&(!onlyRaw||isRaw(b))&&findHit(b)).sort(sortCmp);
   let html="";
   if(books.length){
     /* the everyday controls: which books, find one, and a lid over all the rest —
        five rows of tools before the first book helped nobody */
-    html+=`<div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading"],["want","Want to read"]].map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}">${l} <b>${counts[id]}</b></button>`).join("")}
+    html+=`<div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading"],["want","Want to read"],
+        ...(counts.hold?[["hold","⏸ On hold"]]:[]),...(counts.dnf?[["dnf","✕ Did not finish"]]:[])]
+      .map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}">${l} <b>${counts[id]}</b></button>`).join("")}
       <input type="search" class="libfind" id="libFind" placeholder="🔎 Find on the shelf…" value="${esc(libFind)}">
       <span class="seg modeseg" title="What you get when you open a book">
         <button data-bmode="read" class="${settings.bookEdit?"":"on"}" aria-label="Books open ready to read"
