@@ -169,6 +169,9 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
      collection is one, and it says which collection it came out of */
   .favdot.story,.gfav.story{background:#f59e0b}
   .bst.instory{background:#fffbeb;color:#b45309;border:1px solid #fcd34d}
+  /* "+12 more stories match" — the rest of a collection's hits, rolled into its
+     own row rather than shown as twelve more rows */
+  .bst.morehits{background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe}
   /* a collection holding stories that have wandered off its own genres */
   .bst.stray{background:#fffbeb;color:#b45309;border:1px solid #fcd34d;font-weight:800;cursor:pointer}
   .bst.stray:hover{background:#fef3c7;border-color:#f59e0b}
@@ -1906,8 +1909,20 @@ const findMatchesStory=en=>{
   const f=(libFind||"").trim().toLowerCase();
   return !!f&&(en.title||"").toLowerCase().includes(f);
 };
-const strayStories=()=>books.flatMap(b=>!isColl(b)?[]
-  :((b.entries)||[]).filter(storySurfaces).map(en=>storyProxy(b,en)));
+/* A word common enough to match half a collection would otherwise put half a
+   collection on the shelf — forty stories, forty rows, for one search. So a
+   collection gives up at most this many rows of its own, and anything past that
+   is gathered back into one row for the collection itself, saying how many more
+   matched. Nothing is hidden; it is one tap away instead of forty rows down. */
+const STORY_HITS_MAX=4;
+const strayStories=()=>books.flatMap(b=>{
+  if(!isColl(b))return [];
+  const ens=((b.entries)||[]).filter(storySurfaces);
+  if(!(libFind||"").trim()||ens.length<=STORY_HITS_MAX)return ens.map(en=>storyProxy(b,en));
+  return [...ens.slice(0,STORY_HITS_MAX).map(en=>storyProxy(b,en)),
+    /* a copy, so the shelf's own record of the collection is never written on */
+    Object.assign({},b,{_moreHits:ens.length-STORY_HITS_MAX})];
+});
 /* A collection's own mark can come from its stories. 0 is a real rating here —
    the boxes run 0 to 10 — so "has been rated" is always `!=null` and never a
    truthiness test, or a story deliberately given 0 would read as an empty one
@@ -3513,7 +3528,7 @@ function rowHtml(b,withDel,note){
     <div class="rmain">
       <div class="rtitle serif">${esc(b.title)||"Untitled"} ${(()=>{const L=linkLabel(b.link);
         return L?`<a class="tlink" data-ext href="${esc(L.url)}" target="_blank" rel="noopener" title="Read it — ${esc(L.name)}">📖</a>`:"";})()} ${isColl(b)?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>`:""}${(()=>{const st=collStrays(b);
-        return st.length?`<button class="bst stray" data-stray="${b.id}" title="${st.length} ${st.length===1?"story has genres":"stories have genres"} of their own — tap to see which">! ${st.length}</button>`:"";})()} ${b._story?`<span class="bst instory" title="A story inside ${esc(b._in)} — opening it takes you to the collection">📚 in ${esc(b._in)}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':holdOf(b)?'<span class="bdnf hold" title="Set down for now, not given up on">⏸ On hold</span>':""}</div>
+        return st.length?`<button class="bst stray" data-stray="${b.id}" title="${st.length} ${st.length===1?"story has genres":"stories have genres"} of their own — tap to see which">! ${st.length}</button>`:"";})()} ${b._story?`<span class="bst instory" title="A story inside ${esc(b._in)} — opening it takes you to the collection">📚 in ${esc(b._in)}</span>`:""} ${b._moreHits?`<span class="bst morehits" title="Open the collection to see them">+${b._moreHits} more ${b._moreHits===1?"story matches":"stories match"}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':holdOf(b)?'<span class="bdnf hold" title="Set down for now, not given up on">⏸ On hold</span>':""}</div>
       <div class="rauth">${kindOf(b)!=="book"?`<span class="bst kind">${kindOf(b)==="fanfic"?"FANFIC":"AI"}</span> `:""}${esc(b.author)||(kindOf(b)==="ai"?"":"Unknown author")}${(b.fandoms||[]).length?` <span class="rser">${(b.fandoms||[]).map(esc).join(", ")}${(b.characters||[]).length?" · "+(b.characters||[]).map(esc).join(", "):""}</span>`:""}${b.series?` <span class="rser">${esc(b.series)}${b.seriesNum?" #"+esc(b.seriesNum):""}</span>`:""}${b.pages?` <span class="rser">· ${esc(String(b.pages))} p.</span>`:""}</div>
       <div class="chiprow">${(()=>{const br=new Set(b.kwBreaks||[]);
         return (b.keywords||[]).map(k=>`<span class="kw" style="${kwStyle(k)}">${esc(k)}</span>`
@@ -4008,8 +4023,15 @@ function renderLibrary(){
      titles are no longer folded in here, because each matching story now stands
      as its own row — folding them in as well would show the collection twice
      over, once as itself and once for every story that matched. */
-  const findHit=b=>!flc||[b.title,b.author,b.series]
-    .some(t=>(t||"").toLowerCase().includes(flc));
+  /* a collection that has already been given a row carrying its overflow count
+     must not also get a plain one for matching by name — that is the same
+     collection twice, which is the thing this was all meant to stop */
+  /* `_story` matters here: a story's row carries its collection's id so that
+     opening it opens the collection, so without that test this dropped the very
+     story rows it was capping — measured, four of them vanished. */
+  const rolledUp=new Set(shelf.filter(b=>b._moreHits).map(b=>b.id));
+  const findHit=b=>!flc||((!b._moreHits&&!b._story&&rolledUp.has(b.id))?false
+    :[b.title,b.author,b.series].some(t=>(t||"").toLowerCase().includes(flc))||!!b._moreHits||!!b._story);
   /* the same rule the stage groups follow: a flag beats the stage underneath it,
      so a book you gave up on stops answering to Finished */
   const stFilterOk=b=>statusFilter==="all"?true
@@ -5618,14 +5640,19 @@ function renderSearchBody(){
        collection it lives in — searching "prince" should hand you Prince Caspian,
        not the whole of Narnia with nothing said about why. */
     if(S.scopes.includes("title")){
-      const seen=new Set(results.map(b=>b.id));
+      const already=new Set(results.map(b=>b.id));
       books.forEach(b=>{
         if(!isColl(b))return;
-        (b.entries||[]).forEach(en=>{
-          if(!(en.title||"").toLowerCase().includes(qlc))return;
-          if(seen.has(b.id+"|"+en.id))return;
-          results.push(storyProxy(b,en));
-        });
+        const hits=(b.entries||[]).filter(en=>(en.title||"").toLowerCase().includes(qlc));
+        if(!hits.length)return;
+        hits.slice(0,STORY_HITS_MAX).forEach(en=>results.push(storyProxy(b,en)));
+        /* the same cap the shelf uses: past four, the rest are rolled into one
+           row for the collection rather than becoming forty results */
+        if(hits.length>STORY_HITS_MAX){
+          const extra=hits.length-STORY_HITS_MAX;
+          if(already.has(b.id))results=results.map(x=>x.id===b.id&&!x._story?Object.assign({},x,{_moreHits:extra}):x);
+          else results.push(Object.assign({},b,{_moreHits:extra}));
+        }
       });
     }
     heading=`“${esc(S.q)}” in ${SCOPES.filter(([id])=>S.scopes.includes(id)).map(([,l])=>l).join(", ")}`;
