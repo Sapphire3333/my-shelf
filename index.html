@@ -5250,7 +5250,7 @@ async function renderHub(){
 const IMP_SHOW=40;   /* how many titles to list per section before summarising */
 let impSel=new Set(),impQ="";
 let impIntoOpen=false,impIntoQ="";            /* the "into a collection you already have" picker */
-let impOnlyDupes=false;                       /* show only the ones already on the shelf */
+let impOnlyFlagged=false;                     /* show only the ones the app has flagged — already there, or possibly */
 /* every collection on the shelf, by name — the list you choose from */
 const collsOnShelf=()=>books.filter(isColl)
   .sort((a,b)=>String(a.title||"").localeCompare(String(b.title||""),undefined,{sensitivity:"base"}));
@@ -5321,17 +5321,24 @@ function refreshImport(){
   if(!importQueue.length){box.innerHTML="";return;}
   const ql=impQ.trim().toLowerCase();
   const dupeN=importQueue.filter(it=>it.dupe).length;
+  const nearN=importQueue.filter(it=>it.near).length;
+  const flagN=dupeN+nearN;
   /* fill in the last of them and the checkbox goes; without this the filter it
      set would stay on with nothing left to switch it off */
-  if(!dupeN)impOnlyDupes=false;
+  if(!flagN)impOnlyFlagged=false;
   /* the ones already on the shelf were counted in the heading and then lost
      among hundreds of others, below the point where the list stops listing —
-     a number you could read and nothing you could act on */
-  const match=it=>(!impOnlyDupes||it.dupe)
+     a number you could read and nothing you could act on. The same was true of
+     the possible ones the moment they existed: "16 may already be there" above
+     1600 rows is a fact you cannot act on, and the owner said so. */
+  const match=it=>(!impOnlyFlagged||it.dupe||it.near)
     &&(!ql||(it.title||"").toLowerCase().includes(ql)||(it.author||"").toLowerCase().includes(ql));
+  const flagLabel=dupeN&&nearN?`Show only the ${flagN} already on your shelf or possibly there`
+    :dupeN?`Show only the ${dupeN} already on your shelf`
+    :`Show only the ${nearN} that may already be there`;
   let html=`<div style="margin-top:12px">
     <input class="field" id="impSearch" placeholder="Search this list — title or author…" value="${esc(impQ)}" style="font-size:13px;padding:7px 11px">
-    ${dupeN?`<label class="chk" style="margin-top:7px"><input type="checkbox" id="impDupeOnly" ${impOnlyDupes?"checked":""}> Show only the ${dupeN} already on your shelf</label>`:""}
+    ${flagN?`<label class="chk" style="margin-top:7px"><input type="checkbox" id="impDupeOnly" ${impOnlyFlagged?"checked":""}> ${flagLabel}</label>`:""}
     <div class="hint" style="margin:5px 0 0">Tick books (tap an author's name to tick everything of theirs), then add them together — as plain books, a linked series, or one collection shelf item.${dupeN?" Ones you already have can't be ticked — they hand over what's missing instead." :""}</div>
     ${impSel.size?`<div class="hrow2" style="margin-top:7px">
       <b style="font-size:13px">${impSel.size} ticked</b>
@@ -5353,19 +5360,29 @@ function refreshImport(){
        and counted in the open beside it, never quietly dropped from the list */
     const dupeIn=all.filter(it=>it.dupe).length,nearIn=all.filter(it=>it.near).length;
     const add=all.filter(it=>!it.dupe&&!it.near);
+    /* Worked out once, because the list and the "…and N more" under it must be
+       cut to the same place. Ticked rows first, then the ones the app has
+       something to say about — sixteen of those scattered through sixteen
+       hundred in file order may as well not exist. The float is capped like
+       everything else here: a thousand flagged rows must not turn into a
+       thousand rows of HTML, each carrying its cover. */
+    const ticked=all.filter(it=>impSel.has(it.id));
+    const flagged=all.filter(it=>!impSel.has(it.id)&&(it.near||it.dupe)).slice(0,IMP_SHOW);
+    const rest=all.filter(it=>!impSel.has(it.id)&&!it.near&&!it.dupe);
+    const keep=Math.max(IMP_SHOW,ticked.length+flagged.length);
+    const visible=[...ticked,...flagged,...rest].slice(0,keep);
     html+=`<div style="margin-top:15px">
       <div class="hrow2" style="margin-bottom:6px">
-        <b style="font-size:14px">${label}</b><span class="none">${all.length}${dupeIn?` · ${dupeIn} already on your shelf`:""}${nearIn?` · ${nearIn} may already be there`:""}</span>
+        <b style="font-size:14px">${label}</b><span class="none">${all.length}${
+          /* the counts are the way to reach what they count — reading "16 may
+             already be there" over a list of 1600 and having nowhere to press
+             is how this looked before */
+          dupeIn?` · <button data-impflag="1" style="padding:0;color:inherit;text-decoration:underline dotted" title="Show only these">${dupeIn} already on your shelf</button>`:""}${
+          nearIn?` · <button data-impflag="1" style="padding:0;color:var(--amber,#b45309);text-decoration:underline dotted" title="Show only these">${nearIn} may already be there</button>`:""}</span>
         ${add.length?`<button class="btn pri" data-impall="${sec}" style="margin-left:auto;padding:5px 11px">Add all ${add.length}</button>`:""}
         ${dupeIn?`<button class="btn" data-impfillall="${sec}" style="${add.length?"":"margin-left:auto;"}padding:5px 11px" title="Fill the blanks on the ${dupeIn} you already have, then take them off this list">↳ Fill in all ${dupeIn}</button>`:""}
       </div>
-      ${(()=>{
-        /* ticked ones first, and never cut off — otherwise ticking a whole author
-           leaves them buried under "…and 1700 more" */
-        const ticked=all.filter(it=>impSel.has(it.id));
-        const rest=all.filter(it=>!impSel.has(it.id));
-        return [...ticked,...rest].slice(0,Math.max(IMP_SHOW,ticked.length));
-      })().map(it=>{
+      ${visible.map(it=>{
         /* a row already on the shelf says where it is and what it could still
            hand over, so pressing the button is never a guess */
         const t=(it.dupe||it.near)?importTarget(it):null;
@@ -5387,14 +5404,15 @@ function refreshImport(){
             : `<button class="btn" data-impdrop="${it.id}" title="Take this row off the list — your book already has everything it holds">✕ Drop it</button>`)
           : `${it.near&&fills.length?`<button class="btn" data-impfill="${it.id}" title="Treat it as the same thing: fill in only what's blank on “${esc(t.b.title||"Untitled")}”">↳ Fill it in</button>`:""}<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
       </div>`;}).join("")}
-      ${all.length>Math.max(IMP_SHOW,all.filter(it=>impSel.has(it.id)).length)
-        ?`<div class="none" style="margin-top:5px">…and ${all.length-Math.max(IMP_SHOW,all.filter(it=>impSel.has(it.id)).length)} more — anything you tick jumps up here. Search to narrow the list, or “Add all”.</div>`:""}
+      ${all.length>visible.length
+        ?`<div class="none" style="margin-top:5px">…and ${all.length-visible.length} more — anything you tick, and anything that may already be on your shelf, jumps up here. Search to narrow the list, or “Add all”.</div>`:""}
     </div>`;
   }
   if(!shown)html+='<div class="none" style="margin-top:10px">Nothing in the list matches that search.</div>';
   box.innerHTML=html;
   const dOnly=q("#impDupeOnly",box);
-  if(dOnly)dOnly.onchange=()=>{impOnlyDupes=dOnly.checked;refreshImport();};
+  if(dOnly)dOnly.onchange=()=>{impOnlyFlagged=dOnly.checked;refreshImport();};
+  qa("[data-impflag]",box).forEach(b=>b.onclick=()=>{impOnlyFlagged=true;impQ="";refreshImport();});
   const se=q("#impSearch",box);
   se.oninput=()=>{impQ=se.value;refreshImport();
     const s2=q("#impSearch");if(s2){s2.focus();s2.setSelectionRange(s2.value.length,s2.value.length);}};
@@ -9687,12 +9705,25 @@ function volTrim(s){
   const cut=base.replace(VOL_TAIL,"").trim();
   return cut.length>2?cut:base;      /* a title that is only "Season 1" keeps it */
 }
+/* What is left after trimming has to still look like the name of a work.
+   "Filler Book 12" trims to "Filler", and once a stem is that generic every
+   book sharing it claims to be an instalment of every other — measured on a
+   1600-row list, five ordinary shelf books turned 1605 rows amber and dropped
+   "Add all" from 1594 to 5. One short word is not a work; two words, or one
+   long one, is enough to be worth a guess. The cost is that a single-word
+   series read volume by volume goes unspotted, which is silence rather than
+   noise, and silence is the safer way for a guess to be wrong. */
+const stemOK=s=>{
+  const w=String(s||"").trim().split(/\s+/).filter(Boolean);
+  return w.length>=2||titleKey(s).length>=10;
+};
 function markDupes(){
   const byKey=new Map(),byIsbn=new Map(),byTitle=new Map(),byNear=new Map();
   const put=(m,k,v)=>{if(k&&!m.has(k))m.set(k,v);};
   const putTitles=(t,v)=>titleVariants(t).forEach(x=>{
     put(byTitle,titleKey(x),v);
-    put(byNear,titleKey(volTrim(x)),v);
+    const stem=volTrim(x);
+    if(stemOK(stem))put(byNear,titleKey(stem),v);
   });
   for(const b of books){
     put(byKey,dupeKey(b.title,b.author),{b,en:null});
@@ -9724,7 +9755,9 @@ function markDupes(){
        never reaches this. */
     let near=null;
     if(!hit)for(const v of titleVariants(it.title)){
-      const t=byNear.get(titleKey(volTrim(v)));
+      const stem=volTrim(v);
+      if(!stemOK(stem))continue;
+      const t=byNear.get(titleKey(stem));
       if(t&&sameHand(it,t)){near=t;break;}
     }
     it.dupe=!!hit;
