@@ -4261,8 +4261,11 @@ function renderLibrary(){
   </div>`;
   else if(!list.length)html+=`<div class="none" style="text-align:center;padding:40px 0">${flc?`Nothing called “${esc(libFind.trim())}” here.`:"No books with this status yet."}</div>`;
   else if(groupBy==="none"){
-    /* what you're reading right now belongs at the top, not buried by date added */
-    const now=list.filter(b=>statusOf(b)==="reading"),rest=list.filter(b=>statusOf(b)!=="reading");
+    /* what you're reading right now belongs at the top, not buried by date
+       added — and a book set down or given up is not being read, however its
+       stage reads under the flag */
+    const onGo=b=>statusOf(b)==="reading"&&!b.dnf&&!holdOf(b);
+    const now=list.filter(onGo),rest=list.filter(b=>!onGo(b));
     if(statusFilter==="all"&&now.length&&rest.length){
       const head=(t,n)=>`<div class="grouphead"><h2 class="serif" style="margin:0;font-size:17px">${t}</h2><span class="n">${n}</span><span class="ghline"></span></div>`;
       html+=head("📖 Reading now",now.length)+booksHtml(now,true)
@@ -4988,11 +4991,14 @@ function renderHistory(){
    the anthology it lives in. */
 function readingNowUnits(){
   const out=[];
+  /* set down or given up is not "reading now", whatever stage sits underneath
+     the flag — the whole point of On hold was that a paused book stops
+     claiming to be on the go. Take the flag off and it walks straight back. */
   for(const b of books){
     const ens=isColl(b)?((b.entries)||[]):[];
-    const live=ens.filter(en=>String(en.status||"").trim()==="reading"&&!en.dnf);
+    const live=ens.filter(en=>String(en.status||"").trim()==="reading"&&!en.dnf&&!en.hold);
     if(live.length)live.forEach(en=>out.push(storyProxy(b,en)));
-    else if(statusOf(b)==="reading"&&!b.dnf)out.push(b);
+    else if(statusOf(b)==="reading"&&!b.dnf&&!holdOf(b))out.push(b);
   }
   return out;
 }
@@ -5785,17 +5791,28 @@ function renderSearchView(){
 function renderSearchBody(){
   const m=q("#sbody");
   const qlc=S.q.trim().toLowerCase();
+  /* counted the way Insights counts opinions — a story rated on its own is its
+     own voice, and a story with genres of its own is its own title under that
+     genre. The two screens used to disagree about the same shelf ("4 rated"
+     here, "6 rated" there) because this one still counted whole shelf items.
+     Every count below opens a filter, and the filter answers in the same
+     units, so the number on the button is the number of rows you get. */
+  const sUnits=rateUnits();
+  const unitRow=u=>u.en?storyProxy(u.book,u.en):u.book;
   const authors={};books.forEach(b=>{const a=(b.author||"").trim();if(a)authors[a]=(authors[a]||0)+1;});
   const authorList=Object.entries(authors).sort((x,y)=>lastName(x[0]).localeCompare(lastName(y[0]))||x[0].localeCompare(y[0]));
   const topAuthor=Object.entries(authors).sort((x,y)=>y[1]-x[1])[0]||null;
-  const gcount={};books.forEach(b=>(b.genres||[]).forEach(g=>gcount[g]=(gcount[g]||0)+1));
+  const gcount={};sUnits.forEach(u=>(u.genres||[]).forEach(g=>gcount[g]=(gcount[g]||0)+1));
   const allG=Object.keys(genres).sort((a,b)=>a.localeCompare(b));
   const seriesMap={};books.forEach(b=>{const s=(b.series||"").trim();if(s)(seriesMap[s]=seriesMap[s]||[]).push(b);});
   const buckets=[];for(let i=1;i<=9;i++)buckets.push({label:`${i}.0 – ${i}.9`,min:i,max:i+.999});buckets.push({label:"10",min:10,max:10});
-  const bCount=b=>books.filter(e=>e.rating!=null&&e.rating>=b.min&&e.rating<=b.max).length;
-  const unrated=books.filter(e=>e.rating==null).length;
+  const bCount=b=>sUnits.filter(u=>u.rating!=null&&u.rating>=b.min&&u.rating<=b.max).length;
+  const unrated=sUnits.filter(u=>u.rating==null).length;
   const favN=favUnits(),dnfN=books.filter(b=>b.dnf).length,holdN=books.filter(b=>holdOf(b)).length;
-  const readN=books.filter(b=>statusOf(b)==="reading").length,wantN=books.filter(b=>statusOf(b)==="want").length;
+  /* flags beat the stage beneath them, here as on the Library's pills — an
+     on-hold book answers to ⏸, not to 📖 */
+  const plainSt2=k=>books.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
+  const readN=plainSt2("reading"),wantN=plainSt2("want");
 
   let results=null,heading="";
   const matchScope=(b,s)=>{switch(s){
@@ -5837,19 +5854,21 @@ function renderSearchBody(){
   }else if(S.filter){
     const f=S.filter;
     if(f.type==="author")results=books.filter(b=>(b.author||"").trim()===f.value);
-    if(f.type==="genre")results=books.filter(b=>(b.genres||[]).includes(f.value));
+    if(f.type==="genre")results=sUnits.filter(u=>(u.genres||[]).includes(f.value)).map(unitRow);
     if(f.type==="favorite")results=books.filter(b=>b.favorite);
     if(f.type==="dnf")results=books.filter(b=>b.dnf);
     else if(f.type==="hold")results=books.filter(b=>holdOf(b));
-    if(f.type==="status")results=books.filter(b=>statusOf(b)===f.value);
+    if(f.type==="status")results=books.filter(b=>statusOf(b)===f.value&&!b.dnf&&!holdOf(b));
     if(f.type==="audience")results=books.filter(b=>audsOf(b).indexOf(f.value)>=0);
     if(f.type==="pages")results=f.value==="none"?books.filter(b=>!isColl(b)&&!parseInt(b.pages))
       :books.filter(b=>{if(isColl(b))return false;const p=parseInt(b.pages);return p&&p>=f.value.min&&p<=f.value.max;});
     if(f.type==="series")results=books.filter(b=>(b.series||"").trim()===f.value).sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0));
-    if(f.type==="rating")results=f.value==="unrated"?books.filter(b=>b.rating==null):books.filter(b=>b.rating!=null&&b.rating>=f.value.min&&b.rating<=f.value.max);
+    if(f.type==="rating")results=(f.value==="unrated"
+      ?sUnits.filter(u=>u.rating==null)
+      :sUnits.filter(u=>u.rating!=null&&u.rating>=f.value.min&&u.rating<=f.value.max)).map(unitRow);
     heading=esc(f.label);
   }else if(S.multi.length){
-    results=books.filter(b=>S.multi.every(g=>(b.genres||[]).includes(g)));
+    results=sUnits.filter(u=>S.multi.every(g=>(u.genres||[]).includes(g))).map(unitRow);
     heading="Tagged: "+S.multi.map(esc).join(" + ");
   }
 
@@ -5904,12 +5923,16 @@ function renderSearchBody(){
         <button class="rb ${noPages?"has":"no"}" ${noPages?'data-len="none"':""} style="${noPages?"border-color:#d6d3d1;background:#fff":""}"><span>No page count</span><b>${noPages}</b></button>
       </div></div>`;
       if(books.length){
-        const rated=books.filter(b=>b.rating!=null);
-        const avg=rated.length?rated.reduce((s,b)=>s+b.rating,0)/rated.length:null;
+        /* the same arithmetic Insights does, on the same units, so the two
+           screens finally quote one shelf the same way — including Insights'
+           rule that a genre needs two rated titles before it can be "best" */
+        const rated=sUnits.filter(u=>u.rating!=null);
+        const avg=rated.length?rated.reduce((s,u)=>s+u.rating,0)/rated.length:null;
         const topA=topAuthor;
         let topG=null;
-        Object.keys(gcount).forEach(g=>{const gr=books.filter(b=>(b.genres||[]).includes(g)&&b.rating!=null);
-          if(gr.length){const a=gr.reduce((s,b)=>s+b.rating,0)/gr.length;if(!topG||a>topG.avg)topG={name:g,avg:a};}});
+        const gsum={},gn={};
+        rated.forEach(u=>(u.genres||[]).forEach(g=>{gsum[g]=(gsum[g]||0)+u.rating;gn[g]=(gn[g]||0)+1;}));
+        Object.keys(gsum).filter(g=>gn[g]>=2).forEach(g=>{const a=gsum[g]/gn[g];if(!topG||a>topG.avg)topG={name:g,avg:a};});
         /* a story read on its own can be the most-reread thing on the shelf, so
            the answer comes from the same units the years do */
         const mr=readUnits().sort((a,b)=>b.times-a.times)[0];
