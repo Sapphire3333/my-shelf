@@ -3525,8 +3525,19 @@ function setProgress(b,v){
   else b.progLog.push({d:today,p:b.progress||0});
   if(b.progLog.length>400)b.progLog=b.progLog.slice(-400);
 }
+/* A collection says how far through it you are whenever you are part-way through
+   it, whatever stage the collection itself carries. Tying this to the collection
+   being "Reading now" was wrong: the stage of a series is a clumsy thing that
+   often still says Finished from an import while a story inside it is plainly on
+   the go, and then the shelf showed no progress for something visibly in
+   progress. A collection you have finished, or not started, still says nothing. */
+const collPartWay=b=>{
+  if(!isColl(b)||!(b.entries||[]).length)return false;
+  const done=collDone(b);
+  return done<(b.entries||[]).length&&(done>0||(b.entries||[]).some(en=>String(en.status||"")==="reading"));
+};
 const progHtml=b=>{
-  if(statusOf(b)!=="reading")return "";
+  if(statusOf(b)!=="reading"&&!collPartWay(b))return "";
   const p=pctOf(b);if(p==null)return "";
   /* a collection counts in stories, everything else in pages */
   const said=isColl(b)&&(b.entries||[]).length
@@ -3546,7 +3557,7 @@ let stPickFor=null;   /* which row has its stage chooser open */
    the edit log, "finished 2 Mar 2026" on the reading timeline. The caller says
    what it means; the row only shows it. */
 function rowHtml(b,withDel,note){
-  return `<div class="row" data-open="${b.id}" tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}${b.author?" — "+esc(b.author):""}">
+  return `<div class="row" data-open="${b.id}"${b._story?` data-openen="${esc(b._story)}"`:""} tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}${b.author?" — "+esc(b.author):""}">
     ${stPickFor===b.id&&!b._story?`<div class="stpick">
       ${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
       <button data-setst="${b.id}|hold" class="${holdOf(b)?"on":""}">⏸ On hold</button>
@@ -3569,7 +3580,7 @@ function rowHtml(b,withDel,note){
 }
 function gridHtml(b){
   const s=statusOf(b);
-  return `<div class="gcard" data-open="${b.id}" tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}${b.author?" — "+esc(b.author):""}">
+  return `<div class="gcard" data-open="${b.id}"${b._story?` data-openen="${esc(b._story)}"`:""} tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}${b.author?" — "+esc(b.author):""}">
     <div class="gcov" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}>${coverInner(b,true)}
       ${b.favorite?`<span class="gfav${b._story?" story":""}">♥</span>`:""}
       ${s!=="finished"?`<span class="gst ${s}">${s==="reading"?"READING":"WANT"}</span>`:""}
@@ -3674,7 +3685,10 @@ function wireOpen(root,withDel){
     const stray=e.target.closest("[data-stray]");
     if(stray){e.stopPropagation();openStrayPanel(stray.dataset.stray);return;}
     const op=e.target.closest("[data-open]");
-    if(op)openBook(op.dataset.open,false);
+    /* A story's row opens its collection, because that is where the story lives —
+       but it used to drop you at the top of it, so finding the story you had just
+       tapped meant scrolling a list of twenty. It takes you to the story now. */
+    if(op)openBook(op.dataset.open,false,false,op.dataset.openen||"");
   };
 }
 
@@ -6196,7 +6210,7 @@ const backLabel=()=>"‹ "+(BACK_NAMES[cameFrom]||"Library");
    nothing at all. It had worked; it just answered by closing the form, dropping
    the pen and jumping to the top of the page, so you were looking at a different
    screen when you went to check. */
-async function openBook(id,fresh,keepPlace){
+async function openBook(id,fresh,keepPlace,goToStory){
   if(view!=="book"){cameFrom=view;keepMyPlace();}   /* so Back can bring you here again */
   const found=books.find(b=>b.id===id);
   /* asked to open a book that is gone (deleted since this row was drawn):
@@ -6223,6 +6237,18 @@ async function openBook(id,fresh,keepPlace){
        that hasn't got its full height back yet silently clamps the scroll */
     window.scrollTo(0,heldScroll);
     requestAnimationFrame(()=>window.scrollTo(0,heldScroll));
+  }
+  else if(goToStory){
+    /* opened by tapping a story, so land on that story rather than the top. Twice
+       over, for the same reason as above: the page is still finding its height. */
+    const go=()=>{
+      const i=(cur.entries||[]).findIndex(en=>en.id===goToStory);
+      const row=i>=0?qa(".ent")[i]:null;
+      if(row)row.scrollIntoView({block:"center"});
+      return !!row;
+    };
+    if(!go())requestAnimationFrame(go);
+    else requestAnimationFrame(go);
   }
   else if(!navRestoring)window.scrollTo(0,0);
 }
@@ -6413,7 +6439,7 @@ function renderBookView(){
           ${collRateNote(b)?`<span class="lbl">${esc(collRateNote(b))}</span>`:""}
           <button class="vfav ${b.favorite?"on":""}" id="vFav" title="${b.favorite?"One of your favourites":"Mark as a favourite"}">${b.favorite?"♥ Favourite":"♡"}</button>
         </div>
-        ${statusOf(b)==="reading"&&isColl(b)&&(b.entries||[]).length?`<div class="vprog">
+        ${collPartWay(b)?`<div class="vprog">
           <span class="prog" style="flex:1"><i style="width:${pct||0}%"></i></span>
           <span class="rr">${collDone(b)} of ${(b.entries||[]).length} read${(()=>{
             /* and which one you are actually in, since that is the other half of
