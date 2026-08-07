@@ -3303,6 +3303,43 @@ async function applyOp(op,inv){
       refreshHistBtns();return;
     }
   }
+  /* one bulk rewrite — a spelling merge, a tag removed from every book — is one
+     step here, however many books it touched. Undoing it restores every copy it
+     changed, and, when a label was deleted outright, the label's own colour and
+     family and vocabulary entry come back in the same press. */
+  if(op.t==="bulk"){
+    for(const it of op.items||[]){
+      const body=inv?it.before:it.after;
+      if(!body)continue;
+      const clone=JSON.parse(JSON.stringify(body));
+      clone.modified=Math.max(Date.now(),(clone.modified||0)+1,seenFloor(it.id)+1);
+      await dbPut("books",clone);
+      const i=books.findIndex(x=>x.id===it.id);
+      if(i>=0)books[i]=clone;else books.unshift(clone);
+      if(SYNC.on)enqueue({kind:"book",id:it.id});
+    }
+    const lb=op.label;
+    if(lb){
+      const key=(lb.kind==="genre"?"genre:":"kw:")+lb.name;
+      /* the vocabulary is persisted by hand here, never through saveMeta —
+         saveMeta would push a fresh op from inside an undo */
+      if(inv){
+        unmarkMetaDel(key);
+        if(lb.kind==="genre")genres[lb.name]=lb.color||"#78716c";
+        else{if(lb.color)kwColors[lb.name]=lb.color;if(lb.cat)kwCats[lb.name]=lb.cat;}
+      }else{
+        markMetaDel(key);
+        if(lb.kind==="genre")delete genres[lb.name];
+        else{delete kwColors[lb.name];delete kwCats[lb.name];}
+      }
+      if(lb.kind==="genre"){
+        metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
+        dbPut("meta",{k:"genres",v:genres});enqueue({kind:"meta",key:"genres"});touchMeta("genres");
+      }else{saveKwColors();saveKwCats();}
+    }
+    if(SYNC.on)flushQueue();
+    if(view==="book"&&cur&&(op.items||[]).some(it=>it.id===cur.id)){openBook(cur.id,false,true);refreshHistBtns();return;}
+  }
   if(op.t==="meta"){
     const v=inv?op.before:op.after;
     genres=JSON.parse(JSON.stringify(v.genres));
@@ -5496,14 +5533,20 @@ function refreshNameDupes(){
     if(!others.length)return;
     const n=others.reduce((s,nm)=>s+g.spellings[nm].length,0);
     if(!confirm(`Change ${others.map(o=>`“${o}”`).join(" and ")} to “${keep}”?\n\n${n} book${n===1?"":"s"} ${n===1?"is":"are"} affected. Nothing else about them changes, and Undo can put it back.`))return;
+    const items=[];
     for(const nm of others){
       for(const b of g.spellings[nm]){
+        const before=JSON.parse(JSON.stringify(b));
         b[g.field]=keep;
         b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
         await dbPut("books",b);
         if(SYNC.on)enqueue({kind:"book",id:b.id});
+        items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
       }
     }
+    /* the promise in the confirm above is now kept: one press restores every
+       spelling this just rewrote */
+    if(items.length)pushOp({t:"bulk",items});
     if(SYNC.on)flushQueue();
     refreshNameDupes();refreshDupes();
   });
@@ -5542,14 +5585,18 @@ function refreshKwDupes(){
     if(!chosen.length)return;
     if(!confirm(`Remove ${chosen.length} keyword${chosen.length===1?"":"s"} from every book?\n\n${chosen.join(", ")}\n\nThe genres stay as they are.`))return;
     const gone=new Set(chosen);
+    const items=[];
     for(const b of books){
       if(!(b.keywords||[]).some(k=>gone.has(k)))continue;
+      const before=JSON.parse(JSON.stringify(b));
       b.keywords=b.keywords.filter(k=>!gone.has(k));
       b.kwBreaks=(b.kwBreaks||[]).filter(k=>!gone.has(k));
       b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
       await dbPut("books",b);
       if(SYNC.on)enqueue({kind:"book",id:b.id});
+      items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
     }
+    if(items.length)pushOp({t:"bulk",items});
     chosen.forEach(k=>{delete kwColors[k];delete kwCats[k];markMetaDel("kw:"+k);});
     saveKwColors();saveKwCats();
     if(SYNC.on)flushQueue();
@@ -8711,10 +8758,13 @@ function renderEditor(){
   async function deleteTagForGood(k){
     const used=books.filter(b=>(b.keywords||[]).includes(k)).length;
     if(!confirm(`Delete the tag “${k}” for good?\n\nIt comes off ${used} book${used===1?"":"s"} and out of your list of tags. The books themselves are untouched, and Undo can bring it back.`))return;
-    await relabel("keywords",k,"");      /* mapping it to nothing drops it everywhere */
+    const label={kind:"kw",name:k,color:kwColors[k]||"",cat:kwCats[k]||""};
+    const items=[];
+    await relabel("keywords",k,"",items);      /* mapping it to nothing drops it everywhere */
     markMetaDel("kw:"+k);
     delete kwColors[k];delete kwCats[k];
     saveKwColors();saveKwCats();
+    pushOp({t:"bulk",items,label});
     if(SYNC.on)flushQueue();
     renderKw();renderKwSug();
   }
@@ -8843,19 +8893,32 @@ function renderEditor(){
 
   /* ---- editing a genre or keyword everywhere it appears ---- */
   const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,(b?seenFloor(b.id):0)+1);
-  /* rewrite one label across every book; the open book is left to its own autosave */
-  async function relabel(field,oldN,newN){
+  /* rewrite one label across every book — the open book's stored copy included.
+     It used to be left to its own autosave, which is how "delete this tag for
+     good" quietly kept the tag on the one book you were looking at: nothing
+     ever scheduled that save. The working copy is kept in step in the same
+     breath as its stored copy (before any await, so a pending autosave firing
+     mid-loop can't write the old label back). `collect`, when given, receives
+     {id,before,after} for every book touched — the makings of one undo step. */
+  async function relabel(field,oldN,newN,collect){
+    const swap=list=>[...new Set(list.map(x=>x===oldN?newN:x))].filter(Boolean);
     for(const b of books){
-      if(b.id===cur.id)continue;
       const list=b[field]||[];
       if(list.indexOf(oldN)<0)continue;
-      b[field]=[...new Set(list.map(x=>x===oldN?newN:x))].filter(Boolean);
+      const before=collect?JSON.parse(JSON.stringify(b)):null;
+      b[field]=swap(list);
       b.modified=nextMod(b);
+      if(cur&&b.id===cur.id){
+        if((cur[field]||[]).indexOf(oldN)>=0)cur[field]=swap(cur[field]);
+        cur.modified=b.modified;
+      }
       await dbPut("books",b);
       if(SYNC.on)enqueue({kind:"book",id:b.id});
+      if(collect)collect.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
     }
-    if((cur[field]||[]).indexOf(oldN)>=0)
-      cur[field]=[...new Set(cur[field].map(x=>x===oldN?newN:x))].filter(Boolean);
+    /* a brand-new book not yet on the shelf still gets its working copy fixed */
+    if(cur&&!books.some(b=>b.id===cur.id)&&(cur[field]||[]).indexOf(oldN)>=0)
+      cur[field]=swap(cur[field]);
   }
   async function renameGenre(oldN,newN,color){
     newN=(newN||"").trim();
@@ -8863,7 +8926,9 @@ function renderEditor(){
     if(renaming){
       genres[newN]=color||genres[newN]||genres[oldN]||"#78716c";
       delete genres[oldN];
-      await relabel("genres",oldN,newN);
+      const items=[];
+      await relabel("genres",oldN,newN,items);
+      if(items.length)pushOp({t:"bulk",items});
       /* the group's picture is filed under the name — take it with us */
       const ok="genre|"+oldN,nk="genre|"+newN;
       if(groupArt[ok]&&!groupArt[nk]){groupArt[nk]=groupArt[ok];delete groupArt[ok];saveGroupArt();}
@@ -8875,7 +8940,9 @@ function renderEditor(){
   async function renameKeyword(oldN,newN){
     newN=(newN||"").trim();
     if(!newN||newN===oldN)return;
-    await relabel("keywords",oldN,newN);
+    const items=[];
+    await relabel("keywords",oldN,newN,items);
+    if(items.length)pushOp({t:"bulk",items});
     if(SYNC.on)flushQueue();
     renderKw();scheduleSave();
   }
@@ -8945,15 +9012,26 @@ function renderEditor(){
     q("#teDel",box).onclick=async()=>{
       if(!confirm(`Remove “${name}” from ${used} book${used===1?"":"s"} and from the ${isG?"genre":"keyword"} list?\n\nThe books themselves are untouched. Undo can bring it back.`))return;
       box.hidden=true;box.innerHTML="";
-      await relabel(isG?"genres":"keywords",name,"");   /* mapping to nothing drops it */
+      /* the label as it stood, so one press of Undo can put all of it back */
+      const label=isG?{kind:"genre",name,color:genres[name]||""}
+        :{kind:"kw",name,color:kwColors[name]||"",cat:kwCats[name]||""};
+      const items=[];
+      await relabel(isG?"genres":"keywords",name,"",items);   /* mapping to nothing drops it */
       markMetaDel((isG?"genre:":"kw:")+name);
-      if(isG){delete genres[name];saveMeta();renderGenres();}
+      if(isG){
+        delete genres[name];
+        /* persisted by hand, not through saveMeta — the vocabulary change
+           belongs to the same undo step as the books, not to one of its own */
+        metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
+        dbPut("meta",{k:"genres",v:genres});enqueue({kind:"meta",key:"genres"});touchMeta("genres");
+        renderGenres();
+      }
       /* its family too, or the tag is gone from every book and still quietly
          filed under Themes, ready to come back the next time anything reads the
          families out */
       else{delete kwColors[name];delete kwCats[name];saveKwColors();saveKwCats();renderKw();renderKwSug();}
+      pushOp({t:"bulk",items,label});
       if(SYNC.on)flushQueue();
-      scheduleSave();
     };
     q("#teSave",box).onclick=async()=>{
       /* read everything off the panel before emptying it */
