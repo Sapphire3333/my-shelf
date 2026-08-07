@@ -3296,7 +3296,6 @@ async function applyOp(op,inv){
   if(op.t==="book"||op.t==="del"){
     const body=op.t==="del"?(inv?op.body:null):(inv?op.before:op.after);
     const id=op.t==="del"?op.body.id:op.id;
-    const knownKeys=imgKeysOf((op.t==="del"?op.body:op.after)||null);
     if(body){
       const clone=JSON.parse(JSON.stringify(body));
       /* stamped as edited-now, same as restoreTrash: an undo carrying its old time
@@ -3310,7 +3309,13 @@ async function applyOp(op,inv){
     }else{
       await dbDel("books",id);
       books=books.filter(x=>x.id!==id);
-      if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});enqueue({kind:"coverDel",id});knownKeys.forEach(key=>enqueue({kind:"imgDel",key}));}
+      if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});
+        /* redoing a delete used to destroy the cloud cover and pictures on the
+           spot — this delete now banks them in the shared bin for its 30 days,
+           exactly like the delete it is redoing */
+        const gone=(op.t==="del"?op.body:op.after)||null;
+        if(gone){trashCloud[id]={at:Date.now(),book:JSON.parse(JSON.stringify(gone))};saveTrashCloud();}
+      }
     }
     if(view==="book"&&cur&&cur.id===id){
       if(!body){view="library";render();}else{openBook(id,false,true);}
@@ -3616,7 +3621,9 @@ const pctOf=b=>{
    the page can be changed in two places now and both must leave the same trail. */
 function setProgress(b,v){
   b.progress=(v===""||v==null)?"":Math.max(0,parseInt(v)||0);
-  const today=new Date().toISOString().slice(0,10);
+  /* the local day, like every other date here — the UTC day filed an evening's
+     pages under tomorrow anywhere east of Greenwich */
+  const today=todayStr();
   b.progLog=b.progLog||[];
   const last=b.progLog[b.progLog.length-1];
   if(last&&last.d===today)last.p=b.progress||0;
@@ -3842,8 +3849,11 @@ async function retireBook(b){
   await dbDel("books",b.id);
   books=books.filter(x=>x.id!==b.id);
   if(SYNC.on){deletions[b.id]=Date.now();saveDeletions();
-    enqueue({kind:"bookDel",id:b.id});enqueue({kind:"coverDel",id:b.id});
-    imgKeysOf(b).forEach(key=>enqueue({kind:"imgDel",key}));}
+    enqueue({kind:"bookDel",id:b.id});
+    /* like any other delete: the cover and pictures wait out the bin's 30 days
+       in the cloud instead of being destroyed on the spot, so a phone can still
+       put the folded-away page back from its own Recently deleted */
+    trashCloud[b.id]={at:Date.now(),book:JSON.parse(JSON.stringify(b))};saveTrashCloud();}
 }
 /* several books at once into a collection that already exists. The same two
    steps folding one book from inside a collection has always taken — become a
@@ -5711,9 +5721,10 @@ async function refreshSnaps(){
     const msg=q("#busyMsg");if(msg)msg.textContent="Restoring…";
     try{
       await makeSnapshot(true);
-      const cnt=await applyBackup(JSON.parse(s.data));
+      const {n,failedPics}=await applyBackup(JSON.parse(s.data));
       render();
-      alert(`Restored ${cnt} book${cnt===1?"":"s"} from ${fmtWhen(s.at)}.`);
+      alert(`Restored ${n} book${n===1?"":"s"} from ${fmtWhen(s.at)}.`
+        +(failedPics?`\n\n${failedPics} picture${failedPics===1?" didn't":"s didn't"} fit — storage may be full. Free some room and restore again; the books themselves are in.`:""));
     }catch(e){alert("That backup couldn't be restored.");}
     if(q("#busyMsg"))q("#busyMsg").textContent="";
   });
@@ -9308,8 +9319,18 @@ async function applyBackup(data){
      instead of losing a last-write race against newer cloud copies */
   const now=Date.now();
   for(const b of data.books){sanitizeBook(b);b.modified=now;await dbPut("books",b);}
-  for(const[id,c]of Object.entries(data.covers||{})){await dbPut("covers",{id,data:c});coverCache.delete(id);SYNC.triedCover.delete(id);}
-  for(const[k,d]of Object.entries(data.images||{}))await dbPut("images",{key:k,data:d});
+  /* pictures are where a restore actually runs out of room. Failing one must
+     not abandon the rest — and must not bubble out as "the file couldn't be
+     read" after every book was already written. The count comes back to the
+     caller so the message can say what really happened. */
+  let failedPics=0;
+  for(const[id,c]of Object.entries(data.covers||{})){
+    try{await dbPut("covers",{id,data:c});coverCache.delete(id);SYNC.triedCover.delete(id);}
+    catch(e){failedPics++;}
+  }
+  for(const[k,d]of Object.entries(data.images||{})){
+    try{await dbPut("images",{key:k,data:d});}catch(e){failedPics++;}
+  }
   const map=new Map(books.map(b=>[b.id,b]));
   for(const b of data.books)map.set(b.id,b);
   books=[...map.values()];
@@ -9341,7 +9362,7 @@ async function applyBackup(data){
     for(const k of Object.keys(data.images||{}))enqueue({kind:"img",key:k});
     saveDeletions();flushQueue();
   }
-  return data.books.length;
+  return {n:data.books.length,failedPics};
 }
 
 /* =============== import from Goodreads / StoryGraph =============== */
@@ -9746,11 +9767,16 @@ async function importIntoCollection(items,coll){
    where it differs from the collection's, so a series you have simply finished
    stays one entry instead of scattering its books back across the shelf. */
 async function importCollection(items,name){
-  const status=items.every(it=>it.status==="finished"&&!it.dnf)?"finished":items.some(it=>it.status==="reading")?"reading":"want";
+  /* a given-up book is still a book you are done with, not one still waiting —
+     a series of nothing but DNFs used to land as "Want to read" because the
+     first test insisted on !dnf and the fallback was the pile. Done-with means
+     finished or abandoned; abandoned-throughout carries the flag up too. */
+  const allDnf=items.length>0&&items.every(it=>it.dnf);
+  const status=items.every(it=>it.status==="finished"||it.dnf)?"finished":items.some(it=>it.status==="reading")?"reading":"want";
   const nb=Object.assign(blankBook(uid()),{
     type:"collection",title:name,series:name,
     author:items[0].author||"",
-    status,
+    status,dnf:allDnf,
     dateFinished:items.map(it=>it.dateFinished||"").sort().pop()||"",
     keywords:[...new Set(items.flatMap(it=>it.tags||[]))].slice(0,12),
     entries:items.map(it=>syncReads(Object.assign(blankEntry(),{
@@ -10093,9 +10119,10 @@ q("#importFile").addEventListener("change",async e=>{
   const msg=q("#busyMsg");if(msg)msg.textContent="Restoring from backup…";
   try{
     if(books.length)await makeSnapshot(true);
-    const n=await applyBackup(JSON.parse(await f.text()));
+    const {n,failedPics}=await applyBackup(JSON.parse(await f.text()));
     render();
-    alert(`Restored ${n} book${n===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`);
+    alert(`Restored ${n} book${n===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`
+      +(failedPics?`\n\n${failedPics} picture${failedPics===1?" didn't":"s didn't"} fit — storage may be full. Free some room and restore again; the books themselves are in.`:""));
   }catch(err){alert("That file couldn't be read as a shelf backup.");}
   if(q("#busyMsg"))q("#busyMsg").textContent="";
 });
