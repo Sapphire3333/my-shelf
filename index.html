@@ -254,6 +254,14 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   html[data-vw="tiny"] .libfindrow #toolsTog{margin-left:0}
   .libfind:focus{border-color:#2dd4bf;outline:none}
   [data-theme="dark"] .libfind{background:#292524;border-color:#57534e}
+  /* the import list as seen from inside a book — a sibling of the page, never
+     inside it, so nothing placed on the page moves when it opens */
+  .bimp{margin-top:22px}
+  .bimprow .bimpt{font-size:13px;font-weight:600;color:var(--ink);text-align:left;padding:0;
+    display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bimprow .bimpt:hover{color:var(--teal);text-decoration:underline}
+  .bimprow .bimpa{padding:0 3px;font-size:11px;opacity:.75}
+  .bimprow .bimpa:hover{opacity:1}
   /* ---- emptying a box from inside it ----
      Typing a search is cheap and undoing one was not: you had to select the
      words and delete them, or backspace through them, on every box in the app.
@@ -5597,29 +5605,7 @@ function refreshImport(){
      see the working of is indistinguishable from a bug. This shows both sides. */
   qa("[data-impwhy]",box).forEach(b=>b.onclick=()=>{
     const it=importQueue.find(x=>x.id===b.dataset.impwhy);if(!it)return;
-    const t=importTarget(it);
-    if(!t){alert(`“${it.title}” is marked as one you already have, but the book it was matched to can’t be found now — most likely it was deleted since.\n\nPress “✕ Drop it”, or clear the list and choose the file again.`);return;}
-    const T=t.en||t.b;
-    const d=r=>(r.start||"—")+" → "+(r.end||"—")+(r.open?" (still reading)":"")+(r.auto?" (the app’s own guess)":"");
-    const fileR=((it.readings)||[]).filter(r=>r&&(r.start||r.end));
-    const fileReads=fileR.length?fileR.map(d).join("\n      "):(it.dateFinished?("— → "+it.dateFinished):"none");
-    const mine=readsOf(T);
-    /* a guess says it is a guess, and says what the guess was made of */
-    const why=it.near
-      ?`WHY THESE LOOK RELATED\n      “${it.title}” reads as an instalment of\n      “${T.title||"Untitled"}”, which you already have.\n      The app is not certain — nothing has been\n      decided for you. Add it as its own book, or\n      fill what it holds into the one you have.\n\n`
-      :"";
-    alert(`${it.title}\n${t.en?`(inside “${t.b.title||"a collection"}”)\n`:""}
-${why}THE FILE HOLDS
-      dates: ${fileReads}
-      rating: ${it.rating!=null?it.rating:"none"}
-      pages: ${it.pages||"none"}
-
-YOU ALREADY HAVE
-      dates: ${mine.length?mine.map(d).join("\n      "):"none"}
-      rating: ${T.rating!=null?T.rating:"none"}
-      pages: ${T.pages||"none"}
-
-Only what is blank on your side is ever offered.`);
+    importWhy(it);
   });
   qa("[data-impdrop]",box).forEach(b=>b.onclick=()=>{
     importQueue=importQueue.filter(x=>x.id!==b.dataset.impdrop);
@@ -6558,6 +6544,10 @@ async function openBook(id,fresh,keepPlace,goToStory){
      opening a blank page under its old id would create a ghost book */
   if(!found&&!fresh)return;
   const heldFace=bookMode,heldMode=mode,heldFit=fitScreen,heldScroll=window.scrollY;
+  /* the import fold starts closed on every book, and whatever was typed into it
+     belonged to the book you were on — keepPlace means the same book redrawn,
+     so it keeps what it had */
+  if(!keepPlace)bImpReset();
   isNew=!found;
   bookMode=keepPlace?heldFace:((!found||isRaw(found))?"edit":(settings.bookEdit?"edit":"view"));
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
@@ -6875,10 +6865,12 @@ function renderBookView(){
     <div id="imgLayer"></div>
     <div id="padLayer"></div>
     <svg id="drawLayer"></svg>
-  </div>`;
+  </div>
+  ${bookImportHtml(b)}`;
 
   const page=q("#edPage");
   wireSizeCtrl();
+  wireBookImport(b);
   q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();restoreScroll(view);});};
   q("#edDel").onclick=()=>deleteBookById(cur.id);
   q("#toEdit").onclick=()=>{vStatusOpen=false;setBookMode("edit");};
@@ -7997,9 +7989,11 @@ function renderEditor(){
     <div class="hint" id="padsHint" hidden>Write them here, and change the paper, the shape or the layering. Where each one sits on the page is set the same way as a picture — <b>👁 Done</b>, then <b>✥ Move</b>.</div>
     <div id="padLayer"></div>
     <svg id="drawLayer"></svg>
-  </div>`;
+  </div>
+  ${bookImportHtml(b)}`;
 
   const page=q("#edPage");
+  wireBookImport(b);
   /* declared up here because the chip rendering below reads it */
   let tagEdit=false;
 
@@ -9843,6 +9837,176 @@ function markDupes(){
     it.hitB=found?found.b.id:"";
     it.hitE=(found&&found.en)?found.en.id:"";
   });
+}
+/* =============== the import list, asked from inside a book ===============
+   Overview's list asks "where should these rows go?". Standing in a collection
+   you are asking the other question — "what has the file got for THIS one that
+   I haven't?" — and answering it from Overview meant knowing the series by
+   heart and typing it into a search over sixteen hundred rows.
+
+   Everything this draws goes BELOW #edPage and never inside it. That element is
+   what every picture, note and drawn mark on the page is measured from, so
+   growing it moves all of them — a mistake already made twice here. */
+let bImpOpen=false,bImpQ="",bImpHave=false;
+function bImpReset(){bImpOpen=false;bImpQ="";bImpHave=false;}
+/* Two tiers, the way the shelf's own matching works: plainly this thing, then
+   merely by the same hand. With nothing typed the question is asked of the book
+   you are standing in; type something and it is asked of the whole list. */
+function bImpRows(b){
+  const q=bImpQ.trim().toLowerCase();
+  const stems=[...new Set([b.title,b.series]
+    .map(t=>titleKey(volTrim(String(t||""))))
+    .filter(s=>s.length>2))];
+  const mine=String(b.author||"").trim();
+  const hit=[],near=[];
+  for(const it of importQueue){
+    /* already on the shelf is the answer to "have I got it", so those are out
+       of the way unless you ask — that is the whole point of the section */
+    if(it.dupe&&!bImpHave)continue;
+    const ti=String(it.title||""),au=String(it.author||"");
+    if(q){
+      if(ti.toLowerCase().includes(q)||au.toLowerCase().includes(q))hit.push(it);
+      else if(authorsOverlap(q,au))near.push(it);
+      continue;
+    }
+    const k=titleKey(volTrim(ti));
+    /* startsWith as well as equals: "Murderbot Diaries: Network Effect" is one
+       of them even though its own title carries more than the series name */
+    if(stems.some(s=>k===s||k.startsWith(s)))hit.push(it);
+    else if(mine&&authorsOverlap(mine,au))near.push(it);
+  }
+  return {hit,near};
+}
+const bImpRow=(it,coll)=>`<div class="snap bimprow" style="padding:6px 10px">
+  <div style="min-width:0;flex:1">
+    <button class="bimpt" data-bimpt="${esc(it.title||"")}" title="Search the list for this title">${esc(it.title)||"Untitled"}</button>
+    <div class="meta">${esc(it.author)||"Unknown author"}
+      <button class="bimpa" data-bimpa="${esc(it.author||"")}" title="Search the list for this author">🔍</button>
+      ${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}
+      ${it.dupe?' · <span style="color:var(--teal)">already on your shelf</span>':""}
+      ${it.near?' · <span style="color:#b45309">may already be there</span>':""}</div>
+  </div>
+  <div class="sp">${(it.dupe||it.near)?`<button class="btn" data-bimpw="${it.id}" title="What this file holds for it, beside what you already have">?</button>`:""}
+    <button class="btn${it.dupe?"":" pri"}" data-bimpadd="${it.id}" title="${coll?"Put it inside this collection as a story":"Make this a collection and put it inside"}">＋ Inside</button></div>
+</div>`;
+function bookImportHtml(b){
+  if(!importQueue.length)return "";
+  const {hit,near}=bImpRows(b);
+  const coll=isColl(b);
+  const total=hit.length+near.length;
+  /* nothing of this book in the file, and nothing typed to widen the question:
+     say nothing at all rather than leave an empty box on every book you open */
+  if(!total&&!bImpQ.trim()&&!bImpHave)return "";
+  const dupeN=importQueue.filter(it=>it.dupe).length;
+  const cap=12;
+  const list=(rows,label)=>rows.length?`<div class="lbl" style="display:block;margin:9px 0 4px">${label} <b>${rows.length}</b></div>`
+    +rows.slice(0,cap).map(it=>bImpRow(it,coll)).join("")
+    +(rows.length>cap?`<div class="none" style="margin-top:4px">…and ${rows.length-cap} more — narrow it with the box above.</div>`:""):"";
+  return `<div class="wrap bimp"><div class="sec" style="margin-bottom:0">
+    <div class="heading"><h2 class="serif" style="font-size:17px">📥 From your import list</h2>
+      <span class="n">${total||""}</span>
+      <button class="btn foldbtn" id="bImpFold">${bImpOpen?"▾ Hide":"▸ Show"}</button></div>
+    <div class="hcard" id="fold-bImp" ${bImpOpen?"":"hidden"}>
+      ${coll?`<div class="hint" style="margin:0 0 8px">Books in your export that look like part of this collection, and aren't on your shelf yet. Adding one files it inside as a story, keeping its own rating, pages and dates.</div>`
+        :`<div class="hint" style="margin:0 0 8px">Your export has ${total} that look like part of this. Adding one turns this book into a collection and files them inside as stories — it keeps its own rating, dates, tags and writing.</div>`}
+      <span class="fclear"><input class="field" id="bImpQ" placeholder="Search the whole import list…" value="${esc(bImpQ)}" style="font-size:13px;padding:7px 11px">
+        <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the search">✕</button></span>
+      ${dupeN?`<label class="chk" style="margin-top:7px"><input type="checkbox" id="bImpHave" ${bImpHave?"checked":""}> Include the ${dupeN} already on your shelf</label>`:""}
+      ${total?`<div class="hrow2" style="margin-top:8px">
+        <button class="btn pri" id="bImpAll" style="padding:5px 11px">${coll?`＋ Add all ${hit.length+near.length} inside`:`📚 Make it a collection and add all ${hit.length+near.length}`}</button>
+      </div>`:""}
+      ${list(hit,bImpQ.trim()?"Matches":"Part of this")}
+      ${list(near,bImpQ.trim()?"Close matches":"Same author")}
+      ${total?"":`<div class="none" style="margin-top:9px">Nothing in the list matches that.</div>`}
+    </div>
+  </div></div>`;
+}
+function wireBookImport(b){
+  const fold=q("#bImpFold");
+  if(!fold)return;
+  fold.onclick=()=>{
+    bImpOpen=!bImpOpen;
+    const body=q("#fold-bImp");if(body)body.hidden=!bImpOpen;
+    fold.textContent=bImpOpen?"▾ Hide":"▸ Show";
+  };
+  const redraw=()=>{bookMode==="edit"?renderEditor():renderBookView();};
+  const inp=q("#bImpQ");
+  if(inp)inp.oninput=()=>{
+    bImpQ=inp.value;
+    clearTimeout(inp._t);
+    inp._t=setTimeout(()=>{
+      redraw();
+      const again=q("#bImpQ");
+      if(again){again.focus();again.setSelectionRange(again.value.length,again.value.length);}
+    },160);
+  };
+  const hv=q("#bImpHave");
+  if(hv)hv.onchange=()=>{bImpHave=hv.checked;redraw();};
+  qa("[data-bimpt]").forEach(x=>x.onclick=()=>{bImpQ=x.dataset.bimpt;redraw();});
+  qa("[data-bimpa]").forEach(x=>x.onclick=()=>{bImpQ=x.dataset.bimpa;redraw();});
+  qa("[data-bimpw]").forEach(x=>x.onclick=()=>{
+    const it=importQueue.find(i=>i.id===x.dataset.bimpw);if(it)importWhy(it);});
+  /* one row, or all of them — the same two steps either way, so a plain book
+     becomes a collection first and then receives them */
+  const file=async(items,btn)=>{
+    if(!items.length)return;
+    const fresh=!isColl(b);
+    if(fresh&&!confirm(`Make “${b.title||"Untitled"}” a collection and put ${items.length} book${items.length===1?"":"s"} inside it as stories?\n\nIt keeps its own rating, dates, tags and writing.`))return;
+    if(!fresh&&items.length>1&&!confirm(`Put ${items.length} books inside “${b.title||"Untitled"}” as stories?\n\nEach keeps its own rating, pages, dates and writing.`))return;
+    if(btn)btn.disabled=true;
+    const msg=q("#busyMsg");if(msg)msg.textContent=`Filing ${items.length}…`;
+    try{
+      if(fresh)await makeCollection(b);
+      await importIntoCollection(items,b);
+      /* `b` is the open book — cur, which is a COPY of the shelf's object, and
+         the copy is what both steps above just mutated and saved. So the shelf
+         array is the stale one and has to be told, not asked: reading it back
+         into cur put the old standalone book on screen while the database held
+         the finished collection. */
+      const i=books.findIndex(x=>x.id===b.id);
+      const fresh2=JSON.parse(JSON.stringify(b));
+      if(i>=0)books[i]=fresh2;else books.unshift(fresh2);
+      saveImportQueue();
+      if(SYNC.on)flushQueue();
+    }catch(e){alert("They couldn't be saved into the collection — storage may be full. Export a backup from the Overview tab and free some space.");}
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    redraw();
+  };
+  qa("[data-bimpadd]").forEach(x=>x.onclick=()=>{
+    const it=importQueue.find(i=>i.id===x.dataset.bimpadd);
+    if(it)file([it],x);
+  });
+  const all=q("#bImpAll");
+  if(all)all.onclick=()=>{const {hit,near}=bImpRows(b);file([...hit,...near],all);};
+}
+/* "nothing new to take from it" is a conclusion, and a conclusion you cannot see
+   the working of is indistinguishable from a bug. This shows both sides. Lives
+   out here rather than inside the Overview list, because the collection's own
+   copy of that list asks exactly the same question. */
+function importWhy(it){
+  const t=importTarget(it);
+  if(!t){alert(`“${it.title}” is marked as one you already have, but the book it was matched to can’t be found now — most likely it was deleted since.\n\nPress “✕ Drop it”, or clear the list and choose the file again.`);return;}
+  const T=t.en||t.b;
+  const d=r=>(r.start||"—")+" → "+(r.end||"—")+(r.open?" (still reading)":"")+(r.auto?" (the app’s own guess)":"");
+  const fileR=((it.readings)||[]).filter(r=>r&&(r.start||r.end));
+  const fileReads=fileR.length?fileR.map(d).join("\n      "):(it.dateFinished?("— → "+it.dateFinished):"none");
+  const mine=readsOf(T);
+  /* a guess says it is a guess, and says what the guess was made of */
+  const why=it.near
+    ?`WHY THESE LOOK RELATED\n      “${it.title}” reads as an instalment of\n      “${T.title||"Untitled"}”, which you already have.\n      The app is not certain — nothing has been\n      decided for you. Add it as its own book, or\n      fill what it holds into the one you have.\n\n`
+    :"";
+  alert(`${it.title}\n${t.en?`(inside “${t.b.title||"a collection"}”)\n`:""}
+${why}THE FILE HOLDS
+      dates: ${fileReads}
+      rating: ${it.rating!=null?it.rating:"none"}
+      pages: ${it.pages||"none"}
+
+YOU ALREADY HAVE
+      dates: ${mine.length?mine.map(d).join("\n      "):"none"}
+      rating: ${T.rating!=null?T.rating:"none"}
+      pages: ${T.pages||"none"}
+
+Only what is blank on your side is ever offered.`);
 }
 /* find the book — and the story inside it — a staged row already matches */
 function importTarget(it){
