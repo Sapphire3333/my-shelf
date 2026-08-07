@@ -2272,7 +2272,19 @@ const CFG=window.SHELF_CONFIG||{};
 const SYNC={supa:null,user:null,on:false,queue:[],flushing:false,pulling:false,status:"local",triedCover:new Set(),
   /* highest `modified` ever seen from the cloud per book — an edit made after
      seeing it must outrank it even if this device's clock is behind */
-  seen:{}};
+  seen:{},
+  /* cloud versions a pull NOTICED but did not take, because the book was open
+     here or an upload of it was pending. Kept apart from `seen` on purpose:
+     `seen` answers runOp's question "have I absorbed the cloud's copy?", and
+     bumping it for a held-back row made the answer a lie — the conflict copy
+     that should have gone to Recently deleted was silently skipped. This map
+     only feeds the `modified` stamp, so the next edit still outranks the held
+     version; it is deliberately not persisted, because after a reload the
+     pending upload finds the honest `seen` and bins the copy itself. */
+  held:{}};
+/* the floor a fresh `modified` stamp must clear — everything this device has
+   seen from the cloud, absorbed or not */
+const seenFloor=id=>Math.max(SYNC.seen[id]||0,SYNC.held[id]||0);
 
 function syncConfigured(){
   return !!(CFG.url&&CFG.anonKey&&!/YOUR_/.test(String(CFG.url)+String(CFG.anonKey))
@@ -2384,8 +2396,10 @@ async function runOp(op){
     const {error}=await s.from("books").upsert({user_id:uid,id:b.id,data:b,modified:b.modified||b.created||0});
     if(error)throw error;
     /* our own upload is now the cloud's version — remember it, or the next save
-       would mistake it for someone else's edit and bin a copy of our own work */
+       would mistake it for someone else's edit and bin a copy of our own work.
+       Whatever was held back is settled too: it was just binned or outranked. */
     SYNC.seen[op.id]=Math.max(SYNC.seen[op.id]||0,b.modified||0);
+    delete SYNC.held[op.id];
     dbPut("meta",{k:"seenMod",v:SYNC.seen});
   }else if(op.kind==="bookDel"){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
@@ -2479,6 +2493,10 @@ async function pullAll(){
             if(cloudNewer("goal")){
               settings.goal=(row.value===null||row.value===undefined)?"":row.value;
               saveSettings();
+              /* the record boot reads, not only the settings copy — without this
+                 a reload resurrected the old goal, and the metaTimes bump below
+                 then stopped any later pull from correcting it */
+              dbPut("meta",{k:"goal",v:settings.goal||""});
             }}
           else if(row.key==="libArt"){const have=new Set(libArt.map(a=>a.id));
             (row.value||[]).forEach(a=>{if(a&&a.id&&!have.has(a.id)&&!gone("libart:"+a.id))libArt.push(a);});}
@@ -2525,11 +2543,18 @@ async function pullAll(){
     for(const row of rows||[]){
       remoteIds.add(row.id);
       const rb=row.data||{};rb.id=row.id;rb.modified=row.modified||rb.modified||rb.created||0;
-      /* remember it even when we don't take it — the next edit here must beat it */
-      if((rb.modified||0)>(SYNC.seen[row.id]||0))SYNC.seen[row.id]=rb.modified||0;
       const tomb=deletions[row.id]||0;
-      if(tomb&&tomb>=(rb.modified||0))continue;
-      if(heldBack(row.id))continue;
+      if(tomb&&tomb>=(rb.modified||0)){
+        if((rb.modified||0)>(SYNC.seen[row.id]||0))SYNC.seen[row.id]=rb.modified||0;
+        continue;}
+      /* a held-back row is remembered apart — see SYNC.held. Marking it `seen`
+         here is what used to cost the other device its conflict copy. */
+      if(heldBack(row.id)){
+        if((rb.modified||0)>(SYNC.held[row.id]||0))SYNC.held[row.id]=rb.modified||0;
+        continue;}
+      /* this row we either take or already outrank — the next edit must beat it */
+      if((rb.modified||0)>(SYNC.seen[row.id]||0))SYNC.seen[row.id]=rb.modified||0;
+      delete SYNC.held[row.id];
       const lb=localMap.get(row.id);
       if(!lb||(rb.modified||0)>(lb.modified||0)){
         /* same scrub a backup file gets: cloud rows are the only other input
@@ -3263,7 +3288,7 @@ async function applyOp(op,inv){
       /* stamped as edited-now, same as restoreTrash: an undo carrying its old time
          would lose the sync race to the version it undid — the other device still
          holds that newer copy and would quietly put it back */
-      clone.modified=Math.max(Date.now(),(clone.modified||0)+1,(SYNC.seen[id]||0)+1);
+      clone.modified=Math.max(Date.now(),(clone.modified||0)+1,seenFloor(id)+1);
       await dbPut("books",clone);
       const i=books.findIndex(x=>x.id===id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
@@ -3681,7 +3706,7 @@ async function setStatus(id,what){
   const b=books.find(x=>x.id===id);if(!b)return;
   /* said no to starting it again — touch nothing, not even the edited-at stamp */
   if(markStatus(b,what)===false){stPickFor=null;renderMain();return;}
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
+  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
   stPickFor=null;refreshShelfSub();renderMain();
@@ -3792,7 +3817,7 @@ async function foldIntoCollection(ids,coll){
   }
   if(!n)return 0;
   syncCollRating(coll);
-  coll.modified=Math.max(Date.now(),(coll.modified||0)+1,(SYNC.seen[coll.id]||0)+1);
+  coll.modified=Math.max(Date.now(),(coll.modified||0)+1,seenFloor(coll.id)+1);
   await dbPut("books",coll);
   if(SYNC.on){enqueue({kind:"book",id:coll.id});flushQueue();}
   return n;
@@ -4368,7 +4393,7 @@ function renderLibrary(){
       for(const id of libSel){
         const b=books.find(x=>x.id===id);if(!b)continue;
         fn(b);
-        b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
+        b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
         b.touched=true;
         await dbPut("books",b);
         if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -4789,7 +4814,7 @@ async function restoreTrash(tid){
   /* stamped as edited-now, not left on its old time: the deletion's tombstone is
      newer than the book's last edit, so an unstamped restore would lose to it on
      every other device — and be quietly deleted again here at the next pull */
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
+  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
   await dbPut("books",b);
   if(t.cover){await dbPut("covers",{id:b.id,data:t.cover});coverCache.delete(b.id);SYNC.triedCover.delete(b.id);}
   for(const[k,d]of Object.entries(t.images||{}))await dbPut("images",{key:k,data:d});
@@ -5474,7 +5499,7 @@ function refreshNameDupes(){
     for(const nm of others){
       for(const b of g.spellings[nm]){
         b[g.field]=keep;
-        b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
+        b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
         await dbPut("books",b);
         if(SYNC.on)enqueue({kind:"book",id:b.id});
       }
@@ -5521,7 +5546,7 @@ function refreshKwDupes(){
       if(!(b.keywords||[]).some(k=>gone.has(k)))continue;
       b.keywords=b.keywords.filter(k=>!gone.has(k));
       b.kwBreaks=(b.kwBreaks||[]).filter(k=>!gone.has(k));
-      b.modified=Math.max(Date.now(),(b.modified||0)+1,(SYNC.seen[b.id]||0)+1);
+      b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
       await dbPut("books",b);
       if(SYNC.on)enqueue({kind:"book",id:b.id});
     }
@@ -6290,7 +6315,7 @@ async function commitCur(){
   if(before&&strip(before)===strip(after)){setSaved(true);return;}
   /* beat our previous save AND anything the cloud has shown us, so a device whose
      clock runs fast can't have its older copy win forever */
-  after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,(SYNC.seen[cur.id]||0)+1);
+  after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,seenFloor(cur.id)+1);
   after.touched=true;cur.touched=true;   /* you've worked on it — no longer a raw import */
   cur.modified=after.modified;
   try{await dbPut("books",after);}
@@ -6324,7 +6349,7 @@ async function quickEdit(mut){
   const before=stored?JSON.parse(JSON.stringify(stored)):null;
   mut(cur);
   cur.touched=true;
-  cur.modified=Math.max(Date.now(),(cur.modified||0)+1,(SYNC.seen[cur.id]||0)+1);
+  cur.modified=Math.max(Date.now(),(cur.modified||0)+1,seenFloor(cur.id)+1);
   const after=JSON.parse(JSON.stringify(cur));
   pushOp({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))});
   try{await dbPut("books",after);}catch(e){alert("Couldn't save — storage may be full.");return;}
@@ -8817,7 +8842,7 @@ function renderEditor(){
   }
 
   /* ---- editing a genre or keyword everywhere it appears ---- */
-  const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,((b&&SYNC.seen[b.id])||0)+1);
+  const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,(b?seenFloor(b.id):0)+1);
   /* rewrite one label across every book; the open book is left to its own autosave */
   async function relabel(field,oldN,newN){
     for(const b of books){
@@ -9493,7 +9518,7 @@ async function importMerge(it){
     const fills=importFills(it,t.b,t.en);
     if(fills.length){
       applyImportFills(it,t.b,t.en,fills);
-      t.b.modified=Math.max(Date.now(),(t.b.modified||0)+1,(SYNC.seen[t.b.id]||0)+1);
+      t.b.modified=Math.max(Date.now(),(t.b.modified||0)+1,seenFloor(t.b.id)+1);
       try{await dbPut("books",t.b);}catch(e){return false;}
       if(SYNC.on)enqueue({kind:"book",id:t.b.id});
     }
@@ -9586,7 +9611,7 @@ async function importIntoCollection(items,coll){
   /* a mark of your own stays yours; one that was the stories' average follows
      the stories it now has */
   syncCollRating(coll);
-  coll.modified=Math.max(Date.now(),(coll.modified||0)+1,(SYNC.seen[coll.id]||0)+1);
+  coll.modified=Math.max(Date.now(),(coll.modified||0)+1,seenFloor(coll.id)+1);
   await dbPut("books",coll);
   if(SYNC.on)enqueue({kind:"book",id:coll.id});
   const ids=new Set(items.map(x=>x.id));
