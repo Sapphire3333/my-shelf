@@ -86,6 +86,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   [data-theme="dark"] .bgdrop{border-color:#57534e}
   [data-theme="dark"] .empty{border-color:#44403c}
   [data-theme="dark"] input[type=date]::-webkit-calendar-picker-indicator{filter:invert(.8)}
+  /* the ⌄ year/month panel was designed on light paper only — in the dark it
+     was a white slab whose hovered label turned near-white on near-white */
+  [data-theme="dark"] .dqpanel{background:var(--card);border-color:var(--line)}
+  [data-theme="dark"] .dqrow button{background:#3a3532;border-color:#57534e;color:#d6d3d1}
+  [data-theme="dark"] .dqrow button:hover{border-color:var(--teal);color:var(--ink)}
+  [data-theme="dark"] .coverbox{background:var(--card);border-color:#57534e}
   *{box-sizing:border-box}
   /* the browser's own [hidden] rule loses to any class that sets display, which
      left the draw tools and the mode bar on screen in every mode */
@@ -1743,8 +1749,13 @@ document.addEventListener("click",e=>{
   const M=mb?String(mb.dataset.dqm).padStart(2,"0"):(parts[1]||"01");
   const D=parts[2]||"01";
   inp.value=`${Y}-${M}-${D}`;
-  inp.dispatchEvent(new Event("input",{bubbles:true}));
-  inp.dispatchEvent(new Event("change",{bubbles:true}));
+  /* a year alone is half the gesture — flagged on the event, so a listener
+     that redraws its whole page (the reading page does) knows to put the
+     panel back for the month tap this promised */
+  const evI=new Event("input",{bubbles:true}),evC=new Event("change",{bubbles:true});
+  if(yb&&!mb)evI.__dqHalf=evC.__dqHalf=true;
+  inp.dispatchEvent(evI);
+  inp.dispatchEvent(evC);
   qa("[data-dqy],[data-dqm]",panel).forEach(b=>b.classList.remove("on"));
   if(yb)yb.classList.add("on");
   /* year then month is the whole gesture, so the month closes it */
@@ -1869,7 +1880,10 @@ const favUnits=()=>books.reduce((n,b)=>n+(isColl(b)
    collection's, so opening it takes you to the collection it lives in. */
 const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
   title:en.title,author:entAuthorOf(coll,en),genres:entGenresOf(coll,en),
-  rating:en.rating,pages:en.pages,status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),
+  /* its page too — a story on the go earns the same progress line under its
+     row that a plain book gets, and without this the line was silently blank */
+  rating:en.rating,pages:en.pages,progress:en.progress,
+  status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),
   dateFinished:entDateOf(coll,en),favorite:!!en.favorite,summary:en.summary||"",
   /* its own readings travel with it, so a story read three times says so on the
      shelf rather than borrowing the collection's count */
@@ -3754,7 +3768,9 @@ function wireOpen(root,withDel){
   root.onkeydown=e=>{
     if(e.key!=="Enter"&&e.key!==" ")return;
     const op=e.target.closest&&e.target.closest("[data-open]");
-    if(op&&e.target===op){e.preventDefault();openBook(op.dataset.open,false);}
+    /* the story id travels here too — Enter on a story's row lands on the
+       story, the same place a click has always landed */
+    if(op&&e.target===op){e.preventDefault();openBook(op.dataset.open,false,false,op.dataset.openen||"");}
   };
   root.onclick=e=>{
     /* the little ↗ opens the book's own link instead of the book's page */
@@ -4416,6 +4432,10 @@ function renderLibrary(){
   if(aa)aa.onclick=()=>q("#libArtFile").click();
   if(libSelMode){
     qa("[data-open]",m).forEach(el=>{
+      /* a story's row carries its collection's id — a tick there would stamp
+         the collection while you were pointing at the story. Tick all already
+         leaves story rows out; the box does now too. */
+      if(el.dataset.openen)return;
       const id=el.dataset.open;
       const cb=document.createElement("input");
       cb.type="checkbox";cb.className="libcb";cb.checked=libSel.has(id);
@@ -4425,16 +4445,21 @@ function renderLibrary(){
       el.insertBefore(cb,el.firstChild);
     });
     const sn=q("#selNone",m);if(sn)sn.onclick=()=>{libSel.clear();renderLibrary();};
-    /* one label onto every ticked book at once */
+    /* one label onto every ticked book at once — and one undo step, not one
+       per book */
     const applyToSel=async fn=>{
+      const items=[];
       for(const id of libSel){
         const b=books.find(x=>x.id===id);if(!b)continue;
+        const before=JSON.parse(JSON.stringify(b));
         fn(b);
         b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
         b.touched=true;
         await dbPut("books",b);
         if(SYNC.on)enqueue({kind:"book",id:b.id});
+        items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
       }
+      if(items.length)pushOp({t:"bulk",items});
       if(SYNC.on)flushQueue();
       renderLibrary();
     };
@@ -6394,7 +6419,10 @@ let vStatusOpen=false,vRateOpen=false,viewArrange=false,vReadsOpen=false;
 async function quickEdit(mut){
   const stored=books.find(x=>x.id===cur.id);
   const before=stored?JSON.parse(JSON.stringify(stored)):null;
-  mut(cur);
+  /* a mutation may refuse — declining the "start it again?" confirm returns
+     false — and a refusal must cost nothing: no stamp, no save, no undo step,
+     no place at the top of Recently edited, no cloud write */
+  if(mut(cur)===false)return;
   cur.touched=true;
   cur.modified=Math.max(Date.now(),(cur.modified||0)+1,seenFloor(cur.id)+1);
   const after=JSON.parse(JSON.stringify(cur));
@@ -6680,14 +6708,29 @@ function renderBookView(){
     }
     return null;
   };
-  qa("[data-rst],[data-ren]",page).forEach(el=>el.onchange=()=>{
+  qa("[data-rst],[data-ren]",page).forEach(el=>el.onchange=async ev=>{
     const rid=el.dataset.ren||el.dataset.rst,isEnd=!!el.dataset.ren,v=el.value;
-    quickEdit(bk=>{const f=readIn(bk,rid);if(!f)return;
+    await quickEdit(bk=>{const f=readIn(bk,rid);if(!f)return false;
       if(isEnd)f.r.end=v;else f.r.start=v;syncReads(f.host);});
+    /* the ⌄ panel stood beside an input the redraw just threw away. A year tap
+       is only half the gesture, so the panel is put back beside the fresh
+       input, year lit, still waiting for its month — the editor never redraws
+       here, which is why only this page ever lost it. */
+    if(ev.__dqHalf){
+      const inp2=q(`[data-${isEnd?"ren":"rst"}="${CSS.escape(rid)}"]`);
+      const dq=inp2&&inp2.parentElement&&inp2.parentElement.querySelector("[data-dq]");
+      if(dq){dq.click();
+        const row=inp2.closest(".readrow"),p=row&&row.nextElementSibling;
+        if(p&&p.classList&&p.classList.contains("dqpanel")){
+          const yb2=p.querySelector(`[data-dqy="${(inp2.value||"").slice(0,4)}"]`);
+          if(yb2)yb2.classList.add("on");
+        }
+      }
+    }
   });
   qa("[data-rdel]",page).forEach(el=>el.onclick=e=>{
     e.stopPropagation();
-    quickEdit(bk=>{const f=readIn(bk,el.dataset.rdel);if(!f)return;
+    quickEdit(bk=>{const f=readIn(bk,el.dataset.rdel);if(!f)return false;
       const rs=readsOf(f.host),gone=rs.splice(rs.indexOf(f.r),1)[0];
       /* the reading you were in the middle of is gone, so it is not being read —
          this is the one tap that undoes a mis-tapped re-read. On a story the
@@ -6702,7 +6745,7 @@ function renderBookView(){
   });
   qa("[data-radd]",page).forEach(el=>el.onclick=e=>{
     e.stopPropagation();
-    quickEdit(bk=>{const host=readHost(bk,el.dataset.radd);if(!host)return;
+    quickEdit(bk=>{const host=readHost(bk,el.dataset.radd);if(!host)return false;
       readsOf(host).push({id:uid(),start:"",end:""});syncReads(host);});
   });
   /* rating without the editor — the most common thing to do after finishing */
@@ -6735,7 +6778,7 @@ function renderBookView(){
     const i=x.dataset.evst.indexOf("|");
     const id=x.dataset.evst.slice(0,i),v=x.dataset.evst.slice(i+1);
     vEntStatus=null;
-    quickEdit(bk=>{const en=findEn(bk,id);if(!en)return;
+    quickEdit(bk=>{const en=findEn(bk,id);if(!en)return false;
       /* set aside is a flag beside the status, not one of them: choosing it
          clears any status, and choosing a status clears it. Choosing one also
          opens or closes a reading of this story, the way it does for a book. */
