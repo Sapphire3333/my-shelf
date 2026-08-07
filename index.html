@@ -2544,7 +2544,13 @@ async function pullAll(){
       }
     }catch(e){console.warn("[shelf] meta pull",e);}
     // books (per-book last-write-wins by `modified`)
-    const {data:rows,error}=await s.from("books").select("id,data,modified").eq("user_id",uid);
+    /* Ask first who changed and when — ids and stamps are a few kilobytes where
+       the full rows are the entire library. Pulls run on every return to the
+       tab, and on a phone that is every app switch; the old single query
+       re-downloaded every book's whole body each time, usually to conclude
+       nothing had changed. The bodies are fetched below, only for the rows
+       that actually beat what this device holds. */
+    const {data:heads,error}=await s.from("books").select("id,modified").eq("user_id",uid);
     if(error){setSync(navigator.onLine?"error":"offline");return;}
     const localMap=new Map(books.map(b=>[b.id,b]));
     const remoteIds=new Set();
@@ -2554,21 +2560,34 @@ async function pullAll(){
        Same for the book open in the editor: those edits are still being typed. */
     const pending=new Set(SYNC.queue.filter(o=>o.kind==="book"&&o.id).map(o=>o.id));
     const heldBack=id=>pending.has(id)||(view==="book"&&cur&&cur.id===id);
-    for(const row of rows||[]){
-      remoteIds.add(row.id);
-      const rb=row.data||{};rb.id=row.id;rb.modified=row.modified||rb.modified||rb.created||0;
-      const tomb=deletions[row.id]||0;
-      if(tomb&&tomb>=(rb.modified||0)){
-        if((rb.modified||0)>(SYNC.seen[row.id]||0))SYNC.seen[row.id]=rb.modified||0;
+    const wanted=[];
+    for(const h of heads||[]){
+      remoteIds.add(h.id);
+      const rm=h.modified||0;
+      const tomb=deletions[h.id]||0;
+      if(tomb&&tomb>=rm){
+        if(rm>(SYNC.seen[h.id]||0))SYNC.seen[h.id]=rm;
         continue;}
       /* a held-back row is remembered apart — see SYNC.held. Marking it `seen`
          here is what used to cost the other device its conflict copy. */
-      if(heldBack(row.id)){
-        if((rb.modified||0)>(SYNC.held[row.id]||0))SYNC.held[row.id]=rb.modified||0;
+      if(heldBack(h.id)){
+        if(rm>(SYNC.held[h.id]||0))SYNC.held[h.id]=rm;
         continue;}
       /* this row we either take or already outrank — the next edit must beat it */
+      if(rm>(SYNC.seen[h.id]||0))SYNC.seen[h.id]=rm;
+      delete SYNC.held[h.id];
+      const lb=localMap.get(h.id);
+      /* a row with no stamp at all is fetched to be inspected the old way —
+         its true `modified` may be sitting inside the body */
+      if(!lb||rm>(lb.modified||0)||!rm)wanted.push(h.id);
+    }
+    for(let w=0;w<wanted.length;w+=100){
+      const {data:rows,error:e2}=await s.from("books").select("id,data,modified")
+        .eq("user_id",uid).in("id",wanted.slice(w,w+100));
+      if(e2){setSync(navigator.onLine?"error":"offline");return;}
+      for(const row of rows||[]){
+      const rb=row.data||{};rb.id=row.id;rb.modified=row.modified||rb.modified||rb.created||0;
       if((rb.modified||0)>(SYNC.seen[row.id]||0))SYNC.seen[row.id]=rb.modified||0;
-      delete SYNC.held[row.id];
       const lb=localMap.get(row.id);
       if(!lb||(rb.modified||0)>(lb.modified||0)){
         /* same scrub a backup file gets: cloud rows are the only other input
@@ -2579,6 +2598,7 @@ async function pullAll(){
         if(i>=0)books[i]=rb;else books.push(rb);
         coverCache.delete(row.id);SYNC.triedCover.delete(row.id);
         changed.push(rb);
+      }
       }
     }
     /* covers & pictures a few at a time — one by one made a first sync crawl */
@@ -3554,12 +3574,18 @@ function fabSections(){
   return out;
 }
 function closeFabMenu(){const m=q("#fabMenu");if(m){m.hidden=true;m.innerHTML="";}}
-function updateFab(){
+/* whether there is anything worth jumping to only changes when a page is
+   rebuilt — but it was being recounted on every scroll tick, and counting
+   walks the whole page (every heading read, six rects measured). The renders
+   recount; scrolling reuses the answer and does plain arithmetic. */
+let fabCanJump=false;
+function updateFab(recount){
   const fab=q("#fab");if(!fab)return;
   /* jumping is useful straight away; going back to the top only once you've left
      it, and down to the bottom only while there is still page underneath you */
   const jb=q("#fabJump"),tb=q("#fabTop"),bb=q("#fabBot");
-  const canJump=fabSections().length>1;
+  if(recount!==false)fabCanJump=fabSections().length>1;
+  const canJump=fabCanJump;
   const canTop=window.scrollY>=200;
   const doc=document.documentElement;
   const canBot=(doc.scrollHeight-window.scrollY-window.innerHeight)>=200;
@@ -3569,7 +3595,7 @@ function updateFab(){
   fab.hidden=!canJump&&!canTop&&!canBot;
   if(!canJump)closeFabMenu();
 }
-window.addEventListener("scroll",updateFab,{passive:true});
+window.addEventListener("scroll",()=>updateFab(false),{passive:true});
 window.addEventListener("resize",updateFab);
 q("#fabTop").onclick=()=>{closeFabMenu();window.scrollTo({top:0,behavior:"smooth"});};
 q("#fabBot").onclick=()=>{closeFabMenu();
@@ -5687,7 +5713,7 @@ async function refreshTrash(){
 async function refreshStorage(){
   const card=q("#stoCard");if(!card)return;
   const si=await storageInfo();
-  const snaps=await dbAll("snapshots");
+  const snaps=await snapIndex();
   const snapBytes=snaps.reduce((s,x)=>s+(x.size||0),0);
   const nCov=(await dbAllKeys("covers")).length,nImg=(await dbAllKeys("images")).length;
   const counts=`${books.length} book${books.length===1?"":"s"} · ${nCov} cover${nCov===1?"":"s"} · ${nImg} picture${nImg===1?"":"s"} · ${snaps.length} backup${snaps.length===1?"":"s"} (${fmtBytes(snapBytes)})`;
@@ -5708,7 +5734,7 @@ async function refreshStorage(){
 }
 async function refreshSnaps(){
   const box=q("#snapList");if(!box)return;
-  const list=(await dbAll("snapshots")).sort((a,b)=>b.at-a.at);
+  const list=(await snapIndex()).slice().sort((a,b)=>b.at-a.at);
   if(!q("#snapList"))return;
   const n=q("#snapN");if(n)n.textContent=list.length?`(${list.length})`:"";
   q("#snapList").innerHTML=list.length?list.map(s=>`
@@ -5739,9 +5765,9 @@ async function refreshSnaps(){
     downloadJson(s.data,`my-shelf-backup-${new Date(s.at).toISOString().slice(0,10)}.json`);
   });
   qa("[data-sx]",box).forEach(b=>b.onclick=async()=>{
-    const s=await dbGet("snapshots",b.dataset.sx);if(!s)return;
+    const s=(await snapIndex()).find(x=>x.id===b.dataset.sx);if(!s)return;
     if(!confirm(`Delete the backup from ${fmtWhen(s.at)}? This can't be undone.`))return;
-    await dbDel("snapshots",s.id);refreshSnaps();refreshStorage();
+    await dropSnapshot(s.id);refreshSnaps();refreshStorage();
   });
 }
 
@@ -6376,10 +6402,13 @@ async function openBook(id,fresh,keepPlace,goToStory){
   bookMode=keepPlace?heldFace:((!found||isRaw(found))?"edit":(settings.bookEdit?"edit":"view"));
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
   const c=await dbGet("covers",id);curCover=c?c.data:null;
-  curImgs={};
-  for(const im of cur.images||[]){const d=await loadImgData(id+"|"+im.id);if(d)curImgs[im.id]=d;}
-  curEnt={};
-  for(const en of cur.entries||[]){if(!en.cover)continue;const d=await loadImgData(id+"|"+en.id);if(d)curEnt[en.id]=d;}
+  curImgs={};curEnt={};
+  /* a few at a time, the way syncBookAssets already loads — one by one, a
+     scrapbook of twenty pictures not yet on this device was twenty network
+     round trips laid end to end before the page could paint at all */
+  const picJobs=[...(cur.images||[]).map(im=>async()=>{const d=await loadImgData(id+"|"+im.id);if(d)curImgs[im.id]=d;}),
+    ...(cur.entries||[]).filter(en=>en.cover).map(en=>async()=>{const d=await loadImgData(id+"|"+en.id);if(d)curEnt[en.id]=d;})];
+  for(let i=0;i<picJobs.length;i+=4)await Promise.all(picJobs.slice(i,i+4).map(f=>f()));
   await preloadPads();
   mode=keepPlace?heldMode:"write";
   fitScreen=keepPlace?heldFit:((settings.fit==null)?window.innerWidth<700:!!settings.fit);   /* auto on phones, else your choice */
@@ -10114,20 +10143,43 @@ document.addEventListener("paste",e=>{
   }
 },true);
 
+/* The LIST of backups is asked for far more often than any backup itself —
+   Overview reads it twice per visit — and dbAll("snapshots") answered by
+   hauling every full backup body, pictures and all, into memory just to print
+   a few dates and sizes. This small index answers instead; a backup's body is
+   only ever read for Restore and Download. Built once from the store on the
+   first ask after this update, kept in step by make/prune/delete. */
+let snapIdx=null;
+async function snapIndex(){
+  if(snapIdx)return snapIdx;
+  const rec=await dbGet("meta","snapIndex");
+  if(rec&&Array.isArray(rec.v))return snapIdx=rec.v;
+  snapIdx=(await dbAll("snapshots")).map(s=>({id:s.id,at:s.at,auto:!!s.auto,size:s.size||0,nbooks:s.nbooks||0}));
+  dbPut("meta",{k:"snapIndex",v:snapIdx});
+  return snapIdx;
+}
+function saveSnapIndex(){dbPut("meta",{k:"snapIndex",v:snapIdx||[]});}
+async function dropSnapshot(id){
+  await dbDel("snapshots",id);
+  await snapIndex();snapIdx=snapIdx.filter(x=>x.id!==id);saveSnapIndex();
+}
 async function makeSnapshot(auto){
   const json=JSON.stringify(await buildBackup());
   const snap={id:uid(),at:Date.now(),auto:!!auto,size:json.length,nbooks:books.length,data:json};
   await dbPut("snapshots",snap);
+  await snapIndex();
+  snapIdx.push({id:snap.id,at:snap.at,auto:snap.auto,size:snap.size,nbooks:snap.nbooks});
+  saveSnapIndex();
   await pruneSnapshots();
   return snap;
 }
 async function pruneSnapshots(){
-  const autos=(await dbAll("snapshots")).filter(s=>s.auto).sort((a,b)=>b.at-a.at);
-  for(const s of autos.slice(Math.max(1,settings.keepAuto|0)))await dbDel("snapshots",s.id);
+  const autos=(await snapIndex()).filter(s=>s.auto).sort((a,b)=>b.at-a.at);
+  for(const s of autos.slice(Math.max(1,settings.keepAuto|0)))await dropSnapshot(s.id);
 }
 async function maybeAutoBackup(){
   if(!settings.autoBackup||!books.length)return;
-  const last=(await dbAll("snapshots")).filter(s=>s.auto).sort((a,b)=>b.at-a.at)[0];
+  const last=(await snapIndex()).filter(s=>s.auto).sort((a,b)=>b.at-a.at)[0];
   if(last&&Date.now()-last.at<24*3600*1000)return;
   try{await makeSnapshot(true);window.__backupFail=0;}
   catch(e){console.warn("[shelf] auto-backup skipped",e);window.__backupFail=Date.now();}
