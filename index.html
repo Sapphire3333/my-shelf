@@ -5254,6 +5254,31 @@ let impOnlyDupes=false;                       /* show only the ones already on t
 /* every collection on the shelf, by name — the list you choose from */
 const collsOnShelf=()=>books.filter(isColl)
   .sort((a,b)=>String(a.title||"").localeCompare(String(b.title||""),undefined,{sensitivity:"base"}));
+/* The plain books the ticked rows look like instalments of. These are the only
+   ones worth offering to turn into a collection — a list of the whole shelf
+   would be useless, and the app already knows which book it had in mind. */
+const nearTargets=()=>{
+  const ids=[];
+  importQueue.forEach(it=>{
+    if(!impSel.has(it.id)||!it.near||!it.hitB||it.hitE)return;
+    if(!ids.includes(it.hitB))ids.push(it.hitB);
+  });
+  return ids.map(id=>books.find(b=>b.id===id)).filter(b=>b&&!isColl(b));
+};
+/* A plain book becomes a collection so the instalments can live inside it,
+   instead of standing beside it as separate shelf items. Everything it already
+   carries stays on the collection itself — its rating is marked as your own,
+   or gaining stories would quietly replace it with their average. */
+async function makeCollection(b){
+  b.type="collection";
+  b.entries=b.entries||[];
+  b.seriesNum="";b.seriesTotal="";
+  if(!String(b.series||"").trim())b.series=b.title||"";
+  if(b.rating!=null)b.ratingOwn=true;
+  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+  await dbPut("books",b);
+  if(SYNC.on)enqueue({kind:"book",id:b.id});
+}
 /* Folded away by default and searchable, because a shelf can hold eighty of
    these and a list that long in the way of the buttons above it is worse than
    no list at all. */
@@ -5262,6 +5287,10 @@ function intoPanelHtml(){
   const all=collsOnShelf();
   const list=q2?all.filter(b=>String(b.title||"").toLowerCase().includes(q2)
     ||String(b.author||"").toLowerCase().includes(q2)):all;
+  /* the plain book they look like part of, offered as a collection to be —
+     without this the only books you could file into were ones already made a
+     collection, which the very book you meant almost never is */
+  const fresh=nearTargets();
   return `<div class="dnfbox" style="margin-top:7px">
     <div class="cap">Put the ${impSel.size} ticked inside…</div>
     ${all.length>6?`<input class="field" id="impIntoSearch" placeholder="Search your collections…" value="${esc(impIntoQ)}" style="font-size:13px;padding:7px 11px;margin-bottom:7px">`:""}
@@ -5269,8 +5298,15 @@ function intoPanelHtml(){
       ${list.map(b=>`<button class="snap" data-into="${b.id}" style="width:100%;cursor:pointer;text-align:left">
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">${esc(b.title)||"Untitled"}</span>
         <span class="none" style="font-size:12px;flex:none">${((b.entries)||[]).length} inside</span>
-      </button>`).join("")||'<span class="none">Nothing matches that.</span>'}
+      </button>`).join("")||(q2?'<span class="none">Nothing matches that.</span>'
+        :(fresh.length?"":'<span class="none">No collections on your shelf yet.</span>'))}
     </div>
+    ${fresh.length?`<div class="cap" style="margin-top:10px">…or make one of your books a collection first</div>
+      ${fresh.map(b=>`<button class="snap" data-intonew="${b.id}" style="width:100%;cursor:pointer;text-align:left">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">📚 Make “${esc(b.title)||"Untitled"}” a collection</span>
+        <span class="none" style="font-size:12px;flex:none">${impSel.size} go inside</span>
+      </button>`).join("")}
+      <div class="hint" style="margin:6px 0 0">It keeps its own rating, dates, tags and writing — those stay the collection's own. The ticked rows become the stories inside it.</div>`:""}
     <div class="hint" style="margin:7px 0 0">Each one becomes a story inside it, keeping its own rating, pages, dates and writing. A stage that matches the collection's is left unsaid, so the collection stays one row on your shelf.</div>
   </div>`;
 }
@@ -5302,7 +5338,7 @@ function refreshImport(){
       <button class="btn pri" id="impSelAdd" style="padding:5px 11px">＋ Add as books</button>
       <button class="btn" id="impSelSer" style="padding:5px 11px">🔗 As a series…</button>
       <button class="btn" id="impSelColl" style="padding:5px 11px">📚 As one collection…</button>
-      ${collsOnShelf().length?`<button class="btn ${impIntoOpen?"on":""}" id="impSelInto" style="padding:5px 11px" title="Put them inside a collection you already have">📥 Into a collection…</button>`:""}
+      ${collsOnShelf().length||nearTargets().length?`<button class="btn ${impIntoOpen?"on":""}" id="impSelInto" style="padding:5px 11px" title="Put them inside a collection you already have — or inside a book of yours they look like part of">📥 Into a collection…</button>`:""}
       <button class="btn" id="impSelNo" style="padding:5px 11px">Untick</button>
     </div>
     ${impIntoOpen?intoPanelHtml():""}`:""}
@@ -5312,12 +5348,16 @@ function refreshImport(){
     const all=importQueue.filter(it=>secOf(it)===sec&&match(it));
     if(!all.length)continue;
     shown+=all.length;
-    const add=all.filter(it=>!it.dupe);
+    /* "Add all" is a sweep, and a row the app is only guessing about deserves a
+       decision of its own — so a possible instalment is left out of the sweep
+       and counted in the open beside it, never quietly dropped from the list */
+    const dupeIn=all.filter(it=>it.dupe).length,nearIn=all.filter(it=>it.near).length;
+    const add=all.filter(it=>!it.dupe&&!it.near);
     html+=`<div style="margin-top:15px">
       <div class="hrow2" style="margin-bottom:6px">
-        <b style="font-size:14px">${label}</b><span class="none">${all.length}${add.length!==all.length?` · ${all.length-add.length} already on your shelf`:""}</span>
+        <b style="font-size:14px">${label}</b><span class="none">${all.length}${dupeIn?` · ${dupeIn} already on your shelf`:""}${nearIn?` · ${nearIn} may already be there`:""}</span>
         ${add.length?`<button class="btn pri" data-impall="${sec}" style="margin-left:auto;padding:5px 11px">Add all ${add.length}</button>`:""}
-        ${all.length-add.length?`<button class="btn" data-impfillall="${sec}" style="${add.length?"":"margin-left:auto;"}padding:5px 11px" title="Fill the blanks on the ${all.length-add.length} you already have, then take them off this list">↳ Fill in all ${all.length-add.length}</button>`:""}
+        ${dupeIn?`<button class="btn" data-impfillall="${sec}" style="${add.length?"":"margin-left:auto;"}padding:5px 11px" title="Fill the blanks on the ${dupeIn} you already have, then take them off this list">↳ Fill in all ${dupeIn}</button>`:""}
       </div>
       ${(()=>{
         /* ticked ones first, and never cut off — otherwise ticking a whole author
@@ -5328,19 +5368,24 @@ function refreshImport(){
       })().map(it=>{
         /* a row already on the shelf says where it is and what it could still
            hand over, so pressing the button is never a guess */
-        const t=it.dupe?importTarget(it):null;
+        const t=(it.dupe||it.near)?importTarget(it):null;
         const fills=t?importFills(it,t.b,t.en):[];
         const where=t?(t.en?`already inside “${t.b.title||"a collection"}”`:"already on your shelf"):"already on your shelf";
-        return `<div class="snap" style="padding:6px 10px;${impSel.has(it.id)?"border-color:var(--teal)":""}">
+        /* the third answer: not the same title, but an instalment of something
+           you have. It stays tickable and keeps its ＋ Add, because the app is
+           guessing here and the guess must never be what decides. */
+        const nearWhere=t?`looks like part of “${t.en?(t.en.title||"a story"):(t.b.title||"Untitled")}”`:"";
+        return `<div class="snap" style="padding:6px 10px;${impSel.has(it.id)?"border-color:var(--teal)":it.near?"border-color:#fcd34d":""}">
         ${it.dupe?"":`<input type="checkbox" data-impc="${it.id}" ${impSel.has(it.id)?"checked":""}>`}
         <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(it.title)}</div>
           <div class="meta"><button data-impa="${esc(it.author||"")}" style="padding:0;color:inherit;text-decoration:underline dotted" title="Tick / untick everything by this author">${esc(it.author)||"Unknown author"}</button>${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}</div>
-          ${it.dupe?`<div class="meta" style="color:var(--teal)">${esc(where)}${fills.length?` · adds ${esc(fills.map(f=>f.label).join(", "))}`:" · nothing new to take from it"}</div>`:""}</div>
-        <div class="sp">${it.dupe?`<button class="btn" data-impwhy="${it.id}" title="What this file holds for it, beside what you already have">?</button>`:""}${it.dupe
+          ${it.dupe?`<div class="meta" style="color:var(--teal)">${esc(where)}${fills.length?` · adds ${esc(fills.map(f=>f.label).join(", "))}`:" · nothing new to take from it"}</div>`:""}
+          ${it.near?`<div class="meta" style="color:#b45309">${esc(nearWhere)} — add it as its own book, or fill what it holds into that one</div>`:""}</div>
+        <div class="sp">${(it.dupe||it.near)?`<button class="btn" data-impwhy="${it.id}" title="What this file holds for it, beside what you already have">?</button>`:""}${it.dupe
           ? (fills.length
             ? `<button class="btn" data-impfill="${it.id}" title="Fill in only what's blank there — nothing you've written is touched">↳ Fill it in</button>`
             : `<button class="btn" data-impdrop="${it.id}" title="Take this row off the list — your book already has everything it holds">✕ Drop it</button>`)
-          : `<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
+          : `${it.near&&fills.length?`<button class="btn" data-impfill="${it.id}" title="Treat it as the same thing: fill in only what's blank on “${esc(t.b.title||"Untitled")}”">↳ Fill it in</button>`:""}<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
       </div>`;}).join("")}
       ${all.length>Math.max(IMP_SHOW,all.filter(it=>impSel.has(it.id)).length)
         ?`<div class="none" style="margin-top:5px">…and ${all.length-Math.max(IMP_SHOW,all.filter(it=>impSel.has(it.id)).length)} more — anything you tick jumps up here. Search to narrow the list, or “Add all”.</div>`:""}
@@ -5409,6 +5454,19 @@ function refreshImport(){
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     doneSel();
   });
+  qa("[data-intonew]",box).forEach(b=>b.onclick=async()=>{
+    const coll=books.find(x=>x.id===b.dataset.intonew);
+    const items=selItems();
+    if(!coll||!items.length)return;
+    if(!confirm(`Make “${coll.title||"Untitled"}” a collection and put ${items.length} book${items.length===1?"":"s"} inside it as stories?\n\nIt keeps its own rating, dates, tags and writing. Each story keeps its own rating, pages, dates and writing.`))return;
+    b.disabled=true;
+    const msg=q("#busyMsg");if(msg)msg.textContent=`Filing ${items.length}…`;
+    try{await makeCollection(coll);await importIntoCollection(items,coll);}
+    catch(e){alert("They couldn't be saved into the collection — storage may be full. Export a backup from the Overview tab and free some space.");}
+    impIntoOpen=false;impIntoQ="";
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    doneSel();
+  });
   const bNo=q("#impSelNo",box);
   if(bNo)bNo.onclick=()=>{impSel.clear();impIntoOpen=false;refreshImport();};
   qa("[data-impone]",box).forEach(b=>b.onclick=async()=>{
@@ -5453,8 +5511,12 @@ function refreshImport(){
     const fileR=((it.readings)||[]).filter(r=>r&&(r.start||r.end));
     const fileReads=fileR.length?fileR.map(d).join("\n      "):(it.dateFinished?("— → "+it.dateFinished):"none");
     const mine=readsOf(T);
+    /* a guess says it is a guess, and says what the guess was made of */
+    const why=it.near
+      ?`WHY THESE LOOK RELATED\n      “${it.title}” reads as an instalment of\n      “${T.title||"Untitled"}”, which you already have.\n      The app is not certain — nothing has been\n      decided for you. Add it as its own book, or\n      fill what it holds into the one you have.\n\n`
+      :"";
     alert(`${it.title}\n${t.en?`(inside “${t.b.title||"a collection"}”)\n`:""}
-THE FILE HOLDS
+${why}THE FILE HOLDS
       dates: ${fileReads}
       rating: ${it.rating!=null?it.rating:"none"}
       pages: ${it.pages||"none"}
@@ -5490,9 +5552,12 @@ Only what is blank on your side is ever offered.`);
   });
   qa("[data-impall]",box).forEach(b=>b.onclick=async()=>{
     const sec=b.dataset.impall;
-    const batch=importQueue.filter(it=>secOf(it)===sec&&match(it)&&!it.dupe);
+    /* possible instalments are not swept in — see the heading */
+    const batch=importQueue.filter(it=>secOf(it)===sec&&match(it)&&!it.dupe&&!it.near);
     if(!batch.length)return;
-    if(!confirm(`Add ${batch.length} book${batch.length===1?"":"s"} to your shelf?`))return;
+    const held=importQueue.filter(it=>secOf(it)===sec&&match(it)&&it.near).length;
+    if(!confirm(`Add ${batch.length} book${batch.length===1?"":"s"} to your shelf?`
+      +(held?`\n\n${held} other${held===1?"":"s"} look like ${held===1?"an instalment":"instalments"} of something you already have — ${held===1?"it stays":"they stay"} on the list for you to decide.`:"")))return;
     b.disabled=true;b.textContent="Adding…";
     const msg=q("#busyMsg");if(msg)msg.textContent=`Adding ${batch.length}…`;
     await runBatch(batch,it=>importOne(it),"Adding");
@@ -9603,10 +9668,32 @@ function titleVariants(t){
   });
   return [...out];
 }
+/* Punctuation is not a difference. "Not-Sew-Wicked-Stepmom" on the shelf and
+   "Not-Sew-Wicked Stepmom" in the export are one title written two ways, and
+   comparing them collapsed runs of whitespace but never a hyphen — so the app
+   offered a second copy of something already on the shelf. Squashed to letters
+   and digits they are one key. Overview's nameKey already tidies author and
+   series spellings by exactly this rule. */
+const titleKey=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
+/* A season, volume or part number at the end of a title. Trimming it finds the
+   work behind the instalment — "…, Season 2" is the same manhwa as "…" — but
+   it also makes book 1 and book 2 of a real series look identical, and a book
+   wrongly called one you already have is a book that never arrives. So a match
+   found only this way is never certain: it becomes the `near` state below,
+   which suggests and never skips. */
+const VOL_TAIL=/[\s,:;·–—-]+(?:season|series|volume|vol|part|pt|book|bk|no|num|number|#)\.?\s*\d+\s*$/;
+function volTrim(s){
+  const base=String(s||"").toLowerCase().replace(/\s+/g," ").trim();
+  const cut=base.replace(VOL_TAIL,"").trim();
+  return cut.length>2?cut:base;      /* a title that is only "Season 1" keeps it */
+}
 function markDupes(){
-  const byKey=new Map(),byIsbn=new Map(),byTitle=new Map();
+  const byKey=new Map(),byIsbn=new Map(),byTitle=new Map(),byNear=new Map();
   const put=(m,k,v)=>{if(k&&!m.has(k))m.set(k,v);};
-  const putTitles=(t,v)=>titleVariants(t).forEach(x=>put(byTitle,x,v));
+  const putTitles=(t,v)=>titleVariants(t).forEach(x=>{
+    put(byTitle,titleKey(x),v);
+    put(byNear,titleKey(volTrim(x)),v);
+  });
   for(const b of books){
     put(byKey,dupeKey(b.title,b.author),{b,en:null});
     /* staged rows carry digits-only ISBNs — a hand-typed hyphenated one on the
@@ -9619,6 +9706,7 @@ function markDupes(){
       putTitles(en.title,{b,en});
     }
   }
+  const sameHand=(it,t)=>authorsOverlap(it.author,t.en?entAuthorOf(t.b,t.en):t.b.author);
   importQueue.forEach(it=>{
     let hit=(it.isbn?byIsbn.get(it.isbn):null)||byKey.get(dupeKey(it.title,it.author));
     /* The title-only key was being written down and never read, so a book whose
@@ -9626,12 +9714,24 @@ function markDupes(){
        a co-author is involved — came through as new, and "Add all" would have
        put a second copy on the shelf beside the one already there. */
     if(!hit)for(const v of titleVariants(it.title)){
-      const t=byTitle.get(v);
-      if(t&&authorsOverlap(it.author,t.en?entAuthorOf(t.b,t.en):t.b.author)){hit=t;break;}
+      const t=byTitle.get(titleKey(v));
+      if(t&&sameHand(it,t)){hit=t;break;}
+    }
+    /* Nothing matched outright. Ask the weaker question — is this an instalment
+       of something on the shelf? — and if it is, say so rather than either
+       adding a quiet duplicate or skipping a book you may not have. An exact
+       match always wins first, so a series whose every volume is on the shelf
+       never reaches this. */
+    let near=null;
+    if(!hit)for(const v of titleVariants(it.title)){
+      const t=byNear.get(titleKey(volTrim(v)));
+      if(t&&sameHand(it,t)){near=t;break;}
     }
     it.dupe=!!hit;
-    it.hitB=hit?hit.b.id:"";
-    it.hitE=(hit&&hit.en)?hit.en.id:"";
+    it.near=!hit&&!!near;
+    const found=hit||near;
+    it.hitB=found?found.b.id:"";
+    it.hitE=(found&&found.en)?found.en.id:"";
   });
 }
 /* find the book — and the story inside it — a staged row already matches */
