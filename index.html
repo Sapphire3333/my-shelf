@@ -2228,6 +2228,18 @@ let libArt=[],libArtMode=false;
 const libArtCache=new Map();
 const libArtKey=id=>"__libart|"+id;
 function saveLibArt(){dbPut("meta",{k:"libArt",v:libArt});enqueue({kind:"meta",key:"libArt"});}
+/* The year's goal travels between your devices; the rest of `settings` does not,
+   and shouldn't. Text size, Fit and how a book opens are answers to "what is this
+   screen like", and a phone and a PC deserve different answers. How many books
+   you mean to read this year is not about a screen at all — it is one number
+   about you, and having to set it twice, then watch the two disagree, is the
+   kind of small nonsense that makes a shelf feel like two shelves.
+   One stored key, and the newer change wins, exactly like everything else here. */
+function saveGoal(){
+  dbPut("meta",{k:"goal",v:settings.goal||""});
+  enqueue({kind:"meta",key:"goal"});
+  touchMeta("goal");
+}
 let bgList=[];                 /* [{id,name}] custom backgrounds, images live at "__bg|<id>" */
 let padList=[];                /* [{id,name}] custom notepad looks, images live at "__pad|<id>" */
 const bgCache=new Map(),padCache=new Map();
@@ -2379,7 +2391,7 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="trashCloud"?trashCloud:op.key==="libArt"?libArt:op.key==="kwCats"?kwCats:op.key==="catColors"?catColors:op.key==="metaTimes"?metaTimes:null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="trashCloud"?trashCloud:op.key==="libArt"?libArt:op.key==="kwCats"?kwCats:op.key==="catColors"?catColors:op.key==="metaTimes"?metaTimes:op.key==="goal"?(settings.goal||""):null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
@@ -2461,6 +2473,13 @@ async function pullAll(){
                they were restored, and the bin entry is another device's leftover */
             for(const k in rv)if(!trashCloud[k]&&!(deletions[k]&&!rv[k])
               &&!books.some(b=>b.id===k&&(b.modified||0)>((rv[k]&&rv[k].at)||0)))trashCloud[k]=rv[k];}
+          /* one number, so there is nothing to merge — the newer of the two wins,
+             and a goal cleared on the other device is a real answer, not a gap */
+          else if(row.key==="goal"){
+            if(cloudNewer("goal")){
+              settings.goal=(row.value===null||row.value===undefined)?"":row.value;
+              saveSettings();
+            }}
           else if(row.key==="libArt"){const have=new Set(libArt.map(a=>a.id));
             (row.value||[]).forEach(a=>{if(a&&a.id&&!have.has(a.id)&&!gone("libart:"+a.id))libArt.push(a);});}
           else if(row.key==="kwCats"){
@@ -2701,6 +2720,9 @@ async function initSync(){
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
   const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
+  /* the goal is kept beside the settings rather than inside them, because it is
+     the one of them that travels between devices — see saveGoal */
+  const gl=await dbGet("meta","goal");if(gl&&gl.v!==undefined&&gl.v!=="")settings.goal=gl.v;
   const bl=await dbGet("meta","backgrounds");bgList=bl&&Array.isArray(bl.v)?bl.v:[];
   const pl=await dbGet("meta","padskins");padList=pl&&Array.isArray(pl.v)?pl.v:[];
   const fd=await dbGet("meta","fandoms");fandoms=fd&&fd.v?fd.v:{};
@@ -5031,7 +5053,9 @@ async function renderHub(){
   const gi=q("#goalIn",m);
   if(gi)gi.onchange=()=>{
     const v=Math.max(0,Math.min(999,parseInt(gi.value)||0));
-    settings.goal=v||"";saveSettings();renderHub();
+    settings.goal=v||"";saveSettings();saveGoal();
+    if(SYNC.on)flushQueue();      /* so the other device has it before you look */
+    renderHub();
   };
   q("#setTog").onclick=()=>{settings.setOpen=!settings.setOpen;saveSettings();renderHub();};
   /* folded away by default: both are long, and both are places you go on purpose
