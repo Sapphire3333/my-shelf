@@ -235,22 +235,51 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   [data-theme="dark"] .modeseg button.on{background:#134e4a}
   .modeseg button i{position:absolute;right:1px;bottom:0;font-style:normal;font-size:10px}
   /* find-on-the-shelf: takes whatever room the pills leave, drops to its own line when they don't */
-  .libfind{flex:1 1 130px;min-width:110px;max-width:260px;border:1px solid var(--line);background:#fff;
+  /* the box itself fills whatever its wrapper is given — the sizing lives on
+     .fclear now, because the ✕ has to sit inside the box's own right edge and
+     something has to hold it there */
+  .libfind{width:100%;border:1px solid var(--line);background:#fff;
     border-radius:999px;padding:4px 12px;font-size:13px;color:var(--ink)}
-  /* On its own row the box is no longer competing with the stages for space, so
-     it takes everything up to Arrange rather than stopping at 260px. Those two
-     are pushed to the right edge, which is what gives the box its length. */
-  .libfindrow .libfind{max-width:none;flex:1 1 200px}
+  /* On its own row the box is not competing with the stages for space, so it
+     takes everything up to Arrange. Those two are pushed to the right edge,
+     which is what gives the box its length. */
+  .libfindrow .fclear{flex:1 1 200px;min-width:110px}
   .libfindrow #toolsTog{margin-left:auto;flex:none}
   .libfindrow .modeseg{flex:none}
   /* on a narrow phone the row wraps, and then the search wants the whole width
      with the two controls sitting together underneath it */
-  html[data-vw="micro"] .libfindrow .libfind,
-  html[data-vw="tiny"] .libfindrow .libfind{flex:1 1 100%}
+  html[data-vw="micro"] .libfindrow .fclear,
+  html[data-vw="tiny"] .libfindrow .fclear{flex:1 1 100%}
   html[data-vw="micro"] .libfindrow #toolsTog,
   html[data-vw="tiny"] .libfindrow #toolsTog{margin-left:0}
   .libfind:focus{border-color:#2dd4bf;outline:none}
   [data-theme="dark"] .libfind{background:#292524;border-color:#57534e}
+  /* ---- emptying a box from inside it ----
+     Typing a search is cheap and undoing one was not: you had to select the
+     words and delete them, or backspace through them, on every box in the app.
+     The ✕ appears only while there is something to clear, sits inside the
+     box's own right edge, and is the same shape wherever it turns up. A search
+     input has a native one, but not in every browser — the owner's screenshot
+     had none — and it cannot be dressed for the dark theme, so it is turned
+     off and this one used everywhere instead. */
+  /* a flex container, not a block: the box it wraps used to be a flex item of
+     the row and was stretched to the row's height by it. Wrapped in a block it
+     fell back to its own natural height and the Library's find box lost 7px —
+     as a flex wrapper the stretch passes straight through to the box again. */
+  .fclear{position:relative;display:flex}
+  .fclear>input{width:100%;padding-right:32px}
+  /* Shown only when there is something to clear — decided by CSS rather than by
+     re-rendering, because the Search tab draws its box once and then redraws
+     only the results beneath it, so a ✕ that depended on a redraw could never
+     appear there at all. :placeholder-shown is exactly "the box is empty", and
+     it keeps up with every keystroke without anything being rebuilt. */
+  .fclear>input:placeholder-shown~.fx{display:none}
+  .fclear .fx{position:absolute;right:5px;top:50%;transform:translateY(-50%);
+    width:24px;height:24px;border-radius:999px;display:flex;align-items:center;
+    justify-content:center;color:var(--faint);font-size:13px;line-height:1;padding:0}
+  .fclear .fx:hover{background:var(--line);color:var(--ink)}
+  [data-theme="dark"] .fclear .fx:hover{background:#57534e;color:var(--ink)}
+  input[type=search]::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
   .pill:hover{border-color:#5eead4}
   .pill.on{background:var(--teal);border-color:var(--teal);color:#fff}
   .pill.on2{background:#44403c;border-color:#44403c;color:#fff}
@@ -2010,6 +2039,49 @@ function panelOpen(id){
   if(old.__close)old.__close();else old.remove();
   return true;
 }
+/* ---- emptying a box you have typed in ----
+   Undoing a search cost more than making one: select the words and delete, or
+   backspace through them, on every box in the app. The ✕ inside the box does
+   it in one press, and Esc does it from the keyboard.
+
+   Both are delegated at the document, so a list that redraws itself on every
+   keystroke — which all of these do — keeps them without anyone remembering to
+   wire them up again. The box's own `input` handler is what actually runs, so
+   this needs to know nothing about searching, redrawing or where the caret
+   goes; it only empties the box and says so. */
+function clearFieldFrom(el){
+  const wrap=el&&el.closest&&el.closest(".fclear");
+  const inp=wrap&&wrap.querySelector("input");
+  if(!inp||!inp.value)return false;
+  const id=inp.id;
+  inp.value="";
+  inp.dispatchEvent(new Event("input",{bubbles:true}));
+  /* the redraw may well have replaced the box — find it again before focusing,
+     or the keyboard lands nowhere and a phone closes itself */
+  const again=id?document.getElementById(id):null;
+  (again||inp).focus();
+  return true;
+}
+document.addEventListener("click",e=>{
+  if(!e.target.closest)return;
+  const x=e.target.closest("[data-fx]");
+  if(!x)return;
+  e.preventDefault();e.stopPropagation();
+  clearFieldFrom(x);
+});
+/* Registered before the panel handler below, and in the same capture phase, so
+   a box with something in it answers Esc first. An empty one does nothing and
+   lets Esc go on to whatever panel is open, which is what Esc means everywhere
+   else in the app.
+   stopImmediatePropagation, not stopPropagation: both handlers sit on the
+   document, and stopping propagation only keeps an event from the NEXT node —
+   listeners already attached to this one still run. Measured: Esc emptied the
+   box and closed the panel behind it in the same press. */
+document.addEventListener("keydown",e=>{
+  if(e.key!=="Escape"||!e.target||!e.target.closest)return;
+  if(!e.target.closest(".fclear"))return;
+  if(clearFieldFrom(e.target)){e.preventDefault();e.stopImmediatePropagation();}
+},true);
 /* Esc reaches every floating panel, not only the ones built on dismissable().
    Each panel's Close button already carries its own tidying-up, so Esc simply
    presses that button rather than reinventing it. Click-outside is deliberately
@@ -4238,7 +4310,8 @@ function renderLibrary(){
         ...(counts.hold?[["hold","⏸ On hold"]]:[]),...(counts.dnf?[["dnf","✕ Did not finish"]]:[])]
       .map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}">${l} <b>${counts[id]}</b></button>`).join("")}</div>
       <div class="pills libfindrow">
-      <input type="search" class="libfind" id="libFind" placeholder="🔎 Find on the shelf…" value="${esc(libFind)}">
+      <span class="fclear"><input type="search" class="libfind" id="libFind" placeholder="🔎 Find on the shelf…" value="${esc(libFind)}">
+        <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the search">✕</button></span>
       <button class="pill ${settings.libTools?"on":""}" id="toolsTog" title="Sorting, grouping, the grid view, selecting several books, pictures">⚙ Arrange${settings.libTools?"":" ▸"}</button>
       <span class="seg modeseg" title="What you get when you open a book">
         <button data-bmode="read" class="${settings.bookEdit?"":"on"}" aria-label="Books open ready to read"
@@ -5293,7 +5366,8 @@ function intoPanelHtml(){
   const fresh=nearTargets();
   return `<div class="dnfbox" style="margin-top:7px">
     <div class="cap">Put the ${impSel.size} ticked inside…</div>
-    ${all.length>6?`<input class="field" id="impIntoSearch" placeholder="Search your collections…" value="${esc(impIntoQ)}" style="font-size:13px;padding:7px 11px;margin-bottom:7px">`:""}
+    ${all.length>6?`<span class="fclear" style="margin-bottom:7px"><input class="field" id="impIntoSearch" placeholder="Search your collections…" value="${esc(impIntoQ)}" style="font-size:13px;padding:7px 11px">
+      <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the search">✕</button></span>`:""}
     <div style="max-height:230px;overflow:auto">
       ${list.map(b=>`<button class="snap" data-into="${b.id}" style="width:100%;cursor:pointer;text-align:left">
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">${esc(b.title)||"Untitled"}</span>
@@ -5337,7 +5411,8 @@ function refreshImport(){
     :dupeN?`Show only the ${dupeN} already on your shelf`
     :`Show only the ${nearN} that may already be there`;
   let html=`<div style="margin-top:12px">
-    <input class="field" id="impSearch" placeholder="Search this list — title or author…" value="${esc(impQ)}" style="font-size:13px;padding:7px 11px">
+    <span class="fclear"><input class="field" id="impSearch" placeholder="Search this list — title or author…" value="${esc(impQ)}" style="font-size:13px;padding:7px 11px">
+      <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the search">✕</button></span>
     ${flagN?`<label class="chk" style="margin-top:7px"><input type="checkbox" id="impDupeOnly" ${impOnlyFlagged?"checked":""}> ${flagLabel}</label>`:""}
     <div class="hint" style="margin:5px 0 0">Tick books (tap an author's name to tick everything of theirs), then add them together — as plain books, a linked series, or one collection shelf item.${dupeN?" Ones you already have can't be ticked — they hand over what's missing instead." :""}</div>
     ${impSel.size?`<div class="hrow2" style="margin-top:7px">
@@ -5870,8 +5945,9 @@ function textMatches(b,qstr){
 
 function renderSearchView(){
   q("#main").innerHTML=`
-    <div class="searchbox"><span class="sic">🔍</span>
+    <div class="searchbox fclear"><span class="sic">🔍</span>
       <input class="field" id="sq" placeholder="Search…" value="${esc(S.q)}">
+      <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the search">✕</button>
     </div>
     <div class="deep" id="scopeRow" style="flex-wrap:wrap;margin-bottom:18px"></div>
     <div id="sbody"></div>`;
@@ -6006,7 +6082,8 @@ function renderSearchBody(){
         <h2 class="serif" style="margin:0;font-size:17px">${title}</h2>
         <span class="n">${count}</span><span class="ghline"></span></div>`;
       tailHtml+=`<div class="sec">${secHead("authors","Authors",authorList.length)}
-        ${shutS.has("authors")?"":`<input class="field" id="aq" placeholder="Filter authors…" value="${esc(S.authorQ)}" style="margin-bottom:8px;font-size:13px;padding:7px 11px">
+        ${shutS.has("authors")?"":`<span class="fclear" style="margin-bottom:8px"><input class="field" id="aq" placeholder="Filter authors…" value="${esc(S.authorQ)}" style="font-size:13px;padding:7px 11px">
+          <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the filter">✕</button></span>
         <div id="authChips"></div>`}</div>`;
       if(Object.keys(seriesMap).length){
         tailHtml+=`<div class="sec">${secHead("series","Series",Object.keys(seriesMap).length)}
