@@ -57,10 +57,22 @@ self.addEventListener("fetch", e => {
 
   // Our own files: network-first so updates land as soon as you're online,
   // falling back to the cached copy (and then the app shell) when you're not.
-  e.respondWith(
-    fetch(req).then(res => {
+  // "Not online" used to mean only a request that failed outright — a connection
+  // that is present but crawling (one bar, train wifi) kept the app blank for as
+  // long as the request took to die. Now the network gets 2.5 seconds to answer;
+  // after that the saved copy opens the app, and the network's answer, whenever
+  // it does arrive, still refreshes the cache so the next open is current.
+  e.respondWith((async () => {
+    const net = fetch(req).then(res => {
       if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
       return res;
-    }).catch(() => caches.match(req).then(hit => hit || caches.match("./index.html")))
-  );
+    });
+    const cached = await caches.match(req);
+    if (!cached) return net.catch(() => caches.match("./index.html"));
+    const winner = await Promise.race([
+      net.catch(() => null),
+      new Promise(r => setTimeout(r, 2500, null))
+    ]);
+    return winner || cached;
+  })());
 });
