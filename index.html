@@ -9792,7 +9792,13 @@ function titleVariants(t){
    offered a second copy of something already on the shelf. Squashed to letters
    and digits they are one key. Overview's nameKey already tidies author and
    series spellings by exactly this rule. */
-const titleKey=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
+/* Squash a title to just its letters and digits — in every alphabet. This used
+   to keep only a–z and 0–9, which reduced a Korean or Japanese title to nothing
+   at all, so none of the title maps below ever held one: a CJK book could only
+   be recognised by its ISBN or a character-for-character identical line. The
+   accent fold means "café" and "cafe" are one title, which the old rule also
+   got wrong (it kept one string's e and dropped the other's é). */
+const titleKey=s=>String(s||"").toLowerCase().normalize("NFKD").replace(/\p{M}+/gu,"").replace(/[^\p{L}\p{N}]+/gu,"");
 /* A season, volume or part number at the end of a title. Trimming it finds the
    work behind the instalment — "…, Season 2" is the same manhwa as "…" — but
    it also makes book 1 and book 2 of a real series look identical, and a book
@@ -9800,9 +9806,17 @@ const titleKey=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
    found only this way is never certain: it becomes the `near` state below,
    which suggests and never skips. */
 const VOL_TAIL=/[\s,:;·–—-]+(?:season|series|volume|vol|part|pt|book|bk|no|num|number|#)\.?\s*\d+\s*$/;
+/* The same instalment markers in Korean, Japanese and Chinese, which is what
+   most of this shelf is written in. Two shapes: the counter after the number
+   (2권, 3화, 第2巻, 第2卷 — the 제/第 ordinal prefix optional, the space
+   optional because these often sit flush against the title), and the borrowed
+   word before the number (시즌2, シーズン2). Full-width digits included — some
+   exports carry ２ rather than 2. Kept as narrow as the English list: a
+   number-plus-counter, nothing cleverer. */
+const VOL_TAIL_CJK=/(?:[\s,:;·–—-]*(?:제|第)?\s*[0-9０-９]+\s*(?:권|화|부|기|巻|話|期|卷|季|集)|[\s,:;·–—-]+(?:시즌|시리즈|파트|シーズン)\s*[0-9０-９]+)\s*$/;
 function volTrim(s){
   const base=String(s||"").toLowerCase().replace(/\s+/g," ").trim();
-  const cut=base.replace(VOL_TAIL,"").trim();
+  const cut=base.replace(VOL_TAIL,"").replace(VOL_TAIL_CJK,"").trim();
   return cut.length>2?cut:base;      /* a title that is only "Season 1" keeps it */
 }
 /* What is left after trimming has to still look like the name of a work.
@@ -9815,7 +9829,15 @@ function volTrim(s){
    noise, and silence is the safer way for a guess to be wrong. */
 const stemOK=s=>{
   const w=String(s||"").trim().split(/\s+/).filter(Boolean);
-  return w.length>=2||titleKey(s).length>=10;
+  if(w.length>=2)return true;
+  /* "ten characters" was a rule made for spaced Latin text. Japanese and
+     Chinese put no spaces between words and say more per character — 鬼滅の刃
+     is a full title at four — so each CJK character counts for two and a half
+     Latin ones: four of them clear the same bar ten letters do, while a stem
+     as generic as "Filler" (six) still fails it in either script. */
+  let n=0;
+  for(const ch of String(s||""))if(/[\p{L}\p{N}]/u.test(ch))n+=ch.codePointAt(0)>0x2e7f?2.5:1;
+  return n>=10;
 };
 function markDupes(){
   const byKey=new Map(),byIsbn=new Map(),byTitle=new Map(),byNear=new Map();
