@@ -9979,6 +9979,34 @@ function authorsShareWord(a,b){
   for(const w of A)if(B.has(w))return true;
   return false;
 }
+/* "Might these be the same hand?" asked of two strangers in a long list —
+   which is a harder question than either of the two above. One word in
+   common is right for guarding a title that already matched, but standing
+   alone it files every Jenny in a 1600-row export under "same author". So
+   here the shared word has to be someone's FAMILY name: each side is split
+   into its people (commas, & and "and" separate co-authors), each person's
+   surname is their last word, and a single-word name — 추공, Mo9Rang, a
+   comma-inverted "Rowling, J. K." — counts wherever it appears, because its
+   one word IS the whole name. Returns the matched word so the row can say
+   what convinced it, or "" for no. */
+function authorsSameHand(a,b){
+  const people=s=>{
+    const out={sur:new Set(),mono:new Set()};
+    for(const p of String(s||"").toLowerCase().split(/[,;&·・]|\band\b/)){
+      const ws=[...authorWords(p)];
+      if(!ws.length)continue;
+      if(ws.length===1)out.mono.add(ws[0]);
+      else out.sur.add(ws[ws.length-1]);
+    }
+    return out;
+  };
+  const A=people(a),B=people(b);
+  for(const w of A.sur)if(B.sur.has(w))return w;
+  const aAll=authorWords(a),bAll=authorWords(b);
+  for(const w of A.mono)if(bAll.has(w))return w;
+  for(const w of B.mono)if(aAll.has(w))return w;
+  return "";
+}
 /* The same book, titled differently. An export writes a book's full shelf name
    — "Unicorn Academy #7: Rosa and Crystal" — where the entry inside a
    collection is filed under the part that is actually its own, "Rosa and
@@ -10138,8 +10166,14 @@ function bImpRows(b){
     const k=titleKey(volTrim(ti));
     /* startsWith as well as equals: "Murderbot Diaries: Network Effect" is one
        of them even though its own title carries more than the series name */
+    it._bw="";
     if(stems.some(s=>k===s||k.startsWith(s)))hit.push(it);
-    else if(mine&&authorsShareWord(mine,au))near.push(it);
+    else if(mine){
+      /* the surname test, not the one-shared-word one — a shared "Jenny" put
+         sixteen strangers under "Same author" on a real shelf */
+      const w=authorsSameHand(mine,au);
+      if(w){it._bw=w;near.push(it);}
+    }
   }
   return {hit,near};
 }
@@ -10161,7 +10195,8 @@ const bImpRow=(it,coll)=>`<div class="snap bimprow" style="padding:6px 10px">
       <button class="bimpa" data-bimpa="${esc(it.author||"")}" title="Search this list for this author">🔍</button>
       ${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}
       ${it.dupe?' · <span style="color:var(--teal)">already on your shelf</span>':""}
-      ${it.near?' · <span style="color:#b45309">may already be there</span>':""}</div>
+      ${it.near?' · <span style="color:#b45309">may already be there</span>':""}
+      ${it._bw?` · <span style="color:var(--faint)">shares the name “${esc(it._bw)}”</span>`:""}</div>
   </div>
   <div class="sp">${(it.dupe||it.near)?`<button class="btn" data-bimpw="${it.id}" title="What this file holds for it, beside what you already have">?</button>`:""}
     <button class="btn${it.dupe?"":" pri"}" data-bimpadd="${it.id}" title="${coll?"Put it inside this collection as a story":"Make this a collection and put it inside"}">＋ Inside</button></div>
@@ -10185,12 +10220,13 @@ function bookImportHtml(b){
       <button class="btn foldbtn" id="bImpFold">${bImpOpen?"▾ Hide":"▸ Show"}</button></div>
     <div class="hcard" id="fold-bImp" ${bImpOpen?"":"hidden"}>
       ${coll?`<div class="hint" style="margin:0 0 8px">Books in your export that look like part of this collection, and aren't on your shelf yet. Adding one files it inside as a story, keeping its own rating, pages and dates.</div>`
-        :`<div class="hint" style="margin:0 0 8px">Your export has ${total} that look like part of this. Adding one turns this book into a collection and files them inside as stories — it keeps its own rating, dates, tags and writing.</div>`}
+        :`<div class="hint" style="margin:0 0 8px">Your export has ${total} that look related to this. Adding one turns this book into a collection and files them inside as stories — it keeps its own rating, dates, tags and writing.</div>`}
       <span class="fclear"><input class="field" id="bImpQ" placeholder="Search the whole import list…" value="${esc(bImpQ)}" style="font-size:13px;padding:7px 11px">
         <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the search">✕</button></span>
       ${dupeN?`<label class="chk" style="margin-top:7px"><input type="checkbox" id="bImpHave" ${bImpHave?"checked":""}> Include the ${dupeN} already on your shelf</label>`:""}
-      ${total?`<div class="hrow2" style="margin-top:8px">
-        <button class="btn pri" id="bImpAll" style="padding:5px 11px">${coll?`＋ Add all ${hit.length+near.length} inside`:`📚 Make it a collection and add all ${hit.length+near.length}`}</button>
+      ${hit.length?`<div class="hrow2" style="margin-top:8px">
+        <button class="btn pri" id="bImpAll" style="padding:5px 11px">${coll?`＋ Add all ${hit.length} inside`:`📚 Make it a collection and add all ${hit.length}`}</button>
+        ${near.length?`<span class="none" style="font-size:12px">the ${near.length} same-author guess${near.length===1?"":"es"} below stay out — add those one by one</span>`:""}
       </div>`:""}
       ${list(hit,bImpQ.trim()?"Matches":"Part of this")}
       ${list(near,bImpQ.trim()?"Close matches":"Same author")}
@@ -10254,7 +10290,10 @@ function wireBookImport(b){
     if(it)file([it],x);
   });
   const all=q("#bImpAll");
-  if(all)all.onclick=()=>{const {hit,near}=bImpRows(b);file([...hit,...near],all);};
+  /* the sweep takes only the rows the TITLE vouches for — a same-author row
+     is a guess, and the Overview list's rule holds here too: a sweep must
+     not act on a guess. Each guess keeps its own ＋ Inside. */
+  if(all)all.onclick=()=>{const {hit}=bImpRows(b);file(hit,all);};
 }
 /* "nothing new to take from it" is a conclusion, and a conclusion you cannot see
    the working of is indistinguishable from a bug. This shows both sides. Lives
