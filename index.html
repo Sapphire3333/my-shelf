@@ -410,6 +410,14 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .dnfbox .cap{font-size:11px;font-weight:700;letter-spacing:.7px;color:var(--mut);text-transform:uppercase;margin-bottom:7px}
   .rsn{border:1px solid #d6d3d1;background:#fff;border-radius:999px;font-size:12px;padding:3px 10px;color:#57534e;margin:2px}
   .rsn.on{background:#44403c;border-color:#57534e;color:#fff}
+  .asprow{display:flex;flex-wrap:wrap;gap:2px 7px;align-items:flex-start;margin:4px 0}
+  .asplab{font-size:12px;color:var(--mut);flex:none;width:82px;padding-top:5px}
+  /* narrower than the label + a long chip, the chips drop under the label
+     instead of pushing the page sideways */
+  .aspchips{flex:1;min-width:min(200px,100%)}
+  .rsn.aspadd{padding:3px 8px;color:var(--faint)}
+  .sugrow{margin-top:6px}
+  .sugwhy{display:block;font-size:12px;color:var(--faint);margin-top:4px}
   .colorpick{border:1px solid var(--line);background:#fff;border-radius:10px;padding:12px;margin-top:8px}
   .colorpick .dots{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
   .colorpick .cdot{width:26px;height:26px}
@@ -1600,6 +1608,136 @@ const holdOf=x=>isHold(x)&&!(x&&x.dnf);
    vocabulary like the DNF reasons, so this adds nothing to the sync layer. */
 const HOLD_REASONS=["Waiting for the next one","Saving it for later","Got tired of it",
   "Lost the thread","Not the right time","Too long for now"];
+
+/* ---- what stood out: the rating, said in words ----
+   A number says how much; these say why. Each aspect offers a handful of
+   ready-made words, tappable like the hold reasons, and words of your own are
+   kept on the book they belong to — nothing is added to the sync layer.
+   Every ready-made word carries its lean (+1 warm, −1 cold, halves for the
+   lukewarm middle); the leans are what the rating suggestion below is
+   computed from. A word you wrote yourself has no known lean and counts for
+   nothing on purpose — guessing the warmth of your words is not this app's
+   place. */
+const ASPECTS=[
+  ["characters","Characters",[["Memorable",1],["Likeable",1],["Grew on me",0.5],["Meh",-0.5],["Couldn't connect",-1],["Annoying",-1]]],
+  ["plot","Plot",[["Gripping",1],["Satisfying end",1],["Original",1],["Slow",-0.5],["Predictable",-0.5],["Fell apart",-1]]],
+  ["writing","Readability",[["Flew through it",1],["Beautifully written",1],["Easy to read",0.5],["Heavy going",-0.5],["Clumsy",-1]]],
+  ["art","Art",[["Gorgeous",1],["Expressive",1],["Fits the story",0.5],["Inconsistent",-0.5],["Hard to follow",-1]]],
+];
+const ASPECT_LEAN=new Map(ASPECTS.flatMap(([k,,ws])=>ws.map(([w,v])=>[k+"\n"+w,v])));
+function toggleAspect(x,k,w){
+  const a=x.aspects=x.aspects||{};
+  const list=a[k]||[];
+  a[k]=list.includes(w)?list.filter(y=>y!==w):[...list,w];
+  if(!a[k].length)delete a[k];
+}
+/* "Characters: Memorable, Likeable · Art: Gorgeous" — for the reading page */
+function aspectLine(x){
+  const a=x.aspects||{};
+  const parts=ASPECTS.filter(([k])=>(a[k]||[]).length)
+    .map(([k,label])=>`<b>${label}</b>: ${a[k].map(esc).join(", ")}`);
+  return parts.join(" · ");
+}
+/* Everything the suggestion counts, each with its weight: aspect words at
+   their lean, liked things +1, dislikes −1, mehs −½, kept quotes ¼ each up
+   to +1. The list is shown to you behind the ? — no mystery numbers. */
+function suggestBits(x){
+  const bits=[],a=x.aspects||{};
+  for(const [k,label] of ASPECTS)
+    for(const w of (a[k]||[])){
+      const v=ASPECT_LEAN.get(k+"\n"+w);
+      if(v)bits.push({what:label+": "+w,v});
+    }
+  (x.pros||[]).forEach(p=>bits.push({what:"liked: "+stripHtml(p),v:1}));
+  (x.cons||[]).forEach(c=>bits.push({what:"disliked: "+stripHtml(c),v:-1}));
+  (x.meh||[]).forEach(m2=>bits.push({what:"meh: "+stripHtml(m2),v:-0.5}));
+  const nq=(x.quotes||[]).length;
+  if(nq)bits.push({what:nq===1?"a quote kept":nq+" quotes kept",v:Math.min(1,nq*0.25)});
+  return bits;
+}
+/* One or two signals are a mood, not a verdict — the suggestion holds its
+   tongue below three. The curve flattens toward the ends so a pile of likes
+   suggests a 9, not an 11. */
+function suggestScore(x){
+  const bits=suggestBits(x);
+  if(bits.length<3)return null;
+  const net=bits.reduce((s,b)=>s+b.v,0);
+  return Math.round((5.5+4.5*Math.tanh(net/6))*2)/2;
+}
+const sugFmt=s=>s%1?s.toFixed(1):String(s);
+function suggestWhy(x){
+  const bits=suggestBits(x);
+  return bits.map(b=>`${b.what} ${b.v>0?"+":"−"}${Math.abs(b.v)%1?Math.abs(b.v).toFixed(2).replace(/0+$/,""):Math.abs(b.v)}`).join(" · ")
+    +` → ≈ ${sugFmt(suggestScore(x))}`;
+}
+/* The chips themselves, shared by every place they appear. `tgt` says whose
+   words these are: "" for the book you are standing in, a story's id for one
+   of its stories — the wiring at each site resolves it back. */
+function aspectChipsHtml(x,tgt){
+  const a=x.aspects||{};
+  return ASPECTS.map(([k,label,ws])=>{
+    const mine=(a[k]||[]).filter(w=>!ws.some(([w2])=>w2===w));
+    const all=[...ws.map(([w])=>w),...mine];
+    return `<div class="asprow"><span class="asplab">${label}</span><span class="aspchips">${
+      all.map(w=>{const on=(a[k]||[]).includes(w);
+        return `<button class="rsn ${on?"on":""}" data-aspt="${esc(tgt)}" data-aspk="${k}" data-aspw="${esc(w)}">${on?"✓ ":""}${esc(w)}</button>`;}).join("")
+    }<button class="rsn aspadd" data-aspaddt="${esc(tgt)}" data-aspaddk="${k}" title="A word of your own about the ${label.toLowerCase()}">＋</button></span></div>`;
+  }).join("");
+}
+/* The suggestion line: only while YOU have said nothing — a mark you set is
+   never touched, and once it exists this has nothing left to add. */
+function sugHtml(x,tgt){
+  if(x.rating!=null)return "";
+  const s=suggestScore(x);
+  if(s==null)return "";
+  return `<div class="vfacts sugrow">Your notes lean ≈ <b>${sugFmt(s)}</b>
+    <button class="btn" data-sugt="${esc(tgt)}" style="padding:2px 9px;font-size:12px">★ Use it</button>
+    <button class="btn" data-sugw="${esc(tgt)}" style="padding:2px 8px;font-size:12px" title="How this number was reached">?</button>
+    <span class="sugwhy" hidden>${esc(suggestWhy(x))}</span></div>`;
+}
+/* One wiring for every place the chips and the suggestion appear. `apply` is
+   the site's own way of changing things — the editor mutates cur and
+   schedules a save, the reading page goes through quickEdit — called as
+   apply(tgt, fn) to change, apply(tgt, null) to just redraw. */
+function wireAspects(root,apply){
+  qa("[data-aspk]",root).forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    apply(b.dataset.aspt,x=>toggleAspect(x,b.dataset.aspk,b.dataset.aspw));
+  });
+  qa("[data-aspaddt]",root).forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const tgt=b.dataset.aspaddt,k=b.dataset.aspaddk;
+    const inp=document.createElement("input");
+    inp.className="field";inp.placeholder="Your own word… (Enter)";
+    inp.style.cssText="font-size:12px;padding:4px 9px;width:150px;margin:2px";
+    b.replaceWith(inp);inp.focus();
+    inp.addEventListener("pointerdown",e2=>e2.stopPropagation());
+    inp.onkeydown=e2=>{
+      if(e2.key==="Enter"){
+        const v=inp.value.trim();
+        if(v)apply(tgt,x=>{const a=x.aspects=x.aspects||{};const l=a[k]||[];if(!l.includes(v))a[k]=[...l,v];});
+        else apply(tgt,null);
+      }
+      if(e2.key==="Escape")apply(tgt,null);
+    };
+  });
+  qa("[data-sugt]",root).forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    apply(b.dataset.sugt,x=>{
+      const s=suggestScore(x);
+      if(s==null||x.rating!=null)return false;
+      x.rating=s;
+      /* the same rule typing a mark follows: on a collection your own mark
+         steps in front of the stories' average; a story stays a story */
+      if(isColl(x))x.ratingOwn=true;
+    });
+  });
+  qa("[data-sugw]",root).forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const w=b.parentElement.querySelector(".sugwhy");
+    if(w)w.hidden=!w.hidden;
+  });
+}
 
 /* ---- the readings list: every time you read it, not only the last one ----
    A book used to record one finish date and a number. A book read four times
@@ -6789,6 +6927,7 @@ function renderBookView(){
           ${collRateNote(b)?`<span class="lbl">${esc(collRateNote(b))}</span>`:""}
           <button class="vfav ${b.favorite?"on":""}" id="vFav" title="${b.favorite?"One of your favourites":"Mark as a favourite"}">${b.favorite?"♥ Favourite":"♡"}</button>
         </div>
+        ${sugHtml(b,"")}
         ${collPartWay(b)?`<div class="vprog">
           <span class="prog" style="flex:1"><i style="width:${pct||0}%"></i></span>
           <span class="rr">${collDone(b)} of ${(b.entries||[]).length} read${(()=>{
@@ -6807,6 +6946,7 @@ function renderBookView(){
         </div>`:""}
         ${b.dnf&&(b.dnfReasons||[]).length?`<div class="vfacts">Gave up: ${(b.dnfReasons||[]).map(esc).join(", ")}</div>`:""}
         ${holdOf(b)?`<div class="vfacts">On hold${(b.holdReasons||[]).length?": "+(b.holdReasons||[]).map(esc).join(", "):""}</div>`:""}
+        ${aspectLine(b)?`<div class="vfacts">${aspectLine(b)}</div>`:""}
       </div>
       ${(b.genres||[]).length||(b.keywords||[]).length?`<div class="vside">
         ${(b.genres||[]).length?`<div class="vsec"><div class="vsectitle">Genres</div>
@@ -6865,7 +7005,9 @@ function renderBookView(){
             <div class="ratefoot"><span class="lbl">${en.rating!=null?`★ ${Number(en.rating).toFixed(1)} / 10`:"Tap a star"}</span>
               ${en.rating!=null?`<button data-evr="${en.id}|clear">Take the rating off</button>`:""}
               <span class="rr">Decimals live in ✎ Edit</span></div>
+            ${sugHtml(en,en.id)}
           </div>`:""}
+          ${aspectLine(en)?`<div class="vfacts" style="font-size:12px">${aspectLine(en)}</div>`:""}
           ${stripHtml(en.summary||"").trim()?`<div class="vtext small">${en.summary}</div>`:""}
           ${stripHtml(en.notes||"").trim()?`<div class="vtext small">${en.notes}</div>`:""}
         </div></div>`).join("")}</div>`:""}
@@ -7023,6 +7165,19 @@ function renderBookView(){
     const [id,v]=x.dataset.evr.split("|");
     vEntRate=null;
     quickEdit(bk=>{const en=findEn(bk,id);if(en)en.rating=v==="clear"?null:Number(v);});
+  });
+  /* the rating suggestion's Use / ? buttons — the book's own line and the one
+     inside each story's rating panel. No chips live on this face; the words
+     are picked in ✎ Edit, the way the DNF and hold reasons always were. */
+  wireAspects(page,(tgt,f)=>{
+    if(!f){renderBookView();return;}
+    quickEdit(bk=>{
+      const x=tgt?findEn(bk,tgt):bk;
+      if(!x)return false;
+      const r=f(x);
+      if(r===false)return false;
+      if(tgt)syncCollRating(bk);   /* a story's mark moves the average, as typing it would */
+    });
   });
   if(vRateOpen)setTimeout(()=>{
     const shut=ev=>{
@@ -7960,6 +8115,7 @@ function renderEditor(){
           <button class="boxbtn ${holdOf(b)?"holdon":""}" id="fHold" title="Set down for now — you mean to come back to it">⏸ On hold</button>
           <button class="boxbtn ${b.dnf?"dnfon":""}" id="fDnf" title="Given up on">DNF</button>
         </div>
+        <div id="fSugRow"></div>
         <div id="readWrap"></div>
         <div class="inrow">
           <span class="boxbtn" style="cursor:default">Pages <input type="number" id="fPages" min="1" placeholder="–" value="${esc(b.pages)}" style="border:none;width:64px;text-align:center;font-weight:600"></span>
@@ -7967,6 +8123,7 @@ function renderEditor(){
         </div>
         <div id="holdWrap"></div>
         <div id="dnfWrap"></div>
+        <div id="aspWrap"></div>
         <div id="genWrap">
           <div class="lbl" style="display:flex;align-items:center;gap:8px;margin-bottom:4px">Genres
             <button class="btn" id="tagEditTog" style="margin-left:auto;padding:3px 9px;font-size:12px" title="Rename a genre or keyword, or change a genre's colour — everywhere at once">✎ Edit names &amp; colours</button></div>
@@ -8209,7 +8366,7 @@ function renderEditor(){
     /* setting a mark by hand on a collection takes it off the automatic
        average — the ↺ button hands it back */
     cur.ratingOwn=isColl(cur)&&cur.rating!=null;
-    refreshRate();scheduleSave();});
+    refreshRate();refreshSug();scheduleSave();});
   const fg=q("#fGaps");if(fg)fg.onclick=()=>openRatePanel();
   const fa=q("#fRateAuto");if(fa)fa.onclick=()=>{
     cur.ratingOwn=false;syncCollRating(cur);
@@ -8646,6 +8803,8 @@ function renderEditor(){
     document.body.appendChild(wrap);
     close=dismissable(wrap);
   }
+  /* which stories have their words open — per visit to the form, on purpose */
+  const entAspOpen=new Set();
   function renderEntries(){
     const w=q("#entWrap");
     if(!isColl(cur)){w.innerHTML="";const n=q("#pagesNote");if(n)n.hidden=true;refreshRate();return;}
@@ -8682,13 +8841,31 @@ function renderEditor(){
             </select></span>
             <span class="boxbtn entsub" style="cursor:default;flex:1;min-width:96px">Author <input class="entsel" data-eau="${en.id}" value="${esc(en.author||"")}" placeholder="same${cur.author?" — "+esc(cur.author):""}" title="Its own author, if it differs from the collection's" style="flex:1"></span>
             <button class="btn entsub" data-egen="${en.id}" title="Genres for this story on its own">Genres · ${entOwnGenres(en)?en.genres.length:"same"}</button>
+            <button class="btn entsub" data-easp="${en.id}" title="What stood out in this story, in words">Words${en.aspects&&Object.keys(en.aspects).length?" ✓":""}</button>
           </div>
+          ${entAspOpen.has(en.id)?`<div class="dnfbox aspbox" style="margin:4px 0">${aspectChipsHtml(en,en.id)}${sugHtml(en,en.id)}</div>`:""}
           <div class="entreads" data-enrw="${en.id}">${readListHtml(en,en.id,false)}</div>
           <div class="entrich" contenteditable="true" data-es="${en.id}" data-ph="Summary…"></div>
           <div class="entrich" contenteditable="true" data-eno="${en.id}" data-ph="Notes…"></div>
         </div>
       </div>`).join("")||'<span class="none">Nothing added yet.</span>';
     const find=id=>cur.entries.find(x=>x.id===id);
+    qa("[data-easp]",list).forEach(b=>b.onclick=()=>{
+      const id=b.dataset.easp;
+      entAspOpen.has(id)?entAspOpen.delete(id):entAspOpen.add(id);
+      renderEntries();
+    });
+    wireAspects(list,(tgt,f)=>{
+      if(f){
+        const en=find(tgt);
+        if(!en||f(en)===false)return;
+        /* a story's accepted suggestion moves the collection's average the
+           same way typing the number would */
+        if(syncCollRating(cur)){const fr2=q("#fRate");if(fr2)fr2.value=cur.rating??"";}
+        refreshRate();scheduleSave();
+      }
+      renderEntries();
+    });
     qa("[data-et]",list).forEach(el=>el.addEventListener("input",()=>{find(el.dataset.et).title=el.value;scheduleSave();}));
     qa("[data-er]",list).forEach(el=>el.addEventListener("input",()=>{const v=el.value;
       find(el.dataset.er).rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));
@@ -9006,7 +9183,31 @@ function renderEditor(){
       renderDnf();scheduleSave();};
     q("#dnfIn",w).addEventListener("keydown",e=>{if(e.key==="Enter")q("#dnfAdd",w).click();});
   }
-  renderDnf();renderHold();
+  /* What stood out — the rating said in words, and the suggestion those words
+     add up to. See ASPECTS at the top for the vocabulary and the leans. */
+  function edApply(tgt,f){
+    if(f){
+      if(f(cur)===false)return;
+      /* accepting the suggestion writes the number — the box has to show it */
+      const fr2=q("#fRate");if(fr2)fr2.value=cur.rating??"";
+      refreshRate();scheduleSave();
+    }
+    renderAspects();
+  }
+  function refreshSug(){
+    const w=q("#fSugRow");
+    if(!w)return;
+    w.innerHTML=sugHtml(cur,"");
+    wireAspects(w,edApply);
+  }
+  function renderAspects(){
+    const w=q("#aspWrap");
+    if(!w)return;
+    w.innerHTML=`<div class="dnfbox aspbox"><div class="cap">What stood out</div>${aspectChipsHtml(cur,"")}</div>`;
+    wireAspects(w,edApply);
+    refreshSug();
+  }
+  renderDnf();renderHold();renderAspects();
 
   /* audience — tick as many as fit */
   function renderAud(){
@@ -9431,6 +9632,7 @@ function renderEditor(){
     qa("[data-lx]",box).forEach(x=>x.onclick=()=>{cur[key].splice(+x.dataset.lx,1);renderList(key);scheduleSave();});
     const ob=q(`[data-ord="${key}"]`);
     if(ob)ob.disabled=cur[key].length<2;   /* nothing to order with fewer than two */
+    refreshSug();   /* the lists are half the suggestion's evidence */
   }
   qa("[data-ord]").forEach(b=>b.onclick=()=>openListOrder(b.dataset.ord));
   ["pros","cons","meh","quotes"].forEach(k=>{
