@@ -444,6 +444,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .li{display:flex;gap:8px;align-items:flex-start;font-size:14px;margin-bottom:6px}
   .li .dot{width:6px;height:6px;border-radius:50%;flex:none;margin-top:7px}
   .li .qm{color:#818cf8;flex:none;font-family:Georgia,serif;font-size:17px;line-height:1.1}
+  /* the head of a row doubles as the strength control when it is a button */
+  button.dot{border:none;padding:0;cursor:pointer;transition:width .12s,height .12s}
+  button.dot:hover{box-shadow:0 0 0 3px #a8a29e44}
+  button.qm{border:none;background:none;padding:0;cursor:pointer}
+  /* these must outrank `.li .qm`, which sets the old indigo on every mark */
+  .li .qm.qw{color:#a8a29e}.li .qm.qw.up{color:#10b981}.li .qm.qw.dn{color:#fb7185}
   .li [contenteditable]{flex:1;min-width:0}
   .li.q [contenteditable]{font-style:italic;font-family:Georgia,serif}
   .li .lx{color:#d6d3d1;padding:0 3px;opacity:0}
@@ -1646,9 +1652,61 @@ function aspectLine(x){
     .map(([k,label])=>`<b>${label}</b>: ${a[k].map(esc).join(", ")}`);
   return parts.join(" · ");
 }
+/* ---- how much each point weighs ----
+   Counting every point the same made the suggestion a tally of how many things
+   you bothered to write down on each side, and niggles are far easier to
+   enumerate than praise: four things liked against six small complaints came
+   out at 4.0 for a book you enjoyed. So a point now carries a strength you set
+   yourself by tapping its dot — minor, normal, major — and the strength
+   multiplies the point's own value. Nothing you wrote before changes: a point
+   with no strength recorded is a normal one.
+
+   Quotes are the exception and start at nothing. A line is kept for all sorts
+   of reasons — including being magnificently bad — so guessing that a quote is
+   praise was wrong. Tap its mark to say which it was, and until you do it
+   counts for nothing and is not evidence for the three-signal threshold. */
+const LIST_BASE={pros:1,cons:-1,meh:-0.5};
+const LIST_STEPS={pros:[1,2,0.5],cons:[1,2,0.5],meh:[1,2,0.5],quotes:[0,1,-1]};
+const listW=(x,k,i)=>{
+  const w=(x[k+"W"]||[])[i];
+  return w==null?(k==="quotes"?0:1):w;
+};
+function cycleListW(x,k,i){
+  const steps=LIST_STEPS[k]||LIST_STEPS.pros;
+  const a=x[k+"W"]||(x[k+"W"]=[]);
+  while(a.length<(x[k]||[]).length)a.push(steps[0]);
+  const at=steps.indexOf(listW(x,k,i));
+  a[i]=steps[(at+1)%steps.length];
+}
+/* the lists are edited by index, so the strengths have to move with them */
+const listWArr=(x,k)=>{
+  const steps=LIST_STEPS[k]||LIST_STEPS.pros;
+  const a=x[k+"W"]||(x[k+"W"]=[]);
+  while(a.length<(x[k]||[]).length)a.push(steps[0]);
+  a.length=(x[k]||[]).length;
+  return a;
+};
+const wLabel=(k,w)=>k==="quotes"?(w>0?"a line you loved":w<0?"a line that was the problem":"kept, but neither")
+  :(w>1?"a big one":w<1?"a small one":"an ordinary one");
+/* The mark at the head of a row IS the strength control — the dot was already
+   there doing nothing, so it grew rather than something new being added
+   beside it. Big dot, big point; the quote mark takes its colour from which
+   way you marked the line, and stays grey until you do. Pass `attrs` to make
+   it a button; the reading page passes nothing and gets the same picture. */
+function markHtml(key,w,attrs){
+  const tag=attrs?"button":"span",extra=attrs?" "+attrs:"";
+  if(key==="quotes")
+    return `<${tag} class="qm qw${w>0?" up":w<0?" dn":""}"${extra}>“</${tag}>`;
+  const size=w>1?10:w<1?4:6;
+  const col=key==="pros"?"#10b981":key==="cons"?"#fb7185":"#a8a29e";
+  return `<${tag} class="dot"${extra} style="background:${col};width:${size}px;height:${size}px;margin-top:${10-size/2-2}px"></${tag}>`;
+}
+
 /* Everything the suggestion counts, each with its weight: aspect words at
-   their lean, liked things +1, dislikes −1, mehs −½, kept quotes ¼ each up
-   to +1. The list is shown to you behind the ? — no mystery numbers. */
+   their lean, liked things +1, dislikes −1, mehs −½ — each multiplied by the
+   strength you gave it — and quotes only once you have marked them, ±½ apiece
+   and never more than ±2 all together. The list is shown to you behind the
+   ? — no mystery numbers. */
 function suggestBits(x){
   const bits=[],a=x.aspects||{};
   for(const [k,label] of ASPECTS)
@@ -1656,11 +1714,19 @@ function suggestBits(x){
       const v=ASPECT_LEAN.get(k+"\n"+w);
       if(v)bits.push({what:label+": "+w,v});
     }
-  (x.pros||[]).forEach(p=>bits.push({what:"liked: "+stripHtml(p),v:1}));
-  (x.cons||[]).forEach(c=>bits.push({what:"disliked: "+stripHtml(c),v:-1}));
-  (x.meh||[]).forEach(m2=>bits.push({what:"meh: "+stripHtml(m2),v:-0.5}));
-  const nq=(x.quotes||[]).length;
-  if(nq)bits.push({what:nq===1?"a quote kept":nq+" quotes kept",v:Math.min(1,nq*0.25)});
+  const named={pros:"liked",cons:"disliked",meh:"meh"};
+  for(const k of ["pros","cons","meh"])
+    (x[k]||[]).forEach((p,i)=>{
+      const w=listW(x,k,i);
+      const v=LIST_BASE[k]*w;
+      if(v)bits.push({what:named[k]+(w===1?"":" ("+wLabel(k,w)+")")+": "+stripHtml(p),v});
+    });
+  /* good and bad quotes are counted apart, so a shelf of both says so rather
+     than quietly cancelling out to one misleading line */
+  let qUp=0,qDn=0;
+  (x.quotes||[]).forEach((_,i)=>{const w=listW(x,"quotes",i);if(w>0)qUp++;else if(w<0)qDn++;});
+  if(qUp)bits.push({what:(qUp===1?"a quote":qUp+" quotes")+" you loved",v:Math.min(2,qUp*0.5)});
+  if(qDn)bits.push({what:(qDn===1?"a quote":qDn+" quotes")+" kept for being bad",v:-Math.min(2,qDn*0.5)});
   return bits;
 }
 /* One or two signals are a mood, not a verdict — the suggestion holds its
@@ -6936,10 +7002,11 @@ function renderBookView(){
   const listBox=(key,title,cls)=>{
     const items=(b[key]||[]).filter(x=>stripHtml(x).trim());
     if(!items.length)return "";
-    return `<div class="lbox ${cls}"><h3>${title}</h3>${items.map(it=>
-      `<div class="li ${key==="quotes"?"q":""}">${key==="quotes"?'<span class="qm">“</span>'
-        :`<span class="dot" style="background:${key==="pros"?"#10b981":key==="cons"?"#fb7185":"#a8a29e"}"></span>`}
-      <div>${it}</div></div>`).join("")}</div>`;
+    /* the strength shows here too — the same dot, the same size, so the page
+       you read and the page you write say the same thing */
+    return `<div class="lbox ${cls}"><h3>${title}</h3>${(b[key]||[]).map((it,i)=>
+      stripHtml(it).trim()?`<div class="li ${key==="quotes"?"q":""}">${markHtml(key,listW(b,key,i),"")}
+      <div>${it}</div></div>`:"").join("")}</div>`;
   };
   const lists=[listBox("pros","+ What I liked","plus"),listBox("meh","~ Meh","meh"),listBox("cons","− What I didn't","minus")]
     .filter(Boolean).join("");
@@ -9132,9 +9199,12 @@ function renderEditor(){
         return {id:String(i),text:t.length>200?t.slice(0,200)+"…":t};}),
       onSave:ids=>{
         const idx=ids.map(Number);
-        const picked=idx.map(i=>cur[key][i]);
-        const rest=cur[key].filter((_,i)=>idx.indexOf(i)<0);
-        cur[key]=[...picked,...rest];
+        /* the strengths are held by position, so they take the same journey */
+        const w=listWArr(cur,key);
+        const keep=i=>idx.indexOf(i)<0;
+        const order=[...idx,...cur[key].map((_,i)=>i).filter(keep)];
+        cur[key]=order.map(i=>cur[key][i]);
+        cur[key+"W"]=order.map(i=>w[i]);
         renderList(key);scheduleSave();
       }});
   }
@@ -9737,13 +9807,22 @@ function renderEditor(){
   function renderList(key){
     const box=q("#list-"+key);
     const quote=key==="quotes";
-    box.innerHTML=cur[key].map((it,i)=>`<div class="li ${quote?"q":""}">
-      ${quote?'<span class="qm">“</span>':`<span class="dot" style="background:${key==="pros"?"#10b981":key==="cons"?"#fb7185":"#a8a29e"}"></span>`}
+    listWArr(cur,key);   /* keep the strengths the same length as the list */
+    box.innerHTML=cur[key].map((it,i)=>{
+      const w=listW(cur,key,i);
+      return `<div class="li ${quote?"q":""}">
+      ${markHtml(key,w,`data-lw="${i}" title="${esc(wLabel(key,w))} — tap to change how much it counts"`)}
       <div contenteditable="true" data-li="${i}"></div>
-      <button class="lx" data-lx="${i}">✕</button></div>`).join("");
+      <button class="lx" data-lx="${i}">✕</button></div>`;}).join("");
     qa("[data-li]",box).forEach(el=>{el.innerHTML=cur[key][+el.dataset.li];
       el.addEventListener("input",()=>{cur[key][+el.dataset.li]=el.innerHTML;scheduleSave();});});
-    qa("[data-lx]",box).forEach(x=>x.onclick=()=>{cur[key].splice(+x.dataset.lx,1);renderList(key);scheduleSave();});
+    qa("[data-lw]",box).forEach(b=>b.onclick=()=>{
+      cycleListW(cur,key,+b.dataset.lw);renderList(key);scheduleSave();});
+    qa("[data-lx]",box).forEach(x=>x.onclick=()=>{
+      /* the strengths first, while they are still the same length as the list */
+      const i=+x.dataset.lx;
+      listWArr(cur,key).splice(i,1);cur[key].splice(i,1);
+      renderList(key);scheduleSave();});
     const ob=q(`[data-ord="${key}"]`);
     if(ob)ob.disabled=cur[key].length<2;   /* nothing to order with fewer than two */
     refreshSug();   /* the lists are half the suggestion's evidence */
