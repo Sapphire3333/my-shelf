@@ -3838,13 +3838,21 @@ function backToRow(){
     landed:Math.round(window.scrollY)});
   return true;
 }
-function restoreScroll(v){
-  backTrace={t0:Date.now(),v,id:lastOpenedId||"(none)",en:lastOpenedEn||"(the book itself)",
-    saved:scrollMem[v]||0,steps:[]};
-  traceBack("start");
-  /* samples that run on past the return, because "it never arrived" and "it
-     arrived and something moved it afterwards" look the same from outside */
-  [300,700,1500].forEach(ms=>setTimeout(()=>traceBack("t+"+ms),ms));
+/* What openBook wrote down on the way in, kept for the readout so a return
+   that remembers nothing can be told apart from one that never armed. */
+let lastArm=null;
+function restoreScroll(v,fromBook){
+  /* Only a genuine return from a book is recorded. The first readout was of
+     the tab click that went to LOOK at the readout: going to Overview clears
+     the anchor and restores that tab's own place, which overwrote the trip we
+     were trying to read. An instrument that erases the evidence when you open
+     it is worse than none. */
+  if(fromBook){
+    backTrace={t0:Date.now(),v,id:lastOpenedId||"(none)",en:lastOpenedEn||"(the book itself)",
+      saved:scrollMem[v]||0,arm:lastArm,steps:[]};
+    traceBack("start");
+    [300,700,1500].forEach(ms=>setTimeout(()=>traceBack("t+"+ms),ms));
+  }
   /* The row is found straight away, but the shelf is at its shortest right
      then — the pictures are still coming, every row is about to get taller,
      and the row we just centred slides away underneath. So the anchor is kept
@@ -3919,8 +3927,11 @@ window.addEventListener("popstate",async e=>{
       if(!cur||cur.id!==st.b)await openBook(st.b,false);
       view="book";bookMode=st.m||"view";renderBook();restoreScroll("book");
     }else{
+      /* the browser's own arrow leaving a book is the same journey as the
+         Back button, and is recorded as one */
+      const leavingBook=view==="book";
       view=(st&&st.v&&st.v!=="book")?st.v:"library";
-      cur=null;render();restoreScroll(view);
+      cur=null;render();restoreScroll(view,leavingBook);
     }
   }catch(err){console.warn("[shelf] back",err);}
   finally{navRestoring=false;}
@@ -6465,8 +6476,11 @@ async function refreshStorage(){
      reasoning and all three missed, so the next report can carry the actual
      numbers instead of another guess */
   const bt=backTrace;
+  const armTxt=bt&&bt.arm?`${String(bt.arm.id).slice(0,8)} story=${bt.arm.en||"-"} from ${bt.arm.from} at ${bt.arm.y}px`
+    :"nothing was ever armed";
   const btLine=!bt?"":`<div class="hint" style="margin-top:9px">
-    <b>Last trip back</b> — remembered ${esc(String(bt.id).slice(0,8))}, story ${esc(bt.en)},
+    <b>Last trip back</b> — on the way in: ${esc(armTxt)}.
+    Coming back it remembered ${esc(String(bt.id).slice(0,8))}, story ${esc(bt.en)},
     saved position ${bt.saved}px.
     <div style="font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.5;
       margin-top:4px;max-height:150px;overflow:auto;white-space:pre">${
@@ -6496,7 +6510,7 @@ async function refreshStorage(){
   }
   const bc=q("#btCopy");
   if(bc)bc.onclick=async()=>{
-    const txt=`Build ${window.APP_VERSION}\nremembered ${bt.id} story=${bt.en} saved=${bt.saved}\n`
+    const txt=`Build ${window.APP_VERSION}\narmed: ${armTxt}\nremembered ${bt.id} story=${bt.en} saved=${bt.saved}\n`
       +bt.steps.map(s=>`${s.ms}ms y=${s.y} page=${s.h} ${s.ev}`
         +(s.matched!==undefined?` matched=${s.matched}`:"")
         +(s.by?` by=${s.by} pick=${s.pick} rowTop=${s.rowTop} landed=${s.landed}`:"")
@@ -7168,7 +7182,10 @@ const backLabel=()=>"‹ "+(BACK_NAMES[cameFrom]||"Library");
    the pen and jumping to the top of the page, so you were looking at a different
    screen when you went to check. */
 async function openBook(id,fresh,keepPlace,goToStory){
-  if(view!=="book"){cameFrom=view;keepMyPlace();lastOpenedId=id;lastOpenedEn=goToStory||"";}   /* so Back can bring you here again */
+  if(view!=="book"){
+    cameFrom=view;keepMyPlace();lastOpenedId=id;lastOpenedEn=goToStory||"";
+    lastArm={id,en:goToStory||"",from:view,y:Math.round(window.scrollY)};   /* for the readout */
+  }   /* so Back can bring you here again */
   const found=books.find(b=>b.id===id);
   /* asked to open a book that is gone (deleted since this row was drawn):
      opening a blank page under its old id would create a ghost book */
@@ -7523,7 +7540,7 @@ function renderBookView(){
   const page=q("#edPage");
   wireSizeCtrl();
   wireBookImport(b);
-  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();restoreScroll(view);});};
+  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();restoreScroll(view,true);});};
   q("#edDel").onclick=()=>deleteBookById(cur.id);
   q("#toEdit").onclick=()=>{vStatusOpen=false;setBookMode("edit");};
   const t2=q("#toEdit2");if(t2)t2.onclick=()=>setBookMode("edit");
@@ -8708,7 +8725,7 @@ function renderEditor(){
   });
 
   wireSizeCtrl();
-  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();restoreScroll(view);});};
+  q("#edBack").onclick=()=>{clearTimeout(saveTimer);finishSaveThen(()=>{view=cameFrom||"library";cur=null;render();restoreScroll(view,true);});};
   q("#uBtn").onclick=()=>finishSaveThen(doUndo);
   q("#rBtn").onclick=()=>finishSaveThen(doRedo);
   refreshHistBtns();
