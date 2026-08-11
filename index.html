@@ -9968,6 +9968,7 @@ function renderEditor(){
           <button class="btn pri" id="entAdd">＋ Add a book / story</button>
           <button class="btn" id="entFold" title="Move a book that has its own page into this collection">⤵ Fold in a book from your shelf…</button>
           <button class="btn" id="entOrder" ${cur.entries.length>1?"":"disabled"} title="Tap the titles in the order you want them">⇅ Reorder…</button>
+          ${entNumSortable(cur.entries)?`<button class="btn" id="entNumSort" title="Put them in the order their own titles give — #1, #2, #3">🔢 By the number in the title</button>`:""}
         </div></div>`;
     const list=q("#entList");
     list.innerHTML=cur.entries.map((en,i)=>`
@@ -10102,6 +10103,15 @@ function renderEditor(){
     };
     q("#entFold").onclick=openFoldPanel;
     q("#entOrder").onclick=openOrderPanel;
+    const ens=q("#entNumSort");
+    if(ens)ens.onclick=()=>{
+      const sorted=sortByTitleNum(cur.entries);
+      const unnumbered=sorted.filter(e=>titleNum(e.title)==null).length;
+      if(!confirm(`Put the stories in the order their titles give?`
+        +(unnumbered?`\n\n${unnumbered} ${unnumbered===1?"has no number in its title and stays":"have no number in their titles and stay"} at the end, in the order they are now.`:"")))return;
+      cur.entries=sorted;
+      renderEntries();scheduleSave();
+    };
     sumEntryPages();
     syncCollRating(cur);
     const fr=q("#fRate");if(fr&&!cur.ratingOwn&&cur.rating!=null)fr.value=cur.rating;
@@ -10993,6 +11003,38 @@ function firstFew(list,n){
   if(!l.length)return "";
   return l.slice(0,n).join(", ")+(l.length>n?" +"+(l.length-n):"");
 }
+/* ---- the number a title gives itself ----
+   A collection's stories arrive in whatever order they were added, which for
+   Fright Time meant #5, #2, #9, #3 sitting in positions one to four. The
+   titles already say where they go. Only a number that is announced counts —
+   after a #, or behind Book / Volume / Part / No., or standing alone at the
+   very end — because a bare number anywhere in a title is as likely to be part
+   of the name ("1984", "Catch-22", "A to Z Mysteries") as a position in a
+   series. Nothing is renumbered or rewritten; they are only put in order. */
+function titleNum(t){
+  const s=String(t||"");
+  let m=s.match(/#\s*(\d+(?:\.\d+)?)/);                    if(m)return +m[1];
+  m=s.match(/\b(?:book|vol\.?|volume|part|no\.?)\s*(\d+(?:\.\d+)?)\b/i); if(m)return +m[1];
+  /* something must come BEFORE it, or a title that IS a number — 1984 — reads
+     as book one thousand nine hundred and eighty-four */
+  m=s.match(/\S\s+(\d+(?:\.\d+)?)\s*$/);                   if(m)return +m[1];
+  return null;
+}
+/* worth offering only when the titles actually carry numbers, and when doing it
+   would change something */
+function entNumSortable(entries){
+  const l=entries||[];
+  const nums=l.map(e=>titleNum(e.title));
+  if(nums.filter(n=>n!=null).length<2)return false;
+  return sortByTitleNum(l).some((e,i)=>e!==l[i]);
+}
+function sortByTitleNum(entries){
+  const l=(entries||[]).map((e,i)=>({e,i,n:titleNum(e.title)}));
+  const numbered=l.filter(x=>x.n!=null).sort((a,b)=>a.n-b.n||a.i-b.i);
+  /* the ones whose titles say nothing keep the order you put them in, after */
+  const rest=l.filter(x=>x.n==null);
+  return [...numbered,...rest].map(x=>x.e);
+}
 const WORDS_PER_PAGE=275;   /* so a fic lands in the same length buckets as a book */
 const ficPages=w=>w?String(Math.max(1,Math.round(w/WORDS_PER_PAGE))):"";
 const blankFic=()=>({source:"",title:"",author:"",fandoms:[],characters:[],
@@ -11808,14 +11850,27 @@ function bImpRows(b){
    way the author's already worked, and the row grew a second one that leaves
    the app entirely: whether a book belongs to this series is a question the
    import file cannot answer and the web can. */
+const lookupQ=it=>String(it.title||"")+" "+String(it.author||"");
 const lookupUrl=it=>"https://www.google.com/search?q="+
-  encodeURIComponent(String(it.title||"")+" "+String(it.author||"")).replace(/%20/g,"+");
+  encodeURIComponent(lookupQ(it)).replace(/%20/g,"+");
+/* Google answers "what is this", but the two reading sites answer the question
+   actually being asked of an import row — which book in a series this is, and
+   whether it is one you would want. Same query, three places to take it. */
+const LOOKUPS=[
+  ["🌐","Google","Look it up on Google — what it is, whether it belongs to this series",
+    it=>lookupUrl(it)],
+  ["📚","Goodreads","Find it on Goodreads — the series, the number, the blurb",
+    it=>"https://www.goodreads.com/search?q="+encodeURIComponent(lookupQ(it)).replace(/%20/g,"+")],
+  ["🌱","StoryGraph","Find it on StoryGraph — moods, pace, content warnings",
+    it=>"https://app.thestorygraph.com/browse?search_term="+encodeURIComponent(lookupQ(it))],
+];
+const lookupLinks=it=>LOOKUPS.map(([icon,name,tip,url])=>
+  `<a class="bimpa" href="${esc(url(it))}" target="_blank" rel="noopener" title="${esc(tip)}">${icon}</a>`).join("");
 const bImpRow=(it,coll)=>`<div class="snap bimprow" style="padding:6px 10px">
   <div style="min-width:0;flex:1">
     <div class="bimpt">${esc(it.title)||"Untitled"}
       <button class="bimpa" data-bimpt="${esc(it.title||"")}" title="Search this list for this title">🔍</button>
-      <a class="bimpa" href="${esc(lookupUrl(it))}" target="_blank" rel="noopener"
-         title="Look it up on Google — what it is, whether it belongs to this series">🌐</a></div>
+      ${lookupLinks(it)}</div>
     <div class="meta">${esc(it.author)||"Unknown author"}
       <button class="bimpa" data-bimpa="${esc(it.author||"")}" title="Search this list for this author">🔍</button>
       ${it.rating!=null?` · ★ ${it.rating.toFixed(1)}`:""}${it.pages?` · ${it.pages} p.`:""}
