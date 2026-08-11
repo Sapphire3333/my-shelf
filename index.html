@@ -2511,6 +2511,10 @@ const coverCache=new Map();
 const S={q:"",scopes:["title","author","fandom"],authorQ:"",filter:null,multi:[],pickGenres:[],pickKws:[],pickKwOpen:false,pickWant:true,pickText:"",picked:null};
 let deletions={};
 let lastExport=0;                              /* when this browser last downloaded a backup file */
+/* backups into a real folder on this PC. The folder's handle lives in this
+   browser's own database and never syncs — a folder on this PC means nothing
+   to another device */
+let bkDir=null,lastDirBk=0,bkDirAsk=false;
 
 /* =============== sync (Supabase — optional, offline-first) =============== */
 const CFG=window.SHELF_CONFIG||{};
@@ -3029,6 +3033,8 @@ async function initSync(){
   /* device-local on purpose — an export made on the PC says nothing about
      whether this phone's browser has ever been backed up */
   const le=await dbGet("meta","lastExport");lastExport=le&&le.v?le.v:0;
+  const bd=await dbGet("meta","bkDir");bkDir=bd&&bd.v?bd.v:null;
+  const ldb=await dbGet("meta","lastDirBk");lastDirBk=ldb&&ldb.v?ldb.v:0;
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   /* the scopes you last searched in — kept, but sieved through the list this
      version knows, so a name that has gone away can't leave you searching nowhere */
@@ -3055,6 +3061,7 @@ async function initSync(){
   await loadSyncLocal();
   initSync();
   maybeAutoBackup();
+  maybeFolderBackup();
   purgeTrash();
 })();
 
@@ -3108,7 +3115,7 @@ document.addEventListener("visibilitychange",()=>{
   }
   /* the "daily" backup and the 30-day bin used to be checked only at launch — a
      tab or installed app left open for a week never did either */
-  if(Date.now()-lastMaint>3600000){lastMaint=Date.now();maybeAutoBackup();purgeTrash();}
+  if(Date.now()-lastMaint>3600000){lastMaint=Date.now();maybeAutoBackup();maybeFolderBackup();purgeTrash();}
 });
 window.addEventListener("pagehide",onHidden);
 /* a phone bringing the app back from its own memory fires this and often
@@ -5389,6 +5396,7 @@ async function renderHub(){
           </label>
         </div>
         <div class="hint" style="margin:9px 0 0">Backups live inside this browser. Restoring merges one back in — books you've added since are kept. For a copy you can keep somewhere safe, use Export below.</div>
+        <div id="bkDirBox"></div>
         <div id="snapList"></div>
       </div>
     </div>
@@ -5488,7 +5496,59 @@ async function renderHub(){
     importQueue=[];saveImportQueue();refreshImport();
   };
   drawBgPicker(q("#hubBg"),()=>settings.bg||{id:"none",opacity:100},v=>{settings.bg=v;saveSettings();},false);
-  refreshSnaps();refreshStorage();refreshTrash();refreshImport();
+  refreshSnaps();refreshStorage();refreshTrash();refreshImport();renderDirUi();
+}
+
+/* the folder-backup corner of the Backups card. Rendered on its own so
+   connecting, reconnecting or stopping can redraw just this box */
+function renderDirUi(){
+  const box=q("#bkDirBox");if(!box)return;
+  if(!window.showDirectoryPicker){box.innerHTML="";return;}   /* phones can't do this — the card simply doesn't mention it */
+  if(!bkDir){
+    box.innerHTML=`<div class="hrow2" style="margin-top:12px"><button class="btn" id="bkDirBtn">🗀 Also keep backups in a folder on this PC</button></div>
+      <div class="hint" style="margin:7px 0 0">Pick a folder once and a dated backup file is written there daily — a copy that lives outside this browser, where Explorer and your own backups can see it.</div>`;
+    q("#bkDirBtn").onclick=connectBackupFolder;
+    return;
+  }
+  const d=lastDirBk?Math.floor((Date.now()-lastDirBk)/864e5):null;
+  const when=lastDirBk?(d===0?"today":d===1?"yesterday":d+" days ago"):"not yet";
+  box.innerHTML=`
+    ${bkDirAsk
+      ?`<div class="hrow2" style="margin-top:12px"><button class="btn pri" id="bkDirFix">Reconnect the backup folder</button></div>
+        <div class="hint" style="margin:7px 0 0;color:#b45309">The browser wants a click before letting the app write into “${esc(bkDir.name)}” again — one press and the daily backups continue.</div>`
+      :`<div class="hint" style="margin-top:12px">Daily backups also go to the folder “${esc(bkDir.name)}” on this PC — last: ${when}. The newest ${DIR_KEEP} are kept; older ones are tidied away.</div>`}
+    <div class="hrow2" style="margin-top:7px">
+      <button class="btn" id="bkDirBtn" style="padding:3px 10px;font-size:12px">Change folder…</button>
+      <button class="btn" id="bkDirOff" style="padding:3px 10px;font-size:12px">Stop</button>
+    </div>`;
+  const fix=q("#bkDirFix");
+  if(fix)fix.onclick=async()=>{
+    const p=await dirPermission(true);
+    if(p==="granted"){lastDirBk=0;await maybeFolderBackup();}
+    renderDirUi();
+  };
+  q("#bkDirBtn").onclick=connectBackupFolder;
+  q("#bkDirOff").onclick=()=>{
+    if(!confirm("Stop writing daily backups into the folder?\n\nThe files already there stay — the app just stops adding new ones."))return;
+    bkDir=null;bkDirAsk=false;dbPut("meta",{k:"bkDir",v:null});
+    renderDirUi();
+  };
+}
+async function connectBackupFolder(){
+  let h;
+  try{h=await window.showDirectoryPicker({id:"my-shelf-backups",mode:"readwrite"});}
+  catch(e){return;}                                /* the picker was closed — nothing to do */
+  try{
+    bkDir=h;await dbPut("meta",{k:"bkDir",v:h});
+    lastDirBk=0;bkDirAsk=false;
+    if(books.length)await writeFolderBackup();     /* the first one right away — instant proof it works */
+    renderDirUi();refreshStorage();
+  }catch(e){
+    console.warn("[shelf] backup folder",e);
+    alert("That folder couldn't be written to — try another one.");
+    bkDir=null;dbPut("meta",{k:"bkDir",v:null});
+    renderDirUi();
+  }
 }
 
 const IMP_SHOW=40;   /* how many titles to list per section before summarising */
@@ -6031,15 +6091,16 @@ async function refreshStorage(){
   /* which build this device is actually running — so a "nothing changed" report
      can carry the build's name, instead of us guessing about caches */
   const buildLine=`<div class="none" style="font-size:11px;margin-top:5px;opacity:.7">Build ${esc(window.APP_VERSION||"unknown")}</div>`;
+  const dirWarn=window.__dirBkFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The daily backup could not be written into your backup folder — it may have been moved or deleted. Open Backups below to reconnect it.</div>':"";
   if(si&&si.quota){
     const pct=si.usage/si.quota*100;
     q("#stoCard").innerHTML=`
       <div class="hrow2"><span class="bignum">${fmtBytes(si.usage)}</span><span class="none">used of ${fmtBytes(si.quota)} available on this device</span></div>
       <div class="bar"><i class="${pct>90?"full":pct>70?"warn":""}" style="width:${Math.max(1,Math.min(100,pct))}%"></i></div>
       <div class="none">${counts}</div>
-      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${buildLine}`;
+      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}${buildLine}`;
   }else{
-    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${buildLine}`;
+    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}`;
   }
 }
 async function refreshSnaps(){
@@ -10888,6 +10949,51 @@ async function maybeAutoBackup(){
   if(last&&Date.now()-last.at<24*3600*1000)return;
   try{await makeSnapshot(true);window.__backupFail=0;}
   catch(e){console.warn("[shelf] auto-backup skipped",e);window.__backupFail=Date.now();}
+}
+
+/* =============== backups into a real folder (PC) =============== */
+/* The backups above live INSIDE the browser — the one place a lost browser
+   profile takes with it, and the reason exporting a file now and then has
+   been the real safety net. On a PC the app can write that file itself: pick
+   a folder once (Chrome and Edge can do this; phones can't) and a dated
+   backup lands there daily as an ordinary file — visible in Explorer, caught
+   by anything that backs up folders, and readable by Import forever. */
+const DIR_KEEP=30;                             /* newest dated files kept; older ones tidied away */
+const DIR_PAT=/^my-shelf-auto-backup-\d{4}-\d{2}-\d{2}\.json$/;
+async function dirPermission(ask){
+  if(!bkDir)return "none";
+  try{
+    let p=await bkDir.queryPermission({mode:"readwrite"});
+    if(p==="prompt"&&ask)p=await bkDir.requestPermission({mode:"readwrite"});
+    return p;
+  }catch(e){return "none";}
+}
+async function writeFolderBackup(){
+  const name=`my-shelf-auto-backup-${new Date().toISOString().slice(0,10)}.json`;
+  const fh=await bkDir.getFileHandle(name,{create:true});
+  const w=await fh.createWritable();               /* writes land whole: a crash mid-write leaves the old file, not half a new one */
+  await w.write(JSON.stringify(await buildBackup()));
+  await w.close();
+  /* tidy: only OUR dated files are ever touched — nothing else in the folder */
+  const mine=[];
+  for await(const h of bkDir.values())if(h.kind==="file"&&DIR_PAT.test(h.name))mine.push(h.name);
+  mine.sort();
+  for(const n of mine.slice(0,Math.max(0,mine.length-DIR_KEEP))){
+    try{await bkDir.removeEntry(n);}catch(e){}
+  }
+  lastDirBk=Date.now();dbPut("meta",{k:"lastDirBk",v:lastDirBk});
+  bkDirAsk=false;window.__dirBkFail=0;
+}
+async function maybeFolderBackup(){
+  if(!bkDir||!books.length)return;
+  if(Date.now()-lastDirBk<20*3600*1000)return;   /* “daily”, with slack so it doesn't drift later each day */
+  const p=await dirPermission(false);
+  /* the browser wants a click before letting the app back into the folder —
+     that can't happen silently here, so say so where the backups live */
+  if(p==="prompt"){bkDirAsk=true;renderDirUi();return;}
+  if(p!=="granted")return;
+  try{await writeFolderBackup();renderDirUi();}
+  catch(e){console.warn("[shelf] folder backup",e);window.__dirBkFail=Date.now();refreshStorage();}
 }
 
 q("#importFile").addEventListener("change",async e=>{
