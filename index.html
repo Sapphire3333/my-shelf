@@ -9194,7 +9194,8 @@ function renderEditor(){
         <input type="file" id="fcFileIn" accept=".html,.htm,.xhtml,text/html" hidden>
       </div>
       <textarea class="field" id="fcText" placeholder="…or paste the whole fic page here" style="width:100%;min-height:110px;font-size:13px;padding:8px 11px;resize:vertical"></textarea>
-      <div class="hrow2" style="margin-top:7px"><button class="btn pri" id="fcRead">Read it</button></div>
+      <div class="hrow2" style="margin-top:7px"><button class="btn pri" id="fcRead">Read it</button>
+        <span class="none" id="fcFlavour" style="font-size:12px"></span></div>
       <div id="fcOut"></div>`;
     q("#fcClose",box).onclick=closeFetch;
     q("#fcFile",box).onclick=()=>q("#fcFileIn",box).click();
@@ -9204,8 +9205,34 @@ function renderEditor(){
       try{t=await f.text();}catch(err){alert("That file couldn't be read.");return;}
       showFic(parseFicAny(t),f.name);
     };
+    /* ---- take the marked-up copy, not the flattened one ----
+       A clipboard carries the same selection twice: once as plain text and
+       once as the markup it was cut from. Reading the plain one lost every tag
+       boundary — the browser had run "Ryland Grace Needs a Hug" straight into
+       the next tag with nothing between them, and no amount of splitting can
+       recover a separator that was never written. The markup still has each
+       tag in its own element, so it goes through the same reader the
+       downloaded file uses, which is the good one. */
+    let pastedHtml="",pastedText="";
+    const ta=q("#fcText",box);
+    ta.addEventListener("paste",e=>{
+      const cd=e.clipboardData;
+      if(!cd)return;
+      pastedHtml=cd.getData("text/html")||"";
+      pastedText=cd.getData("text/plain")||"";
+      const f=q("#fcFlavour",box);
+      if(f)f.textContent=pastedHtml?"marked-up copy — tags will stay separate":"plain copy only";
+    });
     q("#fcRead",box).onclick=()=>{
-      const t=q("#fcText",box).value.trim();
+      /* the markup only stands while the box still holds what was pasted; edit
+         it by hand and the words in front of you are the honest source */
+      const raw=q("#fcText",box).value;
+      const useHtml=pastedHtml&&raw.trim()===pastedText.trim();
+      if(useHtml){
+        showFic(parseFicAny(pastedHtml),"the marked-up copy you pasted");
+        return;
+      }
+      const t=raw.trim();
       if(!t){alert("Paste the fic's page into the box first, or choose a downloaded file.");return;}
       showFic(parseFicAny(t),"what you pasted");
     };
@@ -10741,7 +10768,28 @@ function parseFicText(text){
   if(u)out.url=u[0];
   return out;
 }
-const parseFicAny=s=>/<\s*(html|body|div|dl|head|!doctype)/i.test(s)?parseFicHtml(s):parseFicText(s);
+/* Markup first when there is markup, but never blindly: a copied fragment may
+   not contain the labelled block at all, and a parse that found nothing must
+   fall back to reading the words rather than returning an empty result. */
+function parseFicAny(s){
+  if(!/<\s*(html|body|div|dl|head|!doctype)/i.test(s))return parseFicText(s);
+  const r=parseFicHtml(s);
+  const gotSomething=r.fandoms.length||r.characters.length||r.tags.length||r.words||r.title;
+  if(gotSomething)return r;
+  /* Taking the words out of markup has the same trap as the clipboard did:
+     the plain text of <p>Fandom:</p><p>Narnia</p> is "Fandom:Narnia", with the
+     line break that separated them thrown away — and the labels are the only
+     thing the reader has to go on. So the block endings become line breaks
+     before the tags come off. */
+  let txt=s;
+  try{
+    const marked=String(s)
+      .replace(/<\/(p|div|li|dd|dt|tr|h[1-6]|ul|ol|dl|section|article|blockquote)\s*>/gi,"\n")
+      .replace(/<br\s*\/?>/gi,"\n");
+    txt=new DOMParser().parseFromString(marked,"text/html").body.textContent||s;
+  }catch(e){}
+  return parseFicText(txt);
+}
 
 /* =============== bringing a chat in ===============
    An AI story is written in a chat, and a long one cannot be copied out of it:
