@@ -3779,23 +3779,10 @@ let pendingScroll=null;
 /* Which book — and which story inside it — you were last in, so coming back
    can find that exact row again rather than one that merely shares its id. */
 let lastOpenedId=null,lastOpenedEn="";
-/* ---- what the last trip back actually did ----
-   Three attempts at this have now been shipped on reasoning and all three were
-   wrong, so this one records the trip instead of arguing about it: what was
-   remembered, how many rows answered to it, which was picked, where the page
-   went at each step, and how tall it was at the time. The samples run on for
-   nearly two seconds after the return, because "it arrived and then something
-   moved it" and "it never arrived" look identical from the outside and need
-   telling apart. Shown under Overview → Storage. */
-let backTrace=null;
-function traceBack(ev,extra){
-  if(!backTrace||backTrace.done||backTrace.steps.length>24)return;
-  backTrace.steps.push(Object.assign({
-    ms:Date.now()-backTrace.t0,
-    y:Math.round(window.scrollY),
-    h:Math.round(document.documentElement.scrollHeight),
-    ev},extra||{}));
-}
+/* The step-by-step readout that found the cause of all this — the browser
+   reinstating its own scroll position 80ms after ours — has been taken out
+   again now that it has done its work. It is in the history at `fe1bd5a` if
+   this ever needs watching a second time. */
 /* A saved pixel offset is only right if the page is exactly as tall as it was
    when you left it, and it frequently is not — pictures arrive after the rows
    are drawn, a group may be folded, a filter may have moved something. The
@@ -3803,9 +3790,9 @@ function traceBack(ev,extra){
    putting it on screen is the answer and the offset is only the fallback for
    when it is not there at all. */
 function backToRow(){
-  if(!lastOpenedId){traceBack("no-id");return false;}
+  if(!lastOpenedId)return false;
   const all=qa(`[data-open="${CSS.escape(lastOpenedId)}"]`);
-  if(!all.length){traceBack("no-row",{matched:0});return false;}
+  if(!all.length)return false;
   /* A collection and every one of its stories carry the collection's id, so
      asking for the first match often found a story sitting in Reading now at
      the very top of the shelf — which is how coming back from a book in the
@@ -3832,15 +3819,9 @@ function backToRow(){
     });
     row=best.el;
   }
-  const rowTop=Math.round(row.getBoundingClientRect().top+window.scrollY);
   row.scrollIntoView({block:"center"});
-  traceBack("row",{matched:all.length,by,pick:all.indexOf(row),rowTop,
-    landed:Math.round(window.scrollY)});
   return true;
 }
-/* What openBook wrote down on the way in, kept for the readout so a return
-   that remembers nothing can be told apart from one that never armed. */
-let lastArm=null;
 /* ---- the browser was putting the page back itself ----
    Left alone, a browser remembers its own scroll position for every history
    entry and restores it after a back navigation — asynchronously, a beat after
@@ -3862,20 +3843,10 @@ let userTookOver=false;
 addEventListener("keydown",e=>{
   if(["ArrowUp","ArrowDown","PageUp","PageDown","Home","End"," "].includes(e.key))userTookOver=true;
 },{capture:true});
+/* `fromBook` marks a genuine return from a book — the Back button, or the
+   browser's own arrow. Choosing a tab is not one, and must not be treated as
+   one: it wants that tab's own place, not the last book's row. */
 function restoreScroll(v,fromBook){
-  /* Only a genuine return from a book is recorded. The first readout was of
-     the tab click that went to LOOK at the readout: going to Overview clears
-     the anchor and restores that tab's own place, which overwrote the trip we
-     were trying to read. An instrument that erases the evidence when you open
-     it is worse than none. */
-  if(fromBook){
-    backTrace={t0:Date.now(),v,id:lastOpenedId||"(none)",en:lastOpenedEn||"(the book itself)",
-      saved:scrollMem[v]||0,arm:lastArm,steps:[],done:false};
-    traceBack("start");
-    [300,700,1500].forEach(ms=>setTimeout(()=>traceBack("t+"+ms),ms));
-    /* and then stop writing, so wandering off to read it adds nothing */
-    setTimeout(()=>{if(backTrace)backTrace.done=true;},1800);
-  }
   userTookOver=false;   /* a fresh trip; you have not touched it yet */
   /* the row is re-asserted for a while, because pictures keep landing and each
      one makes the page a little taller — it stops the moment you take hold */
@@ -3891,12 +3862,12 @@ function restoreScroll(v,fromBook){
     return;
   }
   const y=scrollMem[v]||0;
-  if(!y){traceBack("nothing-saved");pendingScroll=null;return;}
+  if(!y){pendingScroll=null;return;}
   /* three times over: the page is still being laid out, and a page that has not
      got its height back yet silently clamps a scroll to whatever it can reach */
   pendingScroll={v,y,at:Date.now(),last:null};
   const go=lbl=>{if(!pendingScroll)return;window.scrollTo(0,y);
-    pendingScroll.last=Math.round(window.scrollY);traceBack(lbl,{asked:y});};
+    pendingScroll.last=Math.round(window.scrollY);};
   go("offset");
   requestAnimationFrame(()=>go("offset-raf"));
   setTimeout(()=>go("offset-80"),80);
@@ -3909,23 +3880,23 @@ function restoreScroll(v,fromBook){
    moved since we last set it, or too long has passed, we let go. */
 function reapplyScroll(){
   const p=pendingScroll;
-  if(!p){traceBack("re:nothing-pending");return;}
-  if(p.v!==view){traceBack("re:other-view");return;}
-  if(Date.now()-p.at>5000){traceBack("re:too-late");pendingScroll=null;return;}
+  if(!p)return;
+  if(p.v!==view)return;
+  if(Date.now()-p.at>5000){pendingScroll=null;return;}
   /* your own scrolling beats ours — but only when you have actually touched
      the page. Comparing positions instead let a few dozen pixels of reflow,
      caused by the pictures we were waiting for, read as "they scrolled". */
-  if(userTookOver){traceBack("re:you-moved");pendingScroll=null;return;}
+  if(userTookOver){pendingScroll=null;return;}
   if(p.row){
     /* the row is the anchor, and it may only just have got its picture */
     if(backToRow())p.last=Math.round(window.scrollY);
-    else {traceBack("re:row-gone");pendingScroll=null;}
+    else {pendingScroll=null;}
     return;
   }
-  if(Math.round(window.scrollY)===p.y){traceBack("re:already-there");pendingScroll=null;return;}
+  if(Math.round(window.scrollY)===p.y){pendingScroll=null;return;}
   window.scrollTo(0,p.y);
   p.last=Math.round(window.scrollY);
-  traceBack("re:offset",{asked:p.y});
+
 }
 function syncHistory(){
   if(navRestoring)return;
@@ -4361,7 +4332,7 @@ async function hydrateCovers(root){
   };
   /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
   for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
-  traceBack("covers-in",{n:els.length});
+
   reapplyScroll();   /* the page only has its real height now */
 }
 /* pick the stage from a list — a single click was too easy to do by accident */
@@ -6506,25 +6477,6 @@ async function refreshStorage(){
      gone after a reload" is not reproducible on any machine but theirs, so the
      app says what it managed rather than us both guessing about caches. */
   const cs=coverStats;
-  /* the trip back, step by step — three fixes for this have been shipped on
-     reasoning and all three missed, so the next report can carry the actual
-     numbers instead of another guess */
-  const bt=backTrace;
-  const armTxt=bt&&bt.arm?`${String(bt.arm.id).slice(0,8)} story=${bt.arm.en||"-"} from ${bt.arm.from} at ${bt.arm.y}px`
-    :"nothing was ever armed";
-  const btLine=!bt?"":`<div class="hint" style="margin-top:9px">
-    <b>Last trip back</b> — on the way in: ${esc(armTxt)}.
-    Coming back it remembered ${esc(String(bt.id).slice(0,8))}, story ${esc(bt.en)},
-    saved position ${bt.saved}px.
-    <div style="font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.5;
-      margin-top:4px;max-height:150px;overflow:auto;white-space:pre">${
-      esc(bt.steps.map(s=>`${String(s.ms).padStart(5)}ms  y=${String(s.y).padStart(5)}  page=${String(s.h).padStart(6)}  ${s.ev}`
-        +(s.matched!==undefined?`  matched=${s.matched}`:"")
-        +(s.by?`  by=${s.by} pick=${s.pick} rowTop=${s.rowTop} landed=${s.landed}`:"")
-        +(s.asked!==undefined?`  asked=${s.asked}`:"")
-        +(s.was!==undefined?`  was=${s.was}`:"")
-        +(s.n!==undefined?`  n=${s.n}`:"")).join("\n"))}</div>
-    <button class="btn" id="btCopy" style="margin-top:6px;padding:3px 9px;font-size:12px">⧉ Copy this</button></div>`;
   const covOne=(s,label)=>{
     if(!s||!s.at)return "";
     const shown=s.memory+s.local+s.cloud+s.story;
@@ -6542,21 +6494,10 @@ async function refreshStorage(){
       <div class="hrow2"><span class="bignum">${fmtBytes(si.usage)}</span><span class="none">used of ${fmtBytes(si.quota)} available on this device</span></div>
       <div class="bar"><i class="${pct>90?"full":pct>70?"warn":""}" style="width:${Math.max(1,Math.min(100,pct))}%"></i></div>
       <div class="none">${counts}</div>
-      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}${buildLine}${covLine}${btLine}`;
+      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}${buildLine}${covLine}`;
   }else{
-    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}${btLine}`;
+    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}`;
   }
-  const bc=q("#btCopy");
-  if(bc)bc.onclick=async()=>{
-    const txt=`Build ${window.APP_VERSION}\narmed: ${armTxt}\nremembered ${bt.id} story=${bt.en} saved=${bt.saved}\n`
-      +bt.steps.map(s=>`${s.ms}ms y=${s.y} page=${s.h} ${s.ev}`
-        +(s.matched!==undefined?` matched=${s.matched}`:"")
-        +(s.by?` by=${s.by} pick=${s.pick} rowTop=${s.rowTop} landed=${s.landed}`:"")
-        +(s.asked!==undefined?` asked=${s.asked}`:"")
-        +(s.was!==undefined?` was=${s.was}`:"")
-        +(s.n!==undefined?` n=${s.n}`:"")).join("\n");
-    try{await navigator.clipboard.writeText(txt);bc.textContent="Copied ✓";}catch(e){bc.textContent="Couldn't copy";}
-  };
 }
 async function refreshSnaps(){
   const box=q("#snapList");if(!box)return;
@@ -7222,7 +7163,6 @@ const backLabel=()=>"‹ "+(BACK_NAMES[cameFrom]||"Library");
 async function openBook(id,fresh,keepPlace,goToStory){
   if(view!=="book"){
     cameFrom=view;keepMyPlace();lastOpenedId=id;lastOpenedEn=goToStory||"";
-    lastArm={id,en:goToStory||"",from:view,y:Math.round(window.scrollY)};   /* for the readout */
   }   /* so Back can bring you here again */
   const found=books.find(b=>b.id===id);
   /* asked to open a book that is gone (deleted since this row was drawn):
