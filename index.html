@@ -3789,7 +3789,7 @@ let lastOpenedId=null,lastOpenedEn="";
    telling apart. Shown under Overview → Storage. */
 let backTrace=null;
 function traceBack(ev,extra){
-  if(!backTrace||backTrace.steps.length>24)return;
+  if(!backTrace||backTrace.done||backTrace.steps.length>24)return;
   backTrace.steps.push(Object.assign({
     ms:Date.now()-backTrace.t0,
     y:Math.round(window.scrollY),
@@ -3841,6 +3841,27 @@ function backToRow(){
 /* What openBook wrote down on the way in, kept for the readout so a return
    that remembers nothing can be told apart from one that never armed. */
 let lastArm=null;
+/* ---- the browser was putting the page back itself ----
+   Left alone, a browser remembers its own scroll position for every history
+   entry and restores it after a back navigation — asynchronously, a beat after
+   our own restore has already run. The readout caught it exactly: the row was
+   found and the page was put at 23179, and eighty milliseconds later something
+   threw it to 4225. That something was the browser, reinstating where this
+   history entry had been on some earlier visit. Every fix for the back button
+   "worked" and was then undone by it. The app remembers places deliberately —
+   see keepMyPlace and backToRow — so the browser's own guess is turned off. */
+try{if("scrollRestoration" in history)history.scrollRestoration="manual";}catch(e){}
+/* Whether YOU have taken hold of the page since we last set it. This used to be
+   inferred by watching the position, which was wrong: pictures landing make the
+   page taller and nudge the position by a few dozen pixels, and that reflow was
+   being read as "they scrolled, let go" — in the readout it let go 10ms in,
+   over 73px that nobody asked for. Actual input is the only honest signal. */
+let userTookOver=false;
+["wheel","touchstart","mousedown"].forEach(ev=>
+  addEventListener(ev,()=>{userTookOver=true;},{passive:true,capture:true}));
+addEventListener("keydown",e=>{
+  if(["ArrowUp","ArrowDown","PageUp","PageDown","Home","End"," "].includes(e.key))userTookOver=true;
+},{capture:true});
 function restoreScroll(v,fromBook){
   /* Only a genuine return from a book is recorded. The first readout was of
      the tab click that went to LOOK at the readout: going to Overview clears
@@ -3849,10 +3870,16 @@ function restoreScroll(v,fromBook){
      it is worse than none. */
   if(fromBook){
     backTrace={t0:Date.now(),v,id:lastOpenedId||"(none)",en:lastOpenedEn||"(the book itself)",
-      saved:scrollMem[v]||0,arm:lastArm,steps:[]};
+      saved:scrollMem[v]||0,arm:lastArm,steps:[],done:false};
     traceBack("start");
     [300,700,1500].forEach(ms=>setTimeout(()=>traceBack("t+"+ms),ms));
+    /* and then stop writing, so wandering off to read it adds nothing */
+    setTimeout(()=>{if(backTrace)backTrace.done=true;},1800);
   }
+  userTookOver=false;   /* a fresh trip; you have not touched it yet */
+  /* the row is re-asserted for a while, because pictures keep landing and each
+     one makes the page a little taller — it stops the moment you take hold */
+  if(fromBook)[250,600,1200].forEach(ms=>setTimeout(reapplyScroll,ms));
   /* The row is found straight away, but the shelf is at its shortest right
      then — the pictures are still coming, every row is about to get taller,
      and the row we just centred slides away underneath. So the anchor is kept
@@ -3885,10 +3912,10 @@ function reapplyScroll(){
   if(!p){traceBack("re:nothing-pending");return;}
   if(p.v!==view){traceBack("re:other-view");return;}
   if(Date.now()-p.at>5000){traceBack("re:too-late");pendingScroll=null;return;}
-  /* your own scrolling beats ours: if the page has moved since we last set it,
-     let go and leave you where you put yourself */
-  if(p.last!=null&&Math.abs(window.scrollY-p.last)>4){
-    traceBack("re:you-moved",{was:p.last});pendingScroll=null;return;}
+  /* your own scrolling beats ours — but only when you have actually touched
+     the page. Comparing positions instead let a few dozen pixels of reflow,
+     caused by the pictures we were waiting for, read as "they scrolled". */
+  if(userTookOver){traceBack("re:you-moved");pendingScroll=null;return;}
   if(p.row){
     /* the row is the anchor, and it may only just have got its picture */
     if(backToRow())p.last=Math.round(window.scrollY);
@@ -4262,7 +4289,14 @@ function forgetMissingCovers(){
    that contradicted itself: four wanted, six with none. Each row is counted
    exactly once, where it finally lands. */
 let coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,story:0,waiting:0,none:0,sync:""};
-function resetCoverStats(){coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,story:0,waiting:0,none:0,sync:""};}
+/* The screen before this one, kept for the same reason the trip back is kept:
+   walking to Overview to read the numbers is itself a screen, and it was
+   resetting the very tally being walked to. */
+let coverStatsPrev=null;
+function resetCoverStats(){
+  if(coverStats.at)coverStatsPrev=Object.assign({view:coverStats.view||"?"},coverStats);
+  coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,story:0,waiting:0,none:0,sync:"",view};
+}
 async function hydrateCovers(root){
   const els=qa("[data-cover]",root);
   coverStats.at=Date.now();
@@ -6491,12 +6525,16 @@ async function refreshStorage(){
         +(s.was!==undefined?`  was=${s.was}`:"")
         +(s.n!==undefined?`  n=${s.n}`:"")).join("\n"))}</div>
     <button class="btn" id="btCopy" style="margin-top:6px;padding:3px 9px;font-size:12px">⧉ Copy this</button></div>`;
-  const covShown=cs.memory+cs.local+cs.cloud+cs.story;
-  const covLine=!cs.at?"":`<div class="none" style="font-size:11px;margin-top:3px;opacity:.7">
-    Last screen drawn: ${cs.wanted} picture${cs.wanted===1?"":"s"} wanted, ${covShown} shown —
-    ${cs.memory} already in memory, ${cs.local} from this device, ${cs.cloud} fetched from the cloud,
-    ${cs.story} a story's own. ${cs.waiting} still waiting on sign-in, ${cs.none} with none.
-    Syncing was ${esc(cs.sync)}.</div>`;
+  const covOne=(s,label)=>{
+    if(!s||!s.at)return "";
+    const shown=s.memory+s.local+s.cloud+s.story;
+    return `<div class="none" style="font-size:11px;margin-top:3px;opacity:.7">
+      ${label} (${esc(s.view||"?")}): ${s.wanted} picture${s.wanted===1?"":"s"} wanted, ${shown} shown —
+      ${s.memory} in memory, ${s.local} from this device, ${s.cloud} from the cloud,
+      ${s.story} a story's own. ${s.waiting} waiting on sign-in, ${s.none} with none.
+      Syncing was ${esc(s.sync)}.</div>`;
+  };
+  const covLine=covOne(cs,"This screen")+covOne(coverStatsPrev,"The screen before");
   const dirWarn=window.__dirBkFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The daily backup could not be written into your backup folder — it may have been moved or deleted. Open Backups below to reconnect it.</div>':"";
   if(si&&si.quota){
     const pct=si.usage/si.quota*100;
