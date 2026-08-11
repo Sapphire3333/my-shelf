@@ -8770,6 +8770,119 @@ function renderEditor(){
   }
   q("#autoFill").onclick=()=>{const p=q("#fetchPanel");p.hidden?openFetchPanel():closeFetch();};
 
+  /* ---- fill a fic from its own page ----
+     Same manners as Auto-fill above: everything found is shown, and not one
+     field moves until you press its button. That matters more here than it
+     does for books, because a pasted page can be read wrongly in ways a
+     lookup cannot — a fandom whose name has a comma in it, a title guessed
+     from the two lines above the summary — and a wrong guess should cost you
+     an unpressed button, not a wrong title you have to notice later. */
+  function openFicPanel(){
+    const box=q("#fetchPanel");
+    box.hidden=false;
+    const head=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">⇩ Fill from the fic's page</b>
+      <button class="btn" id="fcClose" style="margin-left:auto;padding:4px 10px">Close</button></div>`;
+    box.innerHTML=head+`
+      <div class="hint" style="margin:0 0 8px">AO3 and fanfiction.net don't let this app fetch a page itself. Two ways round it, both offline:
+        <b>paste</b> the page you're on (Ctrl+A, Ctrl+C), or <b>drop the file</b> AO3's Download → HTML gives you — the file is the better read, because in it every tag stays separate.</div>
+      <div class="hrow2" style="margin-bottom:7px">
+        <button class="btn" id="fcFile">📄 Choose a downloaded file…</button>
+        <input type="file" id="fcFileIn" accept=".html,.htm,.xhtml,text/html" hidden>
+      </div>
+      <textarea class="field" id="fcText" placeholder="…or paste the whole fic page here" style="width:100%;min-height:110px;font-size:13px;padding:8px 11px;resize:vertical"></textarea>
+      <div class="hrow2" style="margin-top:7px"><button class="btn pri" id="fcRead">Read it</button></div>
+      <div id="fcOut"></div>`;
+    q("#fcClose",box).onclick=closeFetch;
+    q("#fcFile",box).onclick=()=>q("#fcFileIn",box).click();
+    q("#fcFileIn",box).onchange=async e=>{
+      const f=e.target.files[0];e.target.value="";if(!f)return;
+      let t="";
+      try{t=await f.text();}catch(err){alert("That file couldn't be read.");return;}
+      showFic(parseFicAny(t),f.name);
+    };
+    q("#fcRead",box).onclick=()=>{
+      const t=q("#fcText",box).value.trim();
+      if(!t){alert("Paste the fic's page into the box first, or choose a downloaded file.");return;}
+      showFic(parseFicAny(t),"what you pasted");
+    };
+  }
+  /* one row per thing found, each with its own button */
+  function showFic(r,from){
+    const box=q("#fetchPanel"),out=q("#fcOut",box);
+    if(!out)return;
+    const has=r.title||r.author||r.fandoms.length||r.characters.length||r.tags.length||r.summary||r.words;
+    if(!has){
+      out.innerHTML=`<div class="none" style="margin-top:10px">Nothing recognisable in that. If you pasted, make sure the tag block — Rating, Fandom, Characters — came with it; some pages only copy the part you can see.</div>`;
+      return;
+    }
+    const newF=r.fandoms.filter(f=>!cur.fandoms.some(x=>x.toLowerCase()===f.toLowerCase()));
+    const newC=r.characters.filter(c=>!cur.characters.some(x=>x.toLowerCase()===c.toLowerCase()));
+    const newT=[...r.tags,...r.relationships].filter(t=>!(cur.keywords||[]).some(k=>k.toLowerCase()===t.toLowerCase()));
+    const newG=r.genres.filter(g=>!cur.genres.some(x=>x.toLowerCase()===g.toLowerCase()));
+    const pg=ficPages(r.words);
+    const chips=(arr,attr)=>arr.map(v=>`<button class="mg" data-${attr}="${esc(v)}"><span class="bx"></span>${esc(v)}</button>`).join("");
+    const row=(label,val,btn)=>`<div style="margin-top:11px"><div class="lbl" style="display:block;margin-bottom:3px">${label}</div>
+      <div style="font-size:13px;margin-bottom:5px;overflow-wrap:anywhere">${val}</div>${btn}</div>`;
+    out.innerHTML=`
+      ${r.title?row("Title",esc(r.title),`<button class="btn" id="fcT">${cur.title?"Replace my title":"Use as title"}</button>`):""}
+      ${r.author?row("Author",esc(r.author),`<button class="btn" id="fcA">${cur.author?"Replace my author":"Use as author"}</button>`):""}
+      ${r.summary?row("Summary",`<div style="max-height:130px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px">${esc(r.summary)}</div>`,
+        `<button class="btn" id="fcS" style="margin-top:5px">${stripHtml(cur.summary||"").trim()?"Replace my summary":"Use as summary"}</button>`):""}
+      ${newF.length?row("Fandoms — tick any to add",chips(newF,"fcf"),`<button class="btn" id="fcF" disabled>Add ticked as fandoms</button>`):""}
+      ${newC.length?row("Characters — tick any to add",chips(newC,"fcc"),
+        `<button class="btn" id="fcC" disabled>Add ticked as characters</button>
+         <div class="hint" style="margin:4px 0 0">They're filed under the first fandom on this story, so add a fandom first if there isn't one.</div>`):""}
+      ${newG.length?row("Genres — tick any to add",chips(newG,"fcg"),`<button class="btn" id="fcG" disabled>Add ticked as genres</button>`):""}
+      ${newT.length?row("Tags and relationships — tick the ones worth keeping",chips(newT,"fct"),`<button class="btn" id="fcK" disabled>Add ticked as keywords</button>`):""}
+      ${r.words?row("Length",`${r.words.toLocaleString()} words${r.chapters?` · ${esc(r.chapters)} chapters`:""} — about ${pg} page${pg==="1"?"":"s"} at ${WORDS_PER_PAGE} words a page`,
+        `<button class="btn" id="fcP">Set pages to ${pg}</button>`):""}
+      ${r.url&&r.url!==(cur.link||"")?row("Link",esc(r.url),`<button class="btn" id="fcL">${cur.link?"Replace my link":"Use as link"}</button>`):""}
+      <div class="hint" style="margin:12px 0 0">Read from ${esc(from)}${r.source?" as "+esc(r.source):""}${r.rating?" · rated "+esc(r.rating):""}. Nothing is applied until you press a button.</div>`;
+    const tick=(attr,btnId)=>{
+      const sel=new Set();
+      qa("[data-"+attr+"]",out).forEach(b=>b.onclick=()=>{
+        const v=b.dataset[attr];
+        if(sel.has(v)){sel.delete(v);b.classList.remove("on");}else{sel.add(v);b.classList.add("on");}
+        const bt=q("#"+btnId,out);if(bt)bt.disabled=!sel.size;
+      });
+      return sel;
+    };
+    const fSel=tick("fcf","fcF"),cSel=tick("fcc","fcC"),gSel=tick("fcg","fcG"),tSel=tick("fct","fcK");
+    const done=(el,msg)=>{if(el){el.disabled=true;el.textContent=msg;}};
+    const bT=q("#fcT",out);if(bT)bT.onclick=()=>{cur.title=r.title;q("#fTitle").value=r.title;scheduleSave();done(bT,"Title set ✓");};
+    const bA=q("#fcA",out);if(bA)bA.onclick=()=>{cur.author=r.author;q("#fAuthor").value=r.author;scheduleSave();done(bA,"Author set ✓");};
+    const bS=q("#fcS",out);if(bS)bS.onclick=()=>{cur.summary=esc(r.summary).replace(/\n/g,"<br>");q("#fSummary").innerHTML=cur.summary;scheduleSave();done(bS,"Summary set ✓");};
+    const bP=q("#fcP",out);if(bP)bP.onclick=()=>{cur.pages=pg;const el=q("#fPages");if(el)el.value=pg;scheduleSave();done(bP,"Pages set ✓");};
+    const bL=q("#fcL",out);if(bL)bL.onclick=()=>{cur.link=r.url;const el=q("#fLink");if(el)el.value=r.url;scheduleSave();done(bL,"Link set ✓");};
+    const bF=q("#fcF",out);if(bF)bF.onclick=()=>{
+      fSel.forEach(f=>{const n=titleCase(f);
+        if(!fandoms[n]){fandoms[n]=[];}
+        if(!cur.fandoms.includes(n))cur.fandoms.push(n);});
+      saveFandoms();renderFF();scheduleSave();done(bF,"Added ✓");
+    };
+    const bC=q("#fcC",out);if(bC)bC.onclick=()=>{
+      const home=cur.fandoms[0];
+      if(!home){alert("Add a fandom first — characters are filed under one.");return;}
+      fandoms[home]=fandoms[home]||[];
+      cSel.forEach(c=>{const n=titleCase(c);
+        if(!fandoms[home].includes(n))fandoms[home].push(n);
+        if(!cur.characters.includes(n))cur.characters.push(n);});
+      saveFandoms();renderFF();scheduleSave();done(bC,"Added ✓");
+    };
+    /* genres go through addGenre so they join the vocabulary properly — with a
+       colour picked for them, since being asked to choose one for each of six
+       imported genres in turn is not a welcome */
+    const bG=q("#fcG",out);if(bG)bG.onclick=()=>{
+      gSel.forEach(g=>{
+        const n=titleCase(g.trim());if(!n)return;
+        let h=0;for(let i=0;i<n.length;i++)h=(h*31+n.charCodeAt(i))>>>0;
+        addGenre(n,genres[n]||PALETTE[h%PALETTE.length]);
+      });
+      done(bG,"Added ✓");
+    };
+    const bK=q("#fcK",out);if(bK)bK.onclick=()=>{tSel.forEach(addKw);done(bK,"Added ✓");};
+  }
+
   /* book / fanfic / AI story */
   function renderKind(){
     q("#kindRow").innerHTML=KINDS.map(([id,l])=>
@@ -8790,6 +8903,9 @@ function renderEditor(){
     const pickable=charsFor(cur.fandoms);                    /* only this fandom's cast */
     const firstF=cur.fandoms[0];
     w.innerHTML=`<div class="ffbox">
+      <div class="hrow2" style="margin-bottom:8px">
+        <button class="btn" id="ficFill" title="Read a fic's own page — paste it, or drop the file AO3's Download gives you">⇩ Fill from the fic's page</button>
+      </div>
       <div class="lbl" style="display:block;margin-bottom:3px">Fandom${cur.fandoms.length>1?"s":""}</div>
       <div>${allF.map(f=>`<button class="rsn ${cur.fandoms.includes(f)?"on":""}" data-fd="${esc(f)}">${cur.fandoms.includes(f)?"✓ ":""}${esc(f)}</button>`).join("")}
         <input id="fdIn" class="addin" style="width:170px;display:inline-block;margin:2px 0 0 2px" placeholder="Add a fandom… (Enter)"></div>
@@ -8797,6 +8913,8 @@ function renderEditor(){
       <div>${pickable.map(c=>`<button class="rsn ${cur.characters.includes(c)?"on":""}" data-ch="${esc(c)}">${cur.characters.includes(c)?"✓ ":""}${esc(c)}</button>`).join("")}
         ${firstF?`<input id="chIn" class="addin" style="width:200px;display:inline-block;margin:2px 0 0 2px" placeholder="Add to ${esc(firstF)}… (Enter)">`:""}</div>
     </div>`;
+    const ff=q("#ficFill",w);
+    if(ff)ff.onclick=()=>{const p=q("#fetchPanel");p.hidden?openFicPanel():closeFetch();};
     qa("[data-fd]",w).forEach(x=>x.onclick=()=>{
       const f=x.dataset.fd;
       cur.fandoms=cur.fandoms.includes(f)?cur.fandoms.filter(y=>y!==f):[...cur.fandoms,f];
@@ -9872,6 +9990,180 @@ function finishSaveThen(fn){
     commitCur().then(fn);
   }else fn();
 }
+
+/* =============== reading a fic's own page ===============
+   AO3 and fanfiction.net send no CORS header, so the app is not allowed to
+   fetch a fic page itself — measured, not assumed, and there is no way round
+   it that does not put a stranger's relay server between you and what you
+   read. What it can do is read the page once you have it: paste the page
+   you are already looking at, or drop the file AO3's own Download → HTML
+   gives you.
+
+   The file is much the better of the two. In it every tag is its own link
+   inside a dt/dd pair, so "Trip (DRAMAtical Murder)" and "Virus (DRAMAtical
+   Murder)" stay two characters; in pasted text they arrive as whatever the
+   browser put between them, and a fandom with a comma in its name can only
+   be guessed at. Both routes are here because the paste is fewer steps on a
+   fic you are halfway through reading. */
+const FIC_LABELS={
+  "rating":"rating","archive warning":"warnings","archive warnings":"warnings",
+  "category":"categories","categories":"categories",
+  "fandom":"fandoms","fandoms":"fandoms",
+  "relationship":"relationships","relationships":"relationships",
+  "character":"characters","characters":"characters",
+  "additional tags":"tags","language":"language","series":"series",
+  "stats":"stats","summary":"summary",
+};
+const WORDS_PER_PAGE=275;   /* so a fic lands in the same length buckets as a book */
+const ficPages=w=>w?String(Math.max(1,Math.round(w/WORDS_PER_PAGE))):"";
+const blankFic=()=>({source:"",title:"",author:"",fandoms:[],characters:[],
+  relationships:[],tags:[],genres:[],summary:"",words:0,chapters:"",url:"",rating:"",language:""});
+/* "Published: 2014-02-25 Words: 441 Chapters: 1/1 Comments: 10" and the
+   fanfiction.net line, which carries the same numbers in its own order */
+function ficStats(s,out){
+  const w=s.match(/Words:\s*([\d,. ]+)/i);
+  if(w)out.words=parseInt(w[1].replace(/[^\d]/g,""),10)||0;
+  const c=s.match(/Chapters:\s*([\d,]+)\s*(?:\/\s*([\d,?]+))?/i);
+  if(c)out.chapters=c[2]?`${c[1]}/${c[2]}`:c[1];
+}
+const ficSplit=s=>String(s||"").split(/\n|,(?![^(]*\))/)
+  .map(x=>x.trim()).filter(x=>x&&x!=="-");
+/* An AO3 download file, an AO3 work page saved as HTML, or a fanfiction.net
+   page — all three are read here, because all three keep the same labels. */
+function parseFicHtml(html){
+  const out=blankFic();
+  let doc;
+  try{doc=new DOMParser().parseFromString(html,"text/html");}catch(e){return out;}
+  const txt=el=>el?el.textContent.replace(/\s+/g," ").trim():"";
+  if(/fanfiction\.net/i.test(html)&&doc.querySelector("#profile_top")){
+    const top=doc.querySelector("#profile_top");
+    out.source="fanfiction.net";
+    out.title=txt(top.querySelector("b.xcontrast_txt"));
+    out.author=txt(top.querySelector("a.xcontrast_txt"));
+    out.summary=txt(top.querySelector("div.xcontrast_txt"));
+    parseFicRated(txt(top.querySelector("span.xgray")),out);
+    const pre=doc.querySelector("#pre_story_links");
+    if(pre)out.fandoms=[txt(pre.querySelector("a:last-of-type"))].filter(Boolean);
+    return out;
+  }
+  out.source="AO3";
+  out.title=txt(doc.querySelector(".meta h1,h2.title,.title.heading"));
+  out.author=txt(doc.querySelector(".byline a,.byline,h3.byline")).replace(/^by\s+/i,"");
+  const dl=doc.querySelector("dl.tags,dl.work.meta.group,dl.meta");
+  if(dl){
+    const kids=[...dl.children];
+    kids.forEach((el,i)=>{
+      if(el.tagName!=="DT")return;
+      const key=FIC_LABELS[txt(el).replace(/:$/,"").toLowerCase()];
+      const dd=kids[i+1];
+      if(!key||!dd||dd.tagName!=="DD")return;
+      if(key==="stats"){ficStats(txt(dd),out);return;}
+      const links=[...dd.querySelectorAll("a")].map(a=>txt(a)).filter(Boolean);
+      const vals=links.length?links:ficSplit(dd.textContent);
+      if(key==="rating")out.rating=vals[0]||"";
+      else if(key==="language")out.language=vals[0]||"";
+      else if(out[key])out[key]=vals;
+    });
+  }
+  /* the work page wraps the summary in a labelled block; the download file
+     just puts a bare "Summary" paragraph in front of a blockquote, so the
+     label has to be followed rather than selected */
+  let sum=doc.querySelector("#summary blockquote,.summary blockquote,.summary .userstuff");
+  if(!sum){
+    const lab=[...doc.querySelectorAll("p,h3,h4,dt")]
+      .find(el=>/^summary:?$/i.test(el.textContent.trim()));
+    let n=lab&&lab.nextElementSibling;
+    while(n&&!/^(BLOCKQUOTE|DD|DIV|P)$/.test(n.tagName))n=n.nextElementSibling;
+    if(n)sum=n;
+  }
+  if(sum)out.summary=sum.textContent.replace(/\n{3,}/g,"\n\n").trim();
+  const src=[...doc.querySelectorAll("p.message a,a")].map(a=>a.getAttribute("href")||"")
+    .find(h=>/archiveofourown\.org\/works\/\d+/.test(h));
+  if(src)out.url=src;
+  return out;
+}
+/* fanfiction.net's one dense line:
+   "Rated: Fiction T - English - Adventure/Fantasy - Harry P., Hermione G. -
+    Chapters: 12 - Words: 45,123 - ... - Status: Complete - id: 13000000" */
+function parseFicRated(line,out){
+  if(!line)return;
+  ficStats(line,out);
+  const parts=line.split(/\s+-\s+/).map(s=>s.trim()).filter(Boolean);
+  const r=line.match(/Rated:\s*(?:Fiction\s*)?([A-Z]+)/i);
+  if(r)out.rating=r[1];
+  parts.forEach((p,i)=>{
+    if(/^(Chapters|Words|Reviews|Favs|Follows|Updated|Published|Status|id):/i.test(p))return;
+    if(/^Rated:/i.test(p))return;
+    if(i===1&&/^[A-Z][a-z]+$/.test(p)){out.language=p;return;}
+    /* the genre slot is a slash-joined pair from a known list; anything after
+       it that is not a labelled number is the character list */
+    if(/^[A-Za-z/ ]+$/.test(p)&&/Adventure|Angst|Comedy|Crime|Drama|Family|Fantasy|Friendship|General|Horror|Humor|Hurt|Mystery|Parody|Poetry|Romance|Sci-Fi|Spiritual|Supernatural|Suspense|Tragedy|Western/i.test(p))
+      out.genres=p.split("/").map(s=>s.trim()).filter(Boolean);
+    else if(i>1&&!out.characters.length&&/[A-Za-z]/.test(p))
+      out.characters=p.split(",").map(s=>s.trim()).filter(Boolean);
+  });
+  const st=line.match(/Status:\s*(\w+)/i);
+  if(st&&/complete/i.test(st[1])&&out.chapters&&out.chapters.indexOf("/")<0)
+    out.chapters=out.chapters+"/"+out.chapters;
+}
+/* The pasted page. Labels are the anchors — everything between one label and
+   the next belongs to it — because they survive AO3 changing its layout in a
+   way that counting lines never would. */
+function parseFicText(text){
+  const out=blankFic();
+  const lines=String(text||"").split(/\r?\n/).map(s=>s.trim());
+  if(/Rated:/i.test(text)&&/(Reviews|Favs|Follows):/i.test(text)){
+    out.source="fanfiction.net";
+    const ratedAt=lines.findIndex(l=>/^Rated:/i.test(l));
+    parseFicRated(ratedAt>=0?lines[ratedAt]:"",out);
+    const by=lines.findIndex(l=>/^By:/i.test(l));
+    if(by>=0){
+      out.author=lines[by].replace(/^By:\s*/i,"")||lines[by+1]||"";
+      for(let i=by-1;i>=0&&i>=by-3;i--)if(lines[i]){out.title=lines[i];break;}
+      /* the blurb is whatever sits between the byline and the stats line */
+      if(ratedAt>by+1)
+        out.summary=lines.slice(by+1,ratedAt).filter(Boolean)
+          .filter(l=>!/^(Follow|Fav|Share|Author|Chapter)\b/i.test(l)).join("\n").trim();
+    }
+    return out;
+  }
+  out.source="AO3";
+  const isLabel=l=>FIC_LABELS[l.replace(/:$/,"").toLowerCase()]!==undefined;
+  const bag={};
+  let key=null,buf=[];
+  const flush=()=>{if(key)bag[key]=(bag[key]||[]).concat(buf);key=null;buf=[];};
+  for(const l of lines){
+    if(!l)continue;
+    const inline=l.match(/^([A-Za-z ]+):\s*(.*)$/);
+    if(inline&&isLabel(inline[1])){
+      flush();key=FIC_LABELS[inline[1].trim().toLowerCase()];
+      if(inline[2])buf.push(inline[2]);
+      continue;
+    }
+    if(key)buf.push(l);
+  }
+  flush();
+  const take=k=>(bag[k]||[]).flatMap(ficSplit);
+  out.fandoms=take("fandoms");out.characters=take("characters");
+  out.relationships=take("relationships");out.tags=take("tags");
+  out.rating=(take("rating")[0])||"";out.language=(take("language")[0])||"";
+  ficStats((bag.stats||[]).join(" "),out);
+  out.summary=(bag.summary||[]).join("\n").trim();
+  /* the preface reads title, then author, then "Summary:" — so the two lines
+     above the summary are the offer, and a wrong guess costs one unpressed
+     button rather than a wrong title */
+  const si=lines.findIndex(l=>/^Summary:?$/i.test(l));
+  if(si>0){
+    const prev=lines.slice(0,si).filter(Boolean);
+    const a=prev[prev.length-1]||"",t=prev[prev.length-2]||"";
+    if(a&&!isLabel(a)&&a.length<90)out.author=a.replace(/^by\s+/i,"");
+    if(t&&!isLabel(t)&&t.length<160)out.title=t;
+  }
+  const u=text.match(/https?:\/\/[^\s"']*archiveofourown\.org\/works\/\d+/);
+  if(u)out.url=u[0];
+  return out;
+}
+const parseFicAny=s=>/<\s*(html|body|div|dl|head|!doctype)/i.test(s)?parseFicHtml(s):parseFicText(s);
 
 /* =============== backup, snapshots & storage =============== */
 const fmtBytes=n=>{if(n==null)return "–";const u=["B","KB","MB","GB"];let i=0,v=n;
