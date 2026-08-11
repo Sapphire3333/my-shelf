@@ -3808,21 +3808,27 @@ async function applyOp(op,inv){
     }
     const lb=op.label;
     if(lb){
-      const key=(lb.kind==="genre"?"genre:":"kw:")+lb.name;
+      const key=(lb.kind==="genre"?"genre:":lb.kind==="fandom"?"fandom:":"kw:")+lb.name;
       /* the vocabulary is persisted by hand here, never through saveMeta —
          saveMeta would push a fresh op from inside an undo */
       if(inv){
         unmarkMetaDel(key);
         if(lb.kind==="genre")genres[lb.name]=lb.color||"#78716c";
+        /* a fandom's cast comes back with it, or the name returns empty and
+           every character that lived under it is quietly gone */
+        else if(lb.kind==="fandom")fandoms[lb.name]=lb.cast||[];
         else{if(lb.color)kwColors[lb.name]=lb.color;if(lb.cat)kwCats[lb.name]=lb.cat;}
       }else{
         markMetaDel(key);
         if(lb.kind==="genre")delete genres[lb.name];
+        else if(lb.kind==="fandom")delete fandoms[lb.name];
         else{delete kwColors[lb.name];delete kwCats[lb.name];}
       }
       if(lb.kind==="genre"){
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
         dbPut("meta",{k:"genres",v:genres});enqueue({kind:"meta",key:"genres"});touchMeta("genres");
+      }else if(lb.kind==="fandom"){
+        dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});touchMeta("fandoms");
       }else{saveKwColors();saveKwCats();}
     }
     if(SYNC.on)flushQueue();
@@ -8758,7 +8764,7 @@ function renderEditor(){
   const page=q("#edPage");
   wireBookImport(b);
   /* declared up here because the chip rendering below reads it */
-  let tagEdit=false;
+  let tagEdit=false,fdTidy=false;
 
 
   /* pictures, notes, drawing and every tool that goes with them — the same code
@@ -9479,8 +9485,13 @@ function renderEditor(){
         ${kindOf(cur)==="ai"?`<button class="btn" id="chatIn" title="Claude's Settings → Privacy → Export Data file — the chapters and your prompts come in as two lists">💬 Bring in a chat…</button>`:""}
       </div>
       ${kindOf(cur)==="ai"?`<div id="chapWrap"></div>`:""}
-      <div class="lbl" style="display:block;margin-bottom:3px">Fandom${cur.fandoms.length>1?"s":""}</div>
-      <div>${allF.map(f=>`<button class="rsn ${cur.fandoms.includes(f)?"on":""}" data-fd="${esc(f)}">${cur.fandoms.includes(f)?"✓ ":""}${esc(f)}</button>`).join("")}
+      <div class="lbl" style="display:flex;align-items:center;gap:8px;margin-bottom:3px">Fandom${cur.fandoms.length>1?"s":""}
+        <button class="btn" id="fdTidy" style="margin-left:auto;padding:3px 9px;font-size:12px" title="Rename a fandom or take one off your list — everywhere at once">${fdTidy?"✓ Done":"✎ Tidy the list"}</button></div>
+      <div>${allF.map(f=>fdTidy
+        ? `<span class="rsn" style="cursor:default">${esc(f)}
+             <button class="chmv" data-fdren="${esc(f)}" title="Rename it everywhere">✎</button>
+             <button class="chmv" data-fddel="${esc(f)}" title="Take it off your list and off every story">✕</button></span>`
+        : `<button class="rsn ${cur.fandoms.includes(f)?"on":""}" data-fd="${esc(f)}">${cur.fandoms.includes(f)?"✓ ":""}${esc(f)}</button>`).join("")}
         <input id="fdIn" class="addin" style="width:170px;display:inline-block;margin:2px 0 0 2px" placeholder="Add a fandom… (Enter)"></div>
       <div id="fdSug" style="margin-top:5px"></div>
       <div class="lbl" style="display:block;margin:11px 0 3px">Characters${firstF?"":" — pick a fandom first"}</div>
@@ -9489,6 +9500,47 @@ function renderEditor(){
     </div>`;
     const ff=q("#ficFill",w);
     if(ff)ff.onclick=()=>{const p=q("#fetchPanel");p.hidden?openFicPanel():closeFetch();};
+    const ft=q("#fdTidy",w);
+    if(ft)ft.onclick=()=>{fdTidy=!fdTidy;renderFF();};
+    /* Renaming and removing a fandom had no way in at all — the plumbing to
+       carry a deletion between devices was there, but nothing on screen could
+       ask for one. A paste that fused two names into one was therefore stuck
+       on the list for good. Both go through the same relabel every genre and
+       keyword rename uses, so they land on every story at once and Undo takes
+       them back. */
+    qa("[data-fdren]",w).forEach(x=>x.onclick=async()=>{
+      const oldN=x.dataset.fdren;
+      const v=prompt(`Rename “${oldN}” everywhere:`,oldN);
+      if(v===null)return;
+      const newN=titleCase(v.trim());
+      if(!newN||newN===oldN)return;
+      const items=[];
+      await relabel("fandoms",oldN,newN,items);
+      /* the cast comes with it, and merges if the new name already had one */
+      fandoms[newN]=[...new Set([...(fandoms[newN]||[]),...(fandoms[oldN]||[])])];
+      delete fandoms[oldN];markMetaDel("fandom:"+oldN);unmarkMetaDel("fandom:"+newN);
+      saveFandoms();
+      if(items.length)pushOp({t:"bulk",items});
+      if(SYNC.on)flushQueue();
+      renderFF();scheduleSave();
+    });
+    qa("[data-fddel]",w).forEach(x=>x.onclick=async()=>{
+      const f=x.dataset.fddel;
+      const used=books.filter(b=>(b.fandoms||[]).includes(f)).length;
+      if(!confirm(`Take “${f}” off your list?\n\nIt comes off ${used} ${used===1?"story":"stories"} and out of the fandom list. Its characters go with it. Undo can bring it back.`))return;
+      const label={kind:"fandom",name:f,cast:[...(fandoms[f]||[])]};
+      const items=[];
+      await relabel("fandoms",f,"",items);
+      delete fandoms[f];markMetaDel("fandom:"+f);saveFandoms();
+      /* characters that belonged only to it have nowhere left to be filed */
+      const stillOk=new Set(Object.values(fandoms).flat());
+      cur.characters=(cur.characters||[]).filter(c=>stillOk.has(c));
+      /* pushed even when it was on no story, so Undo can still hand the name
+         back — the promise in the message above has to be true either way */
+      pushOp({t:"bulk",items,label});
+      if(SYNC.on)flushQueue();
+      renderFF();scheduleSave();
+    });
     /* the starter names, offered only while you are typing and only when they
        are not already on your own list — suggestions, never additions */
     const fdSug=()=>{
@@ -10203,7 +10255,14 @@ function renderEditor(){
     if(!w)return;
     cur.ships=cur.ships||[];
     const mine=new Set(cur.ships.map(s=>s.toLowerCase()));
-    const used=[...new Set(books.flatMap(b=>b.id===cur.id?[]:(b.ships||[])))];
+    /* Only from things of the same sort. A book was being offered every ship
+       on the shelf, so "Adrian/Rocky (Project Hail Mary)" turned up as a
+       suggestion on a novel that has nothing to do with it — the fic ships are
+       named for their fandoms and mean nothing outside them. Fics see fics'
+       ships, books see books', and the ready-made generic ones go to both. */
+    const isBook=kindOf(cur)==="book";
+    const used=[...new Set(books.flatMap(b=>
+      b.id===cur.id||(kindOf(b)==="book")!==isBook?[]:(b.ships||[])))];
     /* yours first, then the ready-made ones you have not got */
     const offer=[...cur.ships,
       ...used.filter(s=>!mine.has(s.toLowerCase())).sort((a,b)=>a.localeCompare(b)),
