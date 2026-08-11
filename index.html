@@ -2515,6 +2515,10 @@ let lastExport=0;                              /* when this browser last downloa
    browser's own database and never syncs — a folder on this PC means nothing
    to another device */
 let bkDir=null,lastDirBk=0,bkDirAsk=false;
+/* Firefox refuses the folder above on purpose, so there it saves a backup file
+   to Downloads instead. Device-local like everything else here: whether this
+   browser has ever saved one says nothing about any other. */
+let lastFileBk=0,lastFileSig="",fileBkCount=0;
 
 /* =============== sync (Supabase — optional, offline-first) =============== */
 const CFG=window.SHELF_CONFIG||{};
@@ -3035,6 +3039,8 @@ async function initSync(){
   const le=await dbGet("meta","lastExport");lastExport=le&&le.v?le.v:0;
   const bd=await dbGet("meta","bkDir");bkDir=bd&&bd.v?bd.v:null;
   const ldb=await dbGet("meta","lastDirBk");lastDirBk=ldb&&ldb.v?ldb.v:0;
+  const lfb=await dbGet("meta","fileBk");
+  if(lfb&&lfb.v){lastFileBk=lfb.v.at||0;lastFileSig=lfb.v.sig||"";fileBkCount=lfb.v.n||0;}
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   /* the scopes you last searched in — kept, but sieved through the list this
      version knows, so a name that has gone away can't leave you searching nowhere */
@@ -3062,6 +3068,7 @@ async function initSync(){
   initSync();
   maybeAutoBackup();
   maybeFolderBackup();
+  maybeFileBackup();
   purgeTrash();
 })();
 
@@ -3115,7 +3122,7 @@ document.addEventListener("visibilitychange",()=>{
   }
   /* the "daily" backup and the 30-day bin used to be checked only at launch — a
      tab or installed app left open for a week never did either */
-  if(Date.now()-lastMaint>3600000){lastMaint=Date.now();maybeAutoBackup();maybeFolderBackup();purgeTrash();}
+  if(Date.now()-lastMaint>3600000){lastMaint=Date.now();maybeAutoBackup();maybeFolderBackup();maybeFileBackup();purgeTrash();}
 });
 window.addEventListener("pagehide",onHidden);
 /* a phone bringing the app back from its own memory fires this and often
@@ -5503,7 +5510,9 @@ async function renderHub(){
    connecting, reconnecting or stopping can redraw just this box */
 function renderDirUi(){
   const box=q("#bkDirBox");if(!box)return;
-  if(!window.showDirectoryPicker){box.innerHTML="";return;}   /* phones can't do this — the card simply doesn't mention it */
+  /* Firefox and phones can't be given a folder, so they're offered the nearest
+     thing their browser does allow: a file saved into Downloads */
+  if(!window.showDirectoryPicker){renderFileBkUi(box);return;}
   if(!bkDir){
     box.innerHTML=`<div class="hrow2" style="margin-top:12px"><button class="btn" id="bkDirBtn">🗀 Also keep backups in a folder on this PC</button></div>
       <div class="hint" style="margin:7px 0 0">Pick a folder once and a dated backup file is written there daily — a copy that lives outside this browser, where Explorer and your own backups can see it.</div>`;
@@ -5531,6 +5540,35 @@ function renderDirUi(){
   q("#bkDirOff").onclick=()=>{
     if(!confirm("Stop writing daily backups into the folder?\n\nThe files already there stay — the app just stops adding new ones."))return;
     bkDir=null;bkDirAsk=false;dbPut("meta",{k:"bkDir",v:null});
+    renderDirUi();
+  };
+}
+/* the Downloads-folder version of the same promise, for browsers that won't
+   hand out a folder. It has to be honest about two limits their browser
+   imposes: where the file lands, and that old ones can't be cleared away. */
+function renderFileBkUi(box){
+  const d=lastFileBk?Math.floor((Date.now()-lastFileBk)/864e5):null;
+  const when=lastFileBk?(d===0?"today":d===1?"yesterday":d+" days ago"):"not yet";
+  const pile=fileBkCount>=5
+    ? `<div class="hint" style="margin:7px 0 0;color:#b45309">${fileBkCount} of them are sitting in Downloads. Your browser won't let the app clear them away — move them into your Backups folder when you get a moment, then press “I've filed them”.</div>
+       <div class="hrow2" style="margin-top:7px"><button class="btn" id="bkFileFiled" style="padding:3px 10px;font-size:12px">I've filed them</button></div>`
+    : "";
+  box.innerHTML=`
+    <div class="hrow2" style="margin-top:12px">
+      <label class="hrow2" style="font-size:13px;gap:6px"><input type="checkbox" id="autoFile" ${settings.autoFile?"checked":""}> Also save a backup file automatically</label>
+    </div>
+    <div class="hint" style="margin:7px 0 0">Once a day, and only on a day you've actually changed something, the app saves a backup into your <b>Downloads</b> folder by itself — a copy that outlives this browser. This browser won't let the app choose the folder or tidy up old files, so move them somewhere safe now and then.</div>
+    ${settings.autoFile?`<div class="hint" style="margin:7px 0 0">Last saved automatically: ${when}${fileBkCount?` · ${fileBkCount} saved so far`:""}.</div>${pile}`:""}`;
+  q("#autoFile").onchange=async e=>{
+    settings.autoFile=e.target.checked;saveSettings();
+    /* saying yes should produce a file there and then — proof it works, and
+       the first copy is made before anything can go wrong */
+    if(settings.autoFile){lastFileBk=0;lastFileSig="";await maybeFileBackup();}
+    renderDirUi();
+  };
+  const filed=q("#bkFileFiled");
+  if(filed)filed.onclick=()=>{
+    fileBkCount=0;dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:0}});
     renderDirUi();
   };
 }
@@ -10994,6 +11032,28 @@ async function maybeFolderBackup(){
   if(p!=="granted")return;
   try{await writeFolderBackup();renderDirUi();}
   catch(e){console.warn("[shelf] folder backup",e);window.__dirBkFail=Date.now();refreshStorage();}
+}
+
+/* =============== the same net for Firefox: a file into Downloads =============== */
+/* Firefox has declined to implement the folder above (Mozilla considers letting
+   a page into a folder too dangerous), and a page may only ever HAND the
+   browser a download — it cannot replace or delete one it saved before. So
+   there can be no single always-current file here; each save is its own dated
+   file in Downloads. Two rules keep that pile as small as honesty allows: at
+   most one a day, and none at all on a day the library didn't change. */
+const libSig=()=>books.length+":"+books.reduce((m,b)=>Math.max(m,b.modified||0),0);
+async function maybeFileBackup(){
+  if(!settings.autoFile||!books.length)return;
+  if(bkDir)return;                               /* a real folder is strictly better — don't do both */
+  if(Date.now()-lastFileBk<20*3600*1000)return;  /* “daily”, with slack so it doesn't drift later each day */
+  const sig=libSig();
+  if(sig===lastFileSig)return;                   /* nothing has changed since the last one — another copy of it is just clutter */
+  try{
+    downloadJson(JSON.stringify(await buildBackup()),`my-shelf-auto-backup-${new Date().toISOString().slice(0,10)}.json`);
+    lastFileBk=Date.now();lastFileSig=sig;fileBkCount++;
+    dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:fileBkCount}});
+    renderDirUi();
+  }catch(e){console.warn("[shelf] file backup",e);}
 }
 
 q("#importFile").addEventListener("change",async e=>{
