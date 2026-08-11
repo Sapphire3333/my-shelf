@@ -3776,8 +3776,9 @@ const scrollMem={};
    moment we control, so we take the reading there. */
 function keepMyPlace(){scrollMem[view==="book"?"book":view]=window.scrollY;}
 let pendingScroll=null;
-/* Which book you were last in, so coming back can find its row again. */
-let lastOpenedId=null;
+/* Which book — and which story inside it — you were last in, so coming back
+   can find that exact row again rather than one that merely shares its id. */
+let lastOpenedId=null,lastOpenedEn="";
 /* A saved pixel offset is only right if the page is exactly as tall as it was
    when you left it, and it frequently is not — pictures arrive after the rows
    are drawn, a group may be folded, a filter may have moved something. The
@@ -3786,8 +3787,24 @@ let lastOpenedId=null;
    when it is not there at all. */
 function backToRow(){
   if(!lastOpenedId)return false;
-  const row=q(`[data-open="${CSS.escape(lastOpenedId)}"]`);
-  if(!row)return false;
+  const all=qa(`[data-open="${CSS.escape(lastOpenedId)}"]`);
+  if(!all.length)return false;
+  /* A collection and every one of its stories carry the collection's id, so
+     asking for the first match often found a story sitting in Reading now at
+     the very top of the shelf — which is how coming back from a book in the
+     middle landed you in the Reading now section. Ask for the exact row
+     instead: the same story you opened, or the collection's own row if you
+     opened that; and if neither is here, the one nearest to where you were. */
+  let row=all.find(el=>(el.dataset.openen||"")===(lastOpenedEn||""));
+  if(!row){
+    const y=scrollMem[view]||0;
+    let best=null;
+    all.forEach(el=>{
+      const d=Math.abs(el.getBoundingClientRect().top+window.scrollY-y);
+      if(!best||d<best.d)best={el,d};
+    });
+    row=best.el;
+  }
   row.scrollIntoView({block:"center"});
   return true;
 }
@@ -4164,7 +4181,15 @@ function genCoverHtml(b,withAuthor){
    hydrate pass meant every redraw showed the drawn stand-in for a moment and
    then swapped — a blink across the whole shelf on every render. */
 function coverInner(b,withAuthor){
-  const c=coverCache.get(b.id);
+  /* A story stood out of its collection keeps its own picture under its own
+     key, but it carries the COLLECTION's id — so looking the cover up by id
+     handed every such story the collection's cover, on every single draw. The
+     hydrate pass then corrected it only if the story's own picture could be
+     found, which is why two stories from one collection sat there wearing the
+     same cover. Ask for the story's own picture when it has one; if it is not
+     to hand yet, the drawn stand-in is the honest answer, not a borrowed
+     photograph of something else. */
+  const c=coverCache.get(b._cover||b.id);
   return typeof c==="string"&&c?`<img src="${c}" alt="">`:genCoverHtml(b,withAuthor);
 }
 /* Syncing is on, we are online, and the signed-in session has not landed yet —
@@ -7075,7 +7100,7 @@ const backLabel=()=>"‹ "+(BACK_NAMES[cameFrom]||"Library");
    the pen and jumping to the top of the page, so you were looking at a different
    screen when you went to check. */
 async function openBook(id,fresh,keepPlace,goToStory){
-  if(view!=="book"){cameFrom=view;keepMyPlace();lastOpenedId=id;}   /* so Back can bring you here again */
+  if(view!=="book"){cameFrom=view;keepMyPlace();lastOpenedId=id;lastOpenedEn=goToStory||"";}   /* so Back can bring you here again */
   const found=books.find(b=>b.id===id);
   /* asked to open a book that is gone (deleted since this row was drawn):
      opening a blank page under its old id would create a ghost book */
