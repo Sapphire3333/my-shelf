@@ -3779,6 +3779,23 @@ let pendingScroll=null;
 /* Which book — and which story inside it — you were last in, so coming back
    can find that exact row again rather than one that merely shares its id. */
 let lastOpenedId=null,lastOpenedEn="";
+/* ---- what the last trip back actually did ----
+   Three attempts at this have now been shipped on reasoning and all three were
+   wrong, so this one records the trip instead of arguing about it: what was
+   remembered, how many rows answered to it, which was picked, where the page
+   went at each step, and how tall it was at the time. The samples run on for
+   nearly two seconds after the return, because "it arrived and then something
+   moved it" and "it never arrived" look identical from the outside and need
+   telling apart. Shown under Overview → Storage. */
+let backTrace=null;
+function traceBack(ev,extra){
+  if(!backTrace||backTrace.steps.length>24)return;
+  backTrace.steps.push(Object.assign({
+    ms:Date.now()-backTrace.t0,
+    y:Math.round(window.scrollY),
+    h:Math.round(document.documentElement.scrollHeight),
+    ev},extra||{}));
+}
 /* A saved pixel offset is only right if the page is exactly as tall as it was
    when you left it, and it frequently is not — pictures arrive after the rows
    are drawn, a group may be folded, a filter may have moved something. The
@@ -3786,17 +3803,27 @@ let lastOpenedId=null,lastOpenedEn="";
    putting it on screen is the answer and the offset is only the fallback for
    when it is not there at all. */
 function backToRow(){
-  if(!lastOpenedId)return false;
+  if(!lastOpenedId){traceBack("no-id");return false;}
   const all=qa(`[data-open="${CSS.escape(lastOpenedId)}"]`);
-  if(!all.length)return false;
+  if(!all.length){traceBack("no-row",{matched:0});return false;}
   /* A collection and every one of its stories carry the collection's id, so
      asking for the first match often found a story sitting in Reading now at
      the very top of the shelf — which is how coming back from a book in the
      middle landed you in the Reading now section. Ask for the exact row
      instead: the same story you opened, or the collection's own row if you
      opened that; and if neither is here, the one nearest to where you were. */
-  let row=all.find(el=>(el.dataset.openen||"")===(lastOpenedEn||""));
+  let row=all.find(el=>(el.dataset.openen||"")===(lastOpenedEn||"")),by="exact";
+  /* You can open a story that has no row of its own — most of them only get
+     one while you are reading them — and the collection it lives in is then
+     the right place to come back to. Without this the search fell straight
+     through to "whichever is nearest", which on a shelf where a sister story
+     sits up in Reading now meant the top of the page. */
+  if(!row&&lastOpenedEn){
+    row=all.find(el=>!el.dataset.openen);
+    if(row)by="its collection";
+  }
   if(!row){
+    by="nearest";
     const y=scrollMem[view]||0;
     let best=null;
     all.forEach(el=>{
@@ -3805,10 +3832,19 @@ function backToRow(){
     });
     row=best.el;
   }
+  const rowTop=Math.round(row.getBoundingClientRect().top+window.scrollY);
   row.scrollIntoView({block:"center"});
+  traceBack("row",{matched:all.length,by,pick:all.indexOf(row),rowTop,
+    landed:Math.round(window.scrollY)});
   return true;
 }
 function restoreScroll(v){
+  backTrace={t0:Date.now(),v,id:lastOpenedId||"(none)",en:lastOpenedEn||"(the book itself)",
+    saved:scrollMem[v]||0,steps:[]};
+  traceBack("start");
+  /* samples that run on past the return, because "it never arrived" and "it
+     arrived and something moved it afterwards" look the same from outside */
+  [300,700,1500].forEach(ms=>setTimeout(()=>traceBack("t+"+ms),ms));
   /* The row is found straight away, but the shelf is at its shortest right
      then — the pictures are still coming, every row is about to get taller,
      and the row we just centred slides away underneath. So the anchor is kept
@@ -3820,14 +3856,15 @@ function restoreScroll(v){
     return;
   }
   const y=scrollMem[v]||0;
-  if(!y){pendingScroll=null;return;}
+  if(!y){traceBack("nothing-saved");pendingScroll=null;return;}
   /* three times over: the page is still being laid out, and a page that has not
      got its height back yet silently clamps a scroll to whatever it can reach */
   pendingScroll={v,y,at:Date.now(),last:null};
-  const go=()=>{if(!pendingScroll)return;window.scrollTo(0,y);pendingScroll.last=Math.round(window.scrollY);};
-  go();
-  requestAnimationFrame(go);
-  setTimeout(go,80);
+  const go=lbl=>{if(!pendingScroll)return;window.scrollTo(0,y);
+    pendingScroll.last=Math.round(window.scrollY);traceBack(lbl,{asked:y});};
+  go("offset");
+  requestAnimationFrame(()=>go("offset-raf"));
+  setTimeout(()=>go("offset-80"),80);
 }
 /* Covers land after the page is drawn, and a shelf without its pictures is far
    shorter than it is about to be — so all three attempts above were clamped to
@@ -3837,20 +3874,23 @@ function restoreScroll(v){
    moved since we last set it, or too long has passed, we let go. */
 function reapplyScroll(){
   const p=pendingScroll;
-  if(!p||p.v!==view)return;
-  if(Date.now()-p.at>5000){pendingScroll=null;return;}
+  if(!p){traceBack("re:nothing-pending");return;}
+  if(p.v!==view){traceBack("re:other-view");return;}
+  if(Date.now()-p.at>5000){traceBack("re:too-late");pendingScroll=null;return;}
   /* your own scrolling beats ours: if the page has moved since we last set it,
      let go and leave you where you put yourself */
-  if(p.last!=null&&Math.abs(window.scrollY-p.last)>4){pendingScroll=null;return;}
+  if(p.last!=null&&Math.abs(window.scrollY-p.last)>4){
+    traceBack("re:you-moved",{was:p.last});pendingScroll=null;return;}
   if(p.row){
     /* the row is the anchor, and it may only just have got its picture */
     if(backToRow())p.last=Math.round(window.scrollY);
-    else pendingScroll=null;
+    else {traceBack("re:row-gone");pendingScroll=null;}
     return;
   }
-  if(Math.round(window.scrollY)===p.y){pendingScroll=null;return;}
+  if(Math.round(window.scrollY)===p.y){traceBack("re:already-there");pendingScroll=null;return;}
   window.scrollTo(0,p.y);
   p.last=Math.round(window.scrollY);
+  traceBack("re:offset",{asked:p.y});
 }
 function syncHistory(){
   if(navRestoring)return;
@@ -4276,6 +4316,7 @@ async function hydrateCovers(root){
   };
   /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
   for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
+  traceBack("covers-in",{n:els.length});
   reapplyScroll();   /* the page only has its real height now */
 }
 /* pick the stage from a list — a single click was too easy to do by accident */
@@ -6420,6 +6461,22 @@ async function refreshStorage(){
      gone after a reload" is not reproducible on any machine but theirs, so the
      app says what it managed rather than us both guessing about caches. */
   const cs=coverStats;
+  /* the trip back, step by step — three fixes for this have been shipped on
+     reasoning and all three missed, so the next report can carry the actual
+     numbers instead of another guess */
+  const bt=backTrace;
+  const btLine=!bt?"":`<div class="hint" style="margin-top:9px">
+    <b>Last trip back</b> — remembered ${esc(String(bt.id).slice(0,8))}, story ${esc(bt.en)},
+    saved position ${bt.saved}px.
+    <div style="font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.5;
+      margin-top:4px;max-height:150px;overflow:auto;white-space:pre">${
+      esc(bt.steps.map(s=>`${String(s.ms).padStart(5)}ms  y=${String(s.y).padStart(5)}  page=${String(s.h).padStart(6)}  ${s.ev}`
+        +(s.matched!==undefined?`  matched=${s.matched}`:"")
+        +(s.by?`  by=${s.by} pick=${s.pick} rowTop=${s.rowTop} landed=${s.landed}`:"")
+        +(s.asked!==undefined?`  asked=${s.asked}`:"")
+        +(s.was!==undefined?`  was=${s.was}`:"")
+        +(s.n!==undefined?`  n=${s.n}`:"")).join("\n"))}</div>
+    <button class="btn" id="btCopy" style="margin-top:6px;padding:3px 9px;font-size:12px">⧉ Copy this</button></div>`;
   const covShown=cs.memory+cs.local+cs.cloud+cs.story;
   const covLine=!cs.at?"":`<div class="none" style="font-size:11px;margin-top:3px;opacity:.7">
     Last screen drawn: ${cs.wanted} picture${cs.wanted===1?"":"s"} wanted, ${covShown} shown —
@@ -6433,10 +6490,21 @@ async function refreshStorage(){
       <div class="hrow2"><span class="bignum">${fmtBytes(si.usage)}</span><span class="none">used of ${fmtBytes(si.quota)} available on this device</span></div>
       <div class="bar"><i class="${pct>90?"full":pct>70?"warn":""}" style="width:${Math.max(1,Math.min(100,pct))}%"></i></div>
       <div class="none">${counts}</div>
-      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}${buildLine}${covLine}`;
+      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}${buildLine}${covLine}${btLine}`;
   }else{
-    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}`;
+    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}${btLine}`;
   }
+  const bc=q("#btCopy");
+  if(bc)bc.onclick=async()=>{
+    const txt=`Build ${window.APP_VERSION}\nremembered ${bt.id} story=${bt.en} saved=${bt.saved}\n`
+      +bt.steps.map(s=>`${s.ms}ms y=${s.y} page=${s.h} ${s.ev}`
+        +(s.matched!==undefined?` matched=${s.matched}`:"")
+        +(s.by?` by=${s.by} pick=${s.pick} rowTop=${s.rowTop} landed=${s.landed}`:"")
+        +(s.asked!==undefined?` asked=${s.asked}`:"")
+        +(s.was!==undefined?` was=${s.was}`:"")
+        +(s.n!==undefined?` n=${s.n}`:"")).join("\n");
+    try{await navigator.clipboard.writeText(txt);bc.textContent="Copied ✓";}catch(e){bc.textContent="Couldn't copy";}
+  };
 }
 async function refreshSnaps(){
   const box=q("#snapList");if(!box)return;
