@@ -5,8 +5,12 @@
 
    Deliberately never touches Supabase traffic — API and Storage requests always
    go to the network, so you can't be served a stale library. */
-const CACHE = "my-shelf-v2";
-const SHELL = ["./", "./index.html", "./config.js", "./manifest.json", "./icon.svg", "./icon.png", "./icon-512.png"];
+/* The build stamp arrives in this worker's own address (sw.js?v=…), put there
+   by index.html from version.js. Naming the cache after it means every build
+   gets a fresh cache and the old one is deleted on activate — stale files
+   can't outlive the build they belonged to. */
+const CACHE = "my-shelf-" + (new URL(self.location.href).searchParams.get("v") || "v2");
+const SHELL = ["./", "./index.html", "./version.js", "./config.js", "./manifest.json", "./icon.svg", "./icon.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(
