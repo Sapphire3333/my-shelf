@@ -3108,7 +3108,7 @@ async function initSync(){
   SYNC.supa.auth.onAuthStateChange((event,session)=>{
     if(event==="SIGNED_IN"&&session&&session.user){
       if(!SYNC.user){
-        SYNC.user=session.user;render();
+        SYNC.user=session.user;forgetMissingCovers();render();
         checkAccount(session.user).then(ok=>{if(ok)flushQueue().then(pullAll);});
       }else SYNC.user=session.user;
     }else if(event==="SIGNED_OUT"){SYNC.user=null;renderLogin();}
@@ -3116,7 +3116,7 @@ async function initSync(){
   });
   const {data}=await SYNC.supa.auth.getSession();
   if(data&&data.session&&data.session.user){
-    SYNC.user=data.session.user;render();
+    SYNC.user=data.session.user;forgetMissingCovers();render();
     if(await checkAccount(SYNC.user))flushQueue().then(pullAll);
   }else{
     renderLogin();
@@ -3775,13 +3775,32 @@ const scrollMem={};
    nothing at all while the page scrolled 600px underneath it. Leaving is a
    moment we control, so we take the reading there. */
 function keepMyPlace(){scrollMem[view==="book"?"book":view]=window.scrollY;}
+let pendingScroll=null;
 function restoreScroll(v){
   const y=scrollMem[v]||0;
+  if(!y){pendingScroll=null;return;}
   /* three times over: the page is still being laid out, and a page that has not
      got its height back yet silently clamps a scroll to whatever it can reach */
-  window.scrollTo(0,y);
-  requestAnimationFrame(()=>window.scrollTo(0,y));
-  setTimeout(()=>window.scrollTo(0,y),80);
+  pendingScroll={v,y,at:Date.now(),last:null};
+  const go=()=>{if(!pendingScroll)return;window.scrollTo(0,y);pendingScroll.last=Math.round(window.scrollY);};
+  go();
+  requestAnimationFrame(go);
+  setTimeout(go,80);
+}
+/* Covers land after the page is drawn, and a shelf without its pictures is far
+   shorter than it is about to be — so all three attempts above were clamped to
+   a height that did not exist yet and you came back above your place, or at
+   the end of a short page. Once the pictures are in and the page has its real
+   height, take the reading again. Your own scrolling wins: if the page has
+   moved since we last set it, or too long has passed, we let go. */
+function reapplyScroll(){
+  const p=pendingScroll;
+  if(!p||p.v!==view)return;
+  if(Date.now()-p.at>5000){pendingScroll=null;return;}
+  if(p.last!=null&&Math.abs(window.scrollY-p.last)>4){pendingScroll=null;return;}
+  if(Math.round(window.scrollY)===p.y){pendingScroll=null;return;}
+  window.scrollTo(0,p.y);
+  p.last=Math.round(window.scrollY);
 }
 function syncHistory(){
   if(navRestoring)return;
@@ -4111,8 +4130,24 @@ function coverInner(b,withAuthor){
   const c=coverCache.get(b.id);
   return typeof c==="string"&&c?`<img src="${c}" alt="">`:genCoverHtml(b,withAuthor);
 }
+/* Syncing is on, we are online, and the signed-in session has not landed yet —
+   so a picture that is not on this device may still be in the cloud, unasked. */
+const coversStillComing=()=>SYNC.on&&!SYNC.user&&navigator.onLine;
+/* Once the session does land, the "no cover" answers given during that gap were
+   never real answers. Forget them so the next draw asks again. */
+function forgetMissingCovers(){
+  let n=0;
+  coverCache.forEach((v,k)=>{if(v==null){coverCache.delete(k);n++;}});
+  SYNC.triedCover.clear();
+  return n;
+}
+/* What the last draw actually managed, so a "my covers are gone" report can
+   carry numbers instead of both of us guessing about caches. */
+let coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,waiting:0,none:0,sync:""};
 async function hydrateCovers(root){
   const els=qa("[data-cover]",root);
+  coverStats={at:Date.now(),wanted:els.length,memory:0,local:0,cloud:0,waiting:0,none:0,
+    sync:(SYNC.on?"on":"off")+", "+(SYNC.user?"signed in":"no session yet")+", "+(navigator.onLine?"online":"offline")};
   const one=async el=>{
     /* a story that has stepped out of its collection keeps its own picture,
        which lives among the images rather than the covers */
@@ -4131,11 +4166,24 @@ async function hydrateCovers(root){
     }
     const id=el.dataset.cover;
     let src=coverCache.get(id);
-    if(src===undefined){const r=await dbGet("covers",id);src=r?r.data:null;coverCache.set(id,src);}
+    if(src===undefined){
+      const r=await dbGet("covers",id);src=r?r.data:null;
+      /* Remembering "this one has no cover" saves a database trip per coverless
+         book on every render — but only when we actually know. Syncing switches
+         itself on the moment it is configured, while the signed-in session
+         arrives later; in that gap the cloud is not asked, and writing a null
+         here recorded "no cover" for the rest of the session. On a device whose
+         pictures live in the cloud that emptied the whole shelf, and only
+         another reload could undo it. So while the session is still coming,
+         leave it unknown. */
+      if(src!=null||!coversStillComing())coverCache.set(id,src);
+      coverStats[src!=null?"local":(coversStillComing()?"waiting":"none")]++;
+    }else coverStats[src!=null?"memory":"none"]++;
     if(src==null&&SYNC.on&&SYNC.user&&navigator.onLine&&!SYNC.triedCover.has(id)){
       SYNC.triedCover.add(id);
       try{const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(id));
-        if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);}}catch(e){}
+        if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);
+          coverStats.cloud++;coverStats.none=Math.max(0,coverStats.none-1);}}catch(e){}
     }
     /* the drawn stand-in must not survive a real cover arriving — but if this
        cover is already on screen, leave the DOM alone: replacing it re-decodes
@@ -4148,6 +4196,7 @@ async function hydrateCovers(root){
   };
   /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
   for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
+  reapplyScroll();   /* the page only has its real height now */
 }
 /* pick the stage from a list — a single click was too easy to do by accident */
 async function setStatus(id,what){
@@ -4753,7 +4802,9 @@ function renderLibrary(){
       const f=b.dataset.fdgo;
       if(f){S.q=f;S.scopes=["fandom"];S.filter=null;S.multi=[];}
       else{S.q="";S.filter=null;S.multi=[];}
-      view="search";keepMyPlace();render();
+      /* the reading is taken before the view changes, or the shelf's position
+         gets filed under Search and both places are then wrong */
+      keepMyPlace();view="search";render();
     });
     const ft=q("#fdTog",m);if(ft)ft.onclick=()=>{libFandomMode=false;renderLibrary();};
     qa("[data-kf]",m).forEach(b=>b.onclick=()=>{
@@ -6285,6 +6336,15 @@ async function refreshStorage(){
   /* which build this device is actually running — so a "nothing changed" report
      can carry the build's name, instead of us guessing about caches */
   const buildLine=`<div class="none" style="font-size:11px;margin-top:5px;opacity:.7">Build ${esc(window.APP_VERSION||"unknown")}</div>`;
+  /* Where the last shelf-full of pictures actually came from. "My covers are
+     gone after a reload" is not reproducible on any machine but theirs, so the
+     app says what it managed rather than us both guessing about caches. */
+  const cs=coverStats;
+  const covLine=!cs.at?"":`<div class="none" style="font-size:11px;margin-top:3px;opacity:.7">
+    Last shelf drawn: ${cs.wanted} cover${cs.wanted===1?"":"s"} wanted —
+    ${cs.memory} already in memory, ${cs.local} from this device, ${cs.cloud} fetched from the cloud,
+    ${cs.waiting} still waiting on sign-in, ${cs.none} with none.
+    Syncing was ${esc(cs.sync)}.</div>`;
   const dirWarn=window.__dirBkFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The daily backup could not be written into your backup folder — it may have been moved or deleted. Open Backups below to reconnect it.</div>':"";
   if(si&&si.quota){
     const pct=si.usage/si.quota*100;
@@ -6292,9 +6352,9 @@ async function refreshStorage(){
       <div class="hrow2"><span class="bignum">${fmtBytes(si.usage)}</span><span class="none">used of ${fmtBytes(si.quota)} available on this device</span></div>
       <div class="bar"><i class="${pct>90?"full":pct>70?"warn":""}" style="width:${Math.max(1,Math.min(100,pct))}%"></i></div>
       <div class="none">${counts}</div>
-      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}${buildLine}`;
+      ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}${buildLine}${covLine}`;
   }else{
-    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}`;
+    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}`;
   }
 }
 async function refreshSnaps(){
