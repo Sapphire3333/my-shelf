@@ -1328,6 +1328,9 @@ const DEFAULT_AUD=["Children","Middle Grade","Young Adult","Adult"];
 /* self-contained CSS backgrounds — no external assets */
 const BG_PRESETS=[
   {id:"none",name:"Plain",css:""},
+  /* not a fixed pattern like the rest — drawn from your own covers, see
+     buildCoverWash. Its swatch shows the real thing once there is one. */
+  {id:"covers",name:"Your covers",css:"background-image:linear-gradient(135deg,#7c3aed55,#0891b255 40%,#ea580c55 70%,#15803d55);filter:blur(2px)",live:true},
   {id:"paper",name:"Old paper",css:"background-color:#f5ecd9;background-image:radial-gradient(circle at 20% 30%,rgba(170,130,70,.13),transparent 45%),radial-gradient(circle at 80% 70%,rgba(150,110,60,.13),transparent 45%)"},
   {id:"lined",name:"Lined paper",css:"background-color:#fffef7;background-image:repeating-linear-gradient(#fffef7 0 25px,#cfe3f0 25px 26px)"},
   {id:"grid",name:"Graph paper",css:"background-color:#fbfdff;background-image:repeating-linear-gradient(#e3eef7 0 1px,transparent 1px 20px),repeating-linear-gradient(90deg,#e3eef7 0 1px,transparent 1px 20px)"},
@@ -3530,6 +3533,65 @@ async function drawPadPicker(box,pad,onChange){
     const id=await addCustomPad(e.dataTransfer.files[0]);if(id)pick(id);};
 }
 
+/* ---- the shelf as its own wallpaper ----
+   Your covers, blurred past recognising and laid behind everything. The point
+   is that it is made of the shelf: a wall of dark fantasy does not look like a
+   wall of bright middle-grade, and it changes as the shelf does — where the
+   flat washes look the same on the day you own six books and the day you own
+   six hundred. Blurred hard enough that it reads as drifting colour and never
+   competes with a row for your attention, which was the worry about putting
+   the covers back there at all.
+
+   Drawn once and remembered. The signature is the covers that went into it, so
+   it is rebuilt when the shelf's pictures change and not otherwise. */
+let coverWash=null,coverWashKey="";
+const COVERS_IN_WASH=24;
+function washSignature(){
+  const ids=[];
+  for(const b of books){
+    const c=coverCache.get(b.id);
+    if(typeof c==="string"&&c)ids.push(b.id);
+  }
+  return ids.length+"|"+ids.slice(0,COVERS_IN_WASH*3).join(",");
+}
+async function buildCoverWash(){
+  const key=washSignature();
+  if(coverWash&&coverWashKey===key)return coverWash;
+  const srcs=[];
+  for(const b of books){
+    const c=coverCache.get(b.id);
+    if(typeof c==="string"&&c)srcs.push(c);
+  }
+  if(!srcs.length)return null;
+  /* spread the sample across the whole shelf rather than taking the first
+     handful, or a shelf sorted by series would wash out to one colour */
+  const step=Math.max(1,Math.floor(srcs.length/COVERS_IN_WASH));
+  const picked=[];
+  for(let i=0;i<srcs.length&&picked.length<COVERS_IN_WASH;i+=step)picked.push(srcs[i]);
+  const imgs=await Promise.all(picked.map(s=>new Promise(res=>{
+    const im=new Image();im.onload=()=>res(im);im.onerror=()=>res(null);im.src=s;
+  })));
+  const live=imgs.filter(Boolean);
+  if(!live.length)return null;
+  const cols=Math.ceil(Math.sqrt(live.length)),rows=Math.ceil(live.length/cols);
+  const CW=90,CH=126;
+  const a=document.createElement("canvas");a.width=cols*CW;a.height=rows*CH;
+  const ax=a.getContext("2d");
+  live.forEach((im,i)=>{
+    try{ax.drawImage(im,(i%cols)*CW,Math.floor(i/cols)*CH,CW,CH);}catch(e){}
+  });
+  /* blurred on a second canvas, drawn oversized so the blur has colour to pull
+     from at the edges instead of fading into transparency */
+  const b2=document.createElement("canvas");b2.width=a.width;b2.height=a.height;
+  const bx=b2.getContext("2d");
+  bx.filter="blur(38px)";
+  const over=90;
+  bx.drawImage(a,-over,-over,a.width+over*2,a.height+over*2);
+  bx.filter="none";
+  try{coverWash=b2.toDataURL("image/jpeg",0.72);}catch(e){return null;}
+  coverWashKey=key;
+  return coverWash;
+}
 /* a book's own background wins; "default" (or nothing) falls back to the app-wide one */
 function effectiveBg(){
   if(view==="book"&&cur&&cur.bg&&cur.bg.id&&cur.bg.id!=="default")return cur.bg;
@@ -3540,6 +3602,14 @@ async function applyBg(){
   const bg=effectiveBg();
   const op=Math.max(0,Math.min(100,bg.opacity==null?100:bg.opacity))/100;
   const pre=BG_PRESETS.find(p=>p.id===bg.id);
+  if(pre&&pre.live){
+    /* the wash may not be built yet, or there may be no covers to build it
+       from — the swatch's stand-in gradient holds the place until then */
+    const w=await buildCoverWash();
+    const el3=q("#bgLayer");if(!el3)return;
+    el3.style.cssText=w?`opacity:${op};background-image:url("${w}")`:`opacity:${op};${pre.css}`;
+    return;
+  }
   if(pre){el.style.cssText=`opacity:${op};${pre.css}`;return;}
   let d=bgCache.get(bg.id);
   if(d===undefined){d=await loadImgData(bgKey(bg.id));bgCache.set(bg.id,d);}
@@ -3549,9 +3619,19 @@ async function applyBg(){
 /* one picker used by both the hub (app default) and the editor (this book) */
 async function drawBgPicker(box,getBg,setBg,allowDefault,onDone){
   await preloadBgs();
+  /* so its swatch shows the real thing rather than the stand-in gradient */
+  try{await buildCoverWash();}catch(e){}
   if(!box||!document.body.contains(box))return;
   const redraw=()=>drawBgPicker(box,getBg,setBg,allowDefault,onDone);
-  const pick=id=>{setBg({id,opacity:(getBg()||{}).opacity??100});redraw();applyBg();};
+  const pick=id=>{
+    let op=(getBg()||{}).opacity??100;
+    /* The covers want to sit behind everything, not on top of it. Coming from
+       a flat wash at full strength they would arrive as a wall of colour, so
+       the first time they are chosen the fade starts where it looks like
+       wallpaper — about a tenth. Move it afterwards and that is respected. */
+    if(id==="covers"&&(getBg()||{}).id!=="covers"&&op>40)op=12;
+    setBg({id,opacity:op});redraw();applyBg();
+  };
   activeBgPicker={box,pick,add:addCustomBg};
   const c0=getBg()||{id:"none",opacity:100};
   const op=c0.opacity==null?100:c0.opacity;
@@ -3564,7 +3644,9 @@ async function drawBgPicker(box,getBg,setBg,allowDefault,onDone){
       <button class="btn" id="bgClose" style="margin-left:auto;padding:4px 10px">Done</button></div>`:""}
     <div class="bgsws">
       ${allowDefault?sw("default","Use default","background:repeating-linear-gradient(45deg,#f5f5f4 0 6px,#e7e5e4 6px 12px)",null,c0.id==="default"||!c0.id):""}
-      ${BG_PRESETS.map(p=>sw(p.id,p.name,p.css,null,c0.id===p.id)).join("")}
+      ${BG_PRESETS.map(p=>p.live
+        ? sw(p.id,p.name,coverWash?"background-size:cover;background-position:center":p.css,coverWash||null,c0.id===p.id)
+        : sw(p.id,p.name,p.css,null,c0.id===p.id)).join("")}
       ${bgList.map(c=>sw(c.id,c.name,"",bgCache.get(c.id)||"",c0.id===c.id,true)).join("")}
     </div>
     <div class="bgdrop" id="bgDrop">＋ Upload, drop or paste an image — it's saved here as an option</div>
