@@ -9426,6 +9426,8 @@ function renderEditor(){
       </div>`:""}
       ${ch.length?`<div class="lbox chapbox"><div class="lhead">
         <h3>Chapters <span class="none" style="font-weight:400">${ch.length} · ${words.toLocaleString()} words</span></h3>
+        ${(cur.chapters||[]).some(c=>splitChapterText(c.text||"").before)
+          ?`<button class="btn" id="chTidy" title="Lift the planning off the front of the chapters that have it">✂ Split off the planning</button>`:""}
         <button class="btn" id="chSave" title="Save the chapters out as one file">⭳ Save as a file</button></div>
         ${ch.map((c,i)=>`<div class="chrow">
           <button class="chhead" data-cho="${c.id}">
@@ -9500,6 +9502,25 @@ function renderEditor(){
       if(t)t.scrollIntoView({behavior:"smooth",block:"start"});
     });
     const pt=q("#prTog",box);if(pt)pt.onclick=()=>{promptsOpen=!promptsOpen;renderChapters();};
+    /* Chapters already brought in keep whatever they were given, so the fix
+       has to be able to reach backwards — 248 of them is not something to
+       re-import. Each is re-read, the planning at its front lifted off into
+       the discussion, and the chapter left as the chapter. */
+    const ct=q("#chTidy",box);if(ct)ct.onclick=()=>{
+      const moved=[];
+      const kept=(cur.chapters||[]).map(c=>{
+        const {before,chapter}=splitChapterText(c.text||"");
+        if(!before)return c;
+        moved.push(mkRow(before,null));
+        const r=mkRow(chapter,null);r.id=c.id;
+        return r;
+      });
+      if(!moved.length)return;
+      if(!confirm(`Lift the planning off ${moved.length} chapter${moved.length===1?"":"s"}?\n\nIt moves to the discussion list; the chapters keep the story. Undo can put it back.`))return;
+      cur.chapters=kept;
+      cur.discussion=[...(cur.discussion||[]),...moved];
+      renderChapters();scheduleSave();
+    };
     const cs=q("#chSave",box);if(cs)cs.onclick=()=>{
       const txt=(cur.chapters||[]).map((c,i)=>`${i+1}. ${c.title}\n\n${c.text}`).join("\n\n\n");
       downloadJson(txt,`${(cur.title||"story").replace(/[^\w -]/g,"")} — chapters.txt`,"text/plain;charset=utf-8");
@@ -11149,6 +11170,35 @@ const firstLine=t=>String(t).split(/\n+/)[0].replace(/^#+\s*/,"").replace(/[*_]+
    a chapter actually has is a heading. */
 const CHAPTER_HEAD=/^(?:chapter|ch\.?|part|episode)\s*[\d ivxlc]+\b|^chapter\b/i;
 const looksLikeChapter=t=>CHAPTER_HEAD.test(firstLine(t));
+/* ---- the planning that arrives stuck to the front of a chapter ----
+   A reply often is not one thing. It opens with the working-out — "The user
+   wants me to continue the story. Let me recap what's happened" and a list of
+   everything agreed so far — and then the chapter itself begins, sometimes on
+   its own line and sometimes welded to the end of the last sentence, as in
+   "I should write a full chapter that advances the plot.# Chapter 12: Deep
+   Water". Judging the reply as a whole can never sort that out, because the
+   reply is both. So the heading is looked for ANYWHERE, not only at the top,
+   and what comes before it is lifted off as discussion. */
+const HEAD_ANYWHERE=/(?:^|\n)\s*#{0,6}\s*(?:chapter|part|episode)\s+[\dIVXLC]+\b|#{1,6}\s*(?:chapter|part|episode)\s+[\dIVXLC]+\b/i;
+function splitChapterText(t){
+  const s=String(t||"");
+  const m=s.match(HEAD_ANYWHERE);
+  if(!m)return {before:"",chapter:s};
+  const at=m.index+(m[0].match(/^\s*\n?/)||[""])[0].length;
+  const before=s.slice(0,at).replace(/#+\s*$/,"").trim();
+  const chapter=s.slice(at).replace(/^#+\s*/,"").trim();
+  /* a heading in the first line or two is just the chapter starting normally */
+  if(wordCount(before)<25)return {before:"",chapter:s.replace(/^#+\s*/,"").trim()};
+  return {before,chapter};
+}
+/* a long opening line is cut rather than thrown away — "Reply 3" tells you
+   nothing, where the first few words of it usually tell you everything */
+function mkRow(t,m){
+  const first=firstLine(t);
+  const title=first.length<=90?first:first.slice(0,72).replace(/\s+\S*$/,"")+"…";
+  return {id:uid(),title:first.length>2?title:"",
+    text:t,words:wordCount(t),at:(m&&m.created_at)||""};
+}
 function chatToStory(conv){
   const msgs=(conv.chat_messages||conv.messages||[]);
   const replies=msgs.filter(m=>{
@@ -11158,21 +11208,26 @@ function chatToStory(conv){
   /* If nothing in the whole conversation is headed, this story was not written
      with chapter headings and the old length rule is the best available guess.
      Where headings exist they are believed absolutely. */
-  const headed=replies.some(m=>looksLikeChapter(chatText(m)));
+  /* anywhere in a reply, not just at its top — the heading is often buried
+     behind a page of planning, which is the whole problem being solved here */
+  const headed=replies.some(m=>{
+    const t=chatText(m);
+    return looksLikeChapter(t)||HEAD_ANYWHERE.test(t);
+  });
   const chapters=[],prompts=[],discussion=[];
   msgs.forEach(m=>{
     const who=(m.sender||m.role||"").toLowerCase();
     const t=chatText(m).trim();
     if(!t)return;
     if(who==="human"||who==="user"){prompts.push({id:uid(),text:t,at:m.created_at||""});return;}
-    const w=wordCount(t);
-    const isChap=headed?looksLikeChapter(t):w>=CHAPTER_MIN_WORDS;
-    /* a long opening line is cut rather than thrown away — "Reply 3" tells you
-       nothing, where the first few words of it usually tell you everything */
-    const first=firstLine(t);
-    const title=first.length<=90?first:first.slice(0,72).replace(/\s+\S*$/,"")+"…";
-    const row={id:uid(),title:first.length>2?title:"",
-      text:t,words:w,at:m.created_at||""};
+    /* the planning that opens a reply is lifted off before anything is judged,
+       so a reply that is both a recap and a chapter becomes both */
+    const {before,chapter}=headed?splitChapterText(t):{before:"",chapter:t};
+    if(before)discussion.push(mkRow(before,m));
+    const body=chapter;
+    const w=wordCount(body);
+    const isChap=headed?looksLikeChapter(body):w>=CHAPTER_MIN_WORDS;
+    const row=mkRow(body,m);
     if(isChap)chapters.push(row);
     else discussion.push(row);
   });
