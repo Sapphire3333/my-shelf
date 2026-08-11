@@ -3792,7 +3792,16 @@ function backToRow(){
   return true;
 }
 function restoreScroll(v){
-  if(backToRow()){pendingScroll=null;return;}
+  /* The row is found straight away, but the shelf is at its shortest right
+     then — the pictures are still coming, every row is about to get taller,
+     and the row we just centred slides away underneath. So the anchor is kept
+     rather than thrown away, and put back once the pictures have landed. This
+     is what made the first attempt look like it did nothing. */
+  if(lastOpenedId&&backToRow()){
+    pendingScroll={v,y:0,at:Date.now(),last:Math.round(window.scrollY),row:true};
+    setTimeout(reapplyScroll,80);
+    return;
+  }
   const y=scrollMem[v]||0;
   if(!y){pendingScroll=null;return;}
   /* three times over: the page is still being laid out, and a page that has not
@@ -3810,12 +3819,18 @@ function restoreScroll(v){
    height, take the reading again. Your own scrolling wins: if the page has
    moved since we last set it, or too long has passed, we let go. */
 function reapplyScroll(){
-  /* the row may only have appeared now, with its picture */
-  if(pendingScroll&&pendingScroll.v===view&&backToRow()){pendingScroll=null;return;}
   const p=pendingScroll;
   if(!p||p.v!==view)return;
   if(Date.now()-p.at>5000){pendingScroll=null;return;}
+  /* your own scrolling beats ours: if the page has moved since we last set it,
+     let go and leave you where you put yourself */
   if(p.last!=null&&Math.abs(window.scrollY-p.last)>4){pendingScroll=null;return;}
+  if(p.row){
+    /* the row is the anchor, and it may only just have got its picture */
+    if(backToRow())p.last=Math.round(window.scrollY);
+    else pendingScroll=null;
+    return;
+  }
   if(Math.round(window.scrollY)===p.y){pendingScroll=null;return;}
   window.scrollTo(0,p.y);
   p.last=Math.round(window.scrollY);
@@ -3879,6 +3894,7 @@ function restoreFromHistory(){
 }
 function render(){
   if(!bootRestored){bootRestored=true;if(restoreFromHistory())return;}
+  resetCoverStats();   /* a fresh tally per screen, however many passes it takes */
   if(view==="book"){renderBook();return;}
   const favN=favUnits(),dnfN=books.filter(b=>b.dnf).length;
   q("#app").innerHTML=`
@@ -4162,31 +4178,56 @@ function forgetMissingCovers(){
   SYNC.triedCover.clear();
   return n;
 }
-/* What the last draw actually managed, so a "my covers are gone" report can
-   carry numbers instead of both of us guessing about caches. */
-let coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,waiting:0,none:0,sync:""};
+/* What the last screen drawn actually managed, so a "my covers are gone" report
+   can carry numbers instead of both of us guessing about caches.
+   It accumulates across a whole screen and is emptied by render(), because a
+   screen draws its pictures in more than one go — Overview alone hydrates two
+   sections at once, and having each pass reset the tally produced a readout
+   that contradicted itself: four wanted, six with none. Each row is counted
+   exactly once, where it finally lands. */
+let coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,story:0,waiting:0,none:0,sync:""};
+function resetCoverStats(){coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,story:0,waiting:0,none:0,sync:""};}
 async function hydrateCovers(root){
   const els=qa("[data-cover]",root);
-  coverStats={at:Date.now(),wanted:els.length,memory:0,local:0,cloud:0,waiting:0,none:0,
-    sync:(SYNC.on?"on":"off")+", "+(SYNC.user?"signed in":"no session yet")+", "+(navigator.onLine?"online":"offline")};
+  coverStats.at=Date.now();
+  coverStats.wanted+=els.length;
+  coverStats.sync=(SYNC.on?"on":"off")+", "+(SYNC.user?"signed in":"no session yet")+", "+(navigator.onLine?"online":"offline");
+  /* exactly one of these per row, recorded where the row finally lands */
+  const paint=(el,src)=>{
+    const shown=el.querySelector("img");
+    if(!shown||shown.getAttribute("src")!==src){
+      /* the drawn stand-in must not survive a real cover arriving — but if this
+         cover is already on screen, leave the DOM alone: replacing it re-decodes
+         the picture and makes the shelf blink for no reason */
+      const keep=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
+      el.innerHTML=`<img src="${src}" alt="">`+keep;
+    }
+  };
   const one=async el=>{
     /* a story that has stepped out of its collection keeps its own picture,
        which lives among the images rather than the covers */
     const key=el.dataset.covkey;
     if(key){
-      let s2=coverCache.get(key);
-      if(s2===undefined){s2=await loadImgData(key);coverCache.set(key,s2||null);}
-      if(s2){
-        const shown0=el.querySelector("img");
-        if(!shown0||shown0.getAttribute("src")!==s2){
-          const keep=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
-          el.innerHTML=`<img src="${s2}" alt="">`+keep;
-        }
-        return;
+      let s2=coverCache.get(key),knew=s2!==undefined;
+      if(!knew){
+        s2=await loadImgData(key);
+        /* The same trap as the covers below, and the one this missed: a story
+           that keeps its own picture asks the cloud for it, and the cloud is
+           only asked once signed in. Recording "no picture" during that gap
+           made the row fall through to the cover of the collection it sits in,
+           so two different stories wore the same cover for the rest of the
+           session. Leave it unknown until there is a real answer. */
+        if(s2!=null||!coversStillComing())coverCache.set(key,s2||null);
       }
+      if(s2){paint(el,s2);coverStats.story++;return;}
+      /* its own picture could not be had, so the row falls through to the cover
+         of the collection it belongs to — right when there genuinely is none,
+         wrong while we are still waiting, so say which this was */
+      if(!knew&&coversStillComing()){coverStats.waiting++;return;}
     }
     const id=el.dataset.cover;
     let src=coverCache.get(id);
+    let where=src===undefined?null:(src!=null?"memory":"none");
     if(src===undefined){
       const r=await dbGet("covers",id);src=r?r.data:null;
       /* Remembering "this one has no cover" saves a database trip per coverless
@@ -4198,22 +4239,15 @@ async function hydrateCovers(root){
          another reload could undo it. So while the session is still coming,
          leave it unknown. */
       if(src!=null||!coversStillComing())coverCache.set(id,src);
-      coverStats[src!=null?"local":(coversStillComing()?"waiting":"none")]++;
-    }else coverStats[src!=null?"memory":"none"]++;
+      where=src!=null?"local":(coversStillComing()?"waiting":"none");
+    }
     if(src==null&&SYNC.on&&SYNC.user&&navigator.onLine&&!SYNC.triedCover.has(id)){
       SYNC.triedCover.add(id);
       try{const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(id));
-        if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);
-          coverStats.cloud++;coverStats.none=Math.max(0,coverStats.none-1);}}catch(e){}
+        if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);where="cloud";}}catch(e){}
     }
-    /* the drawn stand-in must not survive a real cover arriving — but if this
-       cover is already on screen, leave the DOM alone: replacing it re-decodes
-       the picture and makes the shelf blink for no reason */
-    const shown=el.querySelector("img");
-    if(src&&(!shown||shown.getAttribute("src")!==src)){
-      const overlays=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
-      el.innerHTML=`<img src="${src}" alt="">`+overlays;
-    }
+    coverStats[where]++;
+    if(src)paint(el,src);
   };
   /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
   for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
@@ -6361,10 +6395,11 @@ async function refreshStorage(){
      gone after a reload" is not reproducible on any machine but theirs, so the
      app says what it managed rather than us both guessing about caches. */
   const cs=coverStats;
+  const covShown=cs.memory+cs.local+cs.cloud+cs.story;
   const covLine=!cs.at?"":`<div class="none" style="font-size:11px;margin-top:3px;opacity:.7">
-    Last shelf drawn: ${cs.wanted} cover${cs.wanted===1?"":"s"} wanted —
+    Last screen drawn: ${cs.wanted} picture${cs.wanted===1?"":"s"} wanted, ${covShown} shown —
     ${cs.memory} already in memory, ${cs.local} from this device, ${cs.cloud} fetched from the cloud,
-    ${cs.waiting} still waiting on sign-in, ${cs.none} with none.
+    ${cs.story} a story's own. ${cs.waiting} still waiting on sign-in, ${cs.none} with none.
     Syncing was ${esc(cs.sync)}.</div>`;
   const dirWarn=window.__dirBkFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The daily backup could not be written into your backup folder — it may have been moved or deleted. Open Backups below to reconnect it.</div>':"";
   if(si&&si.quota){
