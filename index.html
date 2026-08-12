@@ -3601,29 +3601,102 @@ async function drawPadPicker(box,pad,onChange){
    it is rebuilt when the shelf's pictures change and not otherwise. */
 let coverWash=null,coverWashKey="";
 const COVERS_IN_WASH=24;
-function washSignature(){
-  const ids=[];
+/* How many of one collection's stories may join in. Measured on a real shelf:
+   131 of 147 covers lived inside collections, and they are spread very unevenly
+   — a few collections hold most of them. Letting every one in unweighted handed
+   those few roughly a third of the wash between them and the other collections
+   barely registered. An allowance keeps them all present. */
+const COVERS_PER_COLLECTION=8;
+/* Bumped whenever a picture is written or dropped. The signature used to be the
+   ids alone, so REPLACING a cover changed nothing it could see and the old wash
+   stayed until a picture was added or removed outright, or the page reloaded. */
+let coverEpoch=0;
+const bumpCovers=()=>{coverEpoch++;};
+/* Which pictures the wash may draw on, as keys rather than data, so this stays
+   cheap enough to run on every signature check. A story's picture lives among
+   the images under "collection|story" and never in the covers store, which is
+   why the wash could not see one for as long as it has existed — but whether a
+   story HAS one is a plain flag on the entry, so no reading is needed here. */
+function washKeys(){
+  const out=[];
   for(const b of books){
     const c=coverCache.get(b.id);
-    if(typeof c==="string"&&c)ids.push(b.id);
+    if(typeof c==="string"&&c)out.push(b.id);
+    if(!isColl(b))continue;
+    const mine=[];
+    for(const en of (b.entries||[]))if(en&&en.cover)mine.push(b.id+"|"+en.id);
+    /* the allowance, spread across the collection rather than taken off the
+       front, so a shuffle can reach the whole of it and an unshuffled wash
+       doesn't come from whichever stories happen to sit first.
+       Each collection is given the seed mixed with its own id, or every
+       collection of the same length would shuffle to the same positions. */
+    out.push(...spread(mine,COVERS_PER_COLLECTION,washSeed()&&(washSeed()^strHash(b.id))));
   }
-  return ids.length+"|"+ids.slice(0,COVERS_IN_WASH*3).join(",");
+  return out;
+}
+/* A fixed number of picks laid evenly across the whole list, first and last
+   included. The old version stepped by a floored fraction and stopped the
+   moment it had enough, so it always ran out before the end — and between 25
+   and 47 pictures the step floored to 1 and it simply took the first 24, which
+   is the oldest half of the shelf. Its own comment promised the opposite. */
+function spread(list,want,seed){
+  const n=list.length;
+  if(n<=want)return list.slice();
+  if(seed){
+    /* shuffled: an unbiased pick of `want` from the whole list, seeded so the
+       same shuffle survives a reload instead of changing under you */
+    const idx=list.map((_,i)=>i),rnd=rng(seed);
+    for(let i=n-1;i>0;i--){const j=Math.floor(rnd()*(i+1));const t=idx[i];idx[i]=idx[j];idx[j]=t;}
+    return idx.slice(0,want).sort((a,b)=>a-b).map(i=>list[i]);
+  }
+  if(want===1)return [list[Math.floor(n/2)]];   /* no gaps to lay out; take the middle */
+  const out=[];
+  for(let i=0;i<want;i++)out.push(list[Math.round(i*(n-1)/(want-1))]);
+  return out;
+}
+const strHash=s=>{let h=2166136261;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;};
+/* seeded so a shuffle is remembered: the same number always gives the same
+   wash, which is what lets the drawn one be cached and survive a reload */
+function rng(seed){
+  let s=seed>>>0;
+  return ()=>{s=(s+0x6D2B79F5)>>>0;let t=s;
+    t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);
+    return ((t^(t>>>14))>>>0)/4294967296;};
+}
+const washSeed=()=>Math.max(0,parseInt(settings.washSeed)||0);
+function shuffleWash(){
+  /* never twice the same, and never zero — zero is what "not shuffled" means */
+  settings.washSeed=1+Math.floor(Math.random()*2147483646);
+  saveSettings();
+  return applyBg();
+}
+function washSignature(){
+  const ids=washKeys();
+  return coverEpoch+"|"+washSeed()+"|"+ids.length+"|"+ids.slice(0,COVERS_IN_WASH*3).join(",");
 }
 async function buildCoverWash(){
   const key=washSignature();
   if(coverWash&&coverWashKey===key)return coverWash;
-  const srcs=[];
-  for(const b of books){
-    const c=coverCache.get(b.id);
-    if(typeof c==="string"&&c)srcs.push(c);
-  }
-  if(!srcs.length)return null;
+  const keys=washKeys();
+  if(!keys.length)return null;
   /* spread the sample across the whole shelf rather than taking the first
      handful, or a shelf sorted by series would wash out to one colour */
-  const step=Math.max(1,Math.floor(srcs.length/COVERS_IN_WASH));
-  const picked=[];
-  for(let i=0;i<srcs.length&&picked.length<COVERS_IN_WASH;i+=step)picked.push(srcs[i]);
-  const imgs=await Promise.all(picked.map(s=>new Promise(res=>{
+  const picked=spread(keys,COVERS_IN_WASH,washSeed());
+  /* only now is anything read: a story's picture has to come from the images
+     store, and there is no point fetching the ones that were not picked */
+  const srcs=await Promise.all(picked.map(async k=>{
+    if(k.indexOf("|")<0){const c=coverCache.get(k);return typeof c==="string"?c:null;}
+    let d=coverCache.get(k);
+    if(d===undefined){
+      d=await loadImgData(k);
+      /* the same trap the rows already guard against: while the signed-in
+         session is still arriving the cloud has not been asked, and writing
+         "no picture" here would keep it out of the wash for the whole session */
+      if(d!=null||!coversStillComing())coverCache.set(k,d||null);
+    }
+    return d||null;
+  }));
+  const imgs=await Promise.all(srcs.filter(Boolean).map(s=>new Promise(res=>{
     const im=new Image();im.onload=()=>res(im);im.onerror=()=>res(null);im.src=s;
   })));
   const live=imgs.filter(Boolean);
@@ -3690,8 +3763,13 @@ async function drawBgPicker(box,getBg,setBg,allowDefault,onDone){
   activeBgPicker={box,pick,add:addCustomBg};
   const c0=getBg()||{id:"none",opacity:100};
   const op=c0.opacity==null?100:c0.opacity;
+  /* the semicolon matters: this is the one swatch that carries both a rule and a
+     picture, and glued straight together they read as
+     "background-position:centerbackground-image:url(…)" — one nonsense value that
+     the browser throws away whole. Your covers has therefore never shown your
+     covers; it fell back to the flat stand-in gradient and looked deliberate. */
   const sw=(id,name,css,img,on,del)=>`<div class="bgsw ${on?"on":""}" data-bg="${id}" title="${esc(name)}">
-      <div class="bgsw-p" style="${css||""}${img?`background-image:url('${img}')`:""}"></div>
+      <div class="bgsw-p" style="${css?css.replace(/;\s*$/,"")+";":""}${img?`background-image:url('${img}')`:""}"></div>
       <span>${esc(name)}</span>${del?`<button class="bgx" data-bgx="${id}" title="Delete this background">✕</button>`:""}
     </div>`;
   box.innerHTML=`
@@ -3705,6 +3783,11 @@ async function drawBgPicker(box,getBg,setBg,allowDefault,onDone){
       ${bgList.map(c=>sw(c.id,c.name,"",bgCache.get(c.id)||"",c0.id===c.id,true)).join("")}
     </div>
     <div class="bgdrop" id="bgDrop">＋ Upload, drop or paste an image — it's saved here as an option</div>
+    ${c0.id==="covers"?`<div class="hrow2" style="margin:9px 0 0">
+      <button class="btn" id="washMix" title="Draw it again from a different handful of your covers">🎲 Different covers</button>
+      ${washSeed()?`<button class="btn" id="washMixOff" title="Back to an even spread across the whole shelf">↺ Even spread</button>`:""}
+      <span class="hint" style="margin:0">${washSeed()?"A shuffled pick — it stays until you change it.":"An even spread across the whole shelf."}</span>
+    </div>`:""}
     <div class="opac">Fade <input type="range" min="0" max="100" value="${op}" id="bgOp"><b id="bgOpV" style="width:38px;text-align:right">${op}%</b></div>`;
   qa("[data-bg]",box).forEach(el=>el.onclick=e=>{if(!e.target.closest("[data-bgx]"))pick(el.dataset.bg);});
   qa("[data-bgx]",box).forEach(el=>el.onclick=async e=>{
@@ -3716,6 +3799,13 @@ async function drawBgPicker(box,getBg,setBg,allowDefault,onDone){
     if(was)setBg({id:allowDefault?"default":"none",opacity:(getBg()||{}).opacity??100});
     redraw();applyBg();
   });
+  /* the swatch is the wash itself, so it has to be redrawn too — otherwise the
+     page changed behind you and the picture you pressed still showed the old one */
+  const mix=q("#washMix",box);
+  if(mix)mix.onclick=async()=>{mix.disabled=true;await shuffleWash();redraw();};
+  const mixOff=q("#washMixOff",box);
+  if(mixOff)mixOff.onclick=async()=>{mixOff.disabled=true;
+    settings.washSeed=0;saveSettings();await applyBg();redraw();};
   const bgc=q("#bgClose",box);if(bgc)bgc.onclick=onDone;
   const drop=q("#bgDrop",box);
   drop.onclick=()=>{bgPick=pick;bgAdd=addCustomBg;q("#bgFile").click();};
@@ -9271,12 +9361,12 @@ function renderEditor(){
         if(en){
           en.cover=true;en.coverV=Date.now();
           await dbPut("images",{key:cur.id+"|"+en.id,data,v:en.coverV});
-          curEnt[en.id]=data;
+          curEnt[en.id]=data;coverCache.set(cur.id+"|"+en.id,data);bumpCovers();
           if(SYNC.on)enqueue({kind:"img",key:cur.id+"|"+en.id});
           renderEntries();
         }else{
           await dbPut("covers",{id:cur.id,data});
-          curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);
+          curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);bumpCovers();
           renderCover();
           if(SYNC.on)enqueue({kind:"cover",id:cur.id});
           cur.coverV=Date.now();
@@ -9929,7 +10019,7 @@ function renderEditor(){
     const key=cur.id+"|"+en.id;
     en.coverV=Date.now();          /* version, so replacing a cover reaches other devices too */
     try{await dbPut("images",{key,data,v:en.coverV});}catch(err){alert("That cover couldn't be saved.");return;}
-    curEnt[en.id]=data;en.cover=true;
+    curEnt[en.id]=data;en.cover=true;coverCache.set(key,data);bumpCovers();
     if(SYNC.on)enqueue({kind:"img",key});
     renderEntries();scheduleSave();
   };
@@ -10921,7 +11011,7 @@ function renderEditor(){
       e.stopPropagation();
       if(!confirm("Remove this cover?"))return;
       await dbDel("covers",cur.id);
-      curCover=null;coverCache.set(cur.id,null);
+      curCover=null;coverCache.set(cur.id,null);bumpCovers();
       if(SYNC.on)enqueue({kind:"coverDel",id:cur.id});
       cur.coverV=Date.now();renderCover();scheduleSave();
     };
@@ -10933,7 +11023,7 @@ function renderEditor(){
     curCover=await compressImage(f,600,.85);
     try{await dbPut("covers",{id:cur.id,data:curCover});}
     catch(err){alert("That cover couldn't be saved — storage may be full.");return;}
-    coverCache.set(cur.id,curCover);SYNC.triedCover.delete(cur.id);
+    coverCache.set(cur.id,curCover);SYNC.triedCover.delete(cur.id);bumpCovers();
     renderCover();
     if(SYNC.on)enqueue({kind:"cover",id:cur.id});
     cur.coverV=Date.now();scheduleSave();
