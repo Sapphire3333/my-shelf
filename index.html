@@ -1386,6 +1386,12 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
 <script>
 /* =============== constants & helpers =============== */
 const PALETTE=["#2563eb","#0891b2","#059669","#65a30d","#ca8a04","#ea580c","#dc2626","#e11d48","#db2777","#9333ea","#7c3aed","#4f46e5","#0d9488","#b45309","#78716c","#334155"];
+/* A colour settled by the name, so the same genre always looks the same however
+   it arrived. Three places worked this out with their own identical copy of the
+   sum below; they all ask here now. */
+const genreColor=name=>{let h=0;const s=String(name||"");
+  for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;
+  return PALETTE[h%PALETTE.length];};
 /* ten in every palette on purpose: the strip swaps sets as you change tool, and a
    different number of dots could rewrap the toolbar and reflow the page */
 const TEXT_COLORS=["#44403c","#dc2626","#ea580c","#ca8a04","#059669","#0d9488","#2563eb","#7c3aed","#db2777","#334155"];
@@ -2354,8 +2360,14 @@ function syncCollRating(b){
    as they are: `ratingOwn` was not a field then, so an undefined flag on a
    collection that already has a rating means you put it there. ↺ Use the
    average opts one in whenever you want. */
+/* Returns the ids it changed rather than a count, because they still have to be
+   sent. This runs during boot, BEFORE initSync has switched syncing on, and
+   `enqueue` drops everything while it is off — so the uploads it used to make
+   here went nowhere at all. Worse than nothing: it stamps `modified`, so the
+   local copy then outranked the cloud's forever and no later pull could put it
+   right. The caller sends them once syncing is awake. */
 async function backfillCollRatings(){
-  let n=0;
+  const touchedIds=[];
   for(const b of books){
     if(!isColl(b))continue;
     let touched=false;
@@ -2363,10 +2375,9 @@ async function backfillCollRatings(){
     if(syncCollRating(b))touched=true;
     if(!touched)continue;
     b.modified=Math.max(Date.now(),(b.modified||0)+1);
-    try{await dbPut("books",b);enqueue({kind:"book",id:b.id});}catch(e){}
-    n++;
+    try{await dbPut("books",b);touchedIds.push(b.id);}catch(e){}
   }
-  return n;
+  return touchedIds;
 }
 /* Which stories in a collection have genres of their own, and what they are.
    The collection still sits under its own headings; this only says that some of
@@ -3215,7 +3226,7 @@ async function initSync(){
      "best-effort" IndexedDB (books, covers AND the in-browser backups) can be wiped */
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
   books=await dbAll("books");
-  await backfillCollRatings();   /* before the first paint, so the rows show it straight away */
+  const backfilled=await backfillCollRatings();   /* before the first paint, so the rows show it straight away */
   const g=await dbGet("meta","genres");genres=g?g.v:{};
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
@@ -3268,6 +3279,10 @@ async function initSync(){
   }catch(e){}
   await loadSyncLocal();
   initSync();
+  /* only now is syncing awake — initSync turns it on before its first await, so
+     by here anything queued will actually be kept. The startup backfill runs far
+     above this and had been posting into a queue that was still switched off. */
+  if(SYNC.on&&backfilled.length)backfilled.forEach(id=>enqueue({kind:"book",id}));
   maybeAutoBackup();
   maybeFolderBackup();
   maybeFileBackup();
@@ -3540,6 +3555,18 @@ async function clearGroupArt(key){
 const padKey=id=>"__pad|"+id;
 function savePadList(){dbPut("meta",{k:"padskins",v:padList});enqueue({kind:"meta",key:"padskins"});}
 function saveFandoms(){dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});}
+/* The one way a fandom joins the list. Three places used to do it by hand with
+   `if(!fandoms[f])fandoms[f]=[]`, and every one of them forgot to clear the mark
+   left by "Take it off your list" — which the merge reads on every pull and acts
+   on, deleting the fandom again. Taking one off and then adding it back was
+   therefore impossible: it returned, and the next sync took it away.
+   Returns whether the list actually changed, so callers can skip a needless save. */
+function addFandom(name){
+  const f=String(name||"").trim();if(!f)return false;
+  unmarkMetaDel("fandom:"+f);          /* even if it is already here: an old mark still kills it */
+  if(fandoms[f])return false;
+  fandoms[f]=[];return true;
+}
 function saveKwColors(){dbPut("meta",{k:"kwColors",v:kwColors});enqueue({kind:"meta",key:"kwColors"});touchMeta("kwColors");}
 /* the bin, shared: {id:{at,book}}. The cover and pictures stay in the cloud until
    the 30 days are up, so any device can put a deleted book back. */
@@ -4003,11 +4030,22 @@ async function applyOp(op,inv){
   }
   if(op.t==="meta"){
     const v=inv?op.before:op.after;
+    const had=Object.keys(genres);
     genres=JSON.parse(JSON.stringify(v.genres));
     dnfCustom=[...v.dnfCustom];audCustom=[...v.audCustom];
+    /* An undo has to say WHEN, or it does not survive contact with another
+       device. Two things were missing here, both of which the bulk branch above
+       already does. Without the stamp our restored copy is not the newest, so
+       the merge treats it as the older side and adds the undone entries back.
+       And a stamp alone is not enough for a genre the undo REMOVED: the merge
+       keeps any local name the cloud lacks unless it has been marked deleted,
+       so the other device hands it straight back and pushes it up again. */
+    had.forEach(g=>{if(!(g in genres))markMetaDel("genre:"+g);});
+    Object.keys(genres).forEach(g=>unmarkMetaDel("genre:"+g));
     metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
     dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});
     enqueue({kind:"meta",key:"genres"});enqueue({kind:"meta",key:"dnfReasons"});enqueue({kind:"meta",key:"audiences"});
+    touchMeta("genres","dnfReasons","audiences");
     if(view==="book"&&cur){openBook(cur.id,false,true);refreshHistBtns();return;}
   }
   render();refreshHistBtns();
@@ -5410,8 +5448,7 @@ function renderLibrary(){
     };
     const sg=q("#selGen",m);
     if(sg)sg.onclick=()=>openApply("Which genre",Object.keys(genres).sort((a,b)=>a.localeCompare(b)),g=>{
-      if(!genres[g]){let h=0;for(let i=0;i<g.length;i++)h=(h*31+g.charCodeAt(i))>>>0;genres[g]=PALETTE[h%PALETTE.length];
-        unmarkMetaDel("genre:"+g);saveMeta();}
+      if(!genres[g]){genres[g]=genreColor(g);unmarkMetaDel("genre:"+g);saveMeta();}
       applyToSel(b=>{b.genres=b.genres||[];if(!b.genres.includes(g))b.genres.push(g);});
     },true);
     const sa=q("#selAud",m);
@@ -7575,7 +7612,18 @@ let vStatusOpen=false,vRateOpen=false,viewArrange=false,vReadsOpen=false;
    exactly like an edit made inside it. */
 async function quickEdit(mut){
   const stored=books.find(x=>x.id===cur.id);
-  const before=stored?JSON.parse(JSON.stringify(stored)):null;
+  /* Gone from the shelf while this page was open — deleted here in another tab,
+     or on another device whose deletion has just arrived. The form has guarded
+     against this since it was written (see commitCur); the reading page never
+     did, so one tap on a star or a stage wrote the book back to the database,
+     put it on the shelf and uploaded it — resurrecting it on every device from
+     a page you were only looking at. It also left the deletion's tombstone in
+     place beside it, so the two then argued. */
+  if(!stored){
+    alert("This book isn't on your shelf any more — it was deleted while this page was open.");
+    view=cameFrom||"library";render();return;
+  }
+  const before=JSON.parse(JSON.stringify(stored));
   /* a mutation may refuse — declining the "start it again?" confirm returns
      false — and a refusal must cost nothing: no stamp, no save, no undo step,
      no place at the top of Recently edited, no cloud write */
@@ -7585,8 +7633,11 @@ async function quickEdit(mut){
   const after=JSON.parse(JSON.stringify(cur));
   pushOp({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))});
   try{await dbPut("books",after);}catch(e){alert("Couldn't save — storage may be full.");return;}
+  /* and again after the write, because the deletion could have landed during it.
+     Putting it back on the shelf here would undo the same guard from underneath. */
   const i=books.findIndex(x=>x.id===cur.id);
-  if(i>=0)books[i]=after;else books.unshift(after);
+  if(i<0){renderBookView();return;}
+  books[i]=after;
   if(SYNC.on){enqueue({kind:"book",id:cur.id});flushQueue();}
   renderBookView();
 }
@@ -9362,14 +9413,15 @@ function renderEditor(){
     if(fg)fg.onclick=()=>{
       /* a brand new genre needs a colour; pick a settled one from its name so the
          same genre always looks the same */
+      /* through addGenre, like every other way of adding one. Writing straight
+         into the vocabulary skipped two things it does: tidying the name's case,
+         and clearing any "removed everywhere" mark left on that genre — with the
+         mark still standing, the next sync deleted the genre again and the chip
+         stayed on the book pointing at nothing. */
       genSel.forEach(g=>{
-        if(!genres[g]){
-          let h=0;for(let i=0;i<g.length;i++)h=(h*31+g.charCodeAt(i))>>>0;
-          genres[g]=PALETTE[h%PALETTE.length];
-        }
-        if(!cur.genres.includes(g))cur.genres.push(g);
+        const n=titleCase(String(g||"").trim());if(!n)return;
+        addGenre(n,genres[n]||genreColor(n));
       });
-      saveMeta();renderGenres();scheduleSave();
       fg.textContent=`Added ${genSel.size} ✓`;fg.disabled=true;genSel.clear();
     };
     const fc=q("#fpCover",box);
@@ -9561,7 +9613,7 @@ function renderEditor(){
     const bL=q("#fcL",out);if(bL)bL.onclick=()=>{cur.link=r.url;const el=q("#fLink");if(el)el.value=r.url;scheduleSave();done(bL,"Link set ✓");};
     const bF=q("#fcF",out);if(bF)bF.onclick=()=>{
       fSel.forEach(f=>{const n=titleCase(f);
-        if(!fandoms[n]){fandoms[n]=[];}
+        addFandom(n);
         if(!cur.fandoms.includes(n))cur.fandoms.push(n);});
       saveFandoms();renderFF();scheduleSave();done(bF,"Added ✓");
     };
@@ -9580,8 +9632,7 @@ function renderEditor(){
     const bG=q("#fcG",out);if(bG)bG.onclick=()=>{
       gSel.forEach(g=>{
         const n=titleCase(g.trim());if(!n)return;
-        let h=0;for(let i=0;i<n.length;i++)h=(h*31+n.charCodeAt(i))>>>0;
-        addGenre(n,genres[n]||PALETTE[h%PALETTE.length]);
+        addGenre(n,genres[n]||genreColor(n));
       });
       done(bG,"Added ✓");
     };
@@ -9916,7 +9967,7 @@ function renderEditor(){
         :"";
       qa("[data-fdsug]",box).forEach(b=>b.onclick=()=>{
         const f=b.dataset.fdsug;
-        if(!fandoms[f]){fandoms[f]=[];saveFandoms();}
+        if(addFandom(f))saveFandoms();
         if(!cur.fandoms.includes(f))cur.fandoms.push(f);
         renderFF();scheduleSave();
       });
@@ -9944,7 +9995,7 @@ function renderEditor(){
       ()=>cur.characters,l=>{cur.characters=l;renderFF();},scheduleSave,true);
     wireAddIn(q("#fdIn",w),v=>{
       const f=titleCase(v);
-      if(!fandoms[f]){fandoms[f]=[];saveFandoms();}
+      if(addFandom(f))saveFandoms();
       if(!cur.fandoms.includes(f))cur.fandoms.push(f);
       renderFF();scheduleSave();
     });
@@ -10786,6 +10837,12 @@ function renderEditor(){
     if(renaming){
       genres[newN]=color||genres[newN]||genres[oldN]||"#78716c";
       delete genres[oldN];
+      /* Both marks, exactly as renaming a fandom has always done. Without the
+         first, the old name is only gone here — the next pull finds it still
+         living on the other device, adds it back, and the rename half-undoes
+         itself. Without the second, renaming TO a name you had once removed
+         walks straight into its leftover mark and the new name is deleted. */
+      markMetaDel("genre:"+oldN);unmarkMetaDel("genre:"+newN);
       const items=[];
       await relabel("genres",oldN,newN,items);
       if(items.length)pushOp({t:"bulk",items});
