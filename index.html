@@ -923,9 +923,14 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
      cut out. Its outline is the only thing that was worth keeping. */
   #edPage.arr .padshape{outline:2px solid #2dd4bf}
   /* the reading page's own writing has to stop swallowing the pen the way the
-     form's does — without this, a mark drawn across your notes never arrives */
-  #edPage.draw .vtext,#edPage.draw .vhead,#edPage.draw .vfacts,#edPage.draw .vrow,
-  #edPage.draw .vsec,#edPage.draw .ventry,#edPage.draw .rdlist{pointer-events:none}
+     form's does — without this, a mark drawn across your notes never arrives.
+     Three names in here (.vrow, .ventry, .rdlist) had stopped matching anything
+     at all, while the block they were meant to cover — the list of stories in a
+     collection — had been rebuilt as .entbox and was left out. It is the one
+     part of this page made of buttons and a number box, so drawing across a
+     collection pressed its stories' controls instead of leaving a mark. */
+  #edPage.draw .vtext,#edPage.draw .vhead,#edPage.draw .vfacts,
+  #edPage.draw .vsec,#edPage.draw .entbox{pointer-events:none}
   /* fit-to-screen is about the scrapbook, not this — it was stacking the header
      even on a wide window, which is why the title sat under the cover */
   .prog{display:inline-block;height:7px;border-radius:999px;background:var(--line);overflow:hidden;vertical-align:middle}
@@ -1511,8 +1516,11 @@ const KINDS=[["book","📗 Book"],["fanfic","✍️ Fanfic"],["ai","🤖 AI stor
 const kindOf=b=>b.kind||"book";
 const kindLabel=k=>(KINDS.find(x=>x[0]===k)||KINDS[0])[1];
 const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre","Genre"],["keyword","Keyword"],["quotes","Quotes"],["summary","Summary"],["notes","Notes"],["lists","+/− lists"],["fandom","Fandom & characters"],["ships","Relationships"]];
-const lastName=a=>{const p=(a||"").trim().split(/\s+/);return (p[p.length-1]||"").toLowerCase();};
-/* surname even for "Rowling, J. K." style — used to spot the same author written differently */
+/* surname even for "Rowling, J. K." style — used to spot the same author
+   written differently, and to sort them. There was a second, simpler version of
+   this that only ever took the last word, so an author written surname-first
+   sorted under their initial: Rowling, J. K. filed under K. Both sorts now ask
+   this one, which knows what the comma means. */
 const surnameOf=a=>{a=String(a||"").trim();if(!a)return"";
   const c=a.indexOf(",");if(c>0)return a.slice(0,c).trim().toLowerCase();
   const p=a.replace(/\./g," ").trim().split(/\s+/);return (p[p.length-1]||"").toLowerCase();};
@@ -2148,7 +2156,14 @@ function markEntStatus(coll,en,what){
      stages here has always worked. Tapping it again takes it back off — the
      same toggle the identical-looking button on a book has always been. */
   if(what==="dnf"){if(en.dnf)en.dnf=false;else{en.dnf=true;en.hold=false;en.status="";}}
-  else if(what==="hold"){if(en.hold)en.hold=false;else{en.hold=true;en.dnf=false;en.status="";}}
+  /* Coming back off hold has to put the stage back, which a book never had to
+     do: a book keeps its status through being set aside, so it returns still
+     saying Reading. A story's is cleared on the way in, so it came back saying
+     nothing at all — and a story saying nothing hands its open reading back to
+     the collection, taking the start date with it. Picking it up again is
+     reading it again, so that is what it goes back to saying. */
+  else if(what==="hold"){if(en.hold){en.hold=false;if(openRead(en))en.status="reading";}
+    else{en.hold=true;en.dnf=false;en.status="";}}
   else{en.dnf=false;en.hold=false;en.status=what;}
   return applyReading(en,en.status,en.dnf||en.hold);
 }
@@ -2228,7 +2243,11 @@ const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
   /* its page too — a story on the go earns the same progress line under its
      row that a plain book gets, and without this the line was silently blank */
   rating:en.rating,pages:en.pages,progress:en.progress,
-  status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),
+  /* set aside is a flag beside the stage, not a stage, so it has to be carried
+     over on its own. Without it a story you had set down came to the shelf
+     saying whatever it said before — usually Finished, since setting it aside
+     clears the stage — and the On hold filter never found it. */
+  status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),hold:entHoldOf(coll,en),
   dateFinished:entDateOf(coll,en),favorite:!!en.favorite,summary:en.summary||"",
   /* its own readings travel with it, so a story read three times says so on the
      shelf rather than borrowing the collection's count */
@@ -4849,7 +4868,7 @@ function groupsFor(list){
   }else if(groupBy==="author"){
     const map={};
     list.forEach(b=>{const a=(b.author||"").trim()||"Unknown author";(map[a]=map[a]||[]).push(b);});
-    Object.keys(map).sort((a,b)=>lastName(a).localeCompare(lastName(b))||a.localeCompare(b)).forEach(k=>out.push({label:k,items:map[k]}));
+    Object.keys(map).sort((a,b)=>surnameOf(a).localeCompare(surnameOf(b))||a.localeCompare(b)).forEach(k=>out.push({label:k,items:map[k]}));
   }else if(groupBy==="series"){
     const map={},none=[];
     list.forEach(b=>{const s=(b.series||"").trim();if(s)(map[s]=map[s]||[]).push(b);else none.push(b);});
@@ -4930,6 +4949,11 @@ function renderLibrary(){
   const list=shelf.filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
     &&(!onlyRaw||isRaw(b))&&findHit(b)).sort(sortCmp);
   let html="";
+  /* Kept apart from the rest of the toolbar because the fandom cards want this
+     row and nothing else: they answer a different question and none of the
+     shelf's other controls can reach them. Drawing the whole bar over them left
+     a screenful of buttons that did nothing when pressed. */
+  let kindRow="";
   if(books.length){
     /* the everyday controls: which books, find one, and a lid over all the rest —
        five rows of tools before the first book helped nobody */
@@ -4955,9 +4979,10 @@ function renderLibrary(){
           title="Open books ready to write in — the full form, every field ready to change">📖<i>✎</i></button>
       </span></div>`;
     if(kc.fanfic||kc.ai)
-      html+=`<div class="pills"><span class="lbl">Show:</span>${KINDS.map(([k,l])=>{const on=kindFilter.includes(k);
+      kindRow=`<div class="pills"><span class="lbl">Show:</span>${KINDS.map(([k,l])=>{const on=kindFilter.includes(k);
         return `<button class="mg ${on?"on":""}" data-kf="${k}" style="${on?"background:var(--teal);border-color:var(--teal)":""}"><span class="bx">${on?"✓":""}</span>${l} <b>${kc[k]}</b></button>`;}).join("")}
         <button class="pill ${libFandomMode?"on":""}" id="fdTog" title="Your fics and AI stories as fandom cards">🎭 Fandoms</button></div>`;
+    html+=kindRow;
     if(settings.libTools){
       html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","favorites","title","author","status","genre","type"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}">${s.charAt(0).toUpperCase()+s.slice(1)}</button>`).join("")}
         <button class="laybtn" id="layTog">${layout==="list"?"▦ Grid":"☰ List"}</button></div>`;
@@ -5077,14 +5102,19 @@ function renderLibrary(){
      rule that could be got wrong. A card opens Search already narrowed to
      that fandom, so the shelf itself does the showing and there is no second
      way of listing books to keep in step with the first. */
+  /* nothing left on the shelf that can carry a fandom — the way back out went
+     with it, so step out of the cards rather than stranding you among them */
+  if(libFandomMode&&!kindRow)libFandomMode=false;
   if(libFandomMode){
-    const pool=books.filter(b=>kindOf(b)!=="book");
+    /* the Show ticks count here too. They were drawn above the cards and left
+       them untouched, so unticking AI stories changed nothing you could see. */
+    const pool=books.filter(b=>kindOf(b)!=="book"&&kindFilter.includes(kindOf(b)));
     const count={};
     pool.forEach(b=>(b.fandoms||[]).forEach(f=>{count[f]=count[f]||{n:0,chars:new Set()};
       count[f].n++;(b.characters||[]).forEach(c=>count[f].chars.add(c));}));
     const loose=pool.filter(b=>!(b.fandoms||[]).length).length;
     const rows=Object.entries(count).sort((a,b)=>b[1].n-a[1].n||a[0].localeCompare(b[0]));
-    m.innerHTML=html+`<div class="fdgrid">${
+    m.innerHTML=kindRow+`<div class="fdgrid">${
       rows.map(([f,v])=>`<button class="fdcard" data-fdgo="${esc(f)}">
         <div class="fdname">${esc(f)}</div>
         <div class="fdmeta">${v.n} ${v.n===1?"story":"stories"}${v.chars.size?` · ${v.chars.size} character${v.chars.size===1?"":"s"}`:""}</div>
@@ -5104,6 +5134,7 @@ function renderLibrary(){
     qa("[data-kf]",m).forEach(b=>b.onclick=()=>{
       const k=b.dataset.kf;
       kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
+      if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
       renderLibrary();
     });
     return;
@@ -5795,7 +5826,11 @@ async function renderHub(){
      HOLD_REASONS[0] is "Waiting for the next one". */
   const nextUp=books.filter(b=>holdOf(b)&&(b.holdReasons||[]).includes(HOLD_REASONS[0]));
   /* the last few readings to have ended, newest first */
-  const recent=readUnits().flatMap(u=>u.reads.filter(r=>r.end).map(r=>({t:u.title,end:r.end,id:u.book.id})))
+  /* the story travels with the id. A reading that belongs to one story inside a
+     collection was opening the collection at its top, leaving you to find the
+     story you had just finished — everywhere else on the shelf hands the story
+     through, and this was the one place that dropped it. */
+  const recent=readUnits().flatMap(u=>u.reads.filter(r=>r.end).map(r=>({t:u.title,end:r.end,id:u.book.id,en:u.en?u.en.id:""})))
     .sort((a,b)=>b.end.localeCompare(a.end)).slice(0,3);
   m.innerHTML=`
     <div class="sec" id="secNow">
@@ -5821,7 +5856,7 @@ async function renderHub(){
             :`You've passed it${doneY>goal?` — ${doneY-goal} over`:""}.`}</div>`
           :`<div class="hint" style="margin:0">Put a number in and this becomes a progress bar. Kept on this device, like the text size.</div>`}
         ${recent.length?`<div class="hint" style="margin:9px 0 0">Last finished: ${recent.map(r=>
-          `<button class="btn" data-recb="${r.id}" style="padding:2px 9px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.t)||"Untitled"}</button>`).join(" ")}</div>`:""}
+          `<button class="btn" data-recb="${r.id}"${r.en?` data-recen="${esc(r.en)}"`:""} style="padding:2px 9px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.t)||"Untitled"}</button>`).join(" ")}</div>`:""}
       </div>
     </div>
     ${nextUp.length?`<div class="sec" id="secNext">
@@ -5938,7 +5973,7 @@ async function renderHub(){
   const nxSec=q("#secNext",m);
   if(nxSec&&nextUp.length){wireOpen(nxSec,false);hydrateCovers(nxSec);}
   const np=q("#nowPick",m);if(np)np.onclick=()=>{view="pick";render();window.scrollTo(0,0);};
-  qa("[data-recb]",m).forEach(b=>b.onclick=()=>openBook(b.dataset.recb,false));
+  qa("[data-recb]",m).forEach(b=>b.onclick=()=>openBook(b.dataset.recb,false,false,b.dataset.recen||""));
   const gi=q("#goalIn",m);
   if(gi)gi.onchange=()=>{
     const v=Math.max(0,Math.min(999,parseInt(gi.value)||0));
@@ -6751,7 +6786,7 @@ function renderSearchBody(){
   const sUnits=rateUnits();
   const unitRow=u=>u.en?storyProxy(u.book,u.en):u.book;
   const authors={};books.forEach(b=>{const a=(b.author||"").trim();if(a)authors[a]=(authors[a]||0)+1;});
-  const authorList=Object.entries(authors).sort((x,y)=>lastName(x[0]).localeCompare(lastName(y[0]))||x[0].localeCompare(y[0]));
+  const authorList=Object.entries(authors).sort((x,y)=>surnameOf(x[0]).localeCompare(surnameOf(y[0]))||x[0].localeCompare(y[0]));
   const topAuthor=Object.entries(authors).sort((x,y)=>y[1]-x[1])[0]||null;
   const gcount={};sUnits.forEach(u=>(u.genres||[]).forEach(g=>gcount[g]=(gcount[g]||0)+1));
   const allG=Object.keys(genres).sort((a,b)=>a.localeCompare(b));
@@ -6807,7 +6842,14 @@ function renderSearchBody(){
     const f=S.filter;
     if(f.type==="author")results=books.filter(b=>(b.author||"").trim()===f.value);
     if(f.type==="genre")results=sUnits.filter(u=>(u.genres||[]).includes(f.value)).map(unitRow);
-    if(f.type==="favorite")results=books.filter(b=>b.favorite);
+    /* Every favourite, the stories inside collections included — the same count
+       the button carries. It listed whole books only, so a favourited story
+       inside a collection was counted on the button and then missing from what
+       the button opened; enough of them and the button offered a number and
+       handed back nothing at all. A collection favourited in its own right is
+       still one of them, standing beside the stories it holds. */
+    if(f.type==="favorite")results=books.flatMap(b=>[...(b.favorite?[b]:[]),
+      ...(isColl(b)?(b.entries||[]).filter(en=>en.favorite).map(en=>storyProxy(b,en)):[])]);
     if(f.type==="dnf")results=books.filter(b=>b.dnf);
     else if(f.type==="hold")results=books.filter(b=>holdOf(b));
     if(f.type==="status")results=books.filter(b=>statusOf(b)===f.value&&!b.dnf&&!holdOf(b));
@@ -7088,7 +7130,11 @@ function renderInsights(){
   if(topF)say.push(`Deepest fandom: <b>${esc(topF[0])}</b> (${topF[1]} entr${topF[1]===1?"y":"ies"}).`);
   if((kinds.fanfic||0)+(kinds.ai||0)>0)say.push(`Your shelf isn't only print — ${kinds.fanfic||0} fanfic${(kinds.fanfic||0)===1?"":"s"} and ${kinds.ai||0} AI stor${(kinds.ai||0)===1?"y":"ies"} live here too.`);
   if(topKw.length)say.push(`Themes that keep following you: ${topKw.map(x=>`<span class="kw">${esc(x[0])}</span>`).join(" ")}`);
-  if(want.length&&pace)say.push(`Your want-to-read pile holds <b>${want.length}</b> — at your usual pace (~${pace}/year), that's about <b>${Math.max(1,Math.round(want.length/pace*12))} month${Math.round(want.length/pace*12)===1?"":"s"}</b> of reading already queued.`);
+  /* the number shown and the number the wording is chosen from have to be the
+     same one: a pile under half a month rounds to nothing, was raised to one to
+     avoid saying "about 0 months", and then took the plural from the nought */
+  if(want.length&&pace){const mo=Math.max(1,Math.round(want.length/pace*12));
+    say.push(`Your want-to-read pile holds <b>${want.length}</b> — at your usual pace (~${pace}/year), that's about <b>${mo} month${mo===1?"":"s"}</b> of reading already queued.`);}
   else if(want.length)say.push(`Your want-to-read pile holds <b>${want.length}</b> book${want.length===1?"":"s"}.`);
   const goalN=Math.max(0,parseInt(settings.goal)||0);
   if(years[thisYear]||goalN){
@@ -11110,16 +11156,29 @@ function parseFicRated(line,out){
   if(!line)return;
   ficStats(line,out);
   const parts=line.split(/\s+-\s+/).map(s=>s.trim()).filter(Boolean);
-  const r=line.match(/Rated:\s*(?:Fiction\s*)?([A-Z]+)/i);
+  /* the + is part of the rating: K and K+ are two different things, and taking
+     only the letters filed every K+ fic as a K */
+  const r=line.match(/Rated:\s*(?:Fiction\s*)?([A-Z]+\+?)/i);
   if(r)out.rating=r[1];
   parts.forEach((p,i)=>{
     if(/^(Chapters|Words|Reviews|Favs|Follows|Updated|Published|Status|id):/i.test(p))return;
     if(/^Rated:/i.test(p))return;
     if(i===1&&/^[A-Z][a-z]+$/.test(p)){out.language=p;return;}
     /* the genre slot is a slash-joined pair from a known list; anything after
-       it that is not a labelled number is the character list */
-    if(/^[A-Za-z/ ]+$/.test(p)&&/Adventure|Angst|Comedy|Crime|Drama|Family|Fantasy|Friendship|General|Horror|Humor|Hurt|Mystery|Parody|Poetry|Romance|Sci-Fi|Spiritual|Supernatural|Suspense|Tragedy|Western/i.test(p))
-      out.genres=p.split("/").map(s=>s.trim()).filter(Boolean);
+       it that is not a labelled number is the character list.
+       The hyphen belongs in here because Sci-Fi has one. Without it that genre
+       failed to look like a genre and fell through to the line below, which
+       took it for the cast — so the genres were lost AND the characters were
+       replaced by the word "Sci-Fi", the real ones then skipped for arriving
+       second. Parts were split on a SPACED hyphen, so one inside a word like
+       this can never be a separator. */
+    if(/^[A-Za-z/ -]+$/.test(p)&&/Adventure|Angst|Comedy|Crime|Drama|Family|Fantasy|Friendship|General|Horror|Humor|Hurt|Mystery|Parody|Poetry|Romance|Sci-Fi|Spiritual|Supernatural|Suspense|Tragedy|Western/i.test(p))
+      /* Hurt/Comfort is one genre with a slash inside it, and the slash is also
+         what joins a pair — so it is put aside before the split and restored
+         after. Splitting it blindly invented two genres, Hurt and Comfort,
+         that no site has and that then stayed in your list for good. */
+      out.genres=p.replace(/Hurt\/Comfort/ig,"Hurt+Comfort").split("/")
+        .map(s=>s.trim().replace(/^Hurt\+Comfort$/i,"Hurt/Comfort")).filter(Boolean);
     else if(i>1&&!out.characters.length&&/[A-Za-z]/.test(p))
       out.characters=p.split(",").map(s=>s.trim()).filter(Boolean);
   });
