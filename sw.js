@@ -73,8 +73,12 @@ self.addEventListener("fetch", e => {
     });
     const cached = await caches.match(req);
     if (!cached) return net.catch(() => caches.match("./index.html"));
+    // A 404 or a 500 is an answer, and the race used to accept it as the winner —
+    // so a hiccup at the host, or a request landing mid-deploy, showed you an error
+    // page while a perfectly good copy of the app sat in the cache unused. Only a
+    // real answer can beat the cache; anything else counts as no answer at all.
     const winner = await Promise.race([
-      net.catch(() => null),
+      net.then(res => (res && res.ok) ? res : null).catch(() => null),
       new Promise(r => setTimeout(r, 2500, null))
     ]);
     return winner || cached;

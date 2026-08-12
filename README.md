@@ -189,7 +189,10 @@ asks for persistent storage), but the only backup *you* control is the one you
 export:
 
 - **Overview → Export backup file** downloads a single `.json` with every book,
-  cover, picture, note and setting.
+  cover, picture and note, and the lists you've built up — genres, fandoms,
+  keyword colours, backgrounds. Not this device's own preferences (text size,
+  theme, which background you picked): those stay where they are, so restoring
+  onto another device doesn't drag its appearance across with the books.
 - **Import backup file** merges it back in — books you've added since are kept,
   matching books return to their backed-up version.
 - Automatic daily snapshots are also kept inside the browser (restorable in one
@@ -239,7 +242,10 @@ open it in a browser, done.
 | `config.js` | Your Supabase URL + anon key. Placeholders = local-only mode. |
 | `schema.sql` | Paste-once Supabase setup (tables, bucket, security rules). |
 | `sw.js` | Service worker so the app itself opens offline. |
+| `version.js` | Build stamp, rewritten by the pre-commit hook. The app shows it, and the offline cache is named after it. |
 | `dev-check.html` | Developer tool, not part of the app — opens every screen at a row of widths and fails loudly if anything scrolls sideways. |
+| `wash-check.html` | Developer tool — counts your covers and draws the "Your covers" background four ways side by side. Reads only. |
+| `.githooks/pre-commit` | Stamps `version.js`. Run `git config core.hooksPath .githooks` once per clone or it never fires. |
 | `manifest.json`, `icon.svg`, `icon.png` | Home-screen install bits. |
 
 *Vanilla JS, no build step, no framework, no npm. The only runtime dependencies are

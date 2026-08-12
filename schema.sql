@@ -8,7 +8,11 @@
 --
 --  What it creates:
 --    • table  public.books   (one row per book, JSON payload)
---    • table  public.meta    (genres, DNF reasons, audiences, tombstones)
+--    • table  public.meta    (one row per shared list — genres, DNF reasons,
+--                             audiences, fandoms, backgrounds, notepad skins,
+--                             keyword colours and families, group pictures,
+--                             the reading goal, and the deletion marks and
+--                             timestamps that let two devices agree)
 --    • bucket storage "shelf" (covers + pictures, as JPEG files)
 --    • Row Level Security so each account only ever sees its own data.
 -- ============================================================
