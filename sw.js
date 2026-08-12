@@ -66,12 +66,18 @@ self.addEventListener("fetch", e => {
   // long as the request took to die. Now the network gets 2.5 seconds to answer;
   // after that the saved copy opens the app, and the network's answer, whenever
   // it does arrive, still refreshes the cache so the next open is current.
+  // Cache under the address without its query, and look it up the same way. The
+  // layout check loads index.html ten times a sweep with a different ?devcheck=
+  // stamp each time, and every one of those was kept as its own three-quarters
+  // of a megabyte until the next build cleared the cache. None of our own files
+  // mean anything different for having a query on the end.
+  const key = url.origin + url.pathname;
   e.respondWith((async () => {
     const net = fetch(req).then(res => {
-      if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+      if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(key, copy)); }
       return res;
     });
-    const cached = await caches.match(req);
+    const cached = await caches.match(key);
     if (!cached) return net.catch(() => caches.match("./index.html"));
     // A 404 or a 500 is an answer, and the race used to accept it as the winner —
     // so a hiccup at the host, or a request landing mid-deploy, showed you an error

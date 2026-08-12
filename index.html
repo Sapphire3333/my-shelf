@@ -164,7 +164,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
      genre is shown — the row grows taller rather than hiding any. */
   .rside{display:flex;flex-direction:column;align-items:flex-end;gap:3px;max-width:55%}
   .rgen{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:3px;max-width:100%}
-  @media(max-width:520px){.rside{max-width:50%}}
+  /* the 50% cap that used to be here measured raw pixels, so it fought the width
+     buckets rather than joining them: at any text size of 100% or more a 520px
+     screen is already "tiny", whose own rule gives this the full width and lays
+     it out as a row, and that rule wins. It could only ever fire at text sizes
+     below about 90%, where it quietly disagreed with the bucket covering the
+     same screens. The buckets own this now. */
   /* Stage and favourite ride on the cover itself. Two boxes flanking it made the
      cover — the thing actually worth looking at — the smallest part of the row. */
   .stdot{position:absolute;top:-6px;left:-6px;width:22px;height:22px;border-radius:50%;
@@ -2793,6 +2798,16 @@ async function loadSyncLocal(){
   const cut=Date.now()-90*864e5;let pruned=false;
   for(const k of Object.keys(deletions))if(deletions[k]<cut){delete deletions[k];pruned=true;}
   if(pruned)dbPut("meta",{k:"deletions",v:deletions});
+  /* The same housekeeping for the map beside it, which never had any. It holds
+     the newest copy the cloud has shown us of each book, and it kept an entry
+     for every book that has ever existed here — including ones deleted years
+     ago, whose entry can never be consulted again once even their tombstone has
+     gone. Drop those; a book still on the shelf or still in the bin keeps its. */
+  let seenPruned=false;
+  const liveIds=new Set(books.map(b=>b.id));
+  for(const k of Object.keys(SYNC.seen))
+    if(!liveIds.has(k)&&!(k in deletions)){delete SYNC.seen[k];seenPruned=true;}
+  if(seenPruned)dbPut("meta",{k:"seenMod",v:SYNC.seen});
 }
 /* The whole queue is written out at once, and importing a library puts
    thousands of uploads in it — so writing it after every single one, which is
@@ -2941,8 +2956,14 @@ async function pullAll(){
           if(row.key==="genres"){
             if(cloudNewer("genres"))genres=takeWhole(row.value,genres,"genre:");
             else{const rv=row.value||{};for(const g in rv)if(!(g in genres)&&!gone("genre:"+g))genres[g]=rv[g];}}
-          else if(row.key==="dnfReasons")dnfCustom=[...new Set([...(row.value||[]),...dnfCustom])];
-          else if(row.key==="audiences")audCustom=[...new Set([...(row.value||[]),...audCustom])];
+          /* These two were the only shared lists merged by pure addition, with no
+             way at all to say a name had gone — so undoing one you had just added
+             was undone again by the next sync, which handed it straight back from
+             the other device. They now carry marks like every other list. */
+          else if(row.key==="dnfReasons")
+            dnfCustom=[...new Set([...(row.value||[]),...dnfCustom])].filter(x=>!gone("dnf:"+x));
+          else if(row.key==="audiences")
+            audCustom=[...new Set([...(row.value||[]),...audCustom])].filter(x=>!gone("aud:"+x));
           else if(row.key==="deletions"){const rv=row.value||{};for(const k in rv)deletions[k]=Math.max(deletions[k]||0,rv[k]);}
           else if(row.key==="backgrounds"){const have=new Set(bgList.map(x=>x.id));
             (row.value||[]).forEach(x=>{if(x&&x.id&&!have.has(x.id)&&!gone("bg:"+x.id))bgList.push(x);});}
@@ -2995,7 +3016,18 @@ async function pullAll(){
           else if(kind==="bg")bgList=bgList.filter(x=>x.id!==nm);
           else if(kind==="pad")padList=padList.filter(x=>x.id!==nm);
           else if(kind==="libart")libArt=libArt.filter(x=>x.id!==nm);
+          else if(kind==="dnf")dnfCustom=dnfCustom.filter(x=>x!==nm);
+          else if(kind==="aud")audCustom=audCustom.filter(x=>x!==nm);
+          /* a keyword family, which is only ever as real as the keywords pointing
+             at it — so the mark's job is to take its colour away with it */
+          else if(kind==="cat")delete catColors[nm];
         }
+        /* A family with no keywords left in it is not a family any more, but its
+           colour stayed behind for good and would be silently inherited by the
+           next family of the same name. The mark is what carries that away to
+           the other devices, and is what the "cat:" prefix above was always for. */
+        {const live=new Set(Object.values(kwCats).filter(Boolean));
+         for(const c of Object.keys(catColors))if(!live.has(c)){delete catColors[c];markMetaDel("cat:"+c);}}
         dbPut("meta",{k:"libArt",v:libArt});
         dbPut("meta",{k:"kwCats",v:kwCats});dbPut("meta",{k:"catColors",v:catColors});
         for(const k in rTimes)metaTimes[k]=Math.max(metaTimes[k]||0,rTimes[k]);
@@ -4040,7 +4072,7 @@ async function applyOp(op,inv){
   }
   if(op.t==="meta"){
     const v=inv?op.before:op.after;
-    const had=Object.keys(genres);
+    const had=Object.keys(genres),hadD=[...dnfCustom],hadA=[...audCustom];
     genres=JSON.parse(JSON.stringify(v.genres));
     dnfCustom=[...v.dnfCustom];audCustom=[...v.audCustom];
     /* An undo has to say WHEN, or it does not survive contact with another
@@ -4052,6 +4084,12 @@ async function applyOp(op,inv){
        so the other device hands it straight back and pushes it up again. */
     had.forEach(g=>{if(!(g in genres))markMetaDel("genre:"+g);});
     Object.keys(genres).forEach(g=>unmarkMetaDel("genre:"+g));
+    /* the same both ways for the other two lists, which until now had no way of
+       saying a name had gone and so could only ever grow */
+    hadD.forEach(x=>{if(!dnfCustom.includes(x))markMetaDel("dnf:"+x);});
+    dnfCustom.forEach(x=>unmarkMetaDel("dnf:"+x));
+    hadA.forEach(x=>{if(!audCustom.includes(x))markMetaDel("aud:"+x);});
+    audCustom.forEach(x=>unmarkMetaDel("aud:"+x));
     metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
     dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});
     enqueue({kind:"meta",key:"genres"});enqueue({kind:"meta",key:"dnfReasons"});enqueue({kind:"meta",key:"audiences"});
@@ -4270,14 +4308,13 @@ function render(){
   if(!bootRestored){bootRestored=true;if(restoreFromHistory())return;}
   resetCoverStats();   /* a fresh tally per screen, however many passes it takes */
   if(view==="book"){renderBook();return;}
-  const favN=favUnits(),dnfN=books.filter(b=>b.dnf).length;
   q("#app").innerHTML=`
   <div class="wrap">
     <header>
       <div class="hrow">
         <div>
           <h1 class="serif">My Shelf</h1>
-          <div class="sub">${shelfUnits()} on the shelf · ${favN} favorites · ${dnfN} DNF</div>
+          <div class="sub">${shelfSubText()}</div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
           <button class="addbtn" id="addBook">+ Add book</button>
@@ -4320,10 +4357,20 @@ function render(){
   wireSizeCtrl();
   const so=q("#signOut");if(so)so.onclick=signOut;updateSyncUI();
   applyBg();
-  if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else if(view==="insights")renderInsights();else if(view==="pick")renderPick();else renderSearchView();
+  renderView();
   closeFabMenu();   /* a jump list from the previous page would point at nothing */
   updateFab();
   syncHistory();
+}
+/* which screen goes under the tabs. Written out twice before, once here and
+   once in renderMain, so adding a tab meant remembering both. */
+function renderView(){
+  if(view==="library")renderLibrary();
+  else if(view==="overview")renderHub();
+  else if(view==="history")renderHistory();
+  else if(view==="insights")renderInsights();
+  else if(view==="pick")renderPick();
+  else renderSearchView();
 }
 /* redraw only what sits under the tabs. Opening the little stage disc on a
    cover used to rebuild the entire page — header, tabs and all — twice per
@@ -4332,13 +4379,16 @@ function render(){
 function renderMain(){
   if(view==="book"){renderBook();return;}
   if(!q("#main")){render();return;}
-  if(view==="library")renderLibrary();else if(view==="overview")renderHub();else if(view==="history")renderHistory();else if(view==="insights")renderInsights();else if(view==="pick")renderPick();else renderSearchView();
+  renderView();
   updateFab();
 }
-/* the header's counts, refreshed without rebuilding the header */
+/* the header's counts — one sentence, whether it is being written into a header
+   being built or into one already on screen */
+const shelfSubText=()=>`${shelfUnits()} on the shelf · ${favUnits()} favorites · ${books.filter(b=>b.dnf).length} DNF`;
+/* refreshed without rebuilding the header */
 function refreshShelfSub(){
   const el=q("header .sub");
-  if(el)el.textContent=`${shelfUnits()} on the shelf · ${favUnits()} favorites · ${books.filter(b=>b.dnf).length} DNF`;
+  if(el)el.textContent=shelfSubText();
 }
 
 /* =============== jump-to & back-to-top =============== */
@@ -5463,6 +5513,7 @@ function renderLibrary(){
     },true);
     const sa=q("#selAud",m);
     if(sa)sa.onclick=()=>openApply("Who it's for",[...new Set([...DEFAULT_AUD,...audCustom])],a=>{
+      unmarkMetaDel("aud:"+a);
       if(![...DEFAULT_AUD,...audCustom].includes(a)){audCustom.push(a);saveMeta();}
       applyToSel(b=>{const l=audsOf(b);if(l.indexOf(a)<0)setAuds(b,[...l,a]);});
     },true);
@@ -10586,6 +10637,9 @@ function renderEditor(){
       cur.dnfReasons=cur.dnfReasons.includes(r)?cur.dnfReasons.filter(y=>y!==r):[...cur.dnfReasons,r];
       renderDnf();scheduleSave();});
     q("#dnfAdd",w).onclick=()=>{const v=q("#dnfIn",w).value.trim();if(!v)return;
+      /* clearing the mark matters even when the reason is already on the list:
+         a mark left standing is enough on its own to take it away again */
+      unmarkMetaDel("dnf:"+v);
       if(![...DEFAULT_DNF,...dnfCustom].includes(v)){dnfCustom.push(v);saveMeta();}
       if(!cur.dnfReasons.includes(v))cur.dnfReasons.push(v);
       renderDnf();scheduleSave();};
@@ -10631,6 +10685,7 @@ function renderEditor(){
       setAuds(cur,list.indexOf(a)>=0?list.filter(y=>y!==a):[...list,a]);
       renderAud();scheduleSave();});
     wireAddIn(q("#audIn",w),v=>{
+      unmarkMetaDel("aud:"+v);
       if(![...DEFAULT_AUD,...audCustom].includes(v)){audCustom.push(v);saveMeta();}
       const list=audsOf(cur);
       if(list.indexOf(v)<0)setAuds(cur,[...list,v]);
@@ -10993,6 +11048,10 @@ function renderEditor(){
         if(cat)kwCats[key]=cat;else delete kwCats[key];
         if(nn&&nn!==name)delete kwCats[name];
         if(wholeFamily&&cat&&color){
+          /* a family that emptied once carries a mark saying its colour has gone;
+             giving the name a colour again has to rub that out, or the next sync
+             takes it straight back off — the same trap fandoms used to have */
+          unmarkMetaDel("cat:"+cat);
           catColors[cat]=color;
           delete kwColors[key];        /* let it take the family's colour */
         }else{
@@ -11743,6 +11802,13 @@ async function applyBackup(data){
 
 /* =============== import from Goodreads / StoryGraph =============== */
 const IMPORT_SECTIONS=[["finished","Read"],["reading","Currently reading"],["want","Want to read"],["dnf","Did not finish"]];
+/* How many of an export's tags a book keeps. An export's shelf-names run to
+   dozens and most say nothing about the book, so there has to be a limit — but
+   there were three of them, and the one that filled in a book you already had
+   allowed nearly twice what the two that created one did. Same pipeline, same
+   number now. (Folding your OWN books into a collection keeps its own, larger
+   allowance: those keywords are ones you chose.) */
+const IMPORT_TAG_CAP=12;
 const secOf=it=>it.dnf?"dnf":it.status;
 const dupeKey=(t,a)=>((t||"")+"|"+(a||"")).toLowerCase().replace(/\s+/g," ").trim();
 /* Goodreads wraps ISBNs in ="…" for Excel; keep just the digits (and a check-X) */
@@ -12352,7 +12418,7 @@ function applyImportFills(it,b,en,fills){
     else if(f.k==="summary")T.summary=esc(it.summary);
     else if(f.k==="notes"){if(en)en.notes=esc(it.notes);else b.canvasText=esc(it.notes);}
     else if(f.k==="author")T.author=String(it.author||"").trim();
-    else if(f.k==="tags")b.keywords=[...((b.keywords)||[]),...f.v].slice(0,20);
+    else if(f.k==="tags")b.keywords=[...((b.keywords)||[]),...f.v].slice(0,IMPORT_TAG_CAP);
   }
   return b;
 }
@@ -12425,7 +12491,7 @@ async function importOne(it,extra){
     pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
     readings:readingsFromRow(it),
     summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
-    keywords:(it.tags||[]).slice(0,12),imported:Date.now(),modified:Date.now()},extra||{});
+    keywords:(it.tags||[]).slice(0,IMPORT_TAG_CAP),imported:Date.now(),modified:Date.now()},extra||{});
   syncReads(b);   /* dateFinished and rereads follow the list the export gave */
   await dbPut("books",b);
   books.unshift(b);
@@ -12482,7 +12548,7 @@ async function importCollection(items,name){
     author:items[0].author||"",
     status,dnf:allDnf,
     dateFinished:items.map(it=>it.dateFinished||"").sort().pop()||"",
-    keywords:[...new Set(items.flatMap(it=>it.tags||[]))].slice(0,12),
+    keywords:[...new Set(items.flatMap(it=>it.tags||[]))].slice(0,IMPORT_TAG_CAP),
     entries:items.map(it=>syncReads(Object.assign(blankEntry(),{
       title:it.title,rating:it.rating,pages:it.pages,
       dateFinished:it.dateFinished||"",readings:readingsFromRow(it),
