@@ -881,6 +881,15 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .bs-row{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);
     border-radius:10px;padding:8px 10px;margin-bottom:6px}
   .bs-row.off{opacity:.55}
+  /* a collection and its books read as one block, so the pile underneath is
+     plainly about them and not about the whole run */
+  .bs-grp{border:1px solid var(--line);border-left:3px solid var(--teal);border-radius:11px;
+    padding:9px 10px;margin-bottom:8px}
+  .bs-gt{font-family:Georgia,"Times New Roman",serif;font-size:15.5px;line-height:1.3}
+  .bs-gm{font-size:12.5px;color:var(--mut);margin:1px 0 6px}
+  .bs-row.bs-story{border:none;border-top:1px solid var(--line);border-radius:0;
+    padding:7px 0 4px;margin:0}
+  .bs-pile{background:var(--bg);border-radius:9px;padding:8px 9px;margin-top:8px}
   .bs-row input[type=checkbox]{accent-color:var(--teal);width:16px;height:16px;flex:none;margin:3px 0 0}
   .bs-t{font-family:Georgia,"Times New Roman",serif;font-size:14.5px;line-height:1.3}
   .bs-f{font-size:12.5px;color:var(--mut);margin-top:2px;overflow-wrap:anywhere}
@@ -5374,21 +5383,34 @@ function looksBlank(v){
   const s=stripHtml(String(v==null?"":v)).replace(/\s+/g," ").trim();
   return !s||/^(unknown|unknown author|no author|n\/?a|none|null|undefined|0|[-–—?.]+)$/i.test(s);
 }
-function openBulkFill(ids){
+async function openBulkFill(ids){
   if(q("#bulkSheet"))return;
   const picked=(ids||[]).map(id=>books.find(b=>b.id===id)).filter(Boolean);
   const real=picked.filter(b=>kindOf(b)==="book");
   const notBooks=picked.length-real.length;
-  const over=Math.max(0,real.length-BULK_CAP);
-  const queue=real.slice(0,BULK_CAP);
-  if(!queue.length){
+  /* one read instead of one per book. A story needs no read at all: `en.cover`
+     is a plain flag on the entry, which is why a whole shelf can be costed
+     before anything is fetched. */
+  const hasCover=new Set((await dbAllKeys("covers")).filter(k=>typeof k==="string"));
+  if(q("#bulkSheet"))return;         /* opened twice while that read was in flight */
+  /* A collection is not a thing to look up: its stories are the books. Each one
+     wants a cover, a blurb and a page count of its own, while the author and the
+     words belong to the collection they sit in — so ticking a collection means
+     everything inside it. The setup screen says so out loud, because three ticks
+     quietly becoming twenty-one lookups would be a nasty surprise. */
+  const groups=real.map(b=>isColl(b)
+    ?{b,coll:true,jobs:((b.entries)||[]).map(en=>({b,en,needs:[],row:null})),pile:[],author:null,strip:[]}
+    :{b,coll:false,jobs:[{b,en:null,needs:[],row:null}],pile:[],author:null,strip:[]});
+  const collN=groups.filter(g=>g.coll).length;
+  const inside=groups.reduce((n,g)=>n+(g.coll?g.jobs.length:0),0);
+  if(!groups.some(g=>g.jobs.length)){
     alert(notBooks?"Nothing ticked that can be looked up. Google Books and Open Library only know published books — fanfic and chats aren't on either of them."
-                  :"Tick some books first.");
+                  :"Tick some books first, or a collection with something inside it.");
     return;
   }
   const S={stage:"setup",fields:{cover:true,author:true,pages:true,blurb:true},
-           straight:false,done:0,now:"",rows:[],vocab:[],vocabAll:false,
-           filled:0,failedCovers:[],stopped:false};
+           straight:false,done:0,total:0,now:"",filled:0,failedCovers:[],
+           stopped:false,capped:0};
   let stop=false;
   const sheet=document.createElement("div");
   sheet.id="bulkSheet";
@@ -5399,20 +5421,69 @@ function openBulkFill(ids){
 
   const FIELDS=[["cover","Cover"],["author","Author"],["pages","Pages"],["blurb","Blurb"]];
   const plural=(n,w)=>`${n} ${w}${n===1?"":"s"}`;
+  const titleOf=j=>String((j.en?j.en.title:j.b.title)||"").trim();
 
-  /* ---------- what one book's answer means for that book ---------- */
-  /* Only blanks. A page count you corrected by hand is worth more than a page
-     count from a stranger's edition, and there is no way to tell them apart
-     after the fact — so the safe rule is the only rule. */
-  function weigh(b,info){
-    const want={},found=[];
-    if(S.fields.author&&looksBlank(b.author)&&info.author){want.author=info.author;found.push(info.author);}
-    if(S.fields.pages&&looksBlank(b.pages)&&info.pages){want.pages=parseInt(info.pages)||"";found.push(want.pages+" pages");}
-    if(S.fields.blurb&&looksBlank(b.summary)&&info.summary){want.blurb=info.summary;found.push("a blurb");}
-    if(S.fields.cover&&!S.hasCover.has(b.id)&&(info.covers||[]).filter(Boolean).length){
-      want.cover=(info.covers||[]).filter(Boolean);found.push(plural(want.cover.length,"cover")+" to try");
+  /* ---------- who is worth asking about ----------
+     Only blanks. A page count you corrected by hand is worth more than one from
+     a stranger's edition and there is no telling them apart afterwards, so the
+     safe rule is the only rule — and a thing with no blanks is not asked about
+     at all, which on a shelf this size is most of the saving. */
+  function needsOf(job){
+    const {b,en}=job,out=[];
+    if(en){
+      if(S.fields.cover&&!en.cover)out.push("cover");
+      if(S.fields.blurb&&looksBlank(en.summary))out.push("blurb");
+      if(S.fields.pages&&looksBlank(en.pages))out.push("pages");
+    }else{
+      if(S.fields.cover&&!hasCover.has(b.id))out.push("cover");
+      if(S.fields.blurb&&looksBlank(b.summary))out.push("blurb");
+      if(S.fields.pages&&looksBlank(b.pages))out.push("pages");
+      if(S.fields.author&&looksBlank(b.author))out.push("author");
     }
-    return {want,found};
+    return out;
+  }
+  function plan(){
+    let n=0;
+    groups.forEach(g=>{
+      g.jobs.forEach(j=>{j.needs=needsOf(j);});
+      /* a collection with no author of its own has to learn it from a story, so
+         one lookup is worth making even when every story is already full */
+      if(g.coll&&S.fields.author&&looksBlank(g.b.author)){
+        const first=g.jobs.find(j=>titleOf(j));
+        if(first&&!first.needs.length)first.needs=["the collection's author"];
+      }
+      n+=g.jobs.filter(j=>j.needs.length).length;
+    });
+    return n;
+  }
+
+  /* ---------- what one answer means ---------- */
+  function weigh(job,info){
+    const {b,en}=job,want={},found=[];
+    if(en){
+      if(S.fields.pages&&looksBlank(en.pages)&&info.pages){want.pages=parseInt(info.pages)||"";found.push(want.pages+" pages");}
+      if(S.fields.blurb&&looksBlank(en.summary)&&info.summary){want.blurb=info.summary;found.push("a blurb");}
+      if(S.fields.cover&&!en.cover&&(info.covers||[]).filter(Boolean).length){
+        want.cover=(info.covers||[]).filter(Boolean);found.push(plural(want.cover.length,"cover")+" to try");
+      }
+    }else{
+      if(S.fields.author&&looksBlank(b.author)&&info.author){want.author=info.author;found.push(info.author);}
+      if(S.fields.pages&&looksBlank(b.pages)&&info.pages){want.pages=parseInt(info.pages)||"";found.push(want.pages+" pages");}
+      if(S.fields.blurb&&looksBlank(b.summary)&&info.summary){want.blurb=info.summary;found.push("a blurb");}
+      if(S.fields.cover&&!hasCover.has(b.id)&&(info.covers||[]).filter(Boolean).length){
+        want.cover=(info.covers||[]).filter(Boolean);found.push(plural(want.cover.length,"cover")+" to try");
+      }
+    }
+    /* a story's words are its own; a plain book's are its own. Genres are the
+       exception and always the collection's — a genre on a story replaces
+       rather than adds, and would lift that one book out from under its series. */
+    const have=en?entKeywordsOf(b,en):(b.keywords||[]);
+    const newTags=(info.tags||[]).filter(t=>!have.some(x=>x.toLowerCase()===t.toLowerCase()));
+    const newGen=(info.genres||[]).filter(g=>!(b.genres||[]).some(x=>x.toLowerCase()===g.toLowerCase()));
+    return {info,want,found,newTags,newGen,chips:[],
+            note:en?"":doubt(b,info),
+            dead:found.length?"":"Nothing on it that this one is missing.",
+            on:found.length>0};
   }
   /* An answer can be confidently wrong. Open Library files The Goblin Emperor
      under the author's legal name, not the one on the cover — so where a book
@@ -5426,82 +5497,155 @@ function openBulkFill(ids){
     }
     return "";
   }
+  /* A collection's author, from the stories that answered. It is only offered
+     where they agree — an anthology will not, and picking a winner off a
+     three-way split would put a name on a shelf item that is wrong for most of
+     what is inside it. Declining is the honest answer and it says so. */
+  function decideAuthor(g){
+    if(!g.coll||!S.fields.author||!looksBlank(g.b.author))return null;
+    const names=g.jobs.map(j=>j.row&&j.row.info&&String(j.row.info.author||"").trim()).filter(Boolean);
+    if(!names.length)return null;
+    const tally={};
+    names.forEach(n=>{const k=n.toLowerCase();(tally[k]=tally[k]||{n:0,name:n}).n++;});
+    const rank=Object.values(tally).sort((a,b)=>b.n-a.n);
+    if(rank.length===1||rank[0].n/names.length>=0.6)return {name:rank[0].name,on:true,of:names.length,agreed:rank[0].n};
+    return {clash:rank.map(r=>r.name),on:false};
+  }
 
   /* ---------- the run ---------- */
   async function lookUp(){
-    S.stage="running";S.done=0;S.rows=[];stop=false;draw();
-    /* one read instead of one per book: which ids already have a cover */
-    S.hasCover=new Set((await dbAllKeys("covers")).filter(k=>typeof k==="string"));
-    for(const b of queue){
+    S.stage="running";S.done=0;stop=false;
+    const todo=[];
+    groups.forEach(g=>g.jobs.forEach(j=>{j.row=null;if(j.needs.length)todo.push(j);}));
+    S.capped=Math.max(0,todo.length-BULK_CAP);
+    const run=todo.slice(0,BULK_CAP);
+    S.total=run.length;
+    draw();
+    for(const j of run){
       if(stop){S.stopped=true;break;}
-      S.now=b.title||"Untitled";S.done++;drawProgress();
+      const title=titleOf(j);
+      S.now=title||"Untitled";S.done++;drawProgress();
       /* the title is the whole of the question — there is nothing to ask without
          one, and asking anyway returns somebody else's book */
-      if(!String(b.title||"").trim()){
-        S.rows.push({b,info:null,want:{},found:[],note:"",dead:"No title to search by."});continue;
-      }
+      if(!title){j.row={dead:"No title to search by.",found:[],want:{},chips:[]};continue;}
+      /* a story is searched under its collection's author, which is the only
+         name it has */
+      const author=looksBlank(j.b.author)?"":String(j.b.author||"").trim();
       let info=null;
-      const author=looksBlank(b.author)?"":String(b.author||"").trim();
-      try{info=await fetchBookInfo(String(b.title||"").trim(),author,String(b.isbn||"").trim());}
+      try{info=await fetchBookInfo(title,author,j.en?"":String(j.b.isbn||"").trim());}
       catch(e){info=null;}
-      if(!info){S.rows.push({b,info:null,want:{},found:[],note:"",dead:"Nothing came back for this title."});continue;}
-      const {want,found}=weigh(b,info);
-      const newGen=(info.genres||[]).filter(g=>!(b.genres||[]).some(x=>x.toLowerCase()===g.toLowerCase()));
-      const newTags=(info.tags||[]).filter(t=>!(b.keywords||[]).some(x=>x.toLowerCase()===t.toLowerCase()));
-      S.rows.push({b,info,want,found,note:doubt(b,info),newGen,newTags,
-                   dead:found.length?"":"Found, but nothing on it that this book is missing.",
-                   on:found.length>0});
+      if(!info){j.row={dead:"Nothing came back for this title.",found:[],want:{},chips:[]};continue;}
+      j.row=weigh(j,info);
       /* a small gap so two free sites are not hammered flat */
       await new Promise(r=>setTimeout(r,150));
     }
-    buildVocab();
+    groups.forEach(buildVocab);
     if(S.straight&&!S.stopped)return writeAll();
     S.stage="review";draw();
   }
-  /* Every genre and tag the whole run turned up, gathered into one list with the
-     number of books behind each — because judging "Labyrinths" once for eleven
-     books is a decision you can actually make, and judging it eleven times is
-     not. Nothing here starts ticked. */
-  function buildVocab(){
-    const map=new Map();
-    S.rows.forEach(r=>{
-      if(!r.info)return;
-      const add=(name,kind)=>{
-        /* by the word alone, not by word-and-kind. Google hands the same word
-           back as a category and Open Library as a subject, so keying on both
-           put "Fantasy" in the list twice — which reads as a bug, because it is
-           one. When the two disagree the shelf's genres win: they are the
-           shorter, tidier list, and that is the whole reason they exist. */
-        const key=name.toLowerCase().replace(/\s+/g," ").trim();
-        if(!key)return;
-        let v=map.get(key);
-        if(!v){v={name:titleCase(name),kind,ids:new Set(),on:false};map.set(key,v);}
-        else if(kind==="genre")v.kind="genre";
-        v.ids.add(r.b.id);
-      };
-      (r.newGen||[]).forEach(g=>add(g,"genre"));
-      (r.newTags||[]).forEach(t=>add(t,"tag"));
+  /* Where each word is offered, and to whom.
+
+     A collection's stories share a pile: a word two or more of them came back
+     with is about the series, so it is offered once and goes on the collection.
+     A word only one story returned is offered on that story's own line, where
+     you can see whose it is — which is the same complaint as a pile drawn from
+     unrelated books, one level down. Genres are never a story's: a genre on a
+     story replaces rather than adds and would lift that book out from under its
+     series, so they all go to the collection however few found them.
+
+     A loose book has no pile at all. Its words are its own and sit on its line. */
+  function buildVocab(g){
+    g.pile=[];
+    g.author=decideAuthor(g);
+    const rows=g.jobs.map(j=>j.row).filter(r=>r&&r.info);
+    rows.forEach(r=>{r.chips=[];});
+    if(!rows.length)return;
+    if(!g.coll){
+      const r=rows[0];
+      r.chips=[...r.newGen.map(n=>({name:titleCase(n),kind:"genre",on:false})),
+               ...r.newTags.filter(n=>!r.newGen.some(x=>x.toLowerCase()===n.toLowerCase()))
+                  .map(n=>({name:titleCase(n),kind:"tag",on:false}))];
+      return;
+    }
+    const gen=new Map();
+    rows.forEach(r=>r.newGen.forEach(n=>{
+      const k=String(n).toLowerCase().trim();if(!k)return;
+      const v=gen.get(k)||{name:titleCase(n),kind:"genre",n:0,on:false};v.n++;gen.set(k,v);}));
+    const tag=new Map();
+    g.jobs.forEach(j=>{
+      const r=j.row;if(!r||!r.info)return;
+      r.newTags.forEach(n=>{
+        const k=String(n).toLowerCase().trim();
+        /* the same word arrives as a category from one site and a subject from
+           the other; the genres are the tidier list and win it */
+        if(!k||gen.has(k))return;
+        const v=tag.get(k)||{name:titleCase(n),kind:"tag",n:0,on:false,jobs:[]};
+        v.n++;v.jobs.push(j);tag.set(k,v);});
     });
-    S.vocab=[...map.values()].sort((a,b)=>b.ids.size-a.ids.size||a.name.localeCompare(b.name));
+    const tags=[...tag.values()];
+    g.pile=[...gen.values(),...tags.filter(v=>v.n>1)]
+      .sort((a,b)=>b.n-a.n||a.name.localeCompare(b.name));
+    tags.filter(v=>v.n===1).forEach(v=>v.jobs[0].row.chips.push({name:v.name,kind:"tag",on:false}));
   }
 
   /* ---------- writing it down ---------- */
   async function writeAll(){
     S.stage="writing";S.done=0;S.filled=0;S.failedCovers=[];stop=false;
-    const live=S.rows.filter(r=>r.on&&r.info);
+    S.total=groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.on&&j.row.info).length,0);
     const items=[];let coversAdded=0;
-    for(const r of live){
+    for(const g of groups){
       if(stop){S.stopped=true;break;}
-      const b=r.b;
-      S.now=b.title||"Untitled";S.done++;drawProgress();
+      const b=g.b;
       const before=JSON.parse(JSON.stringify(b));
       let changed=false;
-      if(r.want.author){b.author=r.want.author;changed=true;}
-      if(r.want.pages!==undefined&&r.want.pages!==""){b.pages=r.want.pages;changed=true;}
-      if(r.want.blurb){b.summary=esc(r.want.blurb).replace(/\n/g,"<br>");changed=true;}
-      /* the words you ticked at the bottom, and only onto the books they were
-         actually found for */
-      S.vocab.filter(v=>v.on&&v.ids.has(b.id)).forEach(v=>{
+      for(const j of g.jobs){
+        if(stop){S.stopped=true;break;}
+        const r=j.row,en=j.en;
+        if(!r||!r.on||!r.info)continue;
+        S.now=titleOf(j)||"Untitled";S.done++;drawProgress();
+        /* a story's own three, or a plain book's four. Everything a story cannot
+           hold — the author, the genres — is written to the collection below. */
+        const tgt=en||b;
+        let did=false;
+        if(r.want.pages!==undefined&&r.want.pages!==""){tgt.pages=r.want.pages;did=true;}
+        if(r.want.blurb){tgt.summary=esc(r.want.blurb).replace(/\n/g,"<br>");did=true;}
+        if(!en&&r.want.author){b.author=r.want.author;did=true;}
+        r.chips.filter(c=>c.on).forEach(c=>{
+          if(c.kind==="genre"){
+            if(!genres[c.name]){genres[c.name]=genreColor(c.name);unmarkMetaDel("genre:"+c.name);saveMeta();}
+            b.genres=b.genres||[];
+            if(!b.genres.includes(c.name)){b.genres.push(c.name);did=true;}
+          }else{
+            const have=en?entKeywordsOf(b,en):(b.keywords||[]);
+            if(!have.some(x=>x.toLowerCase()===c.name.toLowerCase())){
+              tgt.keywords=tgt.keywords||[];tgt.keywords.push(c.name);did=true;}
+          }
+        });
+        if(r.want.cover){
+          /* every candidate in turn, not just the first — most of them are hosts
+             that forbid the download, and which one works is not knowable until
+             it is asked. Only here: the single-book panel still applies exactly
+             the picture you pointed at, because there you chose one. */
+          try{
+            const data=await fetchCoverData(r.want.cover,600);
+            if(en){
+              en.cover=true;en.coverV=Date.now();
+              await dbPut("images",{key:b.id+"|"+en.id,data,v:en.coverV});
+              coverCache.set(b.id+"|"+en.id,data);
+              if(SYNC.on)enqueue({kind:"img",key:b.id+"|"+en.id});
+            }else{
+              await dbPut("covers",{id:b.id,data});
+              coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);
+              b.coverV=Date.now();
+              if(SYNC.on)enqueue({kind:"cover",id:b.id});
+            }
+            did=true;coversAdded++;
+          }catch(e){S.failedCovers.push({b,en,cover:r.want.cover||[]});}
+        }
+        if(did){changed=true;S.filled++;}
+      }
+      /* the pile, onto the collection it was gathered for */
+      g.pile.filter(v=>v.on).forEach(v=>{
         if(v.kind==="genre"){
           if(!genres[v.name]){genres[v.name]=genreColor(v.name);unmarkMetaDel("genre:"+v.name);saveMeta();}
           b.genres=b.genres||[];
@@ -5511,40 +5655,80 @@ function openBulkFill(ids){
           if(!b.keywords.some(x=>x.toLowerCase()===v.name.toLowerCase())){b.keywords.push(v.name);changed=true;}
         }
       });
-      if(r.want.cover){
-        /* every candidate in turn, not just the first — most of them are hosts
-           that forbid the download, and which one works is not knowable until
-           it is asked. Only here: the single-book panel still applies exactly
-           the picture you pointed at, because there you chose one. */
-        try{
-          const data=await fetchCoverData(r.want.cover,600);
-          await dbPut("covers",{id:b.id,data});
-          coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);
-          b.coverV=Date.now();changed=true;coversAdded++;
-          if(SYNC.on)enqueue({kind:"cover",id:b.id});
-        }catch(e){S.failedCovers.push(r);}
-      }
+      if(g.author&&g.author.on&&g.author.name&&looksBlank(b.author)){b.author=g.author.name;changed=true;}
       if(!changed)continue;
       b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
       b.touched=true;
       await dbPut("books",b);
       if(SYNC.on)enqueue({kind:"book",id:b.id});
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
-      S.filled++;
     }
     /* one undo step for the whole run, the same as every other bulk action */
     if(items.length)pushOp({t:"bulk",items});
     if(coversAdded)bumpCovers();
     if(SYNC.on)flushQueue();
+    await buildStrips();
     S.stage="done";draw();
+  }
+  /* A cover for the collection out of its own books — every story cover it has,
+     the ones that were already there as well as the ones just fetched. The
+     pictures are in hand by now, so choosing one costs no request and cannot be
+     refused, which is the opposite of every other cover in this sheet. */
+  async function buildStrips(){
+    for(const g of groups){
+      if(!g.coll)continue;
+      const out=[];
+      for(const j of g.jobs){
+        if(!j.en||!j.en.cover)continue;
+        const key=g.b.id+"|"+j.en.id;
+        let d=coverCache.get(key);
+        if(typeof d!=="string")d=await loadImgData(key);
+        if(d)out.push({en:j.en,data:d});
+        if(out.length>=12)break;
+      }
+      g.strip=out;
+    }
+  }
+  async function setCollCover(g,data){
+    const b=g.b;
+    const before=JSON.parse(JSON.stringify(b));
+    await dbPut("covers",{id:b.id,data});
+    coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);
+    b.coverV=Date.now();
+    b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+    await dbPut("books",b);
+    if(SYNC.on){enqueue({kind:"cover",id:b.id});enqueue({kind:"book",id:b.id});flushQueue();}
+    pushOp({t:"bulk",items:[{id:b.id,before,after:JSON.parse(JSON.stringify(b))}]});
+    bumpCovers();
   }
 
   /* ---------- what you see ---------- */
   function drawProgress(){
     const bar=q("#bsBar",inner),live=q("#bsLive",inner);
-    const total=S.stage==="writing"?S.rows.filter(r=>r.on&&r.info).length:queue.length;
-    if(bar)bar.style.width=Math.round(S.done/Math.max(1,total)*100)+"%";
-    if(live)live.textContent=`${S.stage==="writing"?"Filling in":"Looking up"} ${S.now}… (${S.done} of ${total})`;
+    const total=Math.max(1,S.total);
+    if(bar)bar.style.width=Math.round(S.done/total*100)+"%";
+    if(live)live.textContent=`${S.stage==="writing"?"Filling in":"Looking up"} ${S.now}… (${S.done} of ${S.total})`;
+  }
+  const liveJobs=()=>groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.on&&j.row.info).length,0);
+  const usableJobs=()=>groups.reduce((a,g)=>a.concat(g.jobs.filter(j=>j.row&&j.row.info&&j.row.found.length)),[]);
+  function jobRow(g,gi,j,ji){
+    const r=j.row,inColl=g.coll;
+    const cls="bs-row"+(inColl?" bs-story":"")+((!r||!r.on)?" off":"");
+    const tick=r&&r.info&&r.found.length
+      ?`<input type="checkbox" data-bsr="${gi}.${ji}" ${r.on?"checked":""} aria-label="Fill in ${esc(titleOf(j)||"this one")}">`
+      :`<span style="width:16px;flex:none"></span>`;
+    const say=!j.needs.length?"Nothing missing — not looked up."
+      :!r?"Not reached."
+      :r.dead?r.dead
+      :r.found.join(" · ");
+    return `<div class="${cls}">${tick}
+      <div style="min-width:0;flex:1">
+        <div class="bs-t">${esc(titleOf(j))||"Untitled"}</div>
+        <div class="bs-f">${esc(say)}</div>
+        ${r&&r.note?`<div class="bs-w">${esc(r.note)}</div>`:""}
+        ${r&&r.chips&&r.chips.length?`<div style="margin-top:4px">${r.chips.map((c,ci)=>
+          `<button class="mg ${c.on?"on":""}" data-bsc="${gi}.${ji}.${ci}"><span class="bx">${c.on?"✓":""}</span>${esc(c.name)}</button>`).join("")}</div>`:""}
+      </div></div>`;
   }
   function head(t){
     return `<div class="hrow2" style="margin-bottom:9px"><h2>${t}</h2>
@@ -5552,22 +5736,27 @@ function openBulkFill(ids){
   }
   function draw(){
     if(S.stage==="setup"){
-      inner.innerHTML=head("Fill in "+plural(queue.length,"book"))+`
+      const want=plan(),capped=Math.max(0,want-BULK_CAP),willRun=Math.min(want,BULK_CAP);
+      const mins=Math.max(1,Math.round(willRun*1.6/60));
+      inner.innerHTML=head("Fill in "+plural(groups.length,"thing"))+`
         <div class="hint" style="margin:0 0 11px">
+          ${collN?`${plural(collN,"collection")} ticked, and <b>the ${inside} book${inside===1?"":"s"} inside ${collN===1?"it":"them"} will be looked up too</b> — a collection has nothing of its own to find, its books do. `:""}
           ${notBooks?`${plural(notBooks,"thing")} ticked can't be looked up — Google Books and Open Library only know published books, not fanfic or chats. `:""}
-          ${over?`Ticked ${real.length}, and a run is capped at ${BULK_CAP} so the two free sites aren't hammered — <b>the first ${BULK_CAP} in the order you're looking at</b>. Run it again for the rest; filled books drop out of ⭱ Straight from an import, so the count tells you where you are. `:""}
-          At about a second and a half each, this one takes roughly ${Math.max(1,Math.round(queue.length*1.6/60))} minute${Math.max(1,Math.round(queue.length*1.6/60))===1?"":"s"}.</div>
+          <b>${willRun} of ${groups.reduce((n,g)=>n+g.jobs.length,0)}</b> need something; the rest already have everything you've ticked below and aren't asked about at all.
+          ${capped?`A run is capped at ${BULK_CAP} lookups so the two free sites aren't hammered, so <b>${capped} will be left for next time</b> — filled books drop out of ⭱ Straight from an import, so the count tells you where you got to. `:""}
+          At about a second and a half each, this one takes roughly ${plural(mins,"minute")}.</div>
         <div class="lbl" style="display:block;margin-bottom:4px">Fill in</div>
         <div>${FIELDS.map(([k,l])=>`<button class="mg ${S.fields[k]?"on":""}" data-bsf="${k}"><span class="bx">${S.fields[k]?"✓":""}</span>${l}</button>`).join("")}</div>
         <div class="hint" style="margin:6px 0 0">Only blanks are filled. Anything you typed is left exactly as it is — including a page count you corrected. "Unknown" counts as blank.</div>
-        <div class="hint" style="margin:9px 0 0">Genres and tags are gathered from the whole run and offered at the end, as one list you tick — nothing is added unasked.</div>
+        <div class="hint" style="margin:9px 0 0">${collN?"A book inside a collection gets its own cover, blurb and pages; the author, the genres and the words the books share go on the collection. ":""}Words are offered at the end, none of them ticked.</div>
         <div class="hrow2" style="margin-top:13px">
-          <button class="btn pri" id="bsGo">Look them up</button>
+          <button class="btn pri" id="bsGo" ${willRun?"":"disabled"}>${willRun?"Look up "+plural(willRun,"book"):"Nothing needs anything"}</button>
           <label class="chk" style="font-size:13px"><input type="checkbox" id="bsStraight"> Don't show me the list, just fill them in</label>
         </div>`;
       qa("[data-bsf]",inner).forEach(b=>b.onclick=()=>{S.fields[b.dataset.bsf]=!S.fields[b.dataset.bsf];draw();});
       q("#bsStraight",inner).onchange=e=>{S.straight=e.target.checked;};
-      q("#bsGo",inner).onclick=()=>{
+      const go=q("#bsGo",inner);
+      if(go)go.onclick=()=>{
         if(!FIELDS.some(([k])=>S.fields[k])){alert("Tick at least one thing to fill in.");return;}
         lookUp();
       };
@@ -5582,67 +5771,89 @@ function openBulkFill(ids){
       drawProgress();
     }
     else if(S.stage==="review"){
-      const usable=S.rows.filter(r=>r.info&&r.found.length);
-      const on=usable.filter(r=>r.on).length;
-      const shown=S.vocabAll?S.vocab:S.vocab.slice(0,60);
-      /* two labelled groups rather than one mixed list: a word going on as a
-         genre and a word going on as a keyword are different enough that being
-         told which is worth the extra heading */
-      const chipsOf=kind=>shown.filter(v=>v.kind===kind).map(v=>
-        `<button class="mg ${v.on?"on":""}" data-bsv="${S.vocab.indexOf(v)}"><span class="bx">${v.on?"✓":""}</span>${esc(v.name)} <b style="opacity:.6">${v.ids.size}</b></button>`).join("");
-      const gChips=chipsOf("genre"),tChips=chipsOf("tag");
+      const usable=usableJobs();
+      const on=liveJobs();
       inner.innerHTML=head("Found for "+plural(usable.length,"book"))+`
         <div class="hint" style="margin:0 0 4px">${S.stopped?"Stopped early. ":""}Nothing is written until you press the button at the bottom.</div>
-        <div class="bs-list" id="bsList">${S.rows.map((r,i)=>`
-          <div class="bs-row ${r.dead||!r.on?"off":""}">
-            ${r.dead?`<span style="width:16px;flex:none"></span>`
-                    :`<input type="checkbox" data-bsr="${i}" ${r.on?"checked":""} aria-label="Fill in ${esc(r.b.title||"this book")}">`}
-            <div style="min-width:0;flex:1">
-              <div class="bs-t">${esc(r.b.title)||"Untitled"}</div>
-              <div class="bs-f">${r.dead?esc(r.dead):esc(r.found.join(" · "))}</div>
-              ${r.note?`<div class="bs-w">${esc(r.note)}</div>`:""}
-            </div>
-          </div>`).join("")}</div>
-        ${S.vocab.length?`<div class="lbl" style="display:block;margin:13px 0 3px">Words the whole run turned up — tick any worth keeping</div>
-          <div class="hint" style="margin:0 0 6px">The number is how many books it came back for, and a ticked word goes onto those books only. Nothing here is ticked to start with.</div>
-          ${gChips?`<div class="lbl" style="display:block;margin:8px 0 3px;text-transform:none">…as genres</div><div>${gChips}</div>`:""}
-          ${tChips?`<div class="lbl" style="display:block;margin:8px 0 3px;text-transform:none">…as keywords</div><div>${tChips}</div>`:""}
-          ${S.vocab.length>shown.length?`<button class="btn" id="bsMore" style="margin-top:6px;padding:3px 10px;font-size:12px">Show the other ${S.vocab.length-shown.length}</button>`:""}`:""}
+        <div class="bs-list" id="bsList">${groups.map((g,gi)=>{
+          if(!g.coll)return jobRow(g,gi,g.jobs[0],0);
+          const asked=g.jobs.filter(j=>j.needs.length).length;
+          const au=g.author;
+          return `<div class="bs-grp">
+            <div class="bs-gt">${esc(g.b.title)||"Untitled"}</div>
+            <div class="bs-gm">${plural(g.jobs.length,"book")} inside · ${asked} looked up${
+              au&&au.name?` · every book agreed on ${esc(au.name)}`
+              :au&&au.clash?` · they don't agree on an author (${au.clash.slice(0,3).map(esc).join(", ")}) — none is put on`
+              :""}</div>
+            ${au&&au.name?`<div style="margin:5px 0 2px"><button class="mg ${au.on?"on":""}" data-bsa="${gi}"><span class="bx">${au.on?"✓":""}</span>Put ${esc(au.name)} on the collection</button></div>`:""}
+            ${g.jobs.map((j,ji)=>jobRow(g,gi,j,ji)).join("")}
+            ${g.pile.length?`<div class="bs-pile">
+              <div class="lbl" style="display:block;margin-bottom:3px;text-transform:none">Shared by the books inside — goes on ${esc(g.b.title)||"the collection"}</div>
+              <div>${g.pile.map((v,pi)=>`<button class="mg ${v.on?"on":""}" data-bsp="${gi}.${pi}"><span class="bx">${v.on?"✓":""}</span>${esc(v.name)}${v.kind==="tag"?` <b style="opacity:.6">${v.n}</b>`:""}</button>`).join("")}</div>
+              <div class="hint" style="margin:4px 0 0">Genres always go here — a genre on one book would take it out from under the series. A word only one of them returned is on that book's own line instead.</div>
+            </div>`:""}
+          </div>`;}).join("")}</div>
         <div class="hrow2" style="margin-top:13px">
           <button class="btn pri" id="bsWrite" ${on?"":"disabled"}>${on?"Fill in "+plural(on,"book"):"Nothing ticked"}</button>
           <button class="btn" id="bsAll">${usable.length&&on===usable.length?"Untick them all":"Tick them all"}</button></div>`;
+      const at=s=>{const [gi,ji,ci]=String(s).split(".").map(Number);
+        const g=groups[gi],j=g.jobs[ji];return {g,j,c:ci==null?null:j.row.chips[ci]};};
       qa("[data-bsr]",inner).forEach(cb=>cb.onchange=()=>{
-        S.rows[+cb.dataset.bsr].on=cb.checked;
+        at(cb.dataset.bsr).j.row.on=cb.checked;
         /* redrawn in place: a full redraw would throw the list back to the top,
            and a list you are half way down is exactly when you are ticking */
         cb.closest(".bs-row").classList.toggle("off",!cb.checked);
-        const n=S.rows.filter(r=>r.on&&r.info&&r.found.length).length;
-        const w=q("#bsWrite",inner);
+        const n=liveJobs(),w=q("#bsWrite",inner);
         w.disabled=!n;w.textContent=n?"Fill in "+plural(n,"book"):"Nothing ticked";
       });
-      qa("[data-bsv]",inner).forEach(b=>b.onclick=()=>{
-        const v=S.vocab[+b.dataset.bsv];v.on=!v.on;
+      qa("[data-bsc]",inner).forEach(b=>b.onclick=()=>{
+        const c=at(b.dataset.bsc).c;c.on=!c.on;
+        b.classList.toggle("on",c.on);q(".bx",b).textContent=c.on?"✓":"";
+      });
+      qa("[data-bsp]",inner).forEach(b=>b.onclick=()=>{
+        const [gi,pi]=b.dataset.bsp.split(".").map(Number);
+        const v=groups[gi].pile[pi];v.on=!v.on;
         b.classList.toggle("on",v.on);q(".bx",b).textContent=v.on?"✓":"";
       });
-      const more=q("#bsMore",inner);if(more)more.onclick=()=>{S.vocabAll=true;draw();};
+      qa("[data-bsa]",inner).forEach(b=>b.onclick=()=>{
+        const au=groups[+b.dataset.bsa].author;au.on=!au.on;
+        b.classList.toggle("on",au.on);q(".bx",b).textContent=au.on?"✓":"";
+      });
       q("#bsAll",inner).onclick=()=>{
-        const every=usable.length&&usable.every(r=>r.on);
-        usable.forEach(r=>{r.on=!every;});draw();
+        const every=usable.length&&usable.every(j=>j.row.on);
+        usable.forEach(j=>{j.row.on=!every;});draw();
       };
       q("#bsWrite",inner).onclick=writeAll;
     }
     else{
+      const strips=groups.filter(g=>g.coll&&g.strip.length);
       inner.innerHTML=head("Done")+`
         <div style="font-size:14px">Filled in ${plural(S.filled,"book")}.${S.stopped?" Stopped early — the rest are untouched.":""}</div>
-        <div class="hint" style="margin:6px 0 0">Undo puts every one of those books back as it was. The covers stay where they are — take one off from the book's own page if you don't want it.</div>
+        <div class="hint" style="margin:6px 0 0">Undo puts every one of them back as it was. The covers stay where they are — take one off from its own page if you don't want it.</div>
+        ${strips.map((g,si)=>`<div class="lbl" style="display:block;margin:14px 0 4px">A cover for ${esc(g.b.title)||"the collection"}, from its own books</div>
+          <div class="hint" style="margin:0 0 6px">These are already downloaded, so picking one is instant and can't be refused. Nothing is picked unless you press one.</div>
+          <div style="display:flex;gap:7px;flex-wrap:wrap">${g.strip.map((s,ci)=>
+            `<img class="fpcov" data-bsstrip="${groups.indexOf(g)}.${ci}" src="${esc(s.data)}" alt="${esc(s.en.title||"")}" title="${esc(s.en.title||"")}"
+              style="width:54px;height:78px;object-fit:cover;border-radius:6px;cursor:pointer">`).join("")}</div>
+          <div class="hint" id="bsStripMsg${si}" style="margin:4px 0 0"></div>`).join("")}
         ${S.failedCovers.length?`<div class="lbl" style="display:block;margin:14px 0 4px">${plural(S.failedCovers.length,"cover")} wouldn't come</div>
-          <div class="hint" style="margin:0 0 7px">Whoever hosts these forbids the download — Google's picture host always does. Open one, save it, and drop it on the book's cover box.</div>
-          <div class="bs-list">${S.failedCovers.map(r=>`<div class="bs-row">
-            <div style="min-width:0;flex:1"><div class="bs-t">${esc(r.b.title)||"Untitled"}</div>
-              <div class="bs-f">${(r.want.cover||[]).slice(0,3).map((u,i)=>`<a href="${esc(u)}" target="_blank" rel="noopener" style="color:var(--teal)">picture ${i+1}</a>`).join(" · ")}</div></div>
-            <button class="btn" data-bsopen="${esc(r.b.id)}" style="padding:3px 9px;flex:none">Open the book</button></div>`).join("")}</div>`:""}
+          <div class="hint" style="margin:0 0 7px">Whoever hosts these forbids the download — Google's picture host always does. Open one, save it, and drop it on the cover box.</div>
+          <div class="bs-list">${S.failedCovers.map(f=>`<div class="bs-row">
+            <div style="min-width:0;flex:1"><div class="bs-t">${esc((f.en?f.en.title:f.b.title))||"Untitled"}</div>
+              <div class="bs-f">${f.en?`inside ${esc(f.b.title||"a collection")} · `:""}${(f.cover||[]).slice(0,3).map((u,i)=>`<a href="${esc(u)}" target="_blank" rel="noopener" style="color:var(--teal)">picture ${i+1}</a>`).join(" · ")}</div></div>
+            <button class="btn" data-bsopen="${esc(f.b.id)}" style="padding:3px 9px;flex:none">Open it</button></div>`).join("")}</div>`:""}
         <div class="hrow2" style="margin-top:13px"><button class="btn pri" id="bsDone">Back to the shelf</button></div>`;
       qa("[data-bsopen]",inner).forEach(b=>b.onclick=()=>{const id=b.dataset.bsopen;sheet.remove();openBook(id);});
+      qa("[data-bsstrip]",inner).forEach(img=>img.onclick=async()=>{
+        const [gi,ci]=img.dataset.bsstrip.split(".").map(Number);
+        const g=groups[gi],s=g.strip[ci];
+        qa(`[data-bsstrip^="${gi}."]`,inner).forEach(x=>x.classList.remove("on"));
+        img.classList.add("on");
+        await setCollCover(g,s.data);
+        const si=groups.filter(x=>x.coll&&x.strip.length).indexOf(g);
+        const m=q("#bsStripMsg"+si,inner);
+        if(m)m.textContent=`“${s.en.title||"That one"}” is now the cover for ${g.b.title||"the collection"}.`;
+      });
       q("#bsDone",inner).onclick=shut;
     }
     const x=q("#bsX",inner);
