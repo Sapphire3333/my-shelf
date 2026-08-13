@@ -2199,10 +2199,42 @@ const isColl=b=>typeOf(b)==="collection";
 /* A story carries only what differs from its collection. Empty genres, empty
    author, empty status all mean "the same as the book I am in" — and an
    override REPLACES rather than adds, so a story given its own genre belongs to
-   that genre and not to the collection's. */
+   that genre and not to the collection's.
+
+   Tags are the one that ADDS instead, and the difference is not an oversight.
+   A genre is a filing decision — where the thing sits on the shelf — and one
+   place is the whole point of it. A tag only describes, and descriptions stack:
+   the collection's say what the series is, a story's say what is true of that
+   story as well. Under the replace rule, giving Dawn Treader "Sea Stories"
+   would have taken Faith and Hope off it, which nobody would ever want. */
 const blankEntry=()=>({id:uid(),title:"",rating:null,pages:"",summary:"",notes:"",cover:false,
-  favorite:false,genres:[],author:"",status:"",dateFinished:"",dnf:false,hold:false});
+  favorite:false,genres:[],keywords:[],author:"",status:"",dateFinished:"",dnf:false,hold:false});
 const entGenresOf=(coll,en)=>((en&&en.genres||[]).length?en.genres:((coll&&coll.genres)||[]));
+/* the collection's first, then the story's own — the order they read in */
+const entKeywordsOf=(coll,en)=>{
+  const out=[],seen=new Set();
+  [...((coll&&coll.keywords)||[]),...((en&&en.keywords)||[])].forEach(k=>{
+    const t=String(k||"").trim();if(!t)return;
+    const low=t.toLowerCase();if(seen.has(low))return;
+    seen.add(low);out.push(t);
+  });
+  return out;
+};
+/* EVERY tag anywhere on a shelf item, its stories' own included. The loops that
+   tally, rename, delete and search tags all ran over `books` alone, which is how
+   the covers wash came to be blind to every cover inside a collection — the same
+   trap, one field along. Anything counting tags across the shelf uses this. */
+const allKeywordsOf=b=>{
+  const out=[],seen=new Set();
+  [...((b&&b.keywords)||[]),...(isColl(b)?((b.entries)||[]).flatMap(en=>(en&&en.keywords)||[]):[])]
+    .forEach(k=>{
+      const t=String(k||"").trim();if(!t)return;
+      const low=t.toLowerCase();if(seen.has(low))return;
+      seen.add(low);out.push(t);
+    });
+  return out;
+};
+const entOwnKeywords=en=>(((en&&en.keywords)||[]).length>0);
 const entAuthorOf=(coll,en)=>String((en&&en.author)||"").trim()||String((coll&&coll.author)||"");
 const entStatusOf=(coll,en)=>String((en&&en.status)||"").trim()||statusOf(coll||{});
 /* Setting aside is its own flag rather than a status, here as it is for a book.
@@ -2312,6 +2344,10 @@ const favUnits=()=>books.reduce((n,b)=>n+(isColl(b)
    collection's, so opening it takes you to the collection it lives in. */
 const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
   title:en.title,author:entAuthorOf(coll,en),genres:entGenresOf(coll,en),
+  /* the collection's tags and its own together, which is what a story on the
+     shelf should show — searching for one of the series' words has to find every
+     story in it, and a word that is only true of this one has to be here too */
+  keywords:entKeywordsOf(coll,en),
   /* its page too — a story on the go earns the same progress line under its
      row that a plain book gets, and without this the line was silently blank */
   rating:en.rating,pages:en.pages,progress:en.progress,
@@ -4951,9 +4987,17 @@ function wireOpen(root,withDel){
    now. The stage is written down only where it differs from the collection's,
    because a story that agrees with the book it sits in should stay inside it
    rather than step out onto the shelf on its own. */
-async function bookToEntry(b,collId,collStatus,collAuthor,collDnf){
+async function bookToEntry(b,collId,collStatus,collAuthor,collDnf,collKeywords){
   const en=blankEntry();
   en.title=b.title;en.rating=b.rating;en.pages=b.pages;
+  /* Its tags come with it. Folding a book in used to drop them on the floor,
+     because a story had nowhere to keep one — a book with five tags went in with
+     none and nothing said so. The ones the collection already carries are left
+     to the collection, since a copy here would only stop following it; the rest
+     become the story's own. */
+  const already=new Set(((collKeywords)||[]).map(k=>String(k).toLowerCase()));
+  en.keywords=(b.keywords||[]).map(k=>String(k||"").trim())
+    .filter(k=>k&&!already.has(k.toLowerCase()));
   /* the author came across as nothing at all. A story says only what differs
      from its collection, and the name was never written down either way — so a
      book folded into a collection that had no author lost its author entirely,
@@ -5013,7 +5057,7 @@ async function foldIntoCollection(ids,coll){
   for(const id of ids){
     const b=books.find(x=>x.id===id);
     if(!b||isColl(b)||b.id===coll.id)continue;
-    const {en}=await bookToEntry(b,coll.id,st,coll.author,coll.dnf);
+    const {en}=await bookToEntry(b,coll.id,st,coll.author,coll.dnf,coll.keywords);
     coll.entries.push(en);
     await retireBook(b);
     n++;
@@ -5040,7 +5084,7 @@ async function makeCollectionFrom(ids,name,author){
   nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":sel.some(b=>statusOf(b)==="reading")?"reading":"want";
   nb.dateFinished=sel.map(b=>b.dateFinished||"").sort().pop()||"";
   nb.entries=[];
-  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id,nb.status,nb.author,nb.dnf)).en);
+  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id,nb.status,nb.author,nb.dnf,nb.keywords)).en);
   nb.modified=Date.now();
   await dbPut("books",nb);
   books.unshift(nb);
@@ -5990,7 +6034,7 @@ function renderLibrary(){
     const sf=q("#selFill",m);
     if(sf)sf.onclick=()=>openBulkFill([...libSel]);
     const sk=q("#selKw",m);
-    if(sk)sk.onclick=()=>openApply("Which keyword",[...new Set(books.flatMap(b=>b.keywords||[]))].sort((a,b)=>a.localeCompare(b)),k=>{
+    if(sk)sk.onclick=()=>openApply("Which keyword",[...new Set(books.flatMap(allKeywordsOf))].sort((a,b)=>a.localeCompare(b)),k=>{
       applyToSel(b=>{b.keywords=b.keywords||[];if(!b.keywords.some(x=>x.toLowerCase()===k.toLowerCase()))b.keywords.push(k);});
     },true);
     /* everything the shelf is showing, which is not the same as everything on
@@ -7251,7 +7295,7 @@ function refreshNameDupes(){
 function refreshKwDupes(){
   const box=q("#kwDupBox");if(!box)return;
   const gs=Object.keys(genres);
-  const kws=[...new Set(books.flatMap(b=>b.keywords||[]))];
+  const kws=[...new Set(books.flatMap(allKeywordsOf))];
   const hits=[];
   kws.forEach(k=>{
     const kl=k.toLowerCase();
@@ -7263,7 +7307,7 @@ function refreshKwDupes(){
     if(near)hits.push({k,g:near,exact:false});
   });
   if(!hits.length){box.innerHTML="";return;}
-  const count=k=>books.filter(b=>(b.keywords||[]).includes(k)).length;
+  const count=k=>books.filter(b=>allKeywordsOf(b).includes(k)).length;
   box.innerHTML=`<div class="grouphead" style="margin:16px 0 8px"><h2 class="serif" style="margin:0;font-size:15px">Keywords that repeat a genre</h2>
       <span class="n">${hits.length}</span><span class="ghline"></span></div>
     <div class="hint" style="margin:0 0 8px">Tick the ones the genre already covers and remove them from every book at once. The genres themselves aren't touched.</div>
@@ -7280,9 +7324,14 @@ function refreshKwDupes(){
     const gone=new Set(chosen);
     const items=[];
     for(const b of books){
-      if(!(b.keywords||[]).some(k=>gone.has(k)))continue;
+      if(!allKeywordsOf(b).some(k=>gone.has(k)))continue;
       const before=JSON.parse(JSON.stringify(b));
-      b.keywords=b.keywords.filter(k=>!gone.has(k));
+      b.keywords=(b.keywords||[]).filter(k=>!gone.has(k));
+      /* "from every book" has to mean the stories inside them too, or a keyword
+         removed everywhere comes straight back the next time anything counts */
+      if(isColl(b))(b.entries||[]).forEach(en=>{
+        if((en.keywords||[]).length)en.keywords=en.keywords.filter(k=>!gone.has(k));
+      });
       b.kwBreaks=(b.kwBreaks||[]).filter(k=>!gone.has(k));
       b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
       await dbPut("books",b);
@@ -7695,7 +7744,7 @@ async function refreshSnaps(){
 }
 
 /* =============== search & stats =============== */
-function bodyText(b){return stripHtml([b.summary,b.canvasText,...(b.quotes||[]),...(b.pros||[]),...(b.cons||[]),...(b.meh||[]),...(b.keywords||[]),...(b.ships||[])].join(" ")).toLowerCase();}
+function bodyText(b){return stripHtml([b.summary,b.canvasText,...(b.quotes||[]),...(b.pros||[]),...(b.cons||[]),...(b.meh||[]),...allKeywordsOf(b),...(b.ships||[])].join(" ")).toLowerCase();}
 /* "dragons, found family" — a comma means “or”, and every word inside one phrase
    has to turn up somewhere in the book's writing */
 function textMatches(b,qstr){
@@ -7772,7 +7821,7 @@ function renderSearchBody(){
     case "author":return (b.author||"").toLowerCase().includes(qlc);
     case "series":return (b.series||"").toLowerCase().includes(qlc);
     case "genre":return (b.genres||[]).some(g=>g.toLowerCase().includes(qlc));
-    case "keyword":return (b.keywords||[]).some(k=>k.toLowerCase().includes(qlc));
+    case "keyword":return allKeywordsOf(b).some(k=>k.toLowerCase().includes(qlc));
     case "quotes":return stripHtml((b.quotes||[]).join(" ")).toLowerCase().includes(qlc);
     case "summary":return stripHtml((b.summary||"")+" "+(b.entries||[]).map(en=>en.summary||"").join(" ")).toLowerCase().includes(qlc);
     case "notes":return stripHtml((b.canvasText||"")+" "+(b.entries||[]).map(en=>en.notes||"").join(" ")+" "+(b.pads||[]).map(p=>p.html||"").join(" ")).toLowerCase().includes(qlc);
@@ -7963,7 +8012,7 @@ function renderPick(){
      since, showing the stale copy offered a row that opened a ghost */
   if(S.picked&&S.picked!=="none")S.picked=books.find(b=>b.id===S.picked.id)||null;
   const allG=Object.keys(genres).sort((a,b)=>a.localeCompare(b));
-  const allKw=[...new Set(books.flatMap(b=>b.keywords||[]))].sort((a,b)=>a.localeCompare(b));
+  const allKw=[...new Set(books.flatMap(allKeywordsOf))].sort((a,b)=>a.localeCompare(b));
   m.innerHTML=`<div class="sec pickbox"><h2 class="serif" style="margin-bottom:8px">🎲 Pick for me</h2>
     <div class="hint" style="margin:0 0 8px">Can't decide? Narrow the mood below (or don't) and let the dice choose. DNF books are never picked.</div>
     <input class="field" id="pkq" placeholder="Words to look for — e.g. dragons, found family" value="${esc(S.pickText||"")}" style="margin-bottom:4px">
@@ -7992,7 +8041,7 @@ function renderPick(){
     let pool=books.filter(b=>!b.dnf);
     if(S.pickWant)pool=pool.filter(b=>statusOf(b)==="want");
     if(S.pickGenres.length)pool=pool.filter(b=>(b.genres||[]).some(g=>S.pickGenres.includes(g)));
-    if(S.pickKws.length)pool=pool.filter(b=>(b.keywords||[]).some(k=>S.pickKws.includes(k)));
+    if(S.pickKws.length)pool=pool.filter(b=>allKeywordsOf(b).some(k=>S.pickKws.includes(k)));
     if((S.pickText||"").trim())pool=pool.filter(b=>textMatches(b,S.pickText));
     S.picked=pool.length?pool[Math.floor(Math.random()*pool.length)]:"none";
     renderPick();
@@ -8052,7 +8101,7 @@ function renderInsights(){
   const finRate=(fin.length+dnf.length)?fin.length/(fin.length+dnf.length):null;
   const dnfReasons={};dnf.forEach(b=>(b.dnfReasons||[]).forEach(r=>dnfReasons[r]=(dnfReasons[r]||0)+1));
   const topDnf=Object.entries(dnfReasons).sort((a,b)=>b[1]-a[1])[0];
-  const kwCount={};books.forEach(b=>(b.keywords||[]).forEach(k=>kwCount[k]=(kwCount[k]||0)+1));
+  const kwCount={};books.forEach(b=>allKeywordsOf(b).forEach(k=>kwCount[k]=(kwCount[k]||0)+1));
   const topKw=Object.entries(kwCount).filter(x=>x[1]>1).sort((a,b)=>b[1]-a[1]).slice(0,6);
   const finLens=fin.flatMap(unitPages);
   const avgLen=finLens.length?Math.round(finLens.reduce((s,x)=>s+x,0)/finLens.length):null;
@@ -11101,6 +11150,77 @@ function renderEditor(){
     document.body.appendChild(wrap);
     close=dismissable(wrap);
   }
+  /* Tags for one story, and here the rule is the opposite of the genres panel
+     above: these are ADDED to the collection's rather than put in their place.
+     A genre says where a thing is filed and one place is the point of it; a tag
+     only describes, and descriptions stack. Under the replace rule, tagging one
+     story of a series would have stripped the words that are true of all of
+     them, which is not a thing anyone would ask for. */
+  function openEntKw(id){
+    const en=(cur.entries||[]).find(x=>x.id===id);if(!en)return;
+    if(panelOpen("entKwPanel"))return;
+    const wrap=document.createElement("div");
+    wrap.id="entKwPanel";wrap.className="ratepanel";
+    let sel=new Set(en.keywords||[]);
+    const also=new Set();
+    let typed="";
+    /* the collection's own are shown but never tickable — they are already on
+       this story, and a copy of one here would only stop following the
+       collection the moment you edited it there */
+    const mine=new Set((cur.keywords||[]).map(k=>k.toLowerCase()));
+    const pool=()=>[...new Set([...knownKeywords(),...sel])]
+      .filter(k=>!mine.has(k.toLowerCase()))
+      .filter(k=>!typed.trim()||k.toLowerCase().includes(typed.trim().toLowerCase()))
+      .sort((a,b)=>a.localeCompare(b));
+    let close=()=>wrap.remove();
+    const apply=()=>{
+      const list=[...sel];
+      en.keywords=list;
+      /* the genres panel's version of this hands the others the same list, which
+         is right there because a genre replaces. Here it would take another
+         story's own words off it to give it yours, so these are merged in. */
+      also.forEach(i=>{
+        const o=(cur.entries||[]).find(x=>x.id===i);if(!o)return;
+        const seen=new Set((o.keywords||[]).map(k=>k.toLowerCase()));
+        o.keywords=[...(o.keywords||[]),...list.filter(k=>!seen.has(k.toLowerCase()))];
+      });
+      close();renderEntries();scheduleSave();
+    };
+    const draw=()=>{
+      const opts=pool();
+      wrap.innerHTML=`<div class="hrow2" style="margin-bottom:9px">
+          <b style="font-size:13px">🏷 Tags — ${esc(en.title)||"this story"}</b>
+          <button class="btn" id="ekClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+        <div class="hint" style="margin:0 0 8px">These go on <b>as well as</b> the collection's${(cur.keywords||[]).length
+          ?` — ${cur.keywords.map(esc).join(", ")}, which this story keeps whatever you do here`:", not instead of them"}.</div>
+        <input class="field" id="ekNew" placeholder="Find one, or type a new one and press Enter" value="${esc(typed)}" style="font-size:13px;padding:7px 10px;margin-bottom:7px">
+        <div>${opts.map(k=>`<button class="mg${sel.has(k)?" on":""}" data-ek="${esc(k)}"><span class="bx">${sel.has(k)?"✓":""}</span>${esc(k)}</button>`).join("")
+          ||'<span class="none">Nothing to pick from — type one above.</span>'}</div>
+        ${(cur.entries||[]).length>1?`<div class="lbl" style="display:block;margin:12px 0 4px">Give the same to these as well</div>
+          <div>${(cur.entries||[]).filter(x=>x.id!==en.id).map(x=>
+            `<button class="mg${also.has(x.id)?" on":""}" data-eka="${esc(x.id)}"><span class="bx">${also.has(x.id)?"✓":""}</span>${esc(x.title)||"Untitled"}</button>`).join("")}</div>`:""}
+        <div class="hrow2" style="margin-top:12px">
+          <button class="btn pri" id="ekSave">Save</button>
+          <button class="btn" id="ekClear">Only the collection's</button>
+        </div>`;
+      q("#ekClose",wrap).onclick=()=>close();
+      qa("[data-ek]",wrap).forEach(b=>b.onclick=()=>{const k=b.dataset.ek;sel.has(k)?sel.delete(k):sel.add(k);draw();});
+      qa("[data-eka]",wrap).forEach(b=>b.onclick=()=>{const i=b.dataset.eka;also.has(i)?also.delete(i):also.add(i);draw();});
+      const ni=q("#ekNew",wrap);
+      ni.oninput=e=>{typed=e.target.value;keepCaret(e.target,draw,()=>q("#ekNew",wrap));};
+      ni.addEventListener("keydown",e=>{
+        if(e.key!=="Enter")return;
+        const v=titleCase(String(e.target.value||"").trim());
+        if(!v||mine.has(v.toLowerCase()))return;
+        sel.add(v);typed="";draw();
+      });
+      q("#ekClear",wrap).onclick=()=>{sel=new Set();apply();};
+      q("#ekSave",wrap).onclick=apply;
+    };
+    draw();
+    document.body.appendChild(wrap);
+    close=dismissable(wrap);
+  }
   /* which stories have their words open — per visit to the form, on purpose */
   const entAspOpen=new Set();
   function renderEntries(){
@@ -11140,6 +11260,7 @@ function renderEditor(){
             </select></span>
             <span class="boxbtn entsub" style="cursor:default;flex:1;min-width:96px">Author <input class="entsel" data-eau="${en.id}" value="${esc(en.author||"")}" placeholder="same${cur.author?" — "+esc(cur.author):""}" title="Its own author, if it differs from the collection's" style="flex:1"></span>
             <button class="btn entsub" data-egen="${en.id}" title="Genres for this story on its own">Genres · ${entOwnGenres(en)?en.genres.length:"same"}</button>
+            <button class="btn entsub" data-ekw="${en.id}" title="Tags for this story, on top of the collection's">Tags · ${entOwnKeywords(en)?"+"+en.keywords.length:"same"}</button>
             <button class="btn entsub" data-easp="${en.id}" title="What stood out in this story, in words">Words${en.aspects&&Object.keys(en.aspects).length?" ✓":""}</button>
           </div>
           ${entAspOpen.has(en.id)?`<div class="dnfbox aspbox" style="margin:4px 0">${aspectChipsHtml(en,en.id)}${sugHtml(en,en.id)}</div>`:""}
@@ -11213,6 +11334,7 @@ function renderEditor(){
     qa("[data-eau]",list).forEach(el=>el.addEventListener("input",()=>{
       find(el.dataset.eau).author=el.value;scheduleSave();}));
     qa("[data-egen]",list).forEach(el=>el.onclick=()=>openEntGenres(el.dataset.egen));
+    qa("[data-ekw]",list).forEach(el=>el.onclick=()=>openEntKw(el.dataset.ekw));
     qa("[data-ec]",list).forEach(el=>el.onclick=()=>{pendingEnt=el.dataset.ec;q("#entCoverFile").click();});
     qa("[data-ex]",list).forEach(el=>el.onclick=()=>{
       const en=find(el.dataset.ex);if(!en)return;
@@ -11365,7 +11487,7 @@ function renderEditor(){
         /* the collection may have no author yet — take this book's, so nothing
            is lost into a "same as the collection" that means same as nothing */
         if(!String(cur.author||"").trim()&&String(b.author||"").trim())cur.author=String(b.author).trim();
-        const {en,coverData}=await bookToEntry(b,cur.id,statusOf(cur),cur.author,cur.dnf);
+        const {en,coverData}=await bookToEntry(b,cur.id,statusOf(cur),cur.author,cur.dnf,cur.keywords);
         cur.entries.push(en);
         if(coverData)curEnt[en.id]=coverData;
         await retireBook(b);
@@ -11553,7 +11675,7 @@ function renderEditor(){
   /* Getting rid of a tag altogether: off every book that carries it, out of the
      vocabulary, and out of its family. Undoable like any other edit. */
   async function deleteTagForGood(k){
-    const used=books.filter(b=>(b.keywords||[]).includes(k)).length;
+    const used=books.filter(b=>allKeywordsOf(b).includes(k)).length;
     if(!confirm(`Delete the tag “${k}” for good?\n\nIt comes off ${used} book${used===1?"":"s"} and out of your list of tags. The books themselves are untouched, and Undo can bring it back.`))return;
     const label={kind:"kw",name:k,color:kwColors[k]||"",cat:kwCats[k]||""};
     const items=[];
@@ -11568,7 +11690,7 @@ function renderEditor(){
   /* Every keyword the shelf knows, kept in one vocabulary so the same one gets
      reused rather than retyped: alphabetical, narrowed as you type, tap to add. */
   function knownKeywords(){
-    return [...new Set([...books.flatMap(b=>b.keywords||[]),...Object.keys(kwColors)])]
+    return [...new Set([...books.flatMap(allKeywordsOf),...Object.keys(kwColors)])]
       .filter(Boolean).sort((a,b)=>a.localeCompare(b));
   }
   function renderKwSug(){
@@ -11750,14 +11872,27 @@ function renderEditor(){
      {id,before,after} for every book touched — the makings of one undo step. */
   async function relabel(field,oldN,newN,collect){
     const swap=list=>[...new Set(list.map(x=>x===oldN?newN:x))].filter(Boolean);
+    /* A story keeps its own genres and now its own tags, and neither was ever
+       reached from here — so renaming a genre everywhere left every story that
+       had stepped out of its collection still carrying the old name, pointing at
+       a genre the shelf no longer has. Tags would have walked into the same hole
+       the day they existed. Both are swept now. */
+    const entsOf=b=>((field==="genres"||field==="keywords")&&isColl(b))?((b.entries)||[]):[];
+    const swapEnts=b=>{let hit=false;
+      entsOf(b).forEach(en=>{if(((en[field])||[]).indexOf(oldN)>=0){en[field]=swap(en[field]);hit=true;}});
+      return hit;};
     for(const b of books){
       const list=b[field]||[];
-      if(list.indexOf(oldN)<0)continue;
+      const mine=list.indexOf(oldN)>=0;
+      const inStories=entsOf(b).some(en=>((en[field])||[]).indexOf(oldN)>=0);
+      if(!mine&&!inStories)continue;
       const before=collect?JSON.parse(JSON.stringify(b)):null;
-      b[field]=swap(list);
+      if(mine)b[field]=swap(list);
+      swapEnts(b);
       b.modified=nextMod(b);
       if(cur&&b.id===cur.id){
         if((cur[field]||[]).indexOf(oldN)>=0)cur[field]=swap(cur[field]);
+        swapEnts(cur);
         cur.modified=b.modified;
       }
       await dbPut("books",b);
@@ -11765,8 +11900,10 @@ function renderEditor(){
       if(collect)collect.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
     }
     /* a brand-new book not yet on the shelf still gets its working copy fixed */
-    if(cur&&!books.some(b=>b.id===cur.id)&&(cur[field]||[]).indexOf(oldN)>=0)
-      cur[field]=swap(cur[field]);
+    if(cur&&!books.some(b=>b.id===cur.id)){
+      if((cur[field]||[]).indexOf(oldN)>=0)cur[field]=swap(cur[field]);
+      swapEnts(cur);
+    }
   }
   async function renameGenre(oldN,newN,color){
     newN=(newN||"").trim();
@@ -11803,7 +11940,12 @@ function renderEditor(){
   function openTagEditor(kind,name){
     const box=q("#tagPanel");box.hidden=false;
     const isG=kind==="genre";
-    const used=books.filter(b=>(isG?(b.genres||[]):(b.keywords||[])).indexOf(name)>=0).length;
+    /* the stories inside count too — this number is what the rename is about to
+       reach, and it reaches into them now */
+    const allOf=b=>isG
+      ?[...(b.genres||[]),...(isColl(b)?((b.entries)||[]).flatMap(en=>en.genres||[]):[])]
+      :allKeywordsOf(b);
+    const used=books.filter(b=>allOf(b).indexOf(name)>=0).length;
     let color=isG?(genres[name]||"#78716c"):(kwColors[name]||"");
     let cat=isG?"":(kwCats[name]||"");
     box.innerHTML=`
