@@ -989,6 +989,23 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .bar i{display:block;height:100%;background:var(--teal);border-radius:999px;transition:width .3s}
   .bar i.warn{background:var(--amber)}
   .bar i.full{background:var(--rose)}
+  /* the storage breakdown: one stacked bar, its key, and every single thing */
+  .sizebar{height:20px;border-radius:7px;overflow:hidden;display:flex;border:1px solid var(--line);margin:2px 0 8px}
+  .sizebar i{display:block;height:100%}
+  .sizekey{display:flex;flex-wrap:wrap;gap:3px 13px;font-size:12px;color:var(--mut)}
+  .sizekey i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+  .sizekey b{color:var(--ink)}
+  .sizelist{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+  .sizerow{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;
+    border:none;border-bottom:1px solid var(--line);padding:6px 10px;font:inherit;font-size:13px;
+    color:var(--ink);cursor:pointer}
+  .sizerow:last-child{border-bottom:none}
+  .sizerow:hover{background:var(--line)}
+  .sizerow[disabled]{cursor:default;opacity:.65}
+  .sizerow i{flex:none;width:9px;height:9px;border-radius:2px}
+  .sizerow .szw{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sizerow .szn{flex:none;font-variant-numeric:tabular-nums;color:var(--mut)}
+  [data-theme="dark"] .sizerow:hover{background:#3a3532}
   .bignum{font-family:Georgia,serif;font-size:21px;font-weight:700}
   .btn{border:1px solid var(--line);background:#fff;border-radius:10px;padding:8px 13px;font-size:13px;color:var(--ink);font-weight:500}
   .btn:hover{border-color:#2dd4bf;background:#f0fdfa}
@@ -6083,6 +6100,7 @@ async function renderHub(){
     <div class="sec">
       <div class="heading"><h2 class="serif">Storage</h2></div>
       <div class="hcard" id="stoCard"><span class="none">Checking…</span></div>
+      <div class="hcard" id="stoBreak" hidden style="margin-top:9px"></div>
     </div>
     <div class="sec">
       <div class="heading"><h2 class="serif">Export &amp; import</h2></div>
@@ -6893,16 +6911,148 @@ async function refreshStorage(){
   };
   const covLine=covOne(cs,"This screen")+covOne(coverStatsPrev,"The screen before");
   const dirWarn=window.__dirBkFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The daily backup could not be written into your backup folder — it may have been moved or deleted. Open Backups below to reconnect it.</div>':"";
+  /* asked for rather than done: measuring means reading every picture off the
+     disk, which is not something to do each time you glance at this screen */
+  const open=!!(q("#stoBreak")&&!q("#stoBreak").hidden);
+  const breakBtn=`<div class="hrow2" style="margin-top:8px"><button class="btn" id="stoBreakBtn">${open?"▾ Hide the breakdown":"🔎 What's using the room"}</button></div>`;
   if(si&&si.quota){
     const pct=si.usage/si.quota*100;
     q("#stoCard").innerHTML=`
       <div class="hrow2"><span class="bignum">${fmtBytes(si.usage)}</span><span class="none">used of ${fmtBytes(si.quota)} available on this device</span></div>
       <div class="bar"><i class="${pct>90?"full":pct>70?"warn":""}" style="width:${Math.max(1,Math.min(100,pct))}%"></i></div>
       <div class="none">${counts}</div>
+      ${breakBtn}
       ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}${buildLine}${covLine}`;
   }else{
-    q("#stoCard").innerHTML=`<div class="none">${counts}</div><div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}`;
+    q("#stoCard").innerHTML=`<div class="none">${counts}</div>${breakBtn}<div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}`;
   }
+  wireBreakdown();
+}
+/* ---- what is actually using the room ----
+   A real reading of every picture and every book, so it is asked for rather
+   than done on every visit: the pictures alone are tens of megabytes. They are
+   read ONE AT A TIME through a cursor — asking for them all at once is the
+   ordinary way and is exactly what empties a phone's tab. The backups are the
+   exception and never opened at all: their sizes are already written down in
+   the small index beside them, and their bodies are the biggest thing here. */
+/* every single thing, but a shelf can hold thousands of pictures and the list
+   is only useful while it can be read — the tail past this is all tiny anyway */
+const SIZE_ROWS=150;
+const SIZE_KINDS=[
+  ["covers","Book covers","#2563eb"],
+  ["story","Story covers","#0891b2"],
+  ["scrap","Scrapbook pictures","#7c3aed"],
+  ["bg","Backgrounds","#ea580c"],
+  ["pad","Notepad skins","#a16207"],
+  ["gart","Group pictures","#be123c"],
+  ["libart","Library pictures","#db2777"],
+  ["text","What you have written","#15803d"],
+  ["snap","Backups in the browser","#78716c"],
+  ["trash","Recently deleted","#334155"],
+];
+const dbScan=(store,fn)=>new Promise(res=>{
+  try{
+    const c=st(store,"readonly").openCursor();
+    c.onsuccess=e=>{const cur=e.target.result;if(!cur){res();return;}fn(cur.value);cur.continue();};
+    c.onerror=()=>res();
+  }catch(e){res();}
+});
+async function measureStorage(){
+  const byId=new Map(books.map(b=>[b.id,b]));
+  const storyKey=new Map(),scrapKey=new Map();
+  for(const b of books){
+    for(const en of (b.entries||[]))if(en&&en.id)storyKey.set(b.id+"|"+en.id,{b,en});
+    for(const im of (b.images||[]))if(im&&im.id)scrapKey.set(b.id+"|"+im.id,{b,im});
+  }
+  const kind={};SIZE_KINDS.forEach(([k])=>kind[k]=0);
+  const items=[];
+  for(const b of books){
+    const n=JSON.stringify(b).length;
+    kind.text+=n;
+    const chN=(b.chapters||[]).length;
+    items.push({n,what:`The writing in “${b.title||"Untitled"}”`,k:"text",
+      note:chN?`${chN} chapter${chN===1?"":"s"}`:"",go:{t:"book",id:b.id}});
+  }
+  await dbScan("covers",r=>{
+    const n=(r&&r.data||"").length;if(!n)return;kind.covers+=n;
+    const b=byId.get(r.id);
+    items.push({n,what:`Cover — ${(b&&b.title)||"a book that is gone"}`,k:"covers",
+      note:b?"":"not attached to anything",go:b?{t:"book",id:b.id}:null});
+  });
+  await dbScan("images",r=>{
+    const n=(r&&r.data||"").length;if(!n)return;
+    const key=String(r.key||"");
+    if(key.startsWith("__bg|")){kind.bg+=n;items.push({n,what:"A background",k:"bg",note:"",go:{t:"look"}});return;}
+    if(key.startsWith("__pad|")){kind.pad+=n;items.push({n,what:"A notepad skin",k:"pad",note:"",go:{t:"look"}});return;}
+    if(key.startsWith("__gart|")){kind.gart+=n;items.push({n,what:"A group's picture",k:"gart",note:"",go:{t:"library"}});return;}
+    if(key.startsWith("__libart|")){kind.libart+=n;items.push({n,what:"A picture on the Library page",k:"libart",note:"",go:{t:"library"}});return;}
+    if(storyKey.has(key)){const {b,en}=storyKey.get(key);kind.story+=n;
+      items.push({n,what:`Story cover — ${en.title||"a story"}`,k:"story",
+        note:`inside “${b.title||"Untitled"}”`,go:{t:"book",id:b.id,en:en.id}});return;}
+    if(scrapKey.has(key)){const {b}=scrapKey.get(key);kind.scrap+=n;
+      items.push({n,what:"A scrapbook picture",k:"scrap",
+        note:`on “${b.title||"Untitled"}”`,go:{t:"book",id:b.id}});return;}
+    kind.scrap+=n;
+    items.push({n,what:"A picture with no home",k:"scrap",note:"nothing points at it",go:null});
+  });
+  /* sizes without opening a single one */
+  (await snapIndex()).forEach(s=>{kind.snap+=(s.size||0);
+    items.push({n:s.size||0,what:`Backup — ${fmtWhen(s.at)}`,k:"snap",
+      note:`${s.nbooks||0} books${s.auto?"":" · made by you, never cleared away on its own"}`,go:{t:"backups"}});});
+  await dbScan("trash",r=>{
+    const n=JSON.stringify(r||{}).length;kind.trash+=n;
+    items.push({n,what:`In the bin — ${(r&&r.book&&r.book.title)||"a deleted book"}`,k:"trash",
+      note:"",go:{t:"trash"}});
+  });
+  items.sort((a,b)=>b.n-a.n);
+  return {kind,items,total:Object.values(kind).reduce((s,n)=>s+n,0)};
+}
+let sizeReport=null;
+function wireBreakdown(){
+  const btn=q("#stoBreakBtn");if(!btn)return;
+  btn.onclick=async()=>{
+    const box=q("#stoBreak");if(!box)return;
+    if(!box.hidden){box.hidden=true;btn.textContent="🔎 What's using the room";return;}
+    btn.disabled=true;btn.textContent="Measuring…";
+    try{sizeReport=await measureStorage();}
+    catch(e){btn.disabled=false;btn.textContent="🔎 What's using the room";
+      alert("Couldn't measure this: "+e.message);return;}
+    btn.disabled=false;btn.textContent="▾ Hide the breakdown";
+    box.hidden=false;drawBreakdown();
+  };
+}
+function drawBreakdown(){
+  const box=q("#stoBreak");if(!box||!sizeReport)return;
+  const {kind,items,total}=sizeReport;
+  const t=total||1;
+  const live=SIZE_KINDS.filter(([k])=>kind[k]>0);
+  const shown=items.filter(i=>i.n>0).slice(0,SIZE_ROWS);
+  box.innerHTML=`
+    <div class="sizebar">${live.map(([k,,c])=>
+      `<i style="width:${(kind[k]/t*100).toFixed(2)}%;background:${c}" title="${esc(k)}"></i>`).join("")}</div>
+    <div class="sizekey">${live.map(([k,label,c])=>
+      `<span><i style="background:${c}"></i>${label} <b>${fmtBytes(kind[k])}</b></span>`).join("")}</div>
+    <div class="hint" style="margin:8px 0 6px">Biggest first. Press one to go to it.</div>
+    <div class="sizelist">${shown.map((i,ix)=>{
+      const c=(SIZE_KINDS.find(x=>x[0]===i.k)||[])[2]||"#999";
+      return `<button class="sizerow" data-sz="${ix}"${i.go?"":" disabled"}>
+        <i style="background:${c}"></i>
+        <span class="szw">${esc(i.what)}${i.note?` <span class="none">· ${esc(i.note)}</span>`:""}</span>
+        <span class="szn">${fmtBytes(i.n)}</span></button>`;}).join("")}</div>
+    ${items.length>SIZE_ROWS?`<div class="hint" style="margin:7px 0 0">…and ${items.length-SIZE_ROWS} smaller things.</div>`:""}`;
+  qa("[data-sz]",box).forEach(b=>b.onclick=()=>{
+    const g=shown[+b.dataset.sz].go;if(!g)return;
+    if(g.t==="book")openBook(g.id,false,false,g.en||"");
+    else if(g.t==="library"){view="library";render();}
+    else if(g.t==="backups"||g.t==="trash"){
+      const k=g.t==="backups"?"bk":"trash";
+      settings[k+"Open"]=true;saveSettings();renderHub();
+      setTimeout(()=>{const el=q("#fold-"+k);if(el)el.scrollIntoView({behavior:"smooth",block:"start"});},60);
+    }else if(g.t==="look"){
+      settings.setOpen=true;saveSettings();renderHub();
+      setTimeout(()=>{const el=q("#hubBg");if(el)el.scrollIntoView({behavior:"smooth",block:"center"});},60);
+    }
+  });
 }
 async function refreshSnaps(){
   const box=q("#snapList");if(!box)return;
