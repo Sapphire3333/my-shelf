@@ -2234,7 +2234,7 @@ const isColl=b=>typeOf(b)==="collection";
    story as well. Under the replace rule, giving Dawn Treader "Sea Stories"
    would have taken Faith and Hope off it, which nobody would ever want. */
 const blankEntry=()=>({id:uid(),title:"",rating:null,pages:"",summary:"",notes:"",cover:false,
-  favorite:false,genres:[],keywords:[],author:"",status:"",dateFinished:"",dnf:false,hold:false});
+  favorite:false,genres:[],keywords:[],author:"",isbn:"",status:"",dateFinished:"",dnf:false,hold:false});
 const entGenresOf=(coll,en)=>((en&&en.genres||[]).length?en.genres:((coll&&coll.genres)||[]));
 /* the collection's first, then the story's own — the order they read in */
 const entKeywordsOf=(coll,en)=>{
@@ -5055,6 +5055,10 @@ async function bookToEntry(b,collId,collStatus,collAuthor,collDnf,collKeywords){
   const already=new Set(((collKeywords)||[]).map(k=>String(k).toLowerCase()));
   en.keywords=(b.keywords||[]).map(k=>String(k||"").trim())
     .filter(k=>k&&!already.has(k.toLowerCase()));
+  /* and its number, for the same reason. A collection's ISBN is one edition of
+     one thing and cannot stand in for the books inside it, so a folded-in book
+     that gave up its own was left with no exact way to be looked up ever again. */
+  en.isbn=String(b.isbn||"").trim();
   /* the author came across as nothing at all. A story says only what differs
      from its collection, and the name was never written down either way — so a
      book folded into a collection that had no author lost its author entirely,
@@ -5571,8 +5575,12 @@ async function openBulkFill(ids){
       /* a story is searched under its collection's author, which is the only
          name it has */
       const author=looksBlank(j.b.author)?"":String(j.b.author||"").trim();
+      /* a story's own number where it has one — that is the exact question, and
+         it skips the title guessing entirely. The collection's is never used for
+         a story: it names one edition of one thing. */
+      const ask=j.en?String(j.en.isbn||"").trim():String(j.b.isbn||"").trim();
       let info=null;const probe={};
-      try{info=await fetchBookInfo(title,author,j.en?"":String(j.b.isbn||"").trim(),probe);}
+      try{info=await fetchBookInfo(title,author,ask,probe);}
       catch(e){info=null;}
       if(!info){j.row={dead:"Nothing came back for this title.",asked:probe.asked||[],found:[],want:{},chips:[]};continue;}
       j.row=weigh(j,info);
@@ -10557,7 +10565,8 @@ function renderEditor(){
     wireClose();
     let info=null,unreachable=false;
     const probe={};
-    try{info=await fetchBookInfo(title,(cur.author||"").trim(),en?"":(cur.isbn||"").trim(),probe);}
+    try{info=await fetchBookInfo(title,(cur.author||"").trim(),
+      en?String(en.isbn||"").trim():(cur.isbn||"").trim(),probe);}
     catch(e){unreachable=true;}
     if(box.hidden)return;   /* closed while we were fetching */
     if(!info){
@@ -11651,6 +11660,7 @@ function renderEditor(){
               <option value="dnf"${en.dnf?" selected":""}>Did not finish</option>
             </select></span>
             <span class="boxbtn entsub" style="cursor:default;flex:1;min-width:96px">Author <input class="entsel" data-eau="${en.id}" value="${esc(en.author||"")}" placeholder="same${cur.author?" — "+esc(cur.author):""}" title="Its own author, if it differs from the collection's" style="flex:1"></span>
+            <span class="boxbtn entsub" style="cursor:default;min-width:104px">ISBN <input class="entsel" data-eisbn="${en.id}" value="${esc(en.isbn||"")}" placeholder="—" title="Its own number. Looking it up by this asks the exact book, so nothing else can come back instead — worth typing for one the sites can't find by title." style="flex:1"></span>
             <button class="btn entsub" data-egen="${en.id}" title="Genres for this story on its own">Genres · ${entOwnGenres(en)?en.genres.length:"same"}</button>
             <button class="btn entsub" data-ekw="${en.id}" title="Tags for this story, on top of the collection's">Tags · ${entOwnKeywords(en)?"+"+en.keywords.length:"same"}</button>
             <button class="btn entsub" data-easp="${en.id}" title="What stood out in this story, in words">Words${en.aspects&&Object.keys(en.aspects).length?" ✓":""}</button>
@@ -11725,6 +11735,10 @@ function renderEditor(){
     qa("[data-enrw]",list).forEach(w=>wireEntReads(w,find(w.dataset.enrw)));
     qa("[data-eau]",list).forEach(el=>el.addEventListener("input",()=>{
       find(el.dataset.eau).author=el.value;scheduleSave();}));
+    qa("[data-eisbn]",list).forEach(el=>el.addEventListener("input",()=>{
+      /* kept as typed while you type — the check digit is the lookup's business,
+         and a half-typed number is not an error yet */
+      find(el.dataset.eisbn).isbn=el.value.trim();scheduleSave();}));
     qa("[data-egen]",list).forEach(el=>el.onclick=()=>openEntGenres(el.dataset.egen));
     qa("[data-ekw]",list).forEach(el=>el.onclick=()=>openEntKw(el.dataset.ekw));
     qa("[data-ec]",list).forEach(el=>el.onclick=()=>{pendingEnt=el.dataset.ec;q("#entCoverFile").click();});
@@ -13777,7 +13791,11 @@ function importFills(it,b,en){
   }
   if(T.rating==null&&it.rating!=null)f.push({k:"rating",label:"a rating"});
   if(!parseInt(T.pages)&&parseInt(it.pages))f.push({k:"pages",label:"the page count"});
-  if(!en&&!b.isbn&&it.isbn)f.push({k:"isbn",label:"the ISBN"});
+  /* a story can hold its own number now, so it is offered one. This is the
+     whole of the answer to "do I have to clear the list and import it all
+     again": run the same file over the shelf you have and the blanks fill in,
+     stories inside collections included. Nothing is cleared, nothing doubles. */
+  if(!filled(T.isbn)&&it.isbn)f.push({k:"isbn",label:"the ISBN"});
   if(!filled(T.summary)&&it.summary)f.push({k:"summary",label:"the review"});
   if(!filled(en?en.notes:b.canvasText)&&it.notes)f.push({k:"notes",label:"your notes"});
   const auth=String(it.author||"").trim();
@@ -13786,8 +13804,11 @@ function importFills(it,b,en){
      same thing the book it sits in already says */
   if(auth&&!String(T.author||"").trim()&&(!en||auth!==String(b.author||"").trim()))
     f.push({k:"author",label:"the author"});
-  if(!en){
-    const have=new Set(((b.keywords)||[]).map(k=>String(k).toLowerCase()));
+  /* likewise the tags. A story's own sit beside the collection's rather than
+     replacing them, so what it already has means both lists together — offering
+     a word the collection carries would only make a copy that stops following it. */
+  {
+    const have=new Set((en?entKeywordsOf(b,en):((b.keywords)||[])).map(k=>String(k).toLowerCase()));
     const add=((it.tags)||[]).filter(t=>t&&!have.has(String(t).toLowerCase()));
     if(add.length)f.push({k:"tags",label:add.length===1?"a tag":`${add.length} tags`,v:add});
   }
@@ -13799,11 +13820,11 @@ function applyImportFills(it,b,en,fills){
     if(f.k==="readings"){T.readings=f.v;syncReads(T);}
     else if(f.k==="rating"){T.rating=it.rating;if(en)syncCollRating(b);}
     else if(f.k==="pages")T.pages=parseInt(it.pages);
-    else if(f.k==="isbn")b.isbn=it.isbn;
+    else if(f.k==="isbn")T.isbn=it.isbn;
     else if(f.k==="summary")T.summary=esc(it.summary);
     else if(f.k==="notes"){if(en)en.notes=esc(it.notes);else b.canvasText=esc(it.notes);}
     else if(f.k==="author")T.author=String(it.author||"").trim();
-    else if(f.k==="tags")b.keywords=[...((b.keywords)||[]),...f.v].slice(0,IMPORT_TAG_CAP);
+    else if(f.k==="tags")T.keywords=[...((T.keywords)||[]),...f.v].slice(0,IMPORT_TAG_CAP);
   }
   return b;
 }
