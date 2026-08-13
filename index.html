@@ -4319,6 +4319,9 @@ window.addEventListener("popstate",async e=>{
          Back button, and is recorded as one */
       const leavingBook=view==="book";
       view=(st&&st.v&&st.v!=="book")?st.v:"library";
+      /* leaving the shelf after a look at a group's picture folds it back up and
+         puts the grouping where it was — the look was only ever borrowed */
+      if(gartPeek&&view!=="library")endGartPeek();
       cur=null;render();restoreScroll(view,leavingBook);
     }
   }catch(err){console.warn("[shelf] back",err);}
@@ -4396,6 +4399,7 @@ function render(){
        offset for that tab is what you want, not the last book's row, and not
        the line you once pressed in the storage list either */
     lastOpenedId=null;sizeReturn=null;
+    if(gartPeek&&t.dataset.v!=="library")endGartPeek();
     view=t.dataset.v;render();restoreScroll(view);
   });
   q("#uBtn").onclick=()=>finishSaveThen(doUndo);q("#rBtn").onclick=()=>finishSaveThen(doRedo);refreshHistBtns();
@@ -7030,7 +7034,18 @@ async function measureStorage(){
     const key=String(r.key||"");
     if(key.startsWith("__bg|")){kind.bg+=n;items.push({n,what:"A background",k:"bg",note:"",go:{t:"look"}});return;}
     if(key.startsWith("__pad|")){kind.pad+=n;items.push({n,what:"A notepad skin",k:"pad",note:"",go:{t:"look"}});return;}
-    if(key.startsWith("__gart|")){kind.gart+=n;items.push({n,what:"A group's picture",k:"gart",note:"",go:{t:"library"}});return;}
+    if(key.startsWith("__gart|")){
+      kind.gart+=n;
+      /* the picture is filed under its own id; which heading wears it is the
+         other way round, so ask the headings which one points at this */
+      const img=key.slice(7);
+      const gk=Object.keys(groupArt).find(x=>groupArt[x]&&groupArt[x].img===img)||"";
+      const label=gk?gk.slice(gk.indexOf("|")+1):"";
+      const by=gk?gk.slice(0,gk.indexOf("|")):"";
+      items.push({n,what:label?`Group picture — ${label}`:"A group's picture",k:"gart",
+        note:by?`on the ${by} headings`:"nothing points at it",
+        go:gk?{t:"gart",key:gk}:null});
+      return;}
     if(key.startsWith("__libart|")){kind.libart+=n;items.push({n,what:"A picture on the Library page",k:"libart",note:"",go:{t:"library"}});return;}
     if(storyKey.has(key)){const {b,en}=storyKey.get(key);kind.story+=n;
       items.push({n,what:`Story cover — ${en.title||"a story"}`,k:"story",
@@ -7058,6 +7073,38 @@ async function measureStorage(){
 let sizeReport=null,sizeOpen=false;
 /* which line you left from, and where on the screen it was sitting */
 let sizeReturn=null;
+/* ---- going to look at a group's picture, and leaving things as you found them ----
+   Three separate things can be hiding it: the shelf grouped some other way, the
+   heading folded shut, and the "hide the big pictures" switch for that grouping.
+   A peek undoes all three, and puts all three back when you leave. None of it is
+   ever saved, so this cannot leave your shelf rearranged — and a reload in the
+   middle of a peek finds everything as it was. */
+let gartPeek=null;
+function peekGroupArt(key){
+  if(!key||!groupArt[key])return false;
+  const by=key.slice(0,key.indexOf("|"));
+  const shutBy=(settings.gartShutBy&&typeof settings.gartShutBy==="object")?settings.gartShutBy:null;
+  gartPeek={key,by,prevGroupBy:groupBy,
+    wasCollapsed:(settings.collapsed||[]).includes(key),
+    wasArtShut:!!(shutBy&&shutBy[by])};
+  groupBy=by;
+  settings.collapsed=(settings.collapsed||[]).filter(k=>k!==key);
+  if(shutBy&&shutBy[by])shutBy[by]=false;
+  view="library";render();
+  /* the heading only exists if that group still has books under it */
+  setTimeout(()=>{const el=q(`[data-gh="${CSS.escape(key)}"]`);
+    if(el)el.scrollIntoView({behavior:"smooth",block:"center"});},90);
+  return true;
+}
+function endGartPeek(){
+  if(!gartPeek)return;
+  const {key,by,prevGroupBy,wasCollapsed,wasArtShut}=gartPeek;
+  gartPeek=null;
+  groupBy=prevGroupBy;
+  if(wasCollapsed){const s=new Set(settings.collapsed||[]);s.add(key);settings.collapsed=[...s];}
+  if(wasArtShut){const v=settings.gartShutBy=(settings.gartShutBy&&typeof settings.gartShutBy==="object")?settings.gartShutBy:{};
+    v[by]=true;}
+}
 /* Put that line back at the same height on the screen. Working in the line's
    own position rather than the page's means anything growing above it — the
    covers in Reading now are the usual culprit — moves it and us together. */
@@ -7124,6 +7171,7 @@ function drawBreakdown(){
        back rather than guessing from how far down the page we were */
     sizeReturn={ix:+b.dataset.sz,top:Math.round(b.getBoundingClientRect().top)};
     if(g.t==="book")openBook(g.id,false,false,g.en||"");
+    else if(g.t==="gart")peekGroupArt(g.key);
     else if(g.t==="library"){view="library";render();}
     else if(g.t==="backups"||g.t==="trash"){
       const k=g.t==="backups"?"bk":"trash";
