@@ -5500,6 +5500,12 @@ async function openBulkFill(ids){
         want.cover=(info.covers||[]).filter(Boolean);found.push(plural(want.cover.length,"cover")+" to try");
       }
     }
+    /* the number of the book it actually found, onto whatever was filled. It is
+       not a field you look at, but it is the one that makes the NEXT lookup
+       exact instead of a guess at a title — so a story filled by title today is
+       asked by number tomorrow, and none of this can happen to it twice. */
+    const mineIsbn=String((en?en.isbn:b.isbn)||"").trim();
+    if(!mineIsbn&&info.isbn){want.isbn=String(info.isbn).trim();found.push("its ISBN");}
     /* a story's words are its own; a plain book's are its own. Genres are the
        exception and always the collection's — a genre on a story replaces
        rather than adds, and would lift that one book out from under its series. */
@@ -5519,6 +5525,10 @@ async function openBulkFill(ids){
     const renamed=!!(info.title&&!titleSame(asked,info.title));
     if(renamed)notes.push(`They call it “${info.title}” — check it is the same book.`);
     if(info.loose)notes.push("Found only by the title: the author on your shelf matched nothing at either site.");
+    /* the difference between "there is no blurb" and "the blurb didn't arrive"
+       matters, because the second one is worth simply running again */
+    if(info.blurbMissed&&!info.summary&&S.fields.blurb)
+      notes.push("The blurb is the one thing that needs a request of its own, and that request didn't answer — running this book again is likely to get it.");
     if(renamed||info.loose)notes.push("Left unticked on purpose.");
     if(!en){const d=doubt(b,info);if(d)notes.push(d);}
     return {info,want,found,newTags,newGen,chips:[],renamed,
@@ -5673,6 +5683,7 @@ async function openBulkFill(ids){
         const tgt=en||b;
         let did=false;
         if(r.want.pages!==undefined&&r.want.pages!==""){tgt.pages=r.want.pages;did=true;}
+        if(r.want.isbn){tgt.isbn=r.want.isbn;did=true;}
         if(r.want.blurb){tgt.summary=esc(r.want.blurb).replace(/\n/g,"<br>");did=true;}
         if(!en&&r.want.author){b.author=r.want.author;did=true;}
         r.chips.filter(c=>c.on).forEach(c=>{
@@ -14058,7 +14069,10 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
      arrived, so they are simply weight on the answer */
   /* author_name is asked for so there is still a name to offer on the days
      Google's shared quota is dry and only Open Library answers */
-  const oP=fetchJson("https://openlibrary.org/search.json?limit=3&fields=key,title,subject,cover_i,number_of_pages_median,first_publish_year,author_name&"
+  /* isbn is asked for so a number still comes back on the days Google is dry —
+     it was the only source of one, so a run that lost Google lost every ISBN
+     with it, and the books it filled stayed unfindable-by-number afterwards */
+  const oP=fetchJson("https://openlibrary.org/search.json?limit=3&fields=key,title,subject,isbn,cover_i,number_of_pages_median,first_publish_year,author_name&"
     +(isbn?"q="+encodeURIComponent(isbn)
     :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):"")),2,6000);
   /* both are awaited below; this only stops a rejection being called unhandled
@@ -14119,6 +14133,10 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
       if(!out.author&&(d.author_name||[]).length)
         out.author=(d.author_name||[]).map(a=>String(a).trim()).filter(Boolean).join(", ");
       if(!out.title&&String(d.title||"").trim())out.title=String(d.title).trim();
+      if(!out.isbn){
+        const ns=(d.isbn||[]).map(x=>String(x||"").replace(/[^0-9Xx]/g,""));
+        out.isbn=ns.find(x=>x.length===13)||ns.find(x=>x.length===10)||"";
+      }
       if(!out.pages&&d.number_of_pages_median)out.pages=d.number_of_pages_median;
       if(d.cover_i)out.olCover="https://covers.openlibrary.org/b/id/"+d.cover_i+"-L.jpg";
       if(!out.year&&d.first_publish_year)out.year=String(d.first_publish_year);
@@ -14126,16 +14144,23 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
       if(d.key)out.links.push({name:"Open Library",url:"https://openlibrary.org"+d.key});
       /* Google's keyless quota is shared and often runs dry — the Open Library
          work record has a blurb of its own */
+      /* The blurb is the ONE field that costs a request of its own: the title,
+         the author, the pages, the covers and the subjects all arrive in the
+         search answer, and only this has to go and fetch the work record. That
+         makes it the first thing a busy run loses — a book coming back with its
+         pages and its cover and no blurb is not a book without a blurb, it is a
+         request that didn't land. It used to fail in silence; now it says so,
+         and it is given a third try before giving up. */
       if(d.key){
         try{
-          const w=await fetchJson("https://openlibrary.org"+d.key+".json",2);
+          const w=await fetchJson("https://openlibrary.org"+d.key+".json",3);
           const desc=w&&w.description;
           const txt=String(typeof desc==="string"?desc:(desc&&desc.value)||"").trim();
           if(txt){
             if(!out.summary)out.summary=txt;
             if(txt.length>40)out.blurbs.push({text:txt,from:"Open Library"});
           }
-        }catch(e){}
+        }catch(e){out.blurbMissed=true;}
       }
     }
   }catch(e){oErr=true;}
