@@ -894,6 +894,8 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .bs-t{font-family:Georgia,"Times New Roman",serif;font-size:14.5px;line-height:1.3}
   .bs-f{font-size:12.5px;color:var(--mut);margin-top:2px;overflow-wrap:anywhere}
   .bs-w{font-size:12.5px;color:var(--amber);margin-top:3px}
+  /* what was actually asked, shown only where nothing was found */
+  .bs-ask{font-size:11.5px;color:var(--faint);margin-top:3px;overflow-wrap:anywhere;line-height:1.45}
   .bs-n{font-size:12.5px;color:var(--rose);margin-top:3px}
   /* fingers, not cursors: the buttons stay small to the eye but grow a little to
      the touch — an invisible halo, kept narrower than the gaps to its neighbours
@@ -5546,10 +5548,10 @@ async function openBulkFill(ids){
       /* a story is searched under its collection's author, which is the only
          name it has */
       const author=looksBlank(j.b.author)?"":String(j.b.author||"").trim();
-      let info=null;
-      try{info=await fetchBookInfo(title,author,j.en?"":String(j.b.isbn||"").trim());}
+      let info=null;const probe={};
+      try{info=await fetchBookInfo(title,author,j.en?"":String(j.b.isbn||"").trim(),probe);}
       catch(e){info=null;}
-      if(!info){j.row={dead:"Nothing came back for this title.",found:[],want:{},chips:[]};continue;}
+      if(!info){j.row={dead:"Nothing came back for this title.",asked:probe.asked||[],found:[],want:{},chips:[]};continue;}
       j.row=weigh(j,info);
       /* a small gap so two free sites are not hammered flat */
       await new Promise(r=>setTimeout(r,150));
@@ -5740,6 +5742,7 @@ async function openBulkFill(ids){
       <div style="min-width:0;flex:1">
         <div class="bs-t">${esc(titleOf(j))||"Untitled"}</div>
         <div class="bs-f">${esc(say)}</div>
+        ${r&&(r.asked||[]).length?`<div class="bs-ask">${r.asked.map(a=>esc(a)).join("<br>")}</div>`:""}
         ${r&&r.note?`<div class="bs-w">${esc(r.note)}</div>`:""}
         ${r&&r.chips&&r.chips.length?`<div style="margin-top:4px">${r.chips.map((c,ci)=>
           `<button class="mg ${c.on?"on":""}" data-bsc="${gi}.${ji}.${ci}"><span class="bx">${c.on?"✓":""}</span>${esc(c.name)}</button>`).join("")}</div>`:""}
@@ -10528,13 +10531,15 @@ function renderEditor(){
     box.innerHTML=head+`<div class="none">Looking up “${esc(title)}”${cur.author?" by "+esc(cur.author):""}…</div>`;
     wireClose();
     let info=null,unreachable=false;
-    try{info=await fetchBookInfo(title,(cur.author||"").trim(),en?"":(cur.isbn||"").trim());}
+    const probe={};
+    try{info=await fetchBookInfo(title,(cur.author||"").trim(),en?"":(cur.isbn||"").trim(),probe);}
     catch(e){unreachable=true;}
     if(box.hidden)return;   /* closed while we were fetching */
     if(!info){
       box.innerHTML=head+`<div class="none">${unreachable
         ? "Couldn't reach the book sites just now — they're free and sometimes busy. Your connection may also be down."
-        : "Nothing found under that title. Try the author's name too, or a shorter title."}</div>
+        : "Nothing found under that title. Try a shorter title, or check the spelling."}</div>
+        ${(probe.asked||[]).length?`<div class="hint" style="margin:7px 0 0">This is what was asked:<br>${probe.asked.map(a=>esc(a)).join("<br>")}</div>`:""}
         <button class="btn pri" id="fpRetry" style="margin-top:9px">Try again</button>`;
       wireClose();
       q("#fpRetry",box).onclick=()=>openFetchPanel(en);
@@ -13937,7 +13942,9 @@ async function fetchJson(url,tries,ms){
   }
   throw last||new Error("no answer");
 }
-async function fetchBookInfo(title,author,isbn){
+/* `probe`, when given, is filled in with what was actually asked — but only on
+   the way out of a failure, so it costs nothing when a book is found. */
+async function fetchBookInfo(title,author,isbn,probe){
   /* olCovers belongs in here with the rest — it was only ever created further
      down and survived on a `||[]` guard at the one place that reads it.
      Gone from here: coverUrl, which was filled in from Google and then read by
@@ -14076,8 +14083,22 @@ async function fetchBookInfo(title,author,isbn){
     isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
     ...(out.olCovers||[]),
     ...out.gCovers].filter((u,i,a)=>u&&a.indexOf(u)===i).slice(0,6);
-  if(out.summary||out.tags.length||out.pages||out.covers.length)return out;
-  /* nothing to show: say which it was, so "not found" doesn't mean "flaky wifi" */
+  /* the title and the author count as something found. Asked by ISBN, a thin
+     record with nothing but those two was being thrown away as "not found". */
+  if(out.summary||out.tags.length||out.pages||out.covers.length||out.title||out.author)return out;
+  /* Nothing came back. Before giving up, say what was asked — a failure that
+     cannot say what it tried leaves everybody guessing, and guessing at this is
+     what burned four rounds on the import bug. */
+  const say=s=>{if(probe)(probe.asked=probe.asked||[]).push(s);};
+  say(`Google Books · ${qs}${gErr?" · no answer at all (out of quota, or offline)":" · nothing matched"}`);
+  say(`Open Library · ${isbn?"isbn "+isbn:`title “${title}”${author?`, author “${author}”`:""}`}${oErr?" · no answer at all":" · nothing matched"}`);
+  /* And ask again without the author. The author is a hard constraint at both
+     sites — Google's inauthor:"…" and Open Library's author= each demand a
+     match — so a collection whose author is a series name, a publisher, or
+     simply the wrong name for one book inside it turns a perfectly findable
+     title into nothing at all. One extra request, only ever after a failure,
+     and it cannot loop: the second ask carries no author to drop. */
+  if(!isbn&&author)return fetchBookInfo(title,"",isbn,probe);
   if(gErr&&oErr)throw new Error("unreachable");
   return null;
 }
