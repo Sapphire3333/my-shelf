@@ -5434,9 +5434,9 @@ async function openBulkFill(ids){
                   :"Tick some books first, or a collection with something inside it.");
     return;
   }
-  const S={stage:"setup",fields:{cover:true,author:true,pages:true,blurb:true},
+  const S={stage:"setup",fields:{cover:true,author:true,pages:true,blurb:true,isbn:true},
            straight:false,done:0,total:0,now:"",filled:0,failedCovers:[],
-           stopped:false,capped:0};
+           stopped:false,capped:0,gDown:0,oDown:0};
   let stop=false,busy=false;
   const sheet=document.createElement("div");
   sheet.id="bulkSheet";
@@ -5445,7 +5445,7 @@ async function openBulkFill(ids){
   const inner=q(".bs-in",sheet);
   const shut=()=>{stop=true;sheet.remove();renderLibrary();};
 
-  const FIELDS=[["cover","Cover"],["author","Author"],["pages","Pages"],["blurb","Blurb"]];
+  const FIELDS=[["cover","Cover"],["author","Author"],["pages","Pages"],["blurb","Blurb"],["isbn","ISBN"]];
   const plural=(n,w)=>`${n} ${w}${n===1?"":"s"}`;
   const titleOf=j=>String((j.en?j.en.title:j.b.title)||"").trim();
 
@@ -5456,15 +5456,24 @@ async function openBulkFill(ids){
      at all, which on a shelf this size is most of the saving. */
   function needsOf(job){
     const {b,en}=job,out=[];
+    /* A missing number counts as missing something. It did not, and that made
+       the backfill unable to reach the books it most needed to reach: a story
+       that already has its cover, its blurb and its pages is exactly the story
+       that will never be asked about again, so it would have stayed without a
+       number for ever. It is a tick of its own so the extra sweep is yours to
+       decline — on a shelf this size it means asking about nearly everything
+       once, and once only. */
     if(en){
       if(S.fields.cover&&!en.cover)out.push("cover");
       if(S.fields.blurb&&looksBlank(en.summary))out.push("blurb");
       if(S.fields.pages&&looksBlank(en.pages))out.push("pages");
+      if(S.fields.isbn&&looksBlank(en.isbn))out.push("ISBN");
     }else{
       if(S.fields.cover&&!hasCover.has(b.id))out.push("cover");
       if(S.fields.blurb&&looksBlank(b.summary))out.push("blurb");
       if(S.fields.pages&&looksBlank(b.pages))out.push("pages");
       if(S.fields.author&&looksBlank(b.author))out.push("author");
+      if(S.fields.isbn&&looksBlank(b.isbn))out.push("ISBN");
     }
     return out;
   }
@@ -5505,7 +5514,7 @@ async function openBulkFill(ids){
        exact instead of a guess at a title — so a story filled by title today is
        asked by number tomorrow, and none of this can happen to it twice. */
     const mineIsbn=String((en?en.isbn:b.isbn)||"").trim();
-    if(!mineIsbn&&info.isbn){want.isbn=String(info.isbn).trim();found.push("its ISBN");}
+    if(S.fields.isbn&&looksBlank(mineIsbn)&&info.isbn){want.isbn=String(info.isbn).trim();found.push("its ISBN");}
     /* a story's words are its own; a plain book's are its own. Genres are the
        exception and always the collection's — a genre on a story replaces
        rather than adds, and would lift that one book out from under its series. */
@@ -5571,7 +5580,7 @@ async function openBulkFill(ids){
     if(busy)return;
     busy=true;
     try{
-    S.stage="running";S.done=0;stop=false;
+    S.stage="running";S.done=0;S.gDown=0;S.oDown=0;stop=false;
     const todo=[];
     groups.forEach(g=>g.jobs.forEach(j=>{j.row=null;if(j.needs.length)todo.push(j);}));
     S.capped=Math.max(0,todo.length-BULK_CAP);
@@ -5597,6 +5606,8 @@ async function openBulkFill(ids){
       catch(e){info=null;}
       if(!info){j.row={dead:"Nothing came back for this title.",asked:probe.asked||[],found:[],want:{},chips:[]};continue;}
       j.row=weigh(j,info);
+      if(info.gErr)S.gDown++;
+      if(info.oErr)S.oDown++;
       /* a small gap so two free sites are not hammered flat */
       await new Promise(r=>setTimeout(r,150));
     }
@@ -5853,6 +5864,9 @@ async function openBulkFill(ids){
       const on=liveJobs();
       inner.innerHTML=head("Found for "+plural(usable.length,"book"))+`
         <div class="hint" style="margin:0 0 4px">${S.stopped?"Stopped early. ":""}Nothing is written until you press the button at the bottom.</div>
+        ${(S.gDown||S.oDown)?`<div class="bs-w" style="margin:0 0 7px">${
+          S.gDown?`<b>Google Books didn't answer</b> for ${S.gDown} of ${S.total} — its shared quota runs dry most days. That is where the blurbs and the tidy genres come from, so this run is thinner than it would otherwise be${S.oDown?"; ":". "}`:""}${
+          S.oDown?`<b>Open Library didn't answer</b> for ${S.oDown} of ${S.total}. `:""}Nothing is lost by running it again later — only blanks are filled, so a second pass adds what a first one missed.</div>`:""}
         <div class="bs-list" id="bsList">${groups.map((g,gi)=>{
           if(!g.coll)return jobRow(g,gi,g.jobs[0],0);
           const asked=g.jobs.filter(j=>j.needs.length).length;
@@ -5909,6 +5923,7 @@ async function openBulkFill(ids){
       inner.innerHTML=head("Done")+`
         <div style="font-size:14px">Filled in ${plural(S.filled,"book")}.${S.stopped?" Stopped early — the rest are untouched.":""}</div>
         <div class="hint" style="margin:6px 0 0">Undo puts every one of them back as it was. The covers stay where they are — take one off from its own page if you don't want it.</div>
+        ${S.gDown?`<div class="hint" style="margin:6px 0 0">Google Books didn't answer for ${S.gDown} of ${S.total} — that is where the blurbs come from, so running these again another day is worth doing. Only blanks are filled, so nothing is undone by trying twice.</div>`:""}
         ${loose?`<div class="hint" style="margin:6px 0 0">${plural(loose,"book")} came back under a different title, or only once the author was dropped from the search, so ${loose===1?"it was":"they were"} left alone — an unconfirmed match is not something to write for you. Run it again without “just fill them in” to look at ${loose===1?"it":"them"}.</div>`:""}
         ${strips.map((g,si)=>`<div class="lbl" style="display:block;margin:14px 0 4px">A cover for ${esc(g.b.title)||"the collection"}, from its own books</div>
           <div class="hint" style="margin:0 0 6px">These are already downloaded, so picking one is instant and can't be refused. Nothing is picked unless you press one.</div>
@@ -14198,6 +14213,12 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
     ...out.gCovers].filter((u,i,a)=>u&&a.indexOf(u)===i).slice(0,6);
   /* the title and the author count as something found. Asked by ISBN, a thin
      record with nothing but those two was being thrown away as "not found". */
+  /* which of the two answered, carried on every result and not only on a total
+     failure. When one site is dry and the other is not, every book comes back
+     thinner — no Google means no Google blurb, no tidy categories — and nothing
+     anywhere said so, which is indistinguishable from the books simply being
+     thin. Now the run can count it and tell you. */
+  out.gErr=gErr;out.oErr=oErr;
   if(out.summary||out.tags.length||out.pages||out.covers.length||out.title||out.author){
     /* A title-only ask has nothing corroborating it, so it has to earn the
        answer. Searching "Beware of the Ghost" without an author returned
