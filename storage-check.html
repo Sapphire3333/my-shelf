@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>My Shelf — what is using the room</title>
+<style>
+  :root{ --bg:#faf7f2; --card:#fff; --ink:#292524; --mut:#78716c; --line:#e7e5e4; --teal:#2dd4bf; }
+  @media(prefers-color-scheme:dark){
+    :root{ --bg:#1c1917; --card:#292524; --ink:#e8e6e3; --mut:#a8a29e; --line:#44403c; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:18px;background:var(--bg);color:var(--ink);
+    font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+  h1{font-family:Georgia,serif;font-size:22px;margin:0 0 4px}
+  h2{font-family:Georgia,serif;font-size:17px;margin:0 0 9px}
+  .lede{color:var(--mut);max-width:64ch;margin:0 0 14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 0 14px}
+  button{font:inherit;padding:8px 16px;border-radius:9px;border:1px solid var(--line);
+    background:var(--card);color:var(--ink);cursor:pointer}
+  button.pri{background:var(--teal);border-color:var(--teal);color:#06302b;font-weight:600}
+  button.tab{padding:5px 12px;font-size:13px;margin:0 5px 5px 0}
+  button.tab.on{background:var(--teal);border-color:var(--teal);color:#06302b;font-weight:600}
+  .big{font-family:Georgia,serif;font-size:30px}
+  .bar{height:22px;border-radius:7px;overflow:hidden;display:flex;border:1px solid var(--line);margin:10px 0}
+  .bar i{display:block;height:100%}
+  .key{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12.5px;color:var(--mut);margin-bottom:4px}
+  .key span b{color:var(--ink)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:12px}
+  td.n,th.n{text-align:right;white-space:nowrap}
+  .wrap{overflow-x:auto}
+  .note{font-size:12.5px;color:var(--mut)}
+  .err{color:#b91c1c}
+  .pill{font-size:11px;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:var(--mut)}
+  progress{width:100%;height:10px}
+</style>
+</head>
+<body>
+
+<h1>What is using the room</h1>
+<p class="lede">Reads the shelf saved in <em>this</em> browser at <em>this</em> address, measures every
+picture and every book, and never writes anything back. Open it at the same address you use
+the app. A big shelf takes a few seconds — it reads the pictures one at a time on purpose,
+rather than pulling them all into memory at once.</p>
+
+<div class="card">
+  <button class="pri" id="go">Measure my shelf</button>
+  <span class="note" id="say" style="margin-left:10px"></span>
+  <div id="prog" hidden style="margin-top:10px"><progress id="bar2" value="0" max="100"></progress>
+    <div class="note" id="progTxt"></div></div>
+</div>
+
+<div id="out"></div>
+
+<script>
+let db=null;
+const openDb=()=>new Promise((res,rej)=>{
+  const r=indexedDB.open("myShelf");
+  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error||new Error("could not open"));
+});
+const dbAll=s=>new Promise(res=>{try{const g=db.transaction(s,"readonly").objectStore(s).getAll();
+  g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);}catch(e){res([]);}});
+/* one record at a time — getAll on the pictures store would pull every image
+   into memory at once, which on a full shelf is the thing that crashes a phone */
+const scan=(store,fn)=>new Promise(res=>{
+  try{
+    const c=db.transaction(store,"readonly").objectStore(store).openCursor();
+    c.onsuccess=e=>{const cur=e.target.result;if(!cur){res();return;}fn(cur.value);cur.continue();};
+    c.onerror=()=>res();
+  }catch(e){res();}
+});
+const fmt=n=>{if(n==null)return "–";const u=["B","KB","MB","GB"];let i=0,v=n;
+  while(v>=1024&&i<u.length-1){v/=1024;i++;}return (v<10&&i>0?v.toFixed(1):Math.round(v))+" "+u[i];};
+const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+
+/* the colours of the kinds, in the order they are stacked */
+const KINDS=[
+  ["covers","Book covers","#2563eb"],
+  ["story","Story covers (inside collections)","#0891b2"],
+  ["scrap","Scrapbook pictures","#7c3aed"],
+  ["bg","Backgrounds","#ea580c"],
+  ["pad","Notepad skins","#a16207"],
+  ["gart","Group pictures","#be123c"],
+  ["libart","Library-page pictures","#db2777"],
+  ["text","Everything you have written","#15803d"],
+  ["snap","Backups kept in the browser","#78716c"],
+  ["trash","Recently deleted","#334155"],
+];
+const TEXT_PARTS=[["chapters","Chapters"],["discussion","Discussion"],["prompts","Prompts"],
+  ["pads","Notepads"],["writing","Summaries, notes, quotes, lists"],["rest","Titles, dates, everything else"]];
+
+let R=null;   /* the measurement */
+
+async function measure(){
+  const say=id=>{const p=document.getElementById("progTxt");if(p)p.textContent=id;};
+  const bar=v=>{const b=document.getElementById("bar2");if(b)b.value=v;};
+  document.getElementById("prog").hidden=false;
+
+  const books=await dbAll("books");
+  const byId=new Map(books.map(b=>[b.id,b]));
+  /* which image key belongs to which story / which scrapbook picture */
+  const storyKey=new Map(), scrapKey=new Map();
+  for(const b of books){
+    for(const en of (b.entries||[]))if(en&&en.id)storyKey.set(b.id+"|"+en.id,{b,en});
+    for(const im of (b.images||[]))if(im&&im.id)scrapKey.set(b.id+"|"+im.id,{b,im});
+  }
+
+  const kind={};KINDS.forEach(([k])=>kind[k]=0);
+  const items=[];                       /* every single thing, with its size */
+  const perBook=new Map();              /* book id -> {title,bytes,pics,text} */
+  const bumpBook=(b,n,field)=>{
+    if(!b)return;
+    const e=perBook.get(b.id)||{title:b.title||"Untitled",bytes:0,pics:0,text:0,id:b.id};
+    e.bytes+=n; if(field)e[field]+=n; perBook.set(b.id,e);
+  };
+
+  say("Measuring what you have written…");bar(5);
+  const textParts={};TEXT_PARTS.forEach(([k])=>textParts[k]=0);
+  for(const b of books){
+    const whole=JSON.stringify(b).length;
+    let ch=0,di=0,pr=0,pd=0,wr=0;
+    (b.chapters||[]).forEach(c=>{ch+=(c.text||"").length+(c.plan||"").length+(c.title||"").length;});
+    (b.discussion||[]).forEach(c=>{di+=(c.text||"").length+(c.title||"").length;});
+    (b.prompts||[]).forEach(p=>{pr+=(p.text||"").length;});
+    (b.pads||[]).forEach(p=>{pd+=(p.html||"").length;});
+    wr+=(b.summary||"").length+(b.canvasText||"").length
+      +[...(b.quotes||[]),...(b.pros||[]),...(b.cons||[]),...(b.meh||[])].join("").length;
+    (b.entries||[]).forEach(en=>{wr+=(en.summary||"").length+(en.notes||"").length;});
+    const known=ch+di+pr+pd+wr;
+    textParts.chapters+=ch;textParts.discussion+=di;textParts.prompts+=pr;
+    textParts.pads+=pd;textParts.writing+=wr;textParts.rest+=Math.max(0,whole-known);
+    kind.text+=whole;
+    bumpBook(b,whole,"text");
+    if(ch>0)items.push({n:whole,what:"The writing in “"+(b.title||"Untitled")+"”",
+      kindK:"text",where:b.title||"Untitled",detail:(b.chapters||[]).length+" chapters"});
+  }
+
+  say("Measuring covers…");bar(25);
+  await scan("covers",r=>{
+    const n=(r&&r.data||"").length;if(!n)return;
+    kind.covers+=n;
+    const b=byId.get(r.id);
+    bumpBook(b,n,"pics");
+    items.push({n,what:"Cover — "+((b&&b.title)||"a book that is gone"),kindK:"covers",
+      where:(b&&b.title)||"(orphan)",detail:b?"":"not attached to any book"});
+  });
+
+  say("Measuring pictures…");bar(50);
+  await scan("images",r=>{
+    const n=(r&&r.data||"").length;if(!n)return;
+    const k=String(r.key||"");
+    let kk="scrap",what="A picture",where="",detail="";
+    if(k.startsWith("__bg|")){kk="bg";what="Background";where="Backgrounds";}
+    else if(k.startsWith("__pad|")){kk="pad";what="Notepad skin";where="Notepad skins";}
+    else if(k.startsWith("__gart|")){kk="gart";what="Group picture";where="Library headings";}
+    else if(k.startsWith("__libart|")){kk="libart";what="Library-page picture";where="Library page";}
+    else if(storyKey.has(k)){const {b,en}=storyKey.get(k);kk="story";
+      what="Story cover — "+(en.title||"a story");where=b.title||"Untitled";
+      detail="inside “"+(b.title||"Untitled")+"”";bumpBook(b,n,"pics");}
+    else if(scrapKey.has(k)){const {b}=scrapKey.get(k);kk="scrap";
+      what="Scrapbook picture";where=b.title||"Untitled";
+      detail="on “"+(b.title||"Untitled")+"”";bumpBook(b,n,"pics");}
+    else {kk="scrap";what="A picture with no home";where="(orphan)";detail="key "+k;}
+    kind[kk]+=n;
+    items.push({n,what,kindK:kk,where,detail});
+  });
+
+  say("Measuring backups and the bin…");bar(80);
+  await scan("snapshots",r=>{
+    const n=r&&r.size?r.size:JSON.stringify(r||{}).length;
+    kind.snap+=n;
+    items.push({n,what:"Backup kept in the browser",kindK:"snap",
+      where:"Backups",detail:(r&&r.nbooks?r.nbooks+" books":"")});
+  });
+  await scan("trash",r=>{
+    const n=JSON.stringify(r||{}).length;
+    kind.trash+=n;
+    items.push({n,what:"In the bin — "+((r&&r.book&&r.book.title)||"a deleted book"),
+      kindK:"trash",where:"Recently deleted",detail:""});
+  });
+
+  bar(100);say("");
+  let est=null;
+  try{if(navigator.storage&&navigator.storage.estimate)est=await navigator.storage.estimate();}catch(e){}
+  const accounted=Object.values(kind).reduce((s,n)=>s+n,0);
+  items.sort((a,b)=>b.n-a.n);
+  const bookList=[...perBook.values()].sort((a,b)=>b.bytes-a.bytes);
+  document.getElementById("prog").hidden=true;
+  return {kind,items,bookList,textParts,accounted,est,nBooks:books.length};
+}
+
+/* ---------- the three depths, so you can say which one belongs in the app ---------- */
+let depth="kinds";
+function draw(){
+  const {kind,items,bookList,textParts,accounted,est}=R;
+  const total=accounted||1;
+  const rows=KINDS.filter(([k])=>kind[k]>0);
+  const barHtml=`<div class="bar">${rows.map(([k,,c])=>
+    `<i style="width:${(kind[k]/total*100).toFixed(2)}%;background:${c}" title="${k}"></i>`).join("")}</div>`;
+  const keyHtml=`<div class="key">${rows.map(([k,label,c])=>
+    `<span><span class="dot" style="background:${c}"></span>${label} <b>${fmt(kind[k])}</b></span>`).join("")}</div>`;
+
+  const head=`<div class="card">
+    <div><span class="big">${fmt(accounted)}</span>
+      <span class="note">of your own things${est&&est.usage?` · the browser reports ${fmt(est.usage)} used of ${fmt(est.quota)}`:""}</span></div>
+    ${barHtml}${keyHtml}
+    ${est&&est.usage&&est.usage>accounted*1.15?`<div class="note" style="margin-top:6px">The browser's figure is higher because it counts its own bookkeeping and the offline copy of the app as well.</div>`:""}
+  </div>`;
+
+  const tabs=`<div class="card"><b style="font-size:13px">How much detail belongs in the app?</b>
+    <div style="margin-top:8px">
+      ${[["kinds","1 · By kind only"],["books","2 · By kind + biggest books"],["items","3 · Every single thing"]]
+        .map(([k,l])=>`<button class="tab ${depth===k?"on":""}" data-d="${k}">${l}</button>`).join("")}
+    </div>
+    <div class="note" style="margin-top:6px" id="depthNote"></div></div>`;
+
+  let body="";
+  if(depth==="kinds"){
+    body=`<div class="card"><h2>Where it goes</h2><div class="wrap"><table>
+      <tr><th>Kind</th><th class="n">Size</th><th class="n">Share</th></tr>
+      ${rows.map(([k,label,c])=>`<tr><td><span class="dot" style="background:${c}"></span>${label}</td>
+        <td class="n">${fmt(kind[k])}</td><td class="n">${(kind[k]/total*100).toFixed(1)}%</td></tr>`).join("")}
+    </table></div>
+    <h2 style="margin-top:16px">Inside what you have written</h2><div class="wrap"><table>
+      <tr><th>Part</th><th class="n">Size</th></tr>
+      ${TEXT_PARTS.filter(([k])=>textParts[k]>0).map(([k,l])=>
+        `<tr><td>${l}</td><td class="n">${fmt(textParts[k])}</td></tr>`).join("")}
+    </table></div></div>`;
+  }else if(depth==="books"){
+    body=`<div class="card"><h2>The biggest books</h2>
+      <div class="note" style="margin-bottom:8px">Everything that belongs to one book: its writing, its cover, its story covers and its scrapbook.</div>
+      <div class="wrap"><table>
+      <tr><th>Book</th><th class="n">Pictures</th><th class="n">Writing</th><th class="n">All of it</th></tr>
+      ${bookList.slice(0,40).map(b=>`<tr><td>${esc(b.title)}</td>
+        <td class="n">${b.pics?fmt(b.pics):"–"}</td><td class="n">${fmt(b.text)}</td>
+        <td class="n"><b>${fmt(b.bytes)}</b></td></tr>`).join("")}
+    </table></div>
+    ${bookList.length>40?`<div class="note" style="margin-top:7px">…and ${bookList.length-40} more, all smaller.</div>`:""}</div>`;
+  }else{
+    body=`<div class="card"><h2>Every single thing, biggest first</h2>
+      <div class="note" style="margin-bottom:8px">In the app each of these would be a row you can press to go straight to it.</div>
+      <div class="wrap"><table>
+      <tr><th>What</th><th>Where</th><th class="n">Size</th></tr>
+      ${items.slice(0,120).map(i=>{const c=(KINDS.find(x=>x[0]===i.kindK)||[])[2]||"#999";
+        return `<tr><td><span class="dot" style="background:${c}"></span>${esc(i.what)}
+          ${i.detail?`<span class="pill">${esc(i.detail)}</span>`:""}</td>
+          <td>${esc(i.where)}</td><td class="n">${fmt(i.n)}</td></tr>`;}).join("")}
+    </table></div>
+    ${items.length>120?`<div class="note" style="margin-top:7px">…and ${items.length-120} more.</div>`:""}</div>`;
+  }
+  document.getElementById("out").innerHTML=head+tabs+body;
+  const notes={kinds:"Smallest to build, and answers “what should I delete?” at a glance. No way to act on it.",
+    books:"Adds the one question the first can't answer: which book is the expensive one.",
+    items:"Everything, ranked. The most useful and the most work — and only worth it if the long tail is where your room actually goes."};
+  document.getElementById("depthNote").textContent=notes[depth];
+  document.querySelectorAll("[data-d]").forEach(b=>b.onclick=()=>{depth=b.dataset.d;draw();});
+}
+
+document.getElementById("go").onclick=async()=>{
+  const say=document.getElementById("say");
+  say.className="note";say.textContent="reading…";
+  document.getElementById("go").disabled=true;
+  try{
+    db=await openDb();
+    if(!db.objectStoreNames.contains("books")){
+      say.className="note err";
+      say.textContent="No shelf saved at this address — open this page where you actually use the app.";
+      document.getElementById("go").disabled=false;return;}
+    R=await measure();
+    say.textContent=`${R.nBooks} books measured.`;
+    draw();
+  }catch(e){say.className="note err";say.textContent="Couldn't measure: "+e.message;}
+  document.getElementById("go").disabled=false;
+};
+</script>
+</body>
+</html>
