@@ -22,12 +22,16 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
        information (edit dates, series, labels), not just decoration */
     --bg:#faf7f2; --card:#ffffff; --ink:#292524; --mut:#78716c; --faint:#8a8580;
     --line:#e7e5e4; --teal:#0f766e; --teal-d:#115e59; --amber:#f59e0b; --rose:#e11d48;
+    /* the ground a warning sits on, so "check this one" reads as a warning
+       rather than as one more grey line among the others */
+    --warn-bg:#fef3c7; --warn-ink:#92400e;
     color-scheme:light;
   }
   /* ---- dark mode ---- */
   :root[data-theme="dark"]{
     --bg:#1c1917; --card:#292524; --ink:#e8e6e3; --mut:#a8a29e; --faint:#8f8983;
     --line:#44403c; --teal:#2dd4bf; --teal-d:#5eead4; --rose:#fb7185;
+    --warn-bg:#42320f; --warn-ink:#fcd34d;
     color-scheme:dark;
   }
   [data-theme="dark"] .field,[data-theme="dark"] .pill,[data-theme="dark"] .laybtn,
@@ -893,7 +897,8 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .bs-row input[type=checkbox]{accent-color:var(--teal);width:16px;height:16px;flex:none;margin:3px 0 0}
   .bs-t{font-family:Georgia,"Times New Roman",serif;font-size:14.5px;line-height:1.3}
   .bs-f{font-size:12.5px;color:var(--mut);margin-top:2px;overflow-wrap:anywhere}
-  .bs-w{font-size:12.5px;color:var(--amber);margin-top:3px}
+  .bs-w{font-size:12.5px;color:var(--warn-ink);background:var(--warn-bg);
+    border-radius:7px;padding:5px 7px;margin-top:4px}
   /* what was actually asked, shown only where nothing was found */
   .bs-ask{font-size:11.5px;color:var(--faint);margin-top:3px;overflow-wrap:anywhere;line-height:1.45}
   .bs-n{font-size:12.5px;color:var(--rose);margin-top:3px}
@@ -5497,10 +5502,28 @@ async function openBulkFill(ids){
     const have=en?entKeywordsOf(b,en):(b.keywords||[]);
     const newTags=(info.tags||[]).filter(t=>!have.some(x=>x.toLowerCase()===t.toLowerCase()));
     const newGen=(info.genres||[]).filter(g=>!(b.genres||[]).some(x=>x.toLowerCase()===g.toLowerCase()));
-    return {info,want,found,newTags,newGen,chips:[],
-            note:en?"":doubt(b,info),
+    /* What the sites call it, whenever that is not what you call it. Nothing on
+       this row ever showed the found book's own title, so a lookup that landed
+       on the wrong book looked exactly like one that landed on the right one —
+       you saw your title, a page count and "a blurb", and had to open the book
+       afterwards to discover it was somebody else's. */
+    const asked=titleOf(job);
+    const notes=[];
+    /* titleSame already forgives a subtitle, a series in brackets, a leading
+       "The" and a missing apostrophe — so a title that still differs after all
+       that is a different book far more often than it is a retitled edition */
+    const renamed=!!(info.title&&!titleSame(asked,info.title));
+    if(renamed)notes.push(`They call it “${info.title}” — check it is the same book.`);
+    if(info.loose)notes.push("Found only by the title: the author on your shelf matched nothing at either site.");
+    if(renamed||info.loose)notes.push("Left unticked on purpose.");
+    if(!en){const d=doubt(b,info);if(d)notes.push(d);}
+    return {info,want,found,newTags,newGen,chips:[],renamed,
+            note:notes.join(" "),
             dead:found.length?"":"Nothing on it that this one is missing.",
-            on:found.length>0};
+            /* Neither an unconfirmed match nor a differently-titled one is ever
+               ticked for you — which is also what keeps "just fill them in" from
+               writing one, since that writes exactly what is ticked. */
+            on:found.length>0&&!info.loose&&!renamed};
   }
   /* An answer can be confidently wrong. Open Library files The Goblin Emperor
      under the author's legal name, not the one on the cover — so where a book
@@ -5845,9 +5868,11 @@ async function openBulkFill(ids){
     }
     else{
       const strips=groups.filter(g=>g.coll&&g.strip.length);
+      const loose=groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.info&&(j.row.info.loose||j.row.renamed)).length,0);
       inner.innerHTML=head("Done")+`
         <div style="font-size:14px">Filled in ${plural(S.filled,"book")}.${S.stopped?" Stopped early — the rest are untouched.":""}</div>
         <div class="hint" style="margin:6px 0 0">Undo puts every one of them back as it was. The covers stay where they are — take one off from its own page if you don't want it.</div>
+        ${loose?`<div class="hint" style="margin:6px 0 0">${plural(loose,"book")} came back under a different title, or only once the author was dropped from the search, so ${loose===1?"it was":"they were"} left alone — an unconfirmed match is not something to write for you. Run it again without “just fill them in” to look at ${loose===1?"it":"them"}.</div>`:""}
         ${strips.map((g,si)=>`<div class="lbl" style="display:block;margin:14px 0 4px">A cover for ${esc(g.b.title)||"the collection"}, from its own books</div>
           <div class="hint" style="margin:0 0 6px">These are already downloaded, so picking one is instant and can't be refused. Nothing is picked unless you press one.</div>
           <div style="display:flex;gap:7px;flex-wrap:wrap">${g.strip.map((s,ci)=>
@@ -10569,6 +10594,9 @@ function renderEditor(){
        single thing on offer it would sit directly above its own duplicate */
     const manyToApply=[showAuth,!!covers.length,!!blurbs.length,showPages].filter(Boolean).length>1;
     box.innerHTML=head+`
+      ${(info.loose||(info.title&&!titleSame(title,info.title)))?`<div style="margin:0 0 10px;padding:7px 9px;border-radius:8px;background:var(--warn-bg);color:var(--warn-ink);font-size:12.5px">
+        ${info.title&&!titleSame(title,info.title)?`They call it <b>${esc(info.title)}</b>. `:""}
+        ${info.loose?`Nothing matched with the author on this ${en?"story's collection":"book"}, so this was found by the title alone — check it is the same book before applying any of it.`:""}</div>`:""}
       ${manyToApply?`<button class="btn pri" id="fpAll" style="width:100%">Use everything</button>
         <div class="hint" id="fpAllMsg" style="margin:4px 0 12px">Takes the cover and the blurb you have showing, plus whatever you have ticked below.</div>`:""}
       ${showAuth?`<div style="margin-bottom:12px">
@@ -13942,9 +13970,30 @@ async function fetchJson(url,tries,ms){
   }
   throw last||new Error("no answer");
 }
+/* Two titles, same book or not. Editions add a series in brackets and a subtitle
+   after a colon and are still the same book; a word in the middle is a different
+   book. "Beware of the Ghost" and "Beware of the Snoring Ghost" share every word
+   of the first, which is exactly why a contains-check is no use here. */
+/* `bareTitle`, not `titleKey` — the importer already owns that name, and
+   redeclaring it is not a shadowed variable but a SyntaxError that kills the
+   whole script, so every function in the app goes undefined at once. */
+function bareTitle(s){
+  return String(s||"")
+    .replace(/[([].*?[)\]]/g," ")
+    .split(/[:—–]/)[0]
+    .toLowerCase().replace(/&/g," and ")
+    /* apostrophes vanish rather than becoming a gap: one site writes "Don't Let
+       the Doll In" and the other "Dont Let the Doll In", and turning the mark
+       into a space made "don t" and "dont" two different books */
+    .replace(/['’`´]/g,"")
+    .replace(/[^a-z0-9 ]+/g," ")
+    .replace(/\b(a|an|the)\b/g," ")
+    .replace(/\s+/g," ").trim();
+}
+const titleSame=(a,b)=>{const x=bareTitle(a),y=bareTitle(b);return !!x&&!!y&&x===y;};
 /* `probe`, when given, is filled in with what was actually asked — but only on
    the way out of a failure, so it costs nothing when a book is found. */
-async function fetchBookInfo(title,author,isbn,probe){
+async function fetchBookInfo(title,author,isbn,probe,loose){
   /* olCovers belongs in here with the rest — it was only ever created further
      down and survived on a `||[]` guard at the one place that reads it.
      Gone from here: coverUrl, which was filled in from Google and then read by
@@ -14085,7 +14134,19 @@ async function fetchBookInfo(title,author,isbn,probe){
     ...out.gCovers].filter((u,i,a)=>u&&a.indexOf(u)===i).slice(0,6);
   /* the title and the author count as something found. Asked by ISBN, a thin
      record with nothing but those two was being thrown away as "not found". */
-  if(out.summary||out.tags.length||out.pages||out.covers.length||out.title||out.author)return out;
+  if(out.summary||out.tags.length||out.pages||out.covers.length||out.title||out.author){
+    /* A title-only ask has nothing corroborating it, so it has to earn the
+       answer. Searching "Beware of the Ghost" without an author returned
+       "Beware of the Snoring Ghost" — a different book, with its blurb and its
+       cover, and nothing on screen to say so. The relaxed ask now only counts
+       if the book it found is called what was asked for. */
+    if(loose&&out.title&&!titleSame(title,out.title)){
+      if(probe)(probe.asked=probe.asked||[]).push(`…without the author it offered “${out.title}”, which is a different book — refused`);
+      return null;
+    }
+    if(loose)out.loose=true;
+    return out;
+  }
   /* Nothing came back. Before giving up, say what was asked — a failure that
      cannot say what it tried leaves everybody guessing, and guessing at this is
      what burned four rounds on the import bug. */
@@ -14098,7 +14159,7 @@ async function fetchBookInfo(title,author,isbn,probe){
      simply the wrong name for one book inside it turns a perfectly findable
      title into nothing at all. One extra request, only ever after a failure,
      and it cannot loop: the second ask carries no author to drop. */
-  if(!isbn&&author)return fetchBookInfo(title,"",isbn,probe);
+  if(!isbn&&author&&!loose)return fetchBookInfo(title,"",isbn,probe,true);
   if(gErr&&oErr)throw new Error("unreachable");
   return null;
 }
