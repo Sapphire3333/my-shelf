@@ -3475,10 +3475,39 @@ function applySimple(){
   const n=q("#fsNow");if(n)n.textContent=f+"%";
   applyWidthClass();
 }
-window.addEventListener("resize",applyWidthClass);
+/* A page does not keep its own width when the text grows. Measured on a 610px
+   window: 610 page-pixels wide at 100%, 469 at 130%, 370 at 165%, 305 at 200%.
+   Where a picture is allowed to sit is worked out from that width (`xRange`),
+   and the clamp that keeps it there (`cx`) runs at RENDER time only — so
+   changing the size, which re-zooms without re-rendering, left every picture
+   exactly where a much wider page had put it. A picture placed near the right
+   edge at 100% is 138 page-pixels off the edge at 165%: it hangs past the side
+   of the page and lies across the top bar, which is why the Done button could
+   not be found — it was underneath one. The page's own height is measured from
+   those same positions, so the bottom went wrong with it.
+
+   The window changing size does the same thing for the same reason, so both go
+   through here. */
+let SCRAP=null;          /* the scrapbook currently on screen, set by wireScrapbook */
+function replaceScrapItems(){
+  if(!SCRAP)return;
+  if(!document.contains(SCRAP.page)){SCRAP=null;return;}
+  /* never while a note is being written in. A phone opening its keyboard counts
+     as a resize, and rebuilding the notes under the caret would throw the
+     writing out of the box mid-word. */
+  const a=document.activeElement;
+  if(a&&a.closest&&a.closest("#padLayer,#imgLayer"))return;
+  SCRAP.api.renderPads();
+  SCRAP.api.renderImages();   /* ends by re-measuring the page and the drawing */
+}
+let vwTimer=null;
+window.addEventListener("resize",()=>{
+  applyWidthClass();
+  clearTimeout(vwTimer);vwTimer=setTimeout(replaceScrapItems,150);
+});
 function setFontScale(v){
   settings.fontScale=Math.max(80,Math.min(220,Math.round(v/5)*5));
-  saveSettings();applySimple();
+  saveSettings();applySimple();replaceScrapItems();
 }
 /* the same little cluster in every top bar, so it's never hunted for */
 const sizeCtrlHtml=()=>`<button class="btn tinybtn" id="simpleTog" title="${settings.simple
@@ -9683,7 +9712,12 @@ function wireScrapbook(page,host){
   renderPads();
   applyMode();      /* restore the current mode's look after a re-render */
   applyFit();       /* and the fit-to-screen layout */
-  return {renderImages,renderPads,syncDraw,setMode,applyMode,applyFit,pageMin,addPad,addPicture};
+  const api={renderImages,renderPads,syncDraw,setMode,applyMode,applyFit,pageMin,addPad,addPicture};
+  /* kept so a size change can re-run the placement from outside — see
+     replaceScrapItems. The page comes with it so a handle left over from a book
+     you have since closed can be recognised and dropped. */
+  SCRAP={page,api};
+  return api;
 }
 
 function renderEditor(){
