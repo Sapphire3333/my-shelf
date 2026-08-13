@@ -5437,7 +5437,7 @@ async function openBulkFill(ids){
   const S={stage:"setup",fields:{cover:true,author:true,pages:true,blurb:true},
            straight:false,done:0,total:0,now:"",filled:0,failedCovers:[],
            stopped:false,capped:0};
-  let stop=false;
+  let stop=false,busy=false;
   const sheet=document.createElement("div");
   sheet.id="bulkSheet";
   sheet.innerHTML=`<div class="bs-in"></div>`;
@@ -5558,6 +5558,9 @@ async function openBulkFill(ids){
 
   /* ---------- the run ---------- */
   async function lookUp(){
+    if(busy)return;
+    busy=true;
+    try{
     S.stage="running";S.done=0;stop=false;
     const todo=[];
     groups.forEach(g=>g.jobs.forEach(j=>{j.row=null;if(j.needs.length)todo.push(j);}));
@@ -5588,8 +5591,10 @@ async function openBulkFill(ids){
       await new Promise(r=>setTimeout(r,150));
     }
     groups.forEach(buildVocab);
-    if(S.straight&&!S.stopped)return writeAll();
     S.stage="review";draw();
+    }finally{busy=false;}
+    /* released before the writing starts, because writing takes the guard itself */
+    if(S.straight&&!S.stopped)return writeAll();
   }
   /* Where each word is offered, and to whom.
 
@@ -5638,8 +5643,20 @@ async function openBulkFill(ids){
 
   /* ---------- writing it down ---------- */
   async function writeAll(){
+    /* Two things this line has to do, and it did neither. The screen never
+       changed when you pressed the button — the stage was set and nothing was
+       redrawn, so the review sat there looking untouched for as long as the
+       covers took, and drawProgress went hunting for a bar that was not on the
+       page. Which made the button look unpressed, so it got pressed again, so a
+       second run started over the same rows and counted them a second time:
+       seven books reported as twelve. The guard is the other half — no amount of
+       redrawing makes a second run harmless. */
+    if(busy)return;
+    busy=true;
+    try{
     S.stage="writing";S.done=0;S.filled=0;S.failedCovers=[];stop=false;
     S.total=groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.on&&j.row.info).length,0);
+    draw();
     const items=[];let coversAdded=0;
     for(const g of groups){
       if(stop){S.stopped=true;break;}
@@ -5717,6 +5734,7 @@ async function openBulkFill(ids){
     if(SYNC.on)flushQueue();
     await buildStrips();
     S.stage="done";draw();
+    }finally{busy=false;}
   }
   /* A cover for the collection out of its own books — every story cover it has,
      the ones that were already there as well as the ones just fetched. The
@@ -14349,7 +14367,7 @@ function openIsbnAdd(){
   if(q("#isbnSheet"))return;
   const S={stage:"gather",codes:[],rows:[],done:0,total:0,now:"",status:"want",
            msg:"",added:0,stopped:false,typed:""};
-  let stop=false;
+  let stop=false,busy=false;
   const sheet=document.createElement("div");
   sheet.id="isbnSheet";
   sheet.innerHTML=`<div class="bs-in"></div>`;
@@ -14382,6 +14400,8 @@ function openIsbnAdd(){
   }
 
   async function lookUp(){
+    if(busy)return;busy=true;
+    try{
     S.stage="running";S.done=0;S.rows=[];S.total=S.codes.length;stop=false;draw();
     for(const c of S.codes){
       if(stop){S.stopped=true;break;}
@@ -14402,9 +14422,12 @@ function openIsbnAdd(){
       await new Promise(r=>setTimeout(r,150));
     }
     S.stage="review";draw();
+    }finally{busy=false;}
   }
 
   async function addAll(){
+    if(busy)return;busy=true;
+    try{
     S.stage="writing";S.done=0;S.added=0;stop=false;
     S.total=S.rows.filter(r=>r.on&&r.info).length;draw();
     const items=[];let covers=0;
@@ -14451,6 +14474,7 @@ function openIsbnAdd(){
     if(covers)bumpCovers();
     if(SYNC.on)flushQueue();
     S.stage="done";draw();
+    }finally{busy=false;}
   }
 
   function drawProgress(){
