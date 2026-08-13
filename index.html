@@ -7821,7 +7821,10 @@ function renderSearchBody(){
     case "author":return (b.author||"").toLowerCase().includes(qlc);
     case "series":return (b.series||"").toLowerCase().includes(qlc);
     case "genre":return (b.genres||[]).some(g=>g.toLowerCase().includes(qlc));
-    case "keyword":return allKeywordsOf(b).some(k=>k.toLowerCase().includes(qlc));
+    /* its OWN tags only. A story's are answered for by the story, just below —
+       a collection standing in for a word that is true of one book inside it is
+       the thing that made searching a tag useless. */
+    case "keyword":return (b.keywords||[]).some(k=>k.toLowerCase().includes(qlc));
     case "quotes":return stripHtml((b.quotes||[]).join(" ")).toLowerCase().includes(qlc);
     case "summary":return stripHtml((b.summary||"")+" "+(b.entries||[]).map(en=>en.summary||"").join(" ")).toLowerCase().includes(qlc);
     case "notes":return stripHtml((b.canvasText||"")+" "+(b.entries||[]).map(en=>en.notes||"").join(" ")+" "+(b.pads||[]).map(p=>p.html||"").join(" ")).toLowerCase().includes(qlc);
@@ -7833,23 +7836,32 @@ function renderSearchBody(){
     results=books.filter(b=>S.scopes.some(s=>matchScope(b,s)));
     /* A story whose title matches stands as its own result, marked with the
        collection it lives in — searching "prince" should hand you Prince Caspian,
-       not the whole of Narnia with nothing said about why. */
-    if(S.scopes.includes("title")){
-      const already=new Set(results.map(b=>b.id));
+       not the whole of Narnia with nothing said about why.
+
+       A tag of the story's own answers the same way, and for the same reason.
+       Its OWN, never the ones it inherits: the collection's tags sit on every
+       story in it, so matching those would turn one collection into forty rows
+       all saying the same thing. */
+    const seenStory=new Set();
+    const promote=test=>{
       books.forEach(b=>{
         if(!isColl(b))return;
-        const hits=(b.entries||[]).filter(en=>(en.title||"").toLowerCase().includes(qlc));
+        const hits=(b.entries||[]).filter(en=>!seenStory.has(b.id+"|"+en.id)&&test(en));
         if(!hits.length)return;
-        hits.slice(0,STORY_HITS_MAX).forEach(en=>results.push(storyProxy(b,en)));
+        hits.slice(0,STORY_HITS_MAX).forEach(en=>{
+          seenStory.add(b.id+"|"+en.id);results.push(storyProxy(b,en));});
         /* the same cap the shelf uses: past four, the rest are rolled into one
            row for the collection rather than becoming forty results */
         if(hits.length>STORY_HITS_MAX){
           const extra=hits.length-STORY_HITS_MAX;
-          if(already.has(b.id))results=results.map(x=>x.id===b.id&&!x._story?Object.assign({},x,{_moreHits:extra}):x);
+          if(results.some(x=>x.id===b.id&&!x._story))
+            results=results.map(x=>x.id===b.id&&!x._story?Object.assign({},x,{_moreHits:extra}):x);
           else results.push(Object.assign({},b,{_moreHits:extra}));
         }
       });
-    }
+    };
+    if(S.scopes.includes("title"))promote(en=>(en.title||"").toLowerCase().includes(qlc));
+    if(S.scopes.includes("keyword"))promote(en=>(en.keywords||[]).some(k=>k.toLowerCase().includes(qlc)));
     heading=`“${esc(S.q)}” in ${SCOPES.filter(([id])=>S.scopes.includes(id)).map(([,l])=>l).join(", ")}`;
   }else if(S.filter){
     const f=S.filter;
