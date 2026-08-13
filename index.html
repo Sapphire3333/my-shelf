@@ -218,6 +218,10 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   /* grid */
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px}
   .gcard{cursor:pointer;position:relative}
+  /* a real link that looks like nothing: the address is for the browser's menu,
+     not for the eye, so it inherits everything and underlines nothing */
+  a.tgo{color:inherit;text-decoration:none;background:none}
+  .thumb a.tgo,.gcov a.tgo{display:block;width:100%;height:100%}
   .libcb{flex:none;width:17px;height:17px;cursor:pointer;accent-color:var(--teal);pointer-events:none}
   /* while books are being ticked the whole row is the target, so it says so:
      a hand over all of it, and a ticked one visibly ticked */
@@ -3473,6 +3477,13 @@ async function initSync(){
     for(const k of await dbAllKeys("covers"))if(!live.has(k))await dbDel("covers",k);
     for(const k of await dbAllKeys("images"))if(!validImg.has(k))await dbDel("images",k);
   }catch(e){}
+  /* A book named in the address is opened HERE, as soon as the shelf is in
+     memory — not wherever the first paint happens to come from, because that is
+     inside initSync, behind a call to the sign-in service. A bookmarked book has
+     to open with the aeroplane on, and it would have sat on the Overview waiting
+     for a network that was never coming. Found this by opening one and watching
+     it not happen. */
+  if(!bootRestored){bootRestored=true;restoreFromHistory();}
   await loadSyncLocal();
   initSync();
   /* only now is syncing awake — initSync turns it on before its first await, so
@@ -4612,6 +4623,17 @@ function reapplyScroll(){
   p.last=Math.round(window.scrollY);
 
 }
+/* Where a book lives, as an address. A HASH rather than a query, deliberately:
+   this app is meant to work with the aeroplane on, the service worker caches by
+   URL, and a hash is the one part of an address it never sees — so a bookmarked
+   book still opens offline, where "?b=…" might be a page nobody has cached. */
+const bookHash=(id,en)=>id?("#b="+encodeURIComponent(id)+(en?"&e="+encodeURIComponent(en):"")):"";
+function hashSpot(){
+  const h=String(location.hash||"");
+  const m=/^#b=([^&]+)(?:&e=(.+))?$/.exec(h);
+  if(!m)return null;
+  try{return {id:decodeURIComponent(m[1]),en:m[2]?decodeURIComponent(m[2]):""};}catch(e){return null;}
+}
 function syncHistory(){
   if(navRestoring)return;
   const st={v:view,b:view==="book"&&cur?cur.id:null,m:view==="book"?bookMode:null};
@@ -4622,7 +4644,10 @@ function syncHistory(){
      put you into the other face first and only left the book on a second press.
      Same book, only the mode changed -> replace the step rather than add one. */
   const sameSpot=h&&h.v===st.v&&h.b===st.b;
-  try{(h&&!sameSpot)?history.pushState(st,""):history.replaceState(st,"");}catch(e){}
+  /* the address goes with the step, so a reload, a bookmark or a tab opened
+     from a link all land back on the same book */
+  const url=(st.v==="book"&&st.b)?bookHash(st.b):(location.pathname+location.search);
+  try{(h&&!sameSpot)?history.pushState(st,"",url):history.replaceState(st,"",url);}catch(e){}
 }
 window.addEventListener("popstate",async e=>{
   const st=e.state;
@@ -4663,7 +4688,21 @@ window.addEventListener("popstate",async e=>{
 let bootRestored=false;
 function restoreFromHistory(){
   const st=history.state;
-  if(!st||!st.v)return false;
+  /* A tab opened from a link carries no state at all — only the address. That
+     is the entire point of having an address: it is the one thing that survives
+     being opened somewhere else, or bookmarked, or reloaded from cold. */
+  if(!st||!st.v){
+    const spot=hashSpot();
+    if(spot&&books.some(x=>x.id===spot.id)){
+      navRestoring=true;
+      openBook(spot.id,false,false,spot.en||"")
+        .then(()=>{view="book";renderBook();})
+        .catch(()=>{view="overview";render();})
+        .finally(()=>{navRestoring=false;});
+      return true;
+    }
+    return false;
+  }
   if(st.v==="book"&&st.b&&books.some(x=>x.id===st.b)){
     navRestoring=true;
     openBook(st.b,false)
@@ -4944,9 +4983,9 @@ function rowHtml(b,withDel,note){
       <button data-setst="${b.id}|hold" class="${holdOf(b)?"on":""}">⏸ On hold</button>
       <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
     </div>`:""}
-    <div class="thumb" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}>${coverInner(b,false)}${withDel&&!b._story?`<button class="stdot ${b.dnf?"dnf":holdOf(b)?"hold":statusOf(b)}" data-cyc="${b.id}" title="${stName(b)} — tap to change">${stSym(b)}</button>`:""}${b.favorite?`<span class="favdot${b._story?" story":""}">♥</span>`:""}</div>
+    <div class="thumb" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}><a class="tgo" href="${esc(bookHash(b.id,b._story))}" tabindex="-1" aria-hidden="true">${coverInner(b,false)}</a>${withDel&&!b._story?`<button class="stdot ${b.dnf?"dnf":holdOf(b)?"hold":statusOf(b)}" data-cyc="${b.id}" title="${stName(b)} — tap to change">${stSym(b)}</button>`:""}${b.favorite?`<span class="favdot${b._story?" story":""}">♥</span>`:""}</div>
     <div class="rmain">
-      <div class="rtitle serif">${esc(b.title)||"Untitled"}${isFic(b)?`<span class="rby">${kindOf(b)==="fanfic"?"FANFIC":"AI"}${b.author?" · "+esc(b.author):""}${b.pages?" · "+esc(String(b.pages))+" p.":""}</span>`:""} ${(()=>{const L=linkLabel(b.link);
+      <div class="rtitle serif"><a class="tgo" href="${esc(bookHash(b.id,b._story))}">${esc(b.title)||"Untitled"}</a>${isFic(b)?`<span class="rby">${kindOf(b)==="fanfic"?"FANFIC":"AI"}${b.author?" · "+esc(b.author):""}${b.pages?" · "+esc(String(b.pages))+" p.":""}</span>`:""} ${(()=>{const L=linkLabel(b.link);
         return L?`<a class="tlink" data-ext href="${esc(L.url)}" target="_blank" rel="noopener" title="Read it — ${esc(L.name)}">📖</a>`:"";})()} ${isColl(b)?`<span class="bst coll">COLLECTION · ${(b.entries||[]).length}</span>`:""}${(()=>{const st=collStrays(b);
         return st.length?`<button class="bst stray" data-stray="${b.id}" title="${st.length} ${st.length===1?"story has genres":"stories have genres"} of their own — tap to see which">! ${st.length}</button>`:"";})()} ${b._story?`<span class="bst instory" title="A story inside ${esc(b._in)} — opening it takes you to the collection">📚 in ${esc(b._in)}</span>`:""} ${b._moreHits?`<span class="bst morehits" title="Open the collection to see them">+${b._moreHits} more ${b._moreHits===1?"story matches":"stories match"}</span>`:""} ${b.dnf?'<span class="bdnf">DNF</span>':holdOf(b)?'<span class="bdnf hold" title="Set down for now, not given up on">⏸ On hold</span>':""}</div>
       ${isFic(b)?"":`<div class="rauth">${esc(b.author)||"Unknown author"}${b.series?` <span class="rser">${esc(b.series)}${b.seriesNum?" #"+esc(b.seriesNum):""}</span>`:""}${b.pages?` <span class="rser">· ${esc(String(b.pages))} p.</span>`:""}</div>`}
@@ -4963,13 +5002,13 @@ function rowHtml(b,withDel,note){
 function gridHtml(b){
   const s=statusOf(b);
   return `<div class="gcard" data-open="${b.id}"${b._story?` data-openen="${esc(b._story)}"`:""} tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}${b.author?" — "+esc(b.author):""}">
-    <div class="gcov" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}>${coverInner(b,true)}
+    <div class="gcov" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}><a class="tgo" href="${esc(bookHash(b.id,b._story))}" tabindex="-1" aria-hidden="true">${coverInner(b,true)}</a>
       ${b.favorite?`<span class="gfav${b._story?" story":""}">♥</span>`:""}
       ${s!=="finished"?`<span class="gst ${s}">${s==="reading"?"READING":"WANT"}</span>`:""}
       ${b.rating!=null?`<span class="grate ${rateBand(Number(b.rating))}">★ ${Number(b.rating).toFixed(1)}</span>`:""}
       ${b.dnf?'<span class="gdnf">DNF</span>':holdOf(b)?'<span class="gdnf hold" title="Set down for now, not given up on">⏸</span>':""}
     </div>
-    <div class="gtitle serif">${isColl(b)?"📚 ":""}${b._story?"📖 ":""}${esc(b.title)||"Untitled"}</div>
+    <div class="gtitle serif"><a class="tgo" href="${esc(bookHash(b.id,b._story))}">${isColl(b)?"📚 ":""}${b._story?"📖 ":""}${esc(b.title)||"Untitled"}</a></div>
     <div class="gauth">${esc(b.author)}</div>
   </div>`;
 }
@@ -5123,6 +5162,15 @@ function wireOpen(root,withDel){
   root.onclick=e=>{
     /* the little ↗ opens the book's own link instead of the book's page */
     if(e.target.closest("a[data-ext]")){e.stopPropagation();return;}
+    /* A title and a cover are real links to the book, which is the whole of how
+       "open in another tab" works: the browser's own menu does it, and so do
+       ctrl-click, middle-click and dragging one to the bookmarks bar. A plain
+       click is still the app's — only a modified one is left to the browser. */
+    const go=e.target.closest("a.tgo");
+    if(go){
+      if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+      e.preventDefault();
+    }
     const set=e.target.closest("[data-setst]");
     if(set){e.stopPropagation();const [id,what]=set.dataset.setst.split("|");setStatus(id,what);return;}
     const cyc=e.target.closest("[data-cyc]");
