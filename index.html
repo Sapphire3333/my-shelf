@@ -3836,6 +3836,79 @@ function effectiveBg(){
   if(view==="book"&&cur&&cur.bg&&cur.bg.id&&cur.bg.id!=="default")return cur.bg;
   return settings.bg||{id:"none",opacity:100};
 }
+/* ---- keeping the quiet text readable over a background ----
+   The two greys the app writes its counts, hints and labels in were chosen
+   against the plain page, which is nearly white. Put anything behind them and
+   the page stops being nearly white: a covers wash at a third strength turns it
+   into a mid tone, and those greys fall to a contrast of 2.0 and 2.6 where 4.5
+   is the readable minimum. Measured, not guessed — and they fail at EVERY
+   strength, 12% included, which is why this had to follow the background rather
+   than be a fixed pair of darker greys.
+   So the background is actually looked at: sampled, blended with the page
+   colour at the strength you chose, and the greys are walked away from it until
+   they clear 4.5. Away means darker over a light background and lighter over a
+   dark one, so a black-and-white photo behind the page works as well as a wash.
+   Titles are left alone; at 9.2 they were never the problem. */
+const lumOf=c=>{const s=c.map(v=>{v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4);});
+  return 0.2126*s[0]+0.7152*s[1]+0.0722*s[2];};
+const contrastOf=(a,b)=>{const l1=lumOf(a),l2=lumOf(b),hi=Math.max(l1,l2),lo=Math.min(l1,l2);
+  return (hi+0.05)/(lo+0.05);};
+const hexToRgb=h=>{const m=String(h||"").replace("#","");
+  const v=m.length===3?m.split("").map(c=>c+c).join(""):m;
+  const n=parseInt(v||"000000",16)||0;return [(n>>16)&255,(n>>8)&255,n&255];};
+const rgbToHex=c=>"#"+c.map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,"0")).join("");
+let textTuneKey="";
+function clearTextTune(){
+  /* no guard on the remembered key: this has to be able to put the greys back
+     whatever state anything else has left that key in */
+  textTuneKey="";
+  document.documentElement.style.removeProperty("--mut");
+  document.documentElement.style.removeProperty("--faint");
+}
+async function tuneTextForBg(img,op){
+  const dark=document.documentElement.getAttribute("data-theme")==="dark"
+    ||(!document.documentElement.getAttribute("data-theme")&&matchMedia("(prefers-color-scheme: dark)").matches);
+  const key=(img||"").length+"|"+op+"|"+dark;
+  if(key===textTuneKey)return;
+  if(!img||op<=0.02){clearTextTune();return;}
+  const page=hexToRgb(dark?"#1c1917":"#faf7f2");
+  const ink=hexToRgb(dark?"#e8e6e3":"#292524");
+  let im;
+  try{im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=img;});}
+  catch(e){return;}
+  const n=8,cv=document.createElement("canvas");cv.width=n;cv.height=n;
+  const cx=cv.getContext("2d",{willReadFrequently:true});
+  try{cx.drawImage(im,0,0,n,n);}catch(e){return;}
+  let px;try{px=cx.getImageData(0,0,n,n).data;}catch(e){return;}
+  /* the hardest patch is the one nearest the text's own lightness, so take the
+     worst rather than the average — a wash is not one colour */
+  let worst=null,worstL=null;
+  for(let i=0;i<px.length;i+=4){
+    const blend=[0,1,2].map(k=>px[i+k]*op+page[k]*(1-op));
+    const L=lumOf(blend);
+    if(worst===null||(dark?L>worstL:L<worstL)){worst=blend;worstL=L;}
+  }
+  /* Walk each grey towards the ink until it clears the mark, and never past it.
+     Towards the ink and NOT simply away from the background, which would be the
+     obvious rule: these two greys are also what every card writes its quieter
+     lines in, and a card is white whatever is behind the page. Lightening them
+     to suit a dark backdrop would rescue the loose text and wreck every card.
+     So a very dark picture at a high fade is the one case this cannot answer —
+     the Fade slider is the honest fix there, and the wash, which is what this
+     was reported about, never gets near it. */
+  const fix=start=>{
+    const a=hexToRgb(start);
+    if(contrastOf(a,worst)>=4.5)return start;
+    for(let t=0.05;t<=1.0001;t+=0.05){
+      const c=[0,1,2].map(k=>a[k]+(ink[k]-a[k])*t);
+      if(contrastOf(c,worst)>=4.5)return rgbToHex(c);
+    }
+    return rgbToHex(ink);
+  };
+  textTuneKey=key;
+  document.documentElement.style.setProperty("--mut",fix(dark?"#a8a29e":"#78716c"));
+  document.documentElement.style.setProperty("--faint",fix(dark?"#8f8983":"#8a8580"));
+}
 async function applyBg(){
   const el=q("#bgLayer");if(!el)return;
   const bg=effectiveBg();
@@ -3847,13 +3920,16 @@ async function applyBg(){
     const w=await buildCoverWash();
     const el3=q("#bgLayer");if(!el3)return;
     el3.style.cssText=w?`opacity:${op};background-image:url("${w}")`:`opacity:${op};${pre.css}`;
+    if(w)tuneTextForBg(w,op);else clearTextTune();
     return;
   }
-  if(pre){el.style.cssText=`opacity:${op};${pre.css}`;return;}
+  /* the flat presets are pale by design and were drawn to be written on */
+  if(pre){el.style.cssText=`opacity:${op};${pre.css}`;clearTextTune();return;}
   let d=bgCache.get(bg.id);
   if(d===undefined){d=await loadImgData(bgKey(bg.id));bgCache.set(bg.id,d);}
   const el2=q("#bgLayer");if(!el2)return;
   el2.style.cssText=d?`opacity:${op};background-image:url("${d}")`:`opacity:${op}`;
+  if(d)tuneTextForBg(d,op);else clearTextTune();
 }
 /* one picker used by both the hub (app default) and the editor (this book) */
 async function drawBgPicker(box,getBg,setBg,allowDefault,onDone){
