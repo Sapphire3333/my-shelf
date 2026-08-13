@@ -4230,6 +4230,18 @@ function restoreScroll(v,fromBook){
     setTimeout(reapplyScroll,80);
     return;
   }
+  /* Left from the storage list: hold THAT LINE where it was, not the number of
+     pixels you were scrolled to. Restoring the number is faithful and still
+     wrong, because the covers up in Reading now arrive after the page is drawn
+     and push everything below them down — measured at 197px, so you land at the
+     same offset looking at something else. When the covers happen to be in
+     memory nothing grows and it looks fine, which is why this only went wrong
+     some of the time. An anchor cannot drift; a number can. */
+  if(v==="overview"&&sizeOpen&&sizeReturn){
+    pendingScroll={v,y:0,at:Date.now(),last:Math.round(window.scrollY),size:true};
+    [0,80,250,600,1200,2000].forEach(ms=>setTimeout(reapplyScroll,ms));
+    return;
+  }
   const y=scrollMem[v]||0;
   if(!y){pendingScroll=null;return;}
   /* three times over: the page is still being laid out, and a page that has not
@@ -4262,6 +4274,13 @@ function reapplyScroll(){
     /* the row is the anchor, and it may only just have got its picture */
     if(backToRow())p.last=Math.round(window.scrollY);
     else {pendingScroll=null;}
+    return;
+  }
+  if(p.size){
+    /* the panel is filled in after the screen is drawn, so the line may not be
+       there yet — that is a reason to wait, not to give up. Keep holding it
+       until the five seconds are out or you take the page yourself. */
+    if(backToSizeRow())p.last=Math.round(window.scrollY);
     return;
   }
   if(Math.round(window.scrollY)===p.y){pendingScroll=null;return;}
@@ -4374,8 +4393,9 @@ function render(){
     if(view==="book"&&cur){clearTimeout(saveTimer);try{await commitCur();}catch(e){}cur=null;}
     keepMyPlace();
     /* choosing a tab yourself is not coming back from a book — the saved
-       offset for that tab is what you want, not the last book's row */
-    lastOpenedId=null;
+       offset for that tab is what you want, not the last book's row, and not
+       the line you once pressed in the storage list either */
+    lastOpenedId=null;sizeReturn=null;
     view=t.dataset.v;render();restoreScroll(view);
   });
   q("#uBtn").onclick=()=>finishSaveThen(doUndo);q("#rBtn").onclick=()=>finishSaveThen(doRedo);refreshHistBtns();
@@ -7036,6 +7056,19 @@ async function measureStorage(){
 /* the measurement, and whether the panel is showing it — both outlive a redraw
    of this screen, which is what pressing anything in the list causes */
 let sizeReport=null,sizeOpen=false;
+/* which line you left from, and where on the screen it was sitting */
+let sizeReturn=null;
+/* Put that line back at the same height on the screen. Working in the line's
+   own position rather than the page's means anything growing above it — the
+   covers in Reading now are the usual culprit — moves it and us together. */
+function backToSizeRow(){
+  if(!sizeReturn)return false;
+  const el=q(`#stoBreak .sizerow[data-sz="${sizeReturn.ix}"]`);
+  if(!el)return false;
+  const off=Math.round(el.getBoundingClientRect().top)-sizeReturn.top;
+  if(off)window.scrollBy(0,off);
+  return true;
+}
 async function takeMeasure(btn){
   if(btn){btn.disabled=true;btn.textContent="Measuring…";}
   try{sizeReport=await measureStorage();}
@@ -7048,7 +7081,7 @@ function wireBreakdown(){
   const btn=q("#stoBreakBtn");if(!btn)return;
   btn.onclick=async()=>{
     const box=q("#stoBreak");if(!box)return;
-    if(sizeOpen){sizeOpen=false;box.hidden=true;btn.textContent="🔎 What's using the room";return;}
+    if(sizeOpen){sizeOpen=false;sizeReturn=null;box.hidden=true;btn.textContent="🔎 What's using the room";return;}
     /* measured once and kept — reopening it is instant, and Measure again below
        is there for after you have deleted something */
     if(!sizeReport&&!await takeMeasure(btn))return;
@@ -7087,6 +7120,9 @@ function drawBreakdown(){
   };
   qa("[data-sz]",box).forEach(b=>b.onclick=()=>{
     const g=shown[+b.dataset.sz].go;if(!g)return;
+    /* remember the line and its place on the screen, so coming back can put it
+       back rather than guessing from how far down the page we were */
+    sizeReturn={ix:+b.dataset.sz,top:Math.round(b.getBoundingClientRect().top)};
     if(g.t==="book")openBook(g.id,false,false,g.en||"");
     else if(g.t==="library"){view="library";render();}
     else if(g.t==="backups"||g.t==="trash"){
