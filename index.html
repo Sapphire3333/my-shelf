@@ -9808,7 +9808,21 @@ function renderEditor(){
     const hadCover=en?!!curEnt[en.id]:!!curCover;
     const hadSummary=!!stripHtml((en?en.summary:cur.summary)||"").trim();
     const curPages=en?en.pages:cur.pages;
+    const curAuthor=(cur.author||"").trim();
+    const newAuthor=(info.author||"").trim();
+    const showAuth=!!newAuthor&&newAuthor.toLowerCase()!==curAuthor.toLowerCase();
+    const showPages=!!info.pages&&String(info.pages)!==String(curPages||"");
+    /* one button for the lot is only worth its space when there is a lot; with a
+       single thing on offer it would sit directly above its own duplicate */
+    const manyToApply=[showAuth,!!covers.length,!!blurbs.length,showPages].filter(Boolean).length>1;
     box.innerHTML=head+`
+      ${manyToApply?`<button class="btn pri" id="fpAll" style="width:100%">Use everything</button>
+        <div class="hint" id="fpAllMsg" style="margin:4px 0 12px">Takes the cover and the blurb you have showing, plus whatever you have ticked below.</div>`:""}
+      ${showAuth?`<div style="margin-bottom:12px">
+        <div class="lbl" style="display:block;margin-bottom:3px">Author</div>
+        <div style="font-size:13px;margin-bottom:5px;overflow-wrap:anywhere">${esc(newAuthor)}</div>
+        <button class="btn" id="fpAuth">${curAuthor?"Replace my author":"Use as author"}</button>
+        ${en?`<div class="hint" style="margin:4px 0 0">It goes on the collection, the same as the tags do.</div>`:""}</div>`:""}
       ${covers.length?`<div id="fpCovRow">
         <div class="lbl" style="display:block;margin-bottom:4px">Cover${covers.length>1?` — ${covers.length} to choose from`:""}</div>
         <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:flex-start">
@@ -9830,7 +9844,7 @@ function renderEditor(){
       ${newTags.length?`<div class="lbl" style="display:block;margin:12px 0 3px">Tags — tick the ones worth keeping${en?" (they go on the collection)":""}</div>
         <div>${newTags.map(t=>`<button class="mg" data-fpt="${esc(t)}"><span class="bx"></span>${esc(t)}</button>`).join("")}</div>
         <button class="btn" id="fpTags" style="margin-top:6px" disabled>Add ticked as keywords</button>`:""}
-      ${info.pages&&String(info.pages)!==String(curPages||"")?`<div style="margin-top:11px"><button class="btn" id="fpPages">Set pages to ${info.pages}</button></div>`:""}
+      ${showPages?`<div style="margin-top:11px"><button class="btn" id="fpPages">Set pages to ${info.pages}</button></div>`:""}
       <div class="hint" style="margin:11px 0 0">Found via ${info.source.join(" & ")}${info.year?` · first published ${esc(info.year)}`:""}. Nothing is applied until you press a button.</div>
       ${(info.links||[]).length?`<div class="lbl" style="display:block;margin:9px 0 4px">Read more about it</div>
         <div style="display:flex;flex-wrap:wrap;gap:6px">${info.links.map(l=>
@@ -9871,8 +9885,15 @@ function renderEditor(){
       q(".bx",b).textContent=genSel.has(g)?"✓":"";
       const gb=q("#fpGen",box);if(gb)gb.disabled=!genSel.size;
     });
-    const fg=q("#fpGen",box);
-    if(fg)fg.onclick=()=>{
+    /* Each field's apply is a function of its own, and its own button does
+       nothing but call it. That is what lets one button do the lot without
+       being a second copy of the same work — a copy is how the single button
+       and the bulk one would quietly come to disagree. Each reports back what
+       it managed, so the bulk one can say what it did. */
+    const applyGenres=()=>{
+      const fg=q("#fpGen",box);
+      if(!fg||fg.disabled||!genSel.size)return 0;
+      const n=genSel.size;
       /* a brand new genre needs a colour; pick a settled one from its name so the
          same genre always looks the same */
       /* through addGenre, like every other way of adding one. Writing straight
@@ -9881,13 +9902,55 @@ function renderEditor(){
          mark still standing, the next sync deleted the genre again and the chip
          stayed on the book pointing at nothing. */
       genSel.forEach(g=>{
-        const n=titleCase(String(g||"").trim());if(!n)return;
-        addGenre(n,genres[n]||genreColor(n));
+        const nm=titleCase(String(g||"").trim());if(!nm)return;
+        addGenre(nm,genres[nm]||genreColor(nm));
       });
-      fg.textContent=`Added ${genSel.size} ✓`;fg.disabled=true;genSel.clear();
+      fg.textContent=`Added ${n} ✓`;fg.disabled=true;genSel.clear();
+      return n;
     };
-    const fc=q("#fpCover",box);
-    if(fc)fc.onclick=async()=>{
+    const applyTags=()=>{
+      const ft=q("#fpTags",box);
+      if(!ft||ft.disabled||!tagSel.size)return 0;
+      const n=tagSel.size;
+      tagSel.forEach(addKw);
+      ft.textContent=`Added ${n} ✓`;ft.disabled=true;tagSel.clear();
+      return n;
+    };
+    const applyAuthor=()=>{
+      const fa=q("#fpAuth",box);
+      if(!fa||fa.disabled)return false;
+      /* the author belongs to the book even when a single story was looked up —
+         a story inside a collection has no author of its own */
+      cur.author=newAuthor;
+      const el=q("#fAuthor");if(el)el.value=newAuthor;
+      scheduleSave();fa.disabled=true;fa.textContent="Author set ✓";
+      return true;
+    };
+    const applyPages=()=>{
+      const fp=q("#fpPages",box);
+      if(!fp||fp.disabled)return false;
+      if(en){en.pages=parseInt(info.pages)||"";renderEntries();}
+      else{
+        cur.pages=parseInt(info.pages)||"";
+        const el=q("#fPages");if(el)el.value=cur.pages;
+        renderProgress();
+      }
+      scheduleSave();
+      fp.textContent="Pages set ✓";fp.disabled=true;
+      return true;
+    };
+    const applySummary=()=>{
+      const fs=q("#fpSum",box);
+      if(!fs||fs.disabled||!blurbs.length)return false;
+      const html=esc(blurbs[blurbI].text).replace(/\n/g,"<br>");
+      if(en){en.summary=html;renderEntries();}
+      else{cur.summary=html;const el=q("#fSummary");if(el)el.innerHTML=html;}
+      scheduleSave();fs.textContent="Summary set ✓";fs.disabled=true;
+      return true;
+    };
+    const applyCover=async()=>{
+      const fc=q("#fpCover",box);
+      if(!fc||fc.disabled)return false;
       fc.disabled=true;fc.textContent="Fetching…";
       try{
         /* Exactly the one you picked, and nothing else. This used to try the
@@ -9912,6 +9975,7 @@ function renderEditor(){
         }
         scheduleSave();
         fc.textContent="Cover set ✓";
+        return true;
       }catch(e){
         fc.disabled=false;fc.textContent=hadCover?"Replace the cover":"Use as cover";
         /* mark the one that refused, so the row stops offering it as a choice */
@@ -9919,15 +9983,8 @@ function renderEditor(){
         if(shot){shot.style.opacity=".3";shot.title="This picture's host won't allow the app to download it";}
         const cm=q("#fpCovMsg",box);
         if(cm)cm.innerHTML=`Whoever hosts this picture won't let the app download it. You can still have it: <a href="${esc(covers[covI]||covers[0]||"")}" target="_blank" rel="noopener" style="color:var(--teal)">open the picture</a>, save it, then use ${en?"the story's cover box":"the cover box"} to add it.`;
+        return false;
       }
-    };
-    const fs=q("#fpSum",box);
-    if(fs)fs.onclick=()=>{
-      if(hadSummary&&!confirm("Replace the current summary with this blurb?"))return;
-      const html=esc(blurbs[blurbI].text).replace(/\n/g,"<br>");
-      if(en){en.summary=html;renderEntries();}
-      else{cur.summary=html;const el=q("#fSummary");if(el)el.innerHTML=html;}
-      scheduleSave();fs.textContent="Summary set ✓";fs.disabled=true;
     };
     qa("[data-fpt]",box).forEach(b=>b.onclick=()=>{
       const t=b.dataset.fpt;
@@ -9936,22 +9993,60 @@ function renderEditor(){
       q(".bx",b).textContent=tagSel.has(t)?"✓":"";
       const ft2=q("#fpTags",box);if(ft2)ft2.disabled=!tagSel.size;
     });
-    const ft=q("#fpTags",box);
-    if(ft)ft.onclick=()=>{
-      tagSel.forEach(addKw);
-      ft.textContent=`Added ${tagSel.size} ✓`;ft.disabled=true;tagSel.clear();
-    };
-    const fp=q("#fpPages",box);
-    if(fp)fp.onclick=()=>{
-      if(en){en.pages=parseInt(info.pages)||"";renderEntries();}
-      else{
-        cur.pages=parseInt(info.pages)||"";
-        const el=q("#fPages");if(el)el.value=cur.pages;
-        renderProgress();
-      }
-      scheduleSave();
-      fp.textContent="Pages set ✓";fp.disabled=true;
-    };
+    const wire=(id,fn)=>{const el=q("#"+id,box);if(el)el.onclick=fn;};
+    wire("fpGen",applyGenres);
+    wire("fpTags",applyTags);
+    wire("fpAuth",applyAuthor);
+    wire("fpPages",applyPages);
+    wire("fpCover",applyCover);
+    /* the one place the question is still asked singly: pressed on its own, the
+       blurb button is the only one that can silently overwrite something long */
+    wire("fpSum",()=>{
+      if(hadSummary&&!confirm("Replace the current summary with this blurb?"))return;
+      applySummary();
+    });
+    /* ---- one press for the lot ----
+       Everything on offer was a button of its own, so a book with a cover, a
+       blurb, an author and a page count cost four presses and a scroll. This
+       does the same four, in the same order they read, and leaves the ticked
+       chips to the ticking — a keyword you did not choose is not something the
+       button should decide for you. */
+    const andList=a=>a.length<2?(a[0]||""):a.slice(0,-1).join(", ")+" and "+a[a.length-1];
+    const live=id=>{const el=q("#"+id,box);return el&&!el.disabled?el:null;};
+    wire("fpAll",async()=>{
+      /* one question for the lot. Asked field by field it would be four
+         dialogs, which is exactly the cost this button exists to remove. */
+      const over=[];
+      if(curAuthor&&live("fpAuth"))over.push("the author");
+      if(hadSummary&&live("fpSum"))over.push("the blurb you have showing");
+      if(curPages&&live("fpPages"))over.push("the page count");
+      if(hadCover&&live("fpCover"))over.push("the cover");
+      if(over.length&&!confirm(`This writes over ${andList(over)}. Go ahead?`))return;
+      const all=q("#fpAll",box);
+      all.disabled=true;all.textContent="Filling in…";
+      const did=[];
+      if(applyAuthor())did.push("the author");
+      if(applySummary())did.push("the blurb");
+      if(applyPages())did.push("the pages");
+      const g=applyGenres();if(g)did.push(`${g} genre${g===1?"":"s"}`);
+      const t=applyTags();if(t)did.push(`${t} tag${t===1?"":"s"}`);
+      /* the cover goes last because it is the only one that has to be fetched:
+         everything else is already in hand and can land while it waits */
+      const wanted=!!live("fpCover");
+      const got=await applyCover();
+      if(got)did.unshift("the cover");
+      /* a refused cover with nothing else left to do must not report itself as
+         "nothing left" — that is the one press where the only thing that
+         happened is the thing that failed */
+      const refused=wanted&&!got;
+      all.textContent=did.length?"Done ✓":(refused?"The cover wouldn't come":"Nothing left to fill in");
+      if(!did.length)all.disabled=false;
+      const m=q("#fpAllMsg",box);
+      if(m)m.textContent=did.length
+        ? `Filled in ${andList(did)}.${refused?" The cover wouldn't come — there's a way to get it under the pictures.":""}`
+        : (refused?"The cover wouldn't come — there's a way to get it under the pictures. Everything else was on the book already."
+                  :"Everything on offer is on the book already.");
+    });
   }
   q("#autoFill").onclick=()=>{const p=q("#fetchPanel");p.hidden?openFetchPanel():closeFetch();};
 
@@ -12995,7 +13090,7 @@ async function fetchBookInfo(title,author,isbn){
      Gone from here: coverUrl, which was filled in from Google and then read by
      nobody (the covers list is what the chooser uses), and rating, which was
      never even filled in. */
-  const out={summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
+  const out={author:"",summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
     blurbs:[],genres:[],gCovers:[]};
   let gErr=false,oErr=false;
   /* Both sites are asked at the same moment, and neither is given as long to
@@ -13010,7 +13105,9 @@ async function fetchBookInfo(title,author,isbn){
   const gP=fetchJson("https://www.googleapis.com/books/v1/volumes?maxResults=5&q="+encodeURIComponent(qs)+gk,2,6000);
   /* the two ratings fields this used to ask for were never looked at once they
      arrived, so they are simply weight on the answer */
-  const oP=fetchJson("https://openlibrary.org/search.json?limit=3&fields=key,subject,cover_i,number_of_pages_median,first_publish_year&"
+  /* author_name is asked for so there is still a name to offer on the days
+     Google's shared quota is dry and only Open Library answers */
+  const oP=fetchJson("https://openlibrary.org/search.json?limit=3&fields=key,subject,cover_i,number_of_pages_median,first_publish_year,author_name&"
     +(isbn?"q="+encodeURIComponent(isbn)
     :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):"")),2,6000);
   /* both are awaited below; this only stops a rejection being called unhandled
@@ -13019,6 +13116,12 @@ async function fetchBookInfo(title,author,isbn){
   try{
     const j=await gP;
     const items=(j.items||[]).map(x=>x.volumeInfo||{});
+    /* the authors arrived with everything else and were dropped on the floor —
+       nothing read them — so you retyped a name the app already had in its
+       hand. Taken from the first edition that names one, which needn't be the
+       edition the blurb came from. */
+    const wa=items.find(v=>(v.authors||[]).length);
+    if(wa)out.author=(wa.authors||[]).map(a=>String(a).trim()).filter(Boolean).join(", ");
     const vi=items.find(v=>v.description)||items[0];
     if(vi){
       /* Google blurbs sometimes arrive with <b> and <p> tags in them — shown as
@@ -13060,6 +13163,8 @@ async function fetchBookInfo(title,author,isbn){
       .map(id=>"https://covers.openlibrary.org/b/id/"+id+"-L.jpg");
     if(d){
       out.tags=[...new Set([...out.tags,...(d.subject||[]).map(s=>String(s).trim())])];
+      if(!out.author&&(d.author_name||[]).length)
+        out.author=(d.author_name||[]).map(a=>String(a).trim()).filter(Boolean).join(", ");
       if(!out.pages&&d.number_of_pages_median)out.pages=d.number_of_pages_median;
       if(d.cover_i)out.olCover="https://covers.openlibrary.org/b/id/"+d.cover_i+"-L.jpg";
       if(!out.year&&d.first_publish_year)out.year=String(d.first_publish_year);
