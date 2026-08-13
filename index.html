@@ -3500,7 +3500,7 @@ function showHelpSheet(){
       <dt>★, stage, ♡</dt><dd>All three change right on the page — tap the star badge for a row of stars, no need to open Edit.</dd>
       <dt>✥ Move</dt><dd>Drag your pictures and sticky notes wherever you like — or paste a picture straight in. They keep those places outside Edit too.</dd>
       <dt>📱 Fit</dt><dd>Stacks the freely-placed things into a tidy column instead — best on a phone. Their real places are kept for when it's off.</dd>
-      <dt>🗑</dt><dd>The book waits in Recently deleted (Overview tab) for 30 days before it's really gone.</dd>
+      <dt>🗑</dt><dd>The book waits in Recently deleted (History tab) for 30 days before it's really gone.</dd>
     </dl>
     <h3>While editing</h3>
     <dl>
@@ -5926,6 +5926,8 @@ async function purgeTrash(){
     delete trashCloud[id];changed=true;
   }
   if(changed)saveTrashCloud();
+  /* so the History tab can say how many are in there without opening it */
+  countTrash();
 }
 async function toTrash(b){
   if(!b)return;
@@ -5977,7 +5979,7 @@ async function restoreTrash(tid){
 
 async function deleteBookById(id){
   const b=books.find(x=>x.id===id);
-  if(!confirm(`Delete “${(b&&b.title)||"Untitled"}” and all its pictures?\n\nIt waits in Recently deleted (on the Overview tab) for ${TRASH_DAYS} days, so you can get it back.`))return;
+  if(!confirm(`Delete “${(b&&b.title)||"Untitled"}” and all its pictures?\n\nIt waits in Recently deleted (on the History tab) for ${TRASH_DAYS} days, so you can get it back.`))return;
   if(b)pushOp({t:"del",body:JSON.parse(JSON.stringify(b))});
   /* the copy in the editor must die with the book — a pending autosave or a later
      "Save now" would write it straight back onto the shelf */
@@ -6004,14 +6006,34 @@ async function deleteBookById(id){
    which you were on. */
 function renderHistory(){
   const m=q("#main");
-  if(!books.length){m.innerHTML='<div class="empty">📖<br>Nothing here yet.</div>';return;}
-  const mode2=settings.histView==="timeline"?"timeline":"edited";
+  /* Recently deleted lives here now rather than on Overview. It is a record of
+     something that has already happened, which is what this tab is; Overview is
+     meant to be what is in front of you. Its own third way of looking back,
+     beside what you changed and what you read. */
+  const mode2=settings.histView==="timeline"?"timeline":settings.histView==="bin"?"bin":"edited";
+  /* an empty shelf still has a bin — and losing your last book is exactly when
+     you want it, so this no longer refuses to draw anything */
+  if(!books.length&&mode2!=="bin"){
+    m.innerHTML=`<div class="empty">📖<br>Nothing here yet.
+      <div style="margin-top:14px"><button class="btn" data-hv="bin">🗑 Recently deleted${trashCount?` (${trashCount})`:""}</button></div></div>`;
+    qa("[data-hv]",m).forEach(b=>b.onclick=()=>{
+      settings.histView=b.dataset.hv;saveSettings();renderHistory();window.scrollTo(0,0);});
+    return;
+  }
   const pills=`<div class="pills" style="margin-bottom:12px">
     <button class="pill ${mode2==="edited"?"on":""}" data-hv="edited" title="What you last changed, newest first">🕘 Recently edited</button>
     <button class="pill ${mode2==="timeline"?"on":""}" data-hv="timeline" title="What you read, by the dates you finished">📅 Reading timeline</button>
+    <button class="pill ${mode2==="bin"?"on":""}" data-hv="bin" title="Books you deleted — they wait ${TRASH_DAYS} days before going for good">🗑 Recently deleted <b id="histBinN">${trashCount||""}</b></button>
   </div>`;
   let body="";
-  if(mode2==="edited"){
+  if(mode2==="bin"){
+    body=`<div class="hrow2" style="margin-bottom:9px">
+        <span class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good.${SYNC.on?" Anything you delete can be put back from any of your devices.":""}</span>
+        <button class="btn danger" id="binEmpty" style="margin-left:auto" title="Delete everything in here for good">🗑 Empty the bin</button>
+      </div>
+      <div id="trashList"><span class="none">Looking…</span></div>`;
+  }
+  else if(mode2==="edited"){
     const list=[...books].sort((a,b)=>(b.modified||b.created||0)-(a.modified||a.created||0));
     body='<div class="hint" style="margin-bottom:10px">Most recently edited first — only real changes count, not just opening a book.</div>'
       +list.map(b=>rowHtml(b,false,"edited "+fmtEdited(b.modified||b.created||Date.now()))).join("");
@@ -6048,31 +6070,21 @@ function renderHistory(){
   qa("[data-hv]",m).forEach(b=>b.onclick=()=>{
     settings.histView=b.dataset.hv;saveSettings();renderHistory();window.scrollTo(0,0);
   });
+  if(mode2==="bin"){
+    refreshTrash();
+    const eb=q("#binEmpty",m);if(eb)eb.onclick=emptyBin;
+  }
   wireOpen(m,false);
   hydrateCovers(m);
 }
 
 /* =============== overview hub =============== */
-/* What you are in the middle of. A collection whose stories carry stages of
-   their own is shown as those stories — the same rule reading and rating
-   follow — so "reading now" names the story you are actually in rather than
-   the anthology it lives in. */
-function readingNowUnits(){
-  const out=[];
-  /* set down or given up is not "reading now", whatever stage sits underneath
-     the flag — the whole point of On hold was that a paused book stops
-     claiming to be on the go. Take the flag off and it walks straight back. */
-  for(const b of books){
-    const ens=isColl(b)?((b.entries)||[]):[];
-    const live=ens.filter(en=>String(en.status||"").trim()==="reading"&&!en.dnf&&!en.hold);
-    if(live.length)live.forEach(en=>out.push(storyProxy(b,en)));
-    else if(statusOf(b)==="reading"&&!b.dnf&&!holdOf(b))out.push(b);
-  }
-  return out;
-}
+/* "Reading now" used to open this screen — the books on the go, as rows. It has
+   gone, and the working out that fed it with it: the shelf already answers that
+   question, under a stage you can filter to, and repeating it here bought a
+   second copy of the same rows and the covers to draw them. */
 async function renderHub(){
   const m=q("#main");
-  const nowList=readingNowUnits();
   const yrs=readYears();
   const thisYear=String(new Date().getFullYear());
   const doneY=yrs[thisYear]||0;
@@ -6083,7 +6095,6 @@ async function renderHub(){
      of it rather than only how far along it you are */
   const y0=new Date(+thisYear,0,1),dayOfYear=Math.floor((Date.now()-y0)/864e5)+1;
   const expected=goal?goal*Math.min(1,dayOfYear/365):0;
-  const wantN=books.filter(b=>statusOf(b)==="want").length;
   /* the shelf's check-back list: on hold because the next part didn't exist
      yet. Time is what changes that, not anything done in the app, so Overview
      is where the question "has it arrived by now?" should re-ask itself.
@@ -6097,12 +6108,6 @@ async function renderHub(){
   const recent=readUnits().flatMap(u=>u.reads.filter(r=>r.end).map(r=>({t:u.title,end:r.end,id:u.book.id,en:u.en?u.en.id:""})))
     .sort((a,b)=>b.end.localeCompare(a.end)).slice(0,3);
   m.innerHTML=`
-    <div class="sec" id="secNow">
-      <div class="heading"><h2 class="serif">Reading now</h2>${nowList.length>1?`<span class="n">(${nowList.length})</span>`:""}</div>
-      ${nowList.length?nowList.map(b=>rowHtml(b,false)).join("")   /* rows, whatever the Library's own layout is set to */
-        :`<div class="hcard"><div class="hrow2"><span class="none">Nothing on the go just now.</span>
-            ${wantN?`<button class="btn" id="nowPick" style="margin-left:auto">🎲 Pick something from the ${wantN} waiting</button>`:""}</div></div>`}
-    </div>
     <div class="sec" id="secYear">
       <div class="heading"><h2 class="serif">${esc(thisYear)}</h2></div>
       <div class="hcard">
@@ -6221,23 +6226,10 @@ async function renderHub(){
         <div id="impList"></div>
       </div>
     </div>
-    <div class="sec">
-      <div class="heading"><h2 class="serif">Recently deleted</h2><span class="n" id="trashN"></span>
-        <button class="btn foldbtn" data-fold="trash">${settings.trashOpen?"▾ Hide":"▸ Show"}</button></div>
-      <div class="hcard" id="fold-trash" ${settings.trashOpen?"":"hidden"}>
-        <div class="hint" style="margin:0">Deleted books wait here for ${TRASH_DAYS} days — with their covers and pictures — then go for good.${SYNC.on?" Anything you delete can be put back from any of your devices.":""}</div>
-        <div id="trashList"></div>
-      </div>
-    </div>
     </div>`;
 
-  /* the reading-now rows behave exactly like the shelf's: same row, same covers,
-     same tap to open — a story shown here opens the collection it lives in */
-  const nowSec=q("#secNow",m);
-  if(nowSec&&nowList.length){wireOpen(nowSec,false);hydrateCovers(nowSec);}
   const nxSec=q("#secNext",m);
   if(nxSec&&nextUp.length){wireOpen(nxSec,false);hydrateCovers(nxSec);}
-  const np=q("#nowPick",m);if(np)np.onclick=()=>{view="pick";render();window.scrollTo(0,0);};
   qa("[data-recb]",m).forEach(b=>b.onclick=()=>openBook(b.dataset.recb,false,false,b.dataset.recen||""));
   const gi=q("#goalIn",m);
   if(gi)gi.onchange=()=>{
@@ -6304,7 +6296,9 @@ async function renderHub(){
     importQueue=[];saveImportQueue();refreshImport();
   };
   drawBgPicker(q("#hubBg"),()=>settings.bg||{id:"none",opacity:100},v=>{settings.bg=v;saveSettings();},false);
-  refreshSnaps();refreshStorage();refreshTrash();refreshImport();renderDirUi();
+  /* the bin has moved to History; Overview only needs to know how many are in
+     it, which the tab's own button shows */
+  refreshSnaps();refreshStorage();countTrash();refreshImport();renderDirUi();
 }
 
 /* the folder-backup corner of the Backups card. Rendered on its own so
@@ -6875,6 +6869,48 @@ function refreshKwDupes(){
   };
 }
 
+/* How many are in the bin, so the History tab can say so on its own button
+   without reading the whole bin every time that tab is drawn. */
+let trashCount=0;
+async function binIds(){
+  const local=await dbAll("trash");
+  const have=new Set(local.map(t=>t.id));
+  return [...local.map(t=>t.id),...Object.keys(trashCloud).filter(id=>!have.has(id))];
+}
+async function countTrash(){
+  try{trashCount=(await binIds()).length;}catch(e){}
+  const el=q("#histBinN");if(el)el.textContent=trashCount?String(trashCount):"";
+  return trashCount;
+}
+/* One place that knows how to make a binned book go for good, so the ✕ on a row
+   and Empty the bin cannot come apart. It does NOT save or flush — the caller
+   does that once, rather than once per book. */
+async function purgeOneTrash(id){
+  await dbDel("trash",id);
+  if(trashCloud[id]){
+    /* its pictures were being kept only so it could come back — let them go.
+       Unless the book is alive again (restored elsewhere): then this entry is
+       stale and the pictures belong to the living book. */
+    if(SYNC.on&&!books.some(b=>b.id===id)){
+      enqueue({kind:"coverDel",id});
+      imgKeysOf(trashCloud[id].book).forEach(key=>enqueue({kind:"imgDel",key}));
+    }
+    delete trashCloud[id];
+  }
+}
+async function emptyBin(){
+  const ids=await binIds();
+  if(!ids.length){alert("The bin is already empty.");return;}
+  if(!confirm(`Delete ${ids.length} book${ids.length===1?"":"s"} for good?\n\nThis empties Recently deleted. Their covers and pictures go with them${SYNC.on?", on every one of your devices":""}, and this cannot be undone.`))return;
+  const msg=q("#busyMsg");if(msg)msg.textContent="Emptying the bin…";
+  for(const id of ids)await purgeOneTrash(id);
+  saveTrashCloud();
+  if(SYNC.on)flushQueue();
+  if(q("#busyMsg"))q("#busyMsg").textContent="";
+  await countTrash();
+  renderHistory();
+  refreshStorage();
+}
 async function refreshTrash(){
   const box=q("#trashList");if(!box)return;
   const local=await dbAll("trash");
@@ -6884,7 +6920,8 @@ async function refreshTrash(){
     .map(id=>({id,at:trashCloud[id].at,book:trashCloud[id].book,elsewhere:true}));
   const list=[...local,...remote].sort((a,b)=>b.at-a.at);
   if(!q("#trashList"))return;
-  const n=q("#trashN");if(n)n.textContent=list.length?`(${list.length})`:"";
+  trashCount=list.length;
+  const n=q("#histBinN");if(n)n.textContent=list.length?String(list.length):"";
   q("#trashList").innerHTML=list.length?list.map(t=>{
     const left=Math.max(0,TRASH_DAYS-Math.floor((Date.now()-(t.at||0))/864e5));
     return `<div class="snap">
@@ -6901,15 +6938,9 @@ async function refreshTrash(){
     const t=(await dbGet("trash",id))||(trashCloud[id]?{id,book:trashCloud[id].book}:null);
     if(!t)return;
     if(!confirm(`Delete “${(t.book&&t.book.title)||"Untitled"}” for good? This can't be undone.`))return;
-    await dbDel("trash",id);
-    if(trashCloud[id]){
-      /* its pictures were being kept only so it could come back — let them go.
-         Unless the book is alive again (restored elsewhere): then this entry is
-         stale and the pictures belong to the living book. */
-      if(SYNC.on&&!books.some(b=>b.id===id)){enqueue({kind:"coverDel",id});imgKeysOf(trashCloud[id].book).forEach(key=>enqueue({kind:"imgDel",key}));}
-      delete trashCloud[id];saveTrashCloud();
-      if(SYNC.on)flushQueue();
-    }
+    await purgeOneTrash(id);
+    saveTrashCloud();
+    if(SYNC.on)flushQueue();
     refreshTrash();refreshStorage();
   });
 }
@@ -7183,10 +7214,13 @@ function drawBreakdown(){
     if(g.t==="book")openBook(g.id,false,false,g.en||"");
     else if(g.t==="gart")peekGroupArt(g.key);
     else if(g.t==="library"){view="library";render();}
-    else if(g.t==="backups"||g.t==="trash"){
-      const k=g.t==="backups"?"bk":"trash";
-      settings[k+"Open"]=true;saveSettings();renderHub();
-      setTimeout(()=>{const el=q("#fold-"+k);if(el)el.scrollIntoView({behavior:"smooth",block:"start"});},60);
+    else if(g.t==="backups"){
+      settings.bkOpen=true;saveSettings();renderHub();
+      setTimeout(()=>{const el=q("#fold-bk");if(el)el.scrollIntoView({behavior:"smooth",block:"start"});},60);
+    }else if(g.t==="trash"){
+      /* the bin is a History tab now, not a fold on this screen */
+      settings.histView="bin";saveSettings();
+      view="history";render();window.scrollTo(0,0);
     }else if(g.t==="look"){
       settings.setOpen=true;saveSettings();renderHub();
       setTimeout(()=>{const el=q("#hubBg");if(el)el.scrollIntoView({behavior:"smooth",block:"center"});},60);
