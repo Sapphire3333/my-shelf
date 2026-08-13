@@ -863,6 +863,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   /* filling in many books at once — its own sheet rather than a panel inside the
      Library, because ticking a book re-renders the Library and would wipe a run
      half way through */
+  /* moving a tag between a collection and the stories inside it */
+  .tagmv{border:none;background:transparent;color:inherit;font:inherit;cursor:pointer;
+    padding:0 0 0 5px;opacity:.6;line-height:1}
+  .tagmv:hover{opacity:1}
+  .stagrow{display:flex;gap:7px;align-items:baseline;flex-wrap:wrap;margin:0 0 5px}
+  .stagwho{font-size:12px;color:var(--mut);min-width:0;overflow-wrap:anywhere}
   #bulkSheet{position:fixed;inset:0;z-index:400;background:rgba(28,25,23,.45);display:flex;
     align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 12px}
   .bs-in{background:var(--card,#fff);color:var(--ink);border-radius:14px;max-width:720px;width:100%;
@@ -2235,6 +2241,26 @@ const allKeywordsOf=b=>{
   return out;
 };
 const entOwnKeywords=en=>(((en&&en.keywords)||[]).length>0);
+/* Every word carried by some of a collection's stories and not by the collection
+   itself, with the stories that carry it. A collection's page used to say only
+   what the collection was tagged with, so a word true of two books in a series
+   was on the shelf, findable, and invisible from the one place you would look
+   for it. */
+function storyTagRows(b){
+  if(!isColl(b))return [];
+  const mine=new Set(((b.keywords)||[]).map(k=>String(k).toLowerCase()));
+  const map=new Map();
+  ((b.entries)||[]).forEach(en=>{
+    ((en.keywords)||[]).forEach(k=>{
+      const name=String(k||"").trim();if(!name)return;
+      const low=name.toLowerCase();if(mine.has(low))return;
+      let row=map.get(low);
+      if(!row){row={name,on:[]};map.set(low,row);}
+      if(!row.on.includes(en))row.on.push(en);
+    });
+  });
+  return [...map.values()].sort((x,y)=>y.on.length-x.on.length||x.name.localeCompare(y.name));
+}
 const entAuthorOf=(coll,en)=>String((en&&en.author)||"").trim()||String((coll&&coll.author)||"");
 const entStatusOf=(coll,en)=>String((en&&en.status)||"").trim()||statusOf(coll||{});
 /* Setting aside is its own flag rather than a status, here as it is for a book.
@@ -8486,6 +8512,47 @@ let vStatusOpen=false,vRateOpen=false,viewArrange=false,vReadsOpen=false;
    there is one way a picture arrives, wherever you are standing. */
 /* the two things worth changing without opening the form. Saved and undoable
    exactly like an edit made inside it. */
+/* Down from the collection onto only some of its stories — for when a word went
+   on the whole series and then turned out to be true of two books in it. Tick
+   the ones it stays on; it comes off the collection, so the rest lose it. */
+function openTagDownPanel(b,k){
+  if(panelOpen("tagDownPanel"))return;
+  const ens=(b.entries)||[];
+  const keep=new Set();
+  const wrap=document.createElement("div");
+  wrap.id="tagDownPanel";wrap.className="ratepanel";
+  let close=()=>wrap.remove();
+  const draw=()=>{
+    wrap.innerHTML=`<div class="hrow2" style="margin-bottom:9px">
+        <b style="font-size:13px">↓ “${esc(k)}” — which of them?</b>
+        <button class="btn" id="tdClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+      <div class="hint" style="margin:0 0 8px">It is on all ${ens.length} at the moment, because it is on the collection. Tick the ones it is really about — it comes off the collection and the rest lose it.</div>
+      <div>${ens.map(en=>`<button class="mg${keep.has(en.id)?" on":""}" data-td="${esc(en.id)}"><span class="bx">${keep.has(en.id)?"✓":""}</span>${esc(en.title)||"Untitled"}</button>`).join("")}</div>
+      <div class="hrow2" style="margin-top:12px">
+        <button class="btn pri" id="tdSave" ${keep.size?"":"disabled"}>${keep.size?`Keep it on ${keep.size} of ${ens.length}`:"Tick at least one"}</button>
+      </div>`;
+    q("#tdClose",wrap).onclick=()=>close();
+    qa("[data-td]",wrap).forEach(x=>x.onclick=()=>{
+      const id=x.dataset.td;keep.has(id)?keep.delete(id):keep.add(id);draw();});
+    const sv=q("#tdSave",wrap);
+    if(sv)sv.onclick=async()=>{
+      if(!keep.size)return;
+      close();
+      await quickEdit(bk=>{
+        bk.keywords=(bk.keywords||[]).filter(w=>w.toLowerCase()!==k.toLowerCase());
+        (bk.entries||[]).forEach(en=>{
+          if(!keep.has(en.id))return;
+          en.keywords=en.keywords||[];
+          if(!en.keywords.some(w=>w.toLowerCase()===k.toLowerCase()))en.keywords.push(k);
+        });
+      });
+      renderBookView();
+    };
+  };
+  draw();
+  document.body.appendChild(wrap);
+  close=dismissable(wrap);
+}
 async function quickEdit(mut){
   const stored=books.find(x=>x.id===cur.id);
   /* Gone from the shelf while this page was open — deleted here in another tab,
@@ -8698,14 +8765,25 @@ function renderBookView(){
         ${holdOf(b)?`<div class="vfacts">On hold${(b.holdReasons||[]).length?": "+(b.holdReasons||[]).map(esc).join(", "):""}</div>`:""}
         ${aspectLine(b)?`<div class="vfacts">${aspectLine(b)}</div>`:""}
       </div>
-      ${(b.genres||[]).length||(b.keywords||[]).length?`<div class="vside">
+      ${(b.genres||[]).length||(b.keywords||[]).length||storyTagRows(b).length?`<div class="vside">
         ${(b.genres||[]).length?`<div class="vsec"><div class="vsectitle">Genres</div>
           <div class="rgen vgen">${(()=>{const br=new Set(b.genreBreaks||[]);
             return (b.genres||[]).map(g=>chipHtml(g,false)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div></div>`:""}
         ${(b.keywords||[]).length?`<div class="vsec"><div class="vsectitle">Tags</div>
           <div class="chiprow vkw">${(()=>{const br=new Set(b.kwBreaks||[]);
-            return (b.keywords||[]).map(k=>`<span class="kw" style="${kwStyle(k)}">${esc(k)}</span>`
-              +(br.has(k)?'<span class="rowbreak"></span>':"")).join("");})()}</div></div>`:""}
+            /* on a collection every one of these is on every story inside, so
+               each offers a way down to only some of them */
+            const down=isColl(b)&&((b.entries)||[]).length>1;
+            return (b.keywords||[]).map(k=>`<span class="kw" style="${kwStyle(k)}">${esc(k)}${
+              down?`<button class="tagmv" data-kdown="${esc(k)}" title="Keep it on only some of the stories">↓</button>`:""}</span>`
+              +(br.has(k)?'<span class="rowbreak"></span>':"")).join("");})()}</div>
+          ${isColl(b)&&((b.entries)||[]).length>1?`<div class="hint" style="margin:4px 0 0">These are on every story inside.</div>`:""}</div>`:""}
+        ${storyTagRows(b).length?`<div class="vsec"><div class="vsectitle">On the stories</div>
+          <div class="hint" style="margin:0 0 5px">Words that belong to some of them and not the rest.</div>
+          ${storyTagRows(b).map(r=>`<div class="stagrow">
+            <span class="kw" style="${kwStyle(r.name)}">${esc(r.name)}<button class="tagmv" data-kup="${esc(r.name)}" title="Put it on the whole collection instead">↑</button></span>
+            <span class="stagwho">${esc(r.on.length===(b.entries||[]).length?"all "+r.on.length:r.on.map(en=>en.title||"Untitled").join(", "))}</span>
+          </div>`).join("")}</div>`:""}
       </div>`:""}
     </div>
 
@@ -8833,6 +8911,31 @@ function renderBookView(){
   /* the readings, corrected where you read rather than only where you edit —
      a re-read opened by a mis-tap has to be one tap away from gone */
   const vrd=q("#vReads");if(vrd)vrd.onclick=e=>{e.stopPropagation();vReadsOpen=!vReadsOpen;renderBookView();};
+  /* ---- moving a tag between the collection and the stories in it ----
+     Because tags add rather than replace, both directions are a plain move with
+     nothing lost: up takes it off every story and puts it on the collection,
+     which then hands it back to all of them; down takes it off the collection
+     and writes it onto the ones you keep it for. Neither is done for you — a
+     word on three of seven books is a judgement, not arithmetic. */
+  qa("[data-kup]",page).forEach(x=>x.onclick=async e=>{
+    e.stopPropagation();
+    const k=x.dataset.kup,ens=(b.entries||[]).length;
+    const row=storyTagRows(b).find(r=>r.name===k);
+    if(!row)return;
+    if(row.on.length<ens&&!confirm(`Put “${k}” on the whole collection?\n\nIt is on ${row.on.length} of ${ens} — moving it up gives it to all of them.`))return;
+    await quickEdit(bk=>{
+      bk.keywords=bk.keywords||[];
+      if(!bk.keywords.some(w=>w.toLowerCase()===k.toLowerCase()))bk.keywords.push(k);
+      (bk.entries||[]).forEach(en=>{
+        if((en.keywords||[]).length)en.keywords=en.keywords.filter(w=>w.toLowerCase()!==k.toLowerCase());
+      });
+    });
+    renderBookView();
+  });
+  qa("[data-kdown]",page).forEach(x=>x.onclick=e=>{
+    e.stopPropagation();
+    openTagDownPanel(b,x.dataset.kdown);
+  });
   qa("[data-enrd]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
     vEntReads=vEntReads===x.dataset.enrd?null:x.dataset.enrd;
