@@ -218,7 +218,14 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   /* grid */
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px}
   .gcard{cursor:pointer;position:relative}
-  .libcb{flex:none;width:17px;height:17px;cursor:pointer;accent-color:var(--teal)}
+  .libcb{flex:none;width:17px;height:17px;cursor:pointer;accent-color:var(--teal);pointer-events:none}
+  /* while books are being ticked the whole row is the target, so it says so:
+     a hand over all of it, and a ticked one visibly ticked */
+  html[data-selmode="1"] [data-open]:not([data-openen]){cursor:pointer}
+  html[data-selmode="1"] [data-open]:not([data-openen]).picked{
+    box-shadow:inset 0 0 0 2px var(--teal)}
+  html[data-selmode="1"] .gcard[data-open]:not([data-openen]).picked{
+    box-shadow:inset 0 0 0 2px var(--teal),0 1px 3px rgba(0,0,0,.25)}
   .gcard .libcb{position:absolute;top:7px;left:7px;z-index:3;box-shadow:0 1px 3px rgba(0,0,0,.4)}
   .gcov{position:relative;aspect-ratio:2/3;border:1px solid var(--line);border-radius:10px;background:#f5f5f4;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.05);transition:.15s;display:flex;align-items:center;justify-content:center;color:#d6d3d1;font-size:24px}
   .gcard:hover .gcov{border-color:#5eead4;box-shadow:0 3px 8px rgba(0,0,0,.1)}
@@ -5025,6 +5032,12 @@ function wireOpen(root,withDel){
     const stray=e.target.closest("[data-stray]");
     if(stray){e.stopPropagation();openStrayPanel(stray.dataset.stray);return;}
     const op=e.target.closest("[data-open]");
+    /* While books are being ticked, the whole row is the tick. Aiming at a
+       17-pixel box and landing inside the book instead was the commonest thing
+       that could go wrong in that mode, and the cost of missing was losing your
+       place entirely. A story's row still can't be ticked — the tick belongs to
+       the collection it lives in — so those open as they always did. */
+    if(op&&libSelMode&&!op.dataset.openen){toggleLibPick(op.dataset.open);return;}
     /* A story's row opens its collection, because that is where the story lives —
        but it used to drop you at the top of it, so finding the story you had just
        tapped meant scrolling a list of twenty. It takes you to the story now. */
@@ -5960,6 +5973,27 @@ async function openBulkFill(ids){
   draw();
 }
 
+/* Ticking a book used to redraw the whole Library. Everything on screen was
+   rebuilt to change one number, which threw the page back to wherever the new
+   layout happened to put it — so ticking half a dozen books meant hunting for
+   your place half a dozen times. Nothing about a tick changes the list: only the
+   count and what the buttons will let you do. So only those are touched. */
+function refreshLibPick(){
+  const n=libSel.size;
+  const c=q("#selCount");if(c)c.textContent=n+" ticked";
+  const able=(id,ok)=>{const b=q("#"+id);if(b)b.disabled=!ok;};
+  able("selSer",n>1);able("selColl",n>1);able("selInto",n>0);able("selNone",n>0);
+  able("selGen",n>0);able("selAud",n>0);able("selKw",n>0);able("selFill",n>0);
+}
+function toggleLibPick(id){
+  if(libSel.has(id))libSel.delete(id);else libSel.add(id);
+  qa(`[data-open="${CSS.escape(id)}"]`).forEach(el=>{
+    if(el.dataset.openen)return;
+    el.classList.toggle("picked",libSel.has(id));
+    const cb=q(".libcb",el);if(cb)cb.checked=libSel.has(id);
+  });
+  refreshLibPick();
+}
 function renderLibrary(){
   const m=q("#main");
   /* the headings actually drawn this time round, so "Close every group" acts on
@@ -6049,7 +6083,7 @@ function renderLibrary(){
         ${libArtMode?`<button class="pill" id="artAdd">＋ Add a picture</button><span class="lbl">…or just paste one</span>`:""}</div>`;
     }
     if(libSelMode)html+=`<div class="hcard" style="margin-bottom:9px"><div class="hrow2">
-      <b style="font-size:13px">${libSel.size} ticked</b>
+      <b style="font-size:13px" id="selCount">${libSel.size} ticked</b>
       <button class="btn" id="selSer" ${libSel.size>1?"":"disabled"}>🔗 Link as a series…</button>
       <button class="btn" id="selColl" ${libSel.size>1?"":"disabled"}>📚 Fold into one collection…</button>
       ${collsOnShelf().length?`<button class="btn" id="selInto" ${libSel.size?"":"disabled"} title="Put them inside a collection you already have">📥 Into a collection…</button>`:""}
@@ -6306,6 +6340,8 @@ function renderLibrary(){
   if(at)at.onclick=()=>{libArtMode=!libArtMode;renderLibrary();};
   const aa=q("#artAdd",m);
   if(aa)aa.onclick=()=>q("#libArtFile").click();
+  /* the CSS needs to know, because what a row does depends on it */
+  document.documentElement.setAttribute("data-selmode",libSelMode?"1":"0");
   if(libSelMode){
     qa("[data-open]",m).forEach(el=>{
       /* a story's row carries its collection's id — a tick there would stamp
@@ -6313,14 +6349,25 @@ function renderLibrary(){
          leaves story rows out; the box does now too. */
       if(el.dataset.openen)return;
       const id=el.dataset.open;
+      el.classList.toggle("picked",libSel.has(id));
       const cb=document.createElement("input");
       cb.type="checkbox";cb.className="libcb";cb.checked=libSel.has(id);
-      cb.onclick=e=>{e.stopPropagation();
-        if(cb.checked)libSel.add(id);else libSel.delete(id);
-        renderLibrary();};
+      /* the box no longer decides anything: the row's own click does, so that
+         both land in the same place whether you hit the box or missed it */
+      cb.onclick=e=>{e.preventDefault();};
       el.insertBefore(cb,el.firstChild);
     });
-    const sn=q("#selNone",m);if(sn)sn.onclick=()=>{libSel.clear();renderLibrary();};
+    /* these two change every row at once, and still without a redraw */
+    const paintAll=()=>{
+      qa("[data-open]",m).forEach(el=>{
+        if(el.dataset.openen)return;
+        const on=libSel.has(el.dataset.open);
+        el.classList.toggle("picked",on);
+        const cb=q(".libcb",el);if(cb)cb.checked=on;
+      });
+      refreshLibPick();
+    };
+    const sn=q("#selNone",m);if(sn)sn.onclick=()=>{libSel.clear();paintAll();};
     /* one label onto every ticked book at once — and one undo step, not one
        per book */
     const applyToSel=async fn=>{
@@ -6372,7 +6419,7 @@ function renderLibrary(){
     /* everything the shelf is showing, which is not the same as everything on
        it — a status pill or the find box is how you say what "all" means */
     const sAll=q("#selAll",m);
-    if(sAll)sAll.onclick=()=>{list.forEach(b=>{if(!b._story)libSel.add(b.id);});renderLibrary();};
+    if(sAll)sAll.onclick=()=>{list.forEach(b=>{if(!b._story)libSel.add(b.id);});paintAll();};
     const ss=q("#selSer",m);
     if(ss)ss.onclick=async()=>{
       const nm=prompt("Series name — every ticked book keeps its own page, linked under this name:","");
