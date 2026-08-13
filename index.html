@@ -869,7 +869,7 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .tagmv:hover{opacity:1}
   .stagrow{display:flex;gap:7px;align-items:baseline;flex-wrap:wrap;margin:0 0 5px}
   .stagwho{font-size:12px;color:var(--mut);min-width:0;overflow-wrap:anywhere}
-  #bulkSheet{position:fixed;inset:0;z-index:400;background:rgba(28,25,23,.45);display:flex;
+  #bulkSheet,#isbnSheet{position:fixed;inset:0;z-index:400;background:rgba(28,25,23,.45);display:flex;
     align-items:flex-start;justify-content:center;overflow-y:auto;padding:24px 12px}
   .bs-in{background:var(--card,#fff);color:var(--ink);border-radius:14px;max-width:720px;width:100%;
     padding:18px 20px 22px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
@@ -1425,6 +1425,10 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
   <button id="fabBot" title="Down to the bottom">⬇</button>
 </div>
 <input type="file" id="qaFile" accept="image/*" hidden>
+<!-- `capture` is deliberately absent: on a phone this offers the camera AND the
+     photos already taken, and a barcode you photographed earlier is as good as
+     one you photograph now -->
+<input type="file" id="isbnFile" accept="image/*" hidden>
 <input type="file" id="bgFile" accept="image/*" hidden>
 <input type="file" id="importFile" accept=".json,.txt,application/json,text/plain" hidden>
 <input type="file" id="coverFile" accept="image/*" hidden>
@@ -4247,7 +4251,16 @@ async function applyOp(op,inv){
   if(op.t==="bulk"){
     for(const it of op.items||[]){
       const body=inv?it.before:it.after;
-      if(!body)continue;
+      /* An item with no "before" did not exist until this op — adding books by
+         their number is the first thing here that creates rather than edits, and
+         undoing a creation is a deletion. Every older caller passes a real
+         before, so nothing that was working takes this path. */
+      if(!body){
+        await dbDel("books",it.id);
+        books=books.filter(x=>x.id!==it.id);
+        if(SYNC.on){deletions[it.id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id:it.id});}
+        continue;
+      }
       const clone=JSON.parse(JSON.stringify(body));
       clone.modified=Math.max(Date.now(),(clone.modified||0)+1,seenFloor(it.id)+1);
       await dbPut("books",clone);
@@ -4562,6 +4575,7 @@ function render(){
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
           <button class="addbtn" id="addBook">+ Add book</button>
           <button class="btn" id="quickAdd" style="padding:4px 10px;font-size:12px" title="Paste a blurb or drop a photo — the details are read off it">⚡ From text / photo</button>
+          <button class="btn" id="isbnAdd" style="padding:4px 10px;font-size:12px" title="Type the digits under a barcode, or photograph one — the number finds the exact book">📕 By ISBN / barcode</button>
         </div>
       </div>
       <div class="tabs">
@@ -4586,6 +4600,7 @@ function render(){
   </div>`;
   q("#addBook").onclick=()=>openBook(uid(),true);
   q("#quickAdd").onclick=openQuickAdd;
+  q("#isbnAdd").onclick=openIsbnAdd;
   qa(".tab").forEach(t=>t.onclick=async()=>{
     /* leaving a book by tab: save what was typed, then let go of the editor's
        copy — a stale one left behind could be written back over later edits */
@@ -13928,7 +13943,10 @@ async function fetchBookInfo(title,author,isbn){
      Gone from here: coverUrl, which was filled in from Google and then read by
      nobody (the covers list is what the chooser uses), and rating, which was
      never even filled in. */
-  const out={author:"",summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
+  /* `title` is new and only matters when the question was an ISBN: everywhere
+     else the title is what you searched BY, so nothing ever read it back. Asked
+     by number there is nothing on screen to name the book with. */
+  const out={title:"",author:"",summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
     blurbs:[],genres:[],gCovers:[]};
   let gErr=false,oErr=false;
   /* Both sites are asked at the same moment, and neither is given as long to
@@ -13945,7 +13963,7 @@ async function fetchBookInfo(title,author,isbn){
      arrived, so they are simply weight on the answer */
   /* author_name is asked for so there is still a name to offer on the days
      Google's shared quota is dry and only Open Library answers */
-  const oP=fetchJson("https://openlibrary.org/search.json?limit=3&fields=key,subject,cover_i,number_of_pages_median,first_publish_year,author_name&"
+  const oP=fetchJson("https://openlibrary.org/search.json?limit=3&fields=key,title,subject,cover_i,number_of_pages_median,first_publish_year,author_name&"
     +(isbn?"q="+encodeURIComponent(isbn)
     :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):"")),2,6000);
   /* both are awaited below; this only stops a rejection being called unhandled
@@ -13960,6 +13978,8 @@ async function fetchBookInfo(title,author,isbn){
        edition the blurb came from. */
     const wa=items.find(v=>(v.authors||[]).length);
     if(wa)out.author=(wa.authors||[]).map(a=>String(a).trim()).filter(Boolean).join(", ");
+    const wt=items.find(v=>String(v.title||"").trim());
+    if(wt)out.title=String(wt.title||"").trim()+(wt.subtitle?": "+String(wt.subtitle).trim():"");
     const vi=items.find(v=>v.description)||items[0];
     if(vi){
       /* Google blurbs sometimes arrive with <b> and <p> tags in them — shown as
@@ -14003,6 +14023,7 @@ async function fetchBookInfo(title,author,isbn){
       out.tags=[...new Set([...out.tags,...(d.subject||[]).map(s=>String(s).trim())])];
       if(!out.author&&(d.author_name||[]).length)
         out.author=(d.author_name||[]).map(a=>String(a).trim()).filter(Boolean).join(", ");
+      if(!out.title&&String(d.title||"").trim())out.title=String(d.title).trim();
       if(!out.pages&&d.number_of_pages_median)out.pages=d.number_of_pages_median;
       if(d.cover_i)out.olCover="https://covers.openlibrary.org/b/id/"+d.cover_i+"-L.jpg";
       if(!out.year&&d.first_publish_year)out.year=String(d.first_publish_year);
@@ -14095,6 +14116,349 @@ function loadOcr(){
   });
   return ocrLoad;
 }
+/* =============== reading a barcode =============== */
+/* The barcode on a book IS its ISBN — an EAN-13 back cover is the ISBN-13,
+   digits and all. So there is nothing to do with one but hand it to the lookup
+   that already exists, and asking by number is the most accurate question this
+   app can ask: no title to match, no wrong edition, and none of the guessing
+   that hands back an author's legal name instead of the one on the cover. */
+let barcodeLoad=null;
+function loadBarcode(){
+  if(window.ZXing)return Promise.resolve();
+  /* same bargain as the text reader above: fetched once from a CDN and then
+     kept by the service worker, which is the only way to have a decoder at all
+     without a build step */
+  if(!barcodeLoad)barcodeLoad=new Promise((res,rej)=>{
+    const s=document.createElement("script");
+    s.src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js";
+    s.crossOrigin="anonymous";
+    s.onload=res;
+    s.onerror=()=>{barcodeLoad=null;rej(new Error("The barcode reader couldn't load — it needs an internet connection the first time."));};
+    document.head.appendChild(s);
+  });
+  return barcodeLoad;
+}
+/* an ISBN-13, or "" if the digits don't add up. The check digit is the whole
+   point of typing thirteen numbers: a mistyped one is caught here rather than
+   fetching somebody else's book. */
+function isbn13Of(s){
+  const d=String(s||"").replace(/[^0-9Xx]/g,"").toUpperCase();
+  if(/^\d{13}$/.test(d)){
+    let sum=0;for(let i=0;i<12;i++)sum+=(+d[i])*(i%2?3:1);
+    return ((10-sum%10)%10)===+d[12]?d:"";
+  }
+  if(/^\d{9}[\dX]$/.test(d)){
+    let sum=0;for(let i=0;i<9;i++)sum+=(+d[i])*(10-i);
+    if((sum+(d[9]==="X"?10:+d[9]))%11!==0)return "";
+    /* an ISBN-10 is an ISBN-13 with 978 in front and a fresh check digit */
+    const core="978"+d.slice(0,9);
+    let s2=0;for(let i=0;i<12;i++)s2+=(+core[i])*(i%2?3:1);
+    return core+((10-s2%10)%10);
+  }
+  return "";
+}
+function decodeOnCanvas(c){
+  const ctx=c.getContext("2d",{willReadFrequently:true});
+  const d=ctx.getImageData(0,0,c.width,c.height).data;
+  /* A LUMINANCE array, not the raw pixels. Handing ZXing the RGBA buffer decodes
+     nothing at all — and it fails by finding no code rather than by throwing, so
+     it would have shipped looking exactly like "no barcode in that photo".
+     Measured both ways on a barcode drawn from a known number. */
+  const lum=new Uint8ClampedArray(c.width*c.height);
+  for(let i=0,j=0;i<d.length;i+=4,j++)lum[j]=(d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114)|0;
+  const src=new ZXing.RGBLuminanceSource(lum,c.width,c.height);
+  const bm=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(src));
+  const hints=new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,[ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.UPC_A,ZXing.BarcodeFormat.EAN_8]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
+  const rd=new ZXing.MultiFormatReader();rd.setHints(hints);
+  return rd.decode(bm).getText();
+}
+async function readBarcode(file){
+  if(!file||!/^image\//.test(file.type||""))throw new Error("That isn't a picture.");
+  const url=URL.createObjectURL(file);
+  try{
+    const img=await new Promise((res,rej)=>{
+      const i=new Image();i.onload=()=>res(i);
+      i.onerror=()=>rej(new Error("That picture couldn't be opened."));i.src=url;});
+    /* the browser's own reader first where there is one — no download at all,
+       and it is better at a photographed barcode than anything shippable. It is
+       missing from desktop Chrome on Windows, which is why the library exists. */
+    if(window.BarcodeDetector){
+      try{
+        const det=new window.BarcodeDetector({formats:["ean_13","upc_a","ean_8"]});
+        const hits=await det.detect(img);
+        const good=hits.map(h=>isbn13Of(h.rawValue)).filter(Boolean);
+        if(good.length)return good[0];
+      }catch(e){}
+    }
+    await loadBarcode();
+    const W=img.naturalWidth||img.width,H=img.naturalHeight||img.height;
+    /* A photo of a back cover is mostly not barcode, and that — not resolution —
+       is what defeats a whole-image decode. Measured: a barcode 230 pixels wide
+       in a 1200-pixel photo would not read even blown up to 2600 across, while
+       the SAME barcode cropped tight read in 27 milliseconds. A barcode covering
+       a tenth of the height only gets a tenth of the scan lines. So: the whole
+       picture first, in case the photo is just the barcode, and then a window
+       slid across it — lowest and rightmost first, because that is where a
+       barcode lives. Sideways last, for a photo taken on its side. */
+    const tries=[{sx:0,sy:0,sw:W,sh:H,tw:0,rot:0},{sx:0,sy:0,sw:W,sh:H,tw:1600,rot:0}];
+    const winW=Math.round(W*0.45),winH=Math.round(H*0.30);
+    const tiles=[];
+    for(let y=0;y<H-20;y+=Math.max(1,Math.round(winH/2)))
+      for(let x=0;x<W-40;x+=Math.max(1,Math.round(winW/2))){
+        const sw=Math.min(winW,W-x),sh=Math.min(winH,H-y);
+        if(sw<40||sh<20)continue;
+        tiles.push({sx:x,sy:y,sw,sh,tw:1400,rot:0,
+          d:Math.hypot((x+sw/2)/W-0.72,(y+sh/2)/H-0.85)});
+      }
+    tiles.sort((a,b)=>a.d-b.d);
+    tries.push(...tiles.slice(0,40));
+    tries.push({sx:0,sy:0,sw:W,sh:H,tw:1600,rot:90});
+    const c=document.createElement("canvas");
+    for(const t of tries){
+      /* tw 0 means "as it came"; anything else is a target width for that crop,
+         and it enlarges as readily as it shrinks */
+      const scale=t.tw?t.tw/(t.rot?t.sh:t.sw):1;
+      const dw=Math.max(1,Math.round(t.sw*scale)),dh=Math.max(1,Math.round(t.sh*scale));
+      if(dw*dh>36e6)continue;      /* never blow the canvas past what a phone holds */
+      c.width=t.rot?dh:dw;c.height=t.rot?dw:dh;
+      const x=c.getContext("2d",{willReadFrequently:true});
+      /* no smoothing: blurring the edges of an enlarged barcode is the one thing
+         guaranteed not to help */
+      x.imageSmoothingEnabled=false;
+      x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);
+      x.save();
+      if(t.rot){x.translate(c.width,0);x.rotate(Math.PI/2);}
+      x.drawImage(img,t.sx,t.sy,t.sw,t.sh,0,0,dw,dh);
+      x.restore();
+      try{
+        const got=isbn13Of(decodeOnCanvas(c));
+        if(got)return got;
+      }catch(e){}
+    }
+    throw new Error("No barcode found in that photo. A straight-on, close shot of just the barcode reads best.");
+  }finally{URL.revokeObjectURL(url);}
+}
+
+/* =============== adding books by their number =============== */
+function openIsbnAdd(){
+  if(q("#isbnSheet"))return;
+  const S={stage:"gather",codes:[],rows:[],done:0,total:0,now:"",status:"want",
+           msg:"",added:0,stopped:false,typed:""};
+  let stop=false;
+  const sheet=document.createElement("div");
+  sheet.id="isbnSheet";
+  sheet.innerHTML=`<div class="bs-in"></div>`;
+  document.body.appendChild(sheet);
+  const inner=q(".bs-in",sheet);
+  const shut=()=>{stop=true;sheet.remove();render();};
+  const plural=(n,w)=>`${n} ${w}${n===1?"":"s"}`;
+  const onShelf=code=>books.find(b=>isbn13Of(b.isbn)===code)||null;
+
+  function addCodes(text){
+    let added=0,bad=0;
+    String(text||"").split(/[\s,;]+/).forEach(part=>{
+      if(!part.trim())return;
+      const c=isbn13Of(part);
+      if(!c){bad++;return;}
+      if(S.codes.some(x=>x.code===c))return;
+      S.codes.push({code:c,dupe:onShelf(c)});added++;
+    });
+    return {added,bad};
+  }
+  async function fromPhoto(file){
+    if(!file)return;
+    S.msg="Reading the photo…";draw();
+    try{
+      const code=await readBarcode(file);
+      if(S.codes.some(x=>x.code===code)){S.msg=`${code} is already in the list.`;draw();return;}
+      S.codes.push({code,dupe:onShelf(code)});
+      S.msg=`Read ${code}.`;draw();
+    }catch(e){S.msg=e.message||"That photo couldn't be read.";draw();}
+  }
+
+  async function lookUp(){
+    S.stage="running";S.done=0;S.rows=[];S.total=S.codes.length;stop=false;draw();
+    for(const c of S.codes){
+      if(stop){S.stopped=true;break;}
+      S.now=c.code;S.done++;drawProgress();
+      let info=null;
+      try{info=await fetchBookInfo("","",c.code);}catch(e){info=null;}
+      const title=info?String(info.title||"").trim():"";
+      if(!info||!title){
+        S.rows.push({code:c.code,dupe:c.dupe,info:null,on:false,
+          dead:c.dupe?"Already on your shelf.":"Neither site knows that number. Some books have no ISBN, and some backs carry a price barcode instead."});
+        continue;
+      }
+      S.rows.push({code:c.code,dupe:c.dupe,info,title,on:!c.dupe,
+        chips:[...(info.genres||[]).slice(0,8).map(n=>({name:titleCase(n),kind:"genre",on:false})),
+               ...(info.tags||[]).slice(0,10).filter(n=>!(info.genres||[]).some(g=>g.toLowerCase()===n.toLowerCase()))
+                  .map(n=>({name:titleCase(n),kind:"tag",on:false}))],
+        dead:c.dupe?`Already on your shelf as “${c.dupe.title||"Untitled"}”.`:""});
+      await new Promise(r=>setTimeout(r,150));
+    }
+    S.stage="review";draw();
+  }
+
+  async function addAll(){
+    S.stage="writing";S.done=0;S.added=0;stop=false;
+    S.total=S.rows.filter(r=>r.on&&r.info).length;draw();
+    const items=[];let covers=0;
+    for(const r of S.rows){
+      if(stop){S.stopped=true;break;}
+      if(!r.on||!r.info)continue;
+      S.now=r.title;S.done++;drawProgress();
+      const b=blankBook(uid());
+      b.title=r.title;
+      b.author=String(r.info.author||"").trim();
+      b.pages=parseInt(r.info.pages)||"";
+      b.isbn=r.code;
+      b.status=S.status;
+      if(r.info.summary)b.summary=esc(r.info.summary).replace(/\n/g,"<br>");
+      (r.chips||[]).filter(c=>c.on).forEach(c=>{
+        if(c.kind==="genre"){
+          if(!genres[c.name]){genres[c.name]=genreColor(c.name);unmarkMetaDel("genre:"+c.name);saveMeta();}
+          if(!b.genres.includes(c.name))b.genres.push(c.name);
+        }else if(!b.keywords.some(x=>x.toLowerCase()===c.name.toLowerCase()))b.keywords.push(c.name);
+      });
+      b.modified=Date.now();
+      try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");break;}
+      books.unshift(b);
+      if(SYNC.on)enqueue({kind:"book",id:b.id});
+      /* the cover last, and a refusal costs the book nothing — it is already on
+         the shelf by then, which is the right way round for a picture that some
+         hosts will simply not hand over */
+      const cand=(r.info.covers||[]).filter(Boolean);
+      if(cand.length){
+        try{
+          const data=await fetchCoverData(cand,600);
+          await dbPut("covers",{id:b.id,data});
+          coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);
+          b.coverV=Date.now();covers++;
+          await dbPut("books",b);
+          if(SYNC.on)enqueue({kind:"cover",id:b.id});
+        }catch(e){r.noCover=true;}
+      }
+      /* no "before": undoing something that did not exist is deleting it */
+      items.push({id:b.id,before:null,after:JSON.parse(JSON.stringify(b))});
+      S.added++;
+    }
+    if(items.length)pushOp({t:"bulk",items});
+    if(covers)bumpCovers();
+    if(SYNC.on)flushQueue();
+    S.stage="done";draw();
+  }
+
+  function drawProgress(){
+    const bar=q("#isBar",inner),live=q("#isLive",inner);
+    if(bar)bar.style.width=Math.round(S.done/Math.max(1,S.total)*100)+"%";
+    if(live)live.textContent=`${S.stage==="writing"?"Adding":"Looking up"} ${S.now}… (${S.done} of ${S.total})`;
+  }
+  function head(t){
+    return `<div class="hrow2" style="margin-bottom:9px"><h2>${t}</h2>
+      <button class="btn" id="isX" style="margin-left:auto;padding:4px 10px">${S.stage==="running"||S.stage==="writing"?"Stop":"Close"}</button></div>`;
+  }
+  function draw(){
+    if(S.stage==="gather"){
+      inner.innerHTML=head("Add books by their number")+`
+        <div class="hint" style="margin:0 0 9px">A book's barcode <b>is</b> its ISBN — the digits printed under it. Asked by number, the lookup can't fetch the wrong edition or the wrong author, which is the one thing searching by title can never promise.</div>
+        <textarea class="field" id="isText" rows="3" placeholder="Type or paste ISBNs — one per line, or separated by spaces">${esc(S.typed)}</textarea>
+        <div class="hrow2" style="margin-top:7px">
+          <button class="btn" id="isAdd">Add them to the list</button>
+          <button class="btn" id="isPhoto">📷 Read one off a photo</button>
+        </div>
+        <div class="hint" style="margin:6px 0 0;min-height:16px">${esc(S.msg)}</div>
+        ${S.codes.length?`<div class="lbl" style="display:block;margin:12px 0 4px">${plural(S.codes.length,"number")} ready</div>
+          <div>${S.codes.map((c,i)=>`<span class="kw" style="${c.dupe?"opacity:.6;":""}font-size:12.5px">${esc(c.code)}${c.dupe?" · on your shelf":""}<button class="tagmv" data-isx="${i}" title="Take it off the list">✕</button></span> `).join("")}</div>`:""}
+        <div class="lbl" style="display:block;margin:12px 0 4px">Add them as</div>
+        <select class="field" id="isSt" style="max-width:220px">
+          <option value="want"${S.status==="want"?" selected":""}>Want to read</option>
+          <option value="reading"${S.status==="reading"?" selected":""}>Reading now</option>
+          <option value="finished"${S.status==="finished"?" selected":""}>Finished</option>
+        </select>
+        <div class="hrow2" style="margin-top:13px">
+          <button class="btn pri" id="isGo" ${S.codes.length?"":"disabled"}>${S.codes.length?"Look up "+plural(S.codes.length,"book"):"Nothing on the list yet"}</button>
+        </div>`;
+      const ta=q("#isText",inner);
+      ta.oninput=e=>{S.typed=e.target.value;};
+      q("#isAdd",inner).onclick=()=>{
+        const {added,bad}=addCodes(S.typed);
+        S.typed="";
+        S.msg=added?`Added ${plural(added,"number")}.${bad?` ${bad} didn't look like an ISBN.`:""}`
+                   :(bad?"None of those looked like an ISBN — the check digit has to add up.":"Nothing new there.");
+        draw();
+      };
+      q("#isPhoto",inner).onclick=()=>{isbnPhotoCb=fromPhoto;q("#isbnFile").click();};
+      q("#isSt",inner).onchange=e=>{S.status=e.target.value;};
+      qa("[data-isx]",inner).forEach(b=>b.onclick=()=>{S.codes.splice(+b.dataset.isx,1);draw();});
+      const go=q("#isGo",inner);if(go)go.onclick=lookUp;
+    }
+    else if(S.stage==="running"||S.stage==="writing"){
+      inner.innerHTML=head(S.stage==="writing"?"Adding them":"Looking them up")+`
+        <div class="bs-bar"><i id="isBar"></i></div>
+        <div class="hint" id="isLive" style="margin:0"></div>
+        <div class="hint" style="margin:9px 0 0">${S.stage==="writing"
+          ?"Covers are downloaded one at a time, so this part is the slow one."
+          :"Nothing is added until you press the button on the next screen."}</div>`;
+      drawProgress();
+    }
+    else if(S.stage==="review"){
+      const usable=S.rows.filter(r=>r.info&&!r.dupe);
+      const on=usable.filter(r=>r.on).length;
+      inner.innerHTML=head("Found "+plural(usable.length,"book"))+`
+        <div class="hint" style="margin:0 0 4px">${S.stopped?"Stopped early. ":""}Nothing is added until you press the button at the bottom.</div>
+        <div class="bs-list">${S.rows.map((r,i)=>`
+          <div class="bs-row ${(!r.info||r.dupe||!r.on)?"off":""}">
+            ${r.info&&!r.dupe?`<input type="checkbox" data-isr="${i}" ${r.on?"checked":""} aria-label="Add ${esc(r.title||r.code)}">`
+                            :`<span style="width:16px;flex:none"></span>`}
+            <div style="min-width:0;flex:1">
+              <div class="bs-t">${esc(r.title||r.code)}</div>
+              <div class="bs-f">${r.info?esc([r.info.author,r.info.pages?r.info.pages+" pages":"",r.info.summary?"a blurb":"",(r.info.covers||[]).filter(Boolean).length?"a cover":""].filter(Boolean).join(" · ")):""}</div>
+              ${r.dead?`<div class="bs-w">${esc(r.dead)}</div>`:""}
+              ${r.chips&&r.chips.length&&!r.dupe?`<div style="margin-top:4px">${r.chips.map((c,ci)=>
+                `<button class="mg ${c.on?"on":""}" data-isc="${i}.${ci}"><span class="bx">${c.on?"✓":""}</span>${esc(c.name)}</button>`).join("")}</div>`:""}
+            </div>
+          </div>`).join("")}</div>
+        <div class="hrow2" style="margin-top:13px">
+          <button class="btn pri" id="isMake" ${on?"":"disabled"}>${on?"Add "+plural(on,"book"):"Nothing ticked"}</button>
+          <button class="btn" id="isAll">${usable.length&&on===usable.length?"Untick them all":"Tick them all"}</button></div>`;
+      qa("[data-isr]",inner).forEach(cb=>cb.onchange=()=>{
+        S.rows[+cb.dataset.isr].on=cb.checked;
+        cb.closest(".bs-row").classList.toggle("off",!cb.checked);
+        const n=S.rows.filter(r=>r.on&&r.info&&!r.dupe).length,w=q("#isMake",inner);
+        w.disabled=!n;w.textContent=n?"Add "+plural(n,"book"):"Nothing ticked";
+      });
+      qa("[data-isc]",inner).forEach(b=>b.onclick=()=>{
+        const [ri,ci]=b.dataset.isc.split(".").map(Number);
+        const c=S.rows[ri].chips[ci];c.on=!c.on;
+        b.classList.toggle("on",c.on);q(".bx",b).textContent=c.on?"✓":"";
+      });
+      q("#isAll",inner).onclick=()=>{
+        const every=usable.length&&usable.every(r=>r.on);
+        usable.forEach(r=>{r.on=!every;});draw();
+      };
+      q("#isMake",inner).onclick=addAll;
+    }
+    else{
+      const noCov=S.rows.filter(r=>r.noCover);
+      inner.innerHTML=head("Done")+`
+        <div style="font-size:14px">Added ${plural(S.added,"book")}.${S.stopped?" Stopped early.":""}</div>
+        <div class="hint" style="margin:6px 0 0">Undo takes every one of them straight back off the shelf.</div>
+        ${noCov.length?`<div class="hint" style="margin:9px 0 0">${plural(noCov.length,"cover")} wouldn't download — ${noCov.map(r=>esc(r.title)).join(", ")}. Their pages have a cover box to drop one on.</div>`:""}
+        <div class="hrow2" style="margin-top:13px"><button class="btn pri" id="isDone">Back to the shelf</button></div>`;
+      q("#isDone",inner).onclick=shut;
+    }
+    const x=q("#isX",inner);
+    if(x)x.onclick=()=>{
+      if(S.stage==="running"||S.stage==="writing"){stop=true;return;}
+      shut();
+    };
+  }
+  draw();
+}
+let isbnPhotoCb=null;
+
 /* best-effort guesses from a blurb / shop page / "Title by Author" — always shown
    for checking before anything is created */
 function parseBookText(t){
@@ -14203,6 +14567,11 @@ function showQuickPreview(p){
   };
 }
 q("#qaFile").addEventListener("change",e=>{const f=e.target.files[0];e.target.value="";if(f)quickOcr(f);});
+q("#isbnFile").addEventListener("change",e=>{
+  const f=e.target.files[0];e.target.value="";
+  const cb=isbnPhotoCb;isbnPhotoCb=null;
+  if(f&&cb)cb(f);
+});
 /* pasting an image while the quick-add panel is open reads the book off it */
 document.addEventListener("paste",e=>{
   const box=q("#quickPanel");
