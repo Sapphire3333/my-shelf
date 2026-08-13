@@ -2771,14 +2771,29 @@ function openDb(){return new Promise((res,rej)=>{
     if(!d.objectStoreNames.contains("trash"))d.createObjectStore("trash",{keyPath:"id"});};
   r.onsuccess=()=>res(r.result);
   r.onerror=()=>rej(r.error);});}
+/* =============== two copies of the shelf, kept in step ===============
+   Two tabs used to overwrite each other's work, and the only defence was a red
+   banner asking you not to open a second one. They talk instead. Every write
+   says what it touched and the other side re-reads exactly that and nothing
+   else — announced from HERE because there are sixty-eight places that write a
+   book or a setting and one place that puts them in the database.
+   This is the problem syncing between two devices already solves, one room
+   closer, so it is solved the same way: by the edit stamp, and by the same rule
+   that keeps a copy from landing on top of the book you are typing in. */
+let TABS=null;
+try{TABS=new BroadcastChannel("my-shelf-tab");}catch(e){}
+const tabSay=m=>{try{if(TABS)TABS.postMessage(m);}catch(e){}};
 const st=(s,m)=>db.transaction(s,m).objectStore(s);
-const dbPut=(s,v)=>new Promise((res,rej)=>{const g=st(s,"readwrite").put(v);g.onsuccess=()=>res(true);g.onerror=()=>rej(g.error);});
+const dbPut=(s,v)=>new Promise((res,rej)=>{const g=st(s,"readwrite").put(v);
+  g.onsuccess=()=>{tabSay({t:"put",s,k:v&&(v.id!=null?v.id:(v.k!=null?v.k:v.key))});res(true);};
+  g.onerror=()=>rej(g.error);});
 const dbGet=(s,k)=>new Promise(res=>{const g=st(s,"readonly").get(k);g.onsuccess=()=>res(g.result||null);g.onerror=()=>res(null);});
 /* the same read, but a failure is a failure rather than "there's nothing there".
    Uploading uses this: a read that merely broke must leave the upload queued to
    try again, where a book that is genuinely gone means the upload can be dropped. */
 const dbGetOrThrow=(s,k)=>new Promise((res,rej)=>{const g=st(s,"readonly").get(k);g.onsuccess=()=>res(g.result||null);g.onerror=()=>rej(g.error||new Error("read failed"));});
-const dbDel=(s,k)=>new Promise(res=>{const g=st(s,"readwrite").delete(k);g.onsuccess=()=>res();g.onerror=()=>res();});
+const dbDel=(s,k)=>new Promise(res=>{const g=st(s,"readwrite").delete(k);
+  g.onsuccess=()=>{tabSay({t:"del",s,k});res();};g.onerror=()=>res();});
 const dbAll=s=>new Promise(res=>{const g=st(s,"readonly").getAll();g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
 const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
 
@@ -2942,7 +2957,20 @@ async function loadSyncLocal(){
    is put away. A queue written slightly late costs at worst an upload done
    twice, which the upserts on the other end do not mind. */
 let qSaveT=null;
-function writeSyncQueue(){clearTimeout(qSaveT);qSaveT=null;dbPut("meta",{k:"syncQueue",v:SYNC.queue});}
+/* The queue is the one thing two tabs could destroy outright. Each held its own
+   list and wrote it whole, so whichever saved last erased the other's waiting
+   uploads — silently, and they were only ever noticed as a book that never
+   reached the other device. It is joined with what is already down before it is
+   written, so a list can only ever grow by another tab existing. */
+async function writeSyncQueue(){
+  clearTimeout(qSaveT);qSaveT=null;
+  try{
+    const row=await dbGet("meta","syncQueue");
+    const have=new Set(SYNC.queue.map(opKey));
+    ((row&&row.v)||[]).forEach(o=>{if(o&&!have.has(opKey(o))){have.add(opKey(o));SYNC.queue.push(o);}});
+  }catch(e){}
+  await dbPut("meta",{k:"syncQueue",v:SYNC.queue});
+}
 function saveQueue(){clearTimeout(qSaveT);qSaveT=setTimeout(writeSyncQueue,400);}
 const opKey=o=>o.kind+":"+(o.id||o.key||"");
 function enqueue(op){
@@ -3457,25 +3485,98 @@ async function initSync(){
   purgeTrash();
 })();
 
-/* Two copies of the app in one browser quietly overwrite each other's saves
-   and upload queue — each tab holds its own picture of the shelf and writes it
-   whole. There is no safe way to referee that, so at least say it out loud. */
-try{
-  const tabBC=new BroadcastChannel("my-shelf-tab");
-  const warnTwoTabs=()=>{
-    if(window.__twoTabs)return;window.__twoTabs=true;
-    const w=document.createElement("div");
-    w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:500;background:#7f1d1d;color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:90vw;text-align:center";
-    w.textContent="My Shelf is open in another tab. Two tabs overwrite each other's saves — please keep just one.";
-    document.body.appendChild(w);
-    setTimeout(()=>{w.remove();window.__twoTabs=false;},12000);
-  };
-  tabBC.onmessage=e=>{
-    if(e.data==="hello"){warnTwoTabs();tabBC.postMessage("here");}
-    else if(e.data==="here")warnTwoTabs();
-  };
-  tabBC.postMessage("hello");
-}catch(e){}
+/* The other half of the conversation started up in the database section. Where
+   there used to be a banner asking you to close the second tab, each tab now
+   takes back in whatever the other one wrote. */
+
+/* which name each stored setting feeds, so a change can be taken in without
+   reloading the page. Anything not on this list is left alone: the list is
+   deliberately the things two tabs can lose for each other, not everything. */
+const META_INTO={
+  genres:v=>{genres=v||{};},
+  dnfReasons:v=>{dnfCustom=Array.isArray(v)?v:[];},
+  audiences:v=>{audCustom=Array.isArray(v)?v:[];},
+  fandoms:v=>{fandoms=v||{};},
+  kwColors:v=>{kwColors=v||{};},
+  kwCats:v=>{kwCats=v||{};},
+  catColors:v=>{catColors=v||{};},
+  groupArt:v=>{groupArt=v||{};},
+  libArt:v=>{libArt=Array.isArray(v)?v:[];},
+  metaDel:v=>{metaDel=v||{};},
+  metaTimes:v=>{metaTimes=v||{};},
+  trashCloud:v=>{trashCloud=v||{};},
+  deletions:v=>{deletions=v||{};},
+  seenMod:v=>{SYNC.seen=v||{};},
+  /* the queue is joined, never taken: an op of ours that has not been written
+     down yet is not the other tab's to drop, and dropping them is precisely
+     what two tabs used to do to each other */
+  syncQueue:v=>{
+    const have=new Set(SYNC.queue.map(opKey));
+    (Array.isArray(v)?v:[]).forEach(o=>{if(o&&!have.has(opKey(o))){have.add(opKey(o));SYNC.queue.push(o);}});
+  }
+};
+/* A bulk fill writes hundreds of times in a row, so the far side gathers what
+   it hears and reads it once rather than once per message. */
+const tabHeard={books:new Set(),covers:new Set(),imgs:new Set(),meta:new Set()};
+let tabHeardT=null,tabClashed=new Set();
+function tabSoon(){clearTimeout(tabHeardT);tabHeardT=setTimeout(tabCatchUp,220);}
+async function tabCatchUp(){
+  let touched=false;
+  for(const k of tabHeard.meta){
+    const fn=META_INTO[k];if(!fn)continue;
+    const row=await dbGet("meta",k);
+    fn(row?row.v:null);touched=true;
+  }
+  tabHeard.meta.clear();
+  for(const id of tabHeard.books){
+    /* never on top of the book you are writing in — the same rule the cloud
+       pull keeps, for the same reason: those edits are still being typed */
+    if(view==="book"&&cur&&cur.id===id){tabClashed.add(id);continue;}
+    const row=await dbGet("books",id);
+    const i=books.findIndex(x=>x.id===id);
+    if(!row){if(i>=0)books.splice(i,1);}
+    else if(i>=0)books[i]=row;
+    else books.push(row);
+    touched=true;
+  }
+  tabHeard.books.clear();
+  for(const id of tabHeard.covers){coverCache.delete(id);SYNC.triedCover.delete(id);touched=true;}
+  for(const k of tabHeard.imgs){coverCache.delete(k);touched=true;}
+  tabHeard.covers.clear();tabHeard.imgs.clear();
+  /* said here, not when the message arrived: the clash is only known once the
+     gathered messages have been looked at, and asking before that is asking
+     before there is anything to say */
+  tabClashNote();
+  if(!touched)return;
+  bumpCovers();
+  /* not while you are typing, and not over the book you have open */
+  const a=document.activeElement;
+  if(a&&(a.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)))return;
+  if(view==="book")return;
+  render();
+}
+/* The one case that cannot be handled quietly: the book open in front of you
+   was changed somewhere else. Nothing is taken from you — your copy still wins
+   when it saves — but you are told, because finding out later is worse. */
+function tabClashNote(){
+  if(!tabClashed.size||window.__tabNote)return;
+  window.__tabNote=true;
+  const w=document.createElement("div");
+  w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:500;background:#78350f;color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:90vw;text-align:center";
+  w.textContent="This book was changed in another tab while you had it open. What you do here is what will be kept.";
+  document.body.appendChild(w);
+  setTimeout(()=>{w.remove();window.__tabNote=false;tabClashed.clear();},9000);
+}
+if(TABS)TABS.onmessage=e=>{
+  const m=e.data;
+  if(!m||typeof m!=="object")return;
+  if(m.s==="books")tabHeard.books.add(m.k);
+  else if(m.s==="covers")tabHeard.covers.add(m.k);
+  else if(m.s==="images")tabHeard.imgs.add(m.k);
+  else if(m.s==="meta")tabHeard.meta.add(m.k);
+  else return;
+  tabSoon();
+};
 
 /* Phones kill background tabs without warning and throttle timers, so the 700ms
    autosave may never fire — commit the open book the moment the tab goes hidden.
