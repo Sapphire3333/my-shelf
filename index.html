@@ -6913,8 +6913,12 @@ async function refreshStorage(){
   const dirWarn=window.__dirBkFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The daily backup could not be written into your backup folder — it may have been moved or deleted. Open Backups below to reconnect it.</div>':"";
   /* asked for rather than done: measuring means reading every picture off the
      disk, which is not something to do each time you glance at this screen */
-  const open=!!(q("#stoBreak")&&!q("#stoBreak").hidden);
-  const breakBtn=`<div class="hrow2" style="margin-top:8px"><button class="btn" id="stoBreakBtn">${open?"▾ Hide the breakdown":"🔎 What's using the room"}</button></div>`;
+  /* Whether it is open is remembered HERE and not read off the page. Pressing a
+     line in the list goes somewhere — a fold, a book — and going anywhere redraws
+     this screen, which built the panel closed again and threw the measurement
+     away with it. So every press shut the thing you were reading and charged you
+     another measurement to get back to it. */
+  const breakBtn=`<div class="hrow2" style="margin-top:8px"><button class="btn" id="stoBreakBtn">${sizeOpen?"▾ Hide the breakdown":"🔎 What's using the room"}</button></div>`;
   if(si&&si.quota){
     const pct=si.usage/si.quota*100;
     q("#stoCard").innerHTML=`
@@ -6927,6 +6931,8 @@ async function refreshStorage(){
     q("#stoCard").innerHTML=`<div class="none">${counts}</div>${breakBtn}<div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}`;
   }
   wireBreakdown();
+  /* and put it straight back, from the measurement already taken */
+  if(sizeOpen&&sizeReport){const box=q("#stoBreak");if(box){box.hidden=false;drawBreakdown();}}
 }
 /* ---- what is actually using the room ----
    A real reading of every picture and every book, so it is asked for rather
@@ -7007,17 +7013,26 @@ async function measureStorage(){
   items.sort((a,b)=>b.n-a.n);
   return {kind,items,total:Object.values(kind).reduce((s,n)=>s+n,0)};
 }
-let sizeReport=null;
+/* the measurement, and whether the panel is showing it — both outlive a redraw
+   of this screen, which is what pressing anything in the list causes */
+let sizeReport=null,sizeOpen=false;
+async function takeMeasure(btn){
+  if(btn){btn.disabled=true;btn.textContent="Measuring…";}
+  try{sizeReport=await measureStorage();}
+  catch(e){if(btn){btn.disabled=false;btn.textContent="🔎 What's using the room";}
+    alert("Couldn't measure this: "+e.message);return false;}
+  if(btn)btn.disabled=false;
+  return true;
+}
 function wireBreakdown(){
   const btn=q("#stoBreakBtn");if(!btn)return;
   btn.onclick=async()=>{
     const box=q("#stoBreak");if(!box)return;
-    if(!box.hidden){box.hidden=true;btn.textContent="🔎 What's using the room";return;}
-    btn.disabled=true;btn.textContent="Measuring…";
-    try{sizeReport=await measureStorage();}
-    catch(e){btn.disabled=false;btn.textContent="🔎 What's using the room";
-      alert("Couldn't measure this: "+e.message);return;}
-    btn.disabled=false;btn.textContent="▾ Hide the breakdown";
+    if(sizeOpen){sizeOpen=false;box.hidden=true;btn.textContent="🔎 What's using the room";return;}
+    /* measured once and kept — reopening it is instant, and Measure again below
+       is there for after you have deleted something */
+    if(!sizeReport&&!await takeMeasure(btn))return;
+    sizeOpen=true;btn.textContent="▾ Hide the breakdown";
     box.hidden=false;drawBreakdown();
   };
 }
@@ -7032,7 +7047,11 @@ function drawBreakdown(){
       `<i style="width:${(kind[k]/t*100).toFixed(2)}%;background:${c}" title="${esc(k)}"></i>`).join("")}</div>
     <div class="sizekey">${live.map(([k,label,c])=>
       `<span><i style="background:${c}"></i>${label} <b>${fmtBytes(kind[k])}</b></span>`).join("")}</div>
-    <div class="hint" style="margin:8px 0 6px">Biggest first. Press one to go to it.</div>
+    <div class="hrow2" style="margin:8px 0 6px">
+      <span class="hint" style="margin:0">Biggest first. Press one to go to it — this stays open behind you.</span>
+      <button class="btn" id="sizeAgain" style="margin-left:auto;padding:3px 10px;font-size:12px"
+        title="Read it all again — after deleting a backup or emptying the bin">↻ Measure again</button>
+    </div>
     <div class="sizelist">${shown.map((i,ix)=>{
       const c=(SIZE_KINDS.find(x=>x[0]===i.k)||[])[2]||"#999";
       return `<button class="sizerow" data-sz="${ix}"${i.go?"":" disabled"}>
@@ -7040,6 +7059,12 @@ function drawBreakdown(){
         <span class="szw">${esc(i.what)}${i.note?` <span class="none">· ${esc(i.note)}</span>`:""}</span>
         <span class="szn">${fmtBytes(i.n)}</span></button>`;}).join("")}</div>
     ${items.length>SIZE_ROWS?`<div class="hint" style="margin:7px 0 0">…and ${items.length-SIZE_ROWS} smaller things.</div>`:""}`;
+  const again=q("#sizeAgain",box);
+  if(again)again.onclick=async()=>{
+    again.disabled=true;again.textContent="Measuring…";
+    if(await takeMeasure(null))drawBreakdown();
+    else{again.disabled=false;again.textContent="↻ Measure again";}
+  };
   qa("[data-sz]",box).forEach(b=>b.onclick=()=>{
     const g=shown[+b.dataset.sz].go;if(!g)return;
     if(g.t==="book")openBook(g.id,false,false,g.en||"");
