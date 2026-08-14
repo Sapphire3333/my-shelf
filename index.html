@@ -7260,6 +7260,10 @@ async function deleteBookById(id){
 }
 
 /* =============== history tab =============== */
+/* how many of "recently edited" are drawn, and how many more each press adds.
+   Forgotten on reload, like every other "how far down am I" in the app. */
+const HIST_PAGE=400;
+let histShown=HIST_PAGE;
 /* Two histories, because they answer different questions and both get asked.
    What did I change lately — the way back to the book you were in the middle of
    writing up. And what did I read, and when — the reading life itself, laid out
@@ -7296,8 +7300,16 @@ function renderHistory(){
   }
   else if(mode2==="edited"){
     const list=[...books].sort((a,b)=>(b.modified||b.created||0)-(a.modified||a.created||0));
+    /* Only as many as anyone reads. This list is "what did I just change", and
+       its answer is at the top — but it was drawing every book on the shelf,
+       which at four thousand is a second of the browser measuring and placing
+       rows nobody scrolls to. Timed: 4,335 rows 1,245ms, 400 rows 100ms. The
+       rest are a press away and the press says how many. */
+    const show=list.slice(0,histShown);
     body='<div class="hint" style="margin-bottom:10px">Most recently edited first — only real changes count, not just opening a book.</div>'
-      +list.map(b=>rowHtml(b,false,"edited "+fmtEdited(b.modified||b.created||Date.now()))).join("");
+      +show.map(b=>rowHtml(b,false,"edited "+fmtEdited(b.modified||b.created||Date.now()))).join("")
+      +(list.length>show.length?`<div class="hrow2" style="margin-top:10px;justify-content:center">
+        <button class="btn" id="histMore">Show ${Math.min(HIST_PAGE,list.length-show.length)} more — ${list.length-show.length} older still</button></div>`:"");
   }else{
     /* one line per reading, not per book: a book read three times belongs in
        the timeline three times, which is the whole point of keeping the list */
@@ -7329,8 +7341,18 @@ function renderHistory(){
   }
   m.innerHTML=pills+body;
   qa("[data-hv]",m).forEach(b=>b.onclick=()=>{
+    /* a fresh list starts at the top in both senses */
+    histShown=HIST_PAGE;
     settings.histView=b.dataset.hv;saveSettings();renderHistory();window.scrollTo(0,0);
   });
+  const hm=q("#histMore",m);
+  if(hm)hm.onclick=()=>{
+    /* keep the place: the button you just pressed is at the bottom of what you
+       have read, and the new rows belong under it, not over you */
+    const y=window.scrollY;
+    histShown+=HIST_PAGE;renderHistory();
+    window.scrollTo(0,y);
+  };
   if(mode2==="bin"){
     refreshTrash();
     const eb=q("#binEmpty",m);if(eb)eb.onclick=emptyBin;
@@ -8329,6 +8351,8 @@ async function refreshTrash(){
   });
 }
 
+/* the browser's own account, kept so pressing it doesn't vanish on the next draw */
+let huntReport="";
 async function refreshStorage(){
   const card=q("#stoCard");if(!card)return;
   const si=await storageInfo();
@@ -8365,7 +8389,9 @@ async function refreshStorage(){
      this screen, which built the panel closed again and threw the measurement
      away with it. So every press shut the thing you were reading and charged you
      another measurement to get back to it. */
-  const breakBtn=`<div class="hrow2" style="margin-top:8px"><button class="btn" id="stoBreakBtn">${sizeOpen?"▾ Hide the breakdown":"🔎 What's using the room"}</button></div>`;
+  const breakBtn=`<div class="hrow2" style="margin-top:8px"><button class="btn" id="stoBreakBtn">${sizeOpen?"▾ Hide the breakdown":"🔎 What's using the room"}</button>
+    <button class="btn" id="stoHuntBtn" title="Ask the browser for its own account of the room, which need not agree with ours">🕵 Where the browser thinks it went</button></div>
+    <div id="stoHunt" class="none" style="font-size:11.5px;margin-top:6px;line-height:1.6"${huntReport?"":" hidden"}>${huntReport||""}</div>`;
   if(si&&si.quota){
     const pct=si.usage/si.quota*100;
     q("#stoCard").innerHTML=`
@@ -8378,6 +8404,29 @@ async function refreshStorage(){
     q("#stoCard").innerHTML=`<div class="none">${counts}</div>${breakBtn}<div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}${buildLine}${covLine}`;
   }
   wireBreakdown();
+  const hb=q("#stoHuntBtn");
+  if(hb)hb.onclick=async()=>{
+    const out=q("#stoHunt");
+    hb.disabled=true;hb.textContent="Asking…";
+    if(out){out.hidden=false;out.textContent="Adding up the offline caches — this reads every file in them, so give it a moment…";}
+    const h=await storageHunt();
+    const ours=(sizeReport&&sizeReport.total)||0;
+    const rows=[];
+    if(h.details){
+      const d=h.details;
+      rows.push("<b>The browser's own account</b>: "
+        +Object.keys(d).map(k=>`${esc(k)} ${fmtBytes(d[k])}`).join(" · "));
+    }else rows.push("<b>The browser's own account</b>: this one won't break its total down.");
+    if(ours)rows.push(`<b>What the app can find</b>: ${fmtBytes(ours)} across its own stores — the difference is room the browser is counting but the app doesn't own.`);
+    rows.push(`<b>Databases here</b>: ${h.dbs.length?h.dbs.map(esc).join(", "):"none it will name"}`
+      +(h.dbs.filter(n=>n!=="myShelf").length?" — anything other than myShelf is a stray and can go.":""));
+    rows.push(`<b>Offline caches</b>: ${h.caches.length?h.caches.map(c=>`${esc(c.name)} (${c.files} files, ${fmtBytes(c.bytes)})`).join(" · "):"none"}`
+      +(h.caches.length>1?" — more than one means an old build's cache was never cleared.":""));
+    rows.push(`<span style="opacity:.8">A record you delete does not hand its room straight back. A backup written and thrown away each day leaves its weight in the browser's count until it tidies up, which is the usual reason this number is far bigger than the one above it.</span>`);
+    huntReport=rows.join("<br>");
+    if(q("#stoHunt")){q("#stoHunt").innerHTML=huntReport;q("#stoHunt").hidden=false;}
+    hb.disabled=false;hb.textContent="🕵 Where the browser thinks it went";
+  };
   /* and put it straight back, from the measurement already taken */
   if(sizeOpen&&sizeReport){
     const box=q("#stoBreak");
@@ -13995,8 +14044,38 @@ const fmtWhen=t=>new Date(t).toLocaleString(undefined,{day:"numeric",month:"shor
 
 async function storageInfo(){
   try{if(navigator.storage&&navigator.storage.estimate){const e=await navigator.storage.estimate();
-    return {usage:e.usage||0,quota:e.quota||0};}}catch(e){}
+    return {usage:e.usage||0,quota:e.quota||0,details:e.usageDetails||null};}}catch(e){}
   return null;
+}
+/* ---- where the browser thinks the room went ----
+   The card measures every store the app owns and adds them up; the browser
+   reports its own figure for the whole site, and the two disagreed by a factor
+   of ten — 67 MB of books and backups against 761 MB "used". A number that
+   large and that unexplained is worth asking about rather than guessing at, and
+   the browser will say if it is asked: `usageDetails` breaks its own total down,
+   and the databases and offline caches can be listed by name.
+   A deleted record does not hand its room straight back, which is the usual
+   answer — a fourteen-megabyte backup written and thrown away every day leaves
+   its weight behind in the count until the browser tidies up after itself. */
+async function storageHunt(){
+  const out={details:null,dbs:[],caches:[],cacheBytes:0};
+  try{const e=await navigator.storage.estimate();out.details=e.usageDetails||null;}catch(e){}
+  try{if(indexedDB.databases)out.dbs=(await indexedDB.databases()).map(d=>d.name).filter(Boolean);}catch(e){}
+  try{
+    const names=await caches.keys();
+    for(const n of names){
+      let bytes=0,n2=0;
+      try{
+        const c=await caches.open(n);
+        for(const req of await c.keys()){
+          n2++;
+          try{const r=await c.match(req);if(r){const b=await r.clone().blob();bytes+=b.size;}}catch(e){}
+        }
+      }catch(e){}
+      out.caches.push({name:n,files:n2,bytes});out.cacheBytes+=bytes;
+    }
+  }catch(e){}
+  return out;
 }
 function saveSettings(){dbPut("meta",{k:"settings",v:settings});}
 
