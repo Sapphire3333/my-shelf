@@ -2813,14 +2813,35 @@ let metaDel={};
    was invisible on the other forever. With a time against each list, the newer
    side wins outright. */
 let metaTimes={};
+/* Two tabs share one database, and each of these maps is written out whole — so
+   whichever tab saved second erased what the first had just put in. They are the
+   marks that stop a deleted thing coming back, which makes a lost mark a book or
+   a genre returning from the dead a moment later. They are joined by key before
+   the write instead, newest time per key, the very rule the two-device merge
+   already keeps. What we have deliberately taken OUT is held aside first, so
+   that joining cannot hand us back the thing we just removed. */
+const mapGone={deletions:new Set(),metaDel:new Set()};
+async function saveSharedMap(key,map){
+  const gone=mapGone[key];
+  try{
+    const row=await dbGet("meta",key);
+    const disk=(row&&row.v&&typeof row.v==="object"&&!Array.isArray(row.v))?row.v:null;
+    if(disk)for(const k in disk){
+      if(gone&&gone.has(k))continue;
+      if((disk[k]||0)>(map[k]||0))map[k]=disk[k];
+    }
+  }catch(e){}
+  if(gone)gone.clear();
+  await dbPut("meta",{k:key,v:map});
+}
 function touchMeta(){
   const now=Date.now();
   for(const k of arguments)metaTimes[k]=now;
-  dbPut("meta",{k:"metaTimes",v:metaTimes});enqueue({kind:"meta",key:"metaTimes"});
+  saveSharedMap("metaTimes",metaTimes);enqueue({kind:"meta",key:"metaTimes"});
 }
-function saveMetaDel(){dbPut("meta",{k:"metaDel",v:metaDel});enqueue({kind:"meta",key:"metaDel"});}
+function saveMetaDel(){saveSharedMap("metaDel",metaDel);enqueue({kind:"meta",key:"metaDel"});}
 function markMetaDel(k){metaDel[k]=Date.now();saveMetaDel();}
-function unmarkMetaDel(k){if(metaDel[k]){delete metaDel[k];saveMetaDel();}}
+function unmarkMetaDel(k){if(metaDel[k]){delete metaDel[k];mapGone.metaDel.add(k);saveMetaDel();}}
 let kwCats={};                 /* keyword -> which family it belongs to */
 let catColors={};              /* family -> its colour, which its keywords inherit */
 /* a keyword's own colour wins; failing that it takes its family's; failing that it
@@ -2895,7 +2916,14 @@ let lastFileBk=0,lastFileSig="",fileBkCount=0;
 
 /* =============== sync (Supabase — optional, offline-first) =============== */
 const CFG=window.SHELF_CONFIG||{};
-const SYNC={supa:null,user:null,on:false,queue:[],flushing:false,pulling:false,status:"local",triedCover:new Set(),
+const SYNC={supa:null,user:null,on:false,queue:[],
+  /* What we have FINISHED uploading: the kind-and-id of the op against the moment
+     it was queued. The waiting list is shared with the other tab through the
+     database, and a list that can only ever be joined has no way of saying "this
+     one is done" — which is what made finished uploads immortal. See
+     writeSyncQueue, where this is the one line everything turns on. */
+  done:{},
+  flushing:false,pulling:false,status:"local",triedCover:new Set(),
   /* highest `modified` ever seen from the cloud per book — an edit made after
      seeing it must outrank it even if this device's clock is behind */
   seen:{},
@@ -2934,15 +2962,39 @@ function blobToDataURL(blob){return new Promise((res,rej)=>{const r=new FileRead
 const coverPath=id=>`${SYNC.user.id}/covers/${id}.jpg`;
 const imgPath=key=>`${SYNC.user.id}/images/${String(key).replace("|","__")}.jpg`;
 
+/* The waiting-uploads record holds two things now: the ops still to go, and the
+   ops already finished. Builds before this one wrote a bare list, so that shape
+   still reads. An op with no queued-at moment is stamped as we read it — it is
+   waiting, whatever else is true of it. */
+function readQueueRow(row){
+  const v=row&&row.v,now=Date.now();
+  const q=Array.isArray(v)?v:(v&&typeof v==="object"&&Array.isArray(v.q)?v.q:[]);
+  const done=(!Array.isArray(v)&&v&&typeof v==="object"&&v.done&&typeof v.done==="object")?v.done:{};
+  const out=q.filter(Boolean);
+  out.forEach(o=>{if(!o.at)o.at=now;});
+  return {q:out,done};
+}
+/* A finished op is remembered for a day: long enough that a tab which was asleep
+   while we finished it cannot wake up and hand it back, short enough that the
+   record stays a handful of kilobytes. */
+function pruneDone(){
+  const cut=Date.now()-864e5;
+  for(const k in SYNC.done)if(!(SYNC.done[k]>cut))delete SYNC.done[k];
+}
+function markOpDone(op){
+  const k=opKey(op),at=op.at||0;
+  if(at>(SYNC.done[k]||0))SYNC.done[k]=at;
+}
 async function loadSyncLocal(){
-  const dq=await dbGet("meta","syncQueue");SYNC.queue=dq&&Array.isArray(dq.v)?dq.v:[];
+  const dq=readQueueRow(await dbGet("meta","syncQueue"));
+  SYNC.queue=dq.q;SYNC.done=dq.done;pruneDone();
   const dd=await dbGet("meta","deletions");deletions=dd&&dd.v?dd.v:{};
   const sm=await dbGet("meta","seenMod");SYNC.seen=sm&&sm.v?sm.v:{};
   /* tombstones only need to outlive the longest-offline device — drop ancient ones
      so the map doesn't grow forever */
   const cut=Date.now()-90*864e5;let pruned=false;
-  for(const k of Object.keys(deletions))if(deletions[k]<cut){delete deletions[k];pruned=true;}
-  if(pruned)dbPut("meta",{k:"deletions",v:deletions});
+  for(const k of Object.keys(deletions))if(deletions[k]<cut){delete deletions[k];mapGone.deletions.add(k);pruned=true;}
+  if(pruned)await saveSharedMap("deletions",deletions);
   /* The same housekeeping for the map beside it, which never had any. It holds
      the newest copy the cloud has shown us of each book, and it kept an entry
      for every book that has ever existed here — including ones deleted years
@@ -2969,20 +3021,55 @@ let qSaveT=null;
 async function writeSyncQueue(){
   clearTimeout(qSaveT);qSaveT=null;
   try{
-    const row=await dbGet("meta","syncQueue");
+    const old=readQueueRow(await dbGet("meta","syncQueue"));
+    /* what the other tab has finished is finished for us too */
+    for(const k in old.done)if((old.done[k]||0)>(SYNC.done[k]||0))SYNC.done[k]=old.done[k];
     const have=new Set(SYNC.queue.map(opKey));
-    ((row&&row.v)||[]).forEach(o=>{if(o&&!have.has(opKey(o))){have.add(opKey(o));SYNC.queue.push(o);}});
+    old.q.forEach(o=>{
+      const k=opKey(o);
+      if(have.has(k))return;
+      /* The line the whole thing turns on. Missing from our own list means one of
+         two opposite things: the other tab wrote it down and we have not heard
+         yet, or WE just finished it. Joining without asking which is what made
+         every upload that ever reached the disk immortal — the same books and
+         pictures went up again on every sync, for good, and a delete that came
+         back after the book had been restored deleted it a second time. */
+      if(o.at<=(SYNC.done[k]||0))return;
+      have.add(k);SYNC.queue.push(o);
+    });
   }catch(e){}
-  await dbPut("meta",{k:"syncQueue",v:SYNC.queue});
+  pruneDone();
+  await dbPut("meta",{k:"syncQueue",v:{q:SYNC.queue,done:SYNC.done}});
+}
+/* The tab is going away. Reading the disk first and writing after gives the page
+   two chances to be killed in between, and the ops enqueued in that last moment
+   — the open book is committed on the way out — were exactly the ones lost. This
+   starts the write in the same breath, with no read to wait on first. */
+function writeSyncQueueNow(){
+  clearTimeout(qSaveT);qSaveT=null;
+  pruneDone();
+  try{dbPut("meta",{k:"syncQueue",v:{q:SYNC.queue,done:SYNC.done}});}catch(e){}
 }
 function saveQueue(){clearTimeout(qSaveT);qSaveT=setTimeout(writeSyncQueue,400);}
 const opKey=o=>o.kind+":"+(o.id||o.key||"");
+/* Each op carries the moment it joined the queue, and the moments always climb —
+   two in the same millisecond still differ. That is what lets a finished op be
+   told apart from the very same book queued again a moment later. */
+let lastOpAt=0;
+const opStamp=()=>(lastOpAt=Math.max(Date.now(),lastOpAt+1));
 function enqueue(op){
   if(!SYNC.on)return;
+  op.at=opStamp();
   SYNC.queue=SYNC.queue.filter(o=>opKey(o)!==opKey(op));
   SYNC.queue.push(op);saveQueue();flushQueue();
 }
-function saveDeletions(){dbPut("meta",{k:"deletions",v:deletions});enqueue({kind:"meta",key:"deletions"});}
+function saveDeletions(){saveSharedMap("deletions",deletions);enqueue({kind:"meta",key:"deletions"});}
+/* Taking a book's tombstone off, because it is alive again. Held aside as a
+   removal so the join in saveSharedMap cannot put it straight back. */
+function unDelete(id){
+  if(!deletions[id])return false;
+  delete deletions[id];mapGone.deletions.add(id);return true;
+}
 
 async function flushQueue(){
   if(!SYNC.on||!SYNC.user||SYNC.flushing)return;
@@ -2999,6 +3086,9 @@ async function flushQueue(){
          while an upload is in flight, so [0] might now be a different op */
       const i=SYNC.queue.indexOf(op);
       if(i>=0)SYNC.queue.splice(i,1);
+      /* written down as finished, not merely dropped from the list — the disk
+         copy and the other tab both need telling, and neither can see memory */
+      markOpDone(op);
       saveQueue();
     }
     setSync("synced");
@@ -3202,8 +3292,21 @@ async function pullAll(){
        re-downloaded every book's whole body each time, usually to conclude
        nothing had changed. The bodies are fetched below, only for the rows
        that actually beat what this device holds. */
-    const {data:heads,error}=await s.from("books").select("id,modified").eq("user_id",uid);
-    if(error){setSync(navigator.onLine?"error":"offline");return;}
+    /* Asked for a page at a time, because the answer is capped. Supabase hands
+       back a thousand rows and stops unless it is told to carry on, and the
+       shelf is several times that — so every book past the first thousand was
+       simply missing from the answer. Missing reads exactly like "the cloud has
+       never seen this one", and the loop at the foot of this function then
+       queued every one of them for upload. Every pull. Thousands of books, over
+       and over, for as long as the shelf stayed big. */
+    const heads=[];
+    for(let from=0;;from+=1000){
+      const {data:page,error}=await s.from("books").select("id,modified").eq("user_id",uid)
+        .order("id",{ascending:true}).range(from,from+999);
+      if(error){setSync(navigator.onLine?"error":"offline");return;}
+      for(const h of page||[])heads.push(h);
+      if(!page||page.length<1000)break;
+    }
     const localMap=new Map(books.map(b=>[b.id,b]));
     const remoteIds=new Set();
     const changed=[];
@@ -3213,7 +3316,7 @@ async function pullAll(){
     const pending=new Set(SYNC.queue.filter(o=>o.kind==="book"&&o.id).map(o=>o.id));
     const heldBack=id=>pending.has(id)||(view==="book"&&cur&&cur.id===id);
     const wanted=[];
-    for(const h of heads||[]){
+    for(const h of heads){
       remoteIds.add(h.id);
       const rm=h.modified||0;
       const tomb=deletions[h.id]||0;
@@ -3522,8 +3625,18 @@ const META_INTO={
      down yet is not the other tab's to drop, and dropping them is precisely
      what two tabs used to do to each other */
   syncQueue:v=>{
+    const heard=readQueueRow({v});
+    for(const k in heard.done)if((heard.done[k]||0)>(SYNC.done[k]||0))SYNC.done[k]=heard.done[k];
+    /* the other tab having FINISHED one is the single thing a list that is only
+       ever joined could never say — and without hearing it, both tabs went on
+       uploading everything either of them had ever done */
+    SYNC.queue=SYNC.queue.filter(o=>o.at>(SYNC.done[opKey(o)]||0));
     const have=new Set(SYNC.queue.map(opKey));
-    (Array.isArray(v)?v:[]).forEach(o=>{if(o&&!have.has(opKey(o))){have.add(opKey(o));SYNC.queue.push(o);}});
+    heard.q.forEach(o=>{
+      const k=opKey(o);
+      if(have.has(k)||o.at<=(SYNC.done[k]||0))return;
+      have.add(k);SYNC.queue.push(o);
+    });
   }
 };
 /* A bulk fill writes hundreds of times in a row, so the far side gathers what
@@ -3574,7 +3687,7 @@ function tabClashNote(){
   window.__tabNote=true;
   const w=document.createElement("div");
   w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:500;background:#78350f;color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:90vw;text-align:center";
-  w.textContent="This book was changed in another tab while you had it open. What you do here is what will be kept.";
+  w.textContent="This book was changed in another tab while you had it open. What you do here is what will be kept — the other version is saved in Recently deleted.";
   document.body.appendChild(w);
   setTimeout(()=>{w.remove();window.__tabNote=false;tabClashed.clear();},9000);
 }
@@ -3596,7 +3709,8 @@ let lastFocusPull=0;
 function onHidden(){
   if(view==="book"&&cur){clearTimeout(saveTimer);commitCur();}
   if(impSaveT)writeImportQueue();   /* a staged list waiting on its timer */
-  if(qSaveT)writeSyncQueue();       /* and the uploads still to go */
+  /* and the uploads still to go, written at once rather than after a read */
+  if(qSaveT||SYNC.queue.length)writeSyncQueueNow();
 }
 let lastMaint=0,hiddenAt=0;
 /* everything this device might not have heard about yet, asked for on purpose.
@@ -4353,7 +4467,7 @@ async function applyOp(op,inv){
       await dbPut("books",clone);
       const i=books.findIndex(x=>x.id===id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
-      if(SYNC.on){if(deletions[id]){delete deletions[id];saveDeletions();}enqueue({kind:"book",id});enqueue({kind:"cover",id});imgKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));}
+      if(SYNC.on){if(unDelete(id))saveDeletions();enqueue({kind:"book",id});enqueue({kind:"cover",id});imgKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));}
     }else{
       await dbDel("books",id);
       books=books.filter(x=>x.id!==id);
@@ -6963,7 +7077,7 @@ async function restoreTrash(tid){
   const i=books.findIndex(x=>x.id===b.id);
   if(i>=0)books[i]=b;else books.unshift(b);
   if(SYNC.on){
-    if(deletions[b.id]){delete deletions[b.id];saveDeletions();}
+    if(unDelete(b.id))saveDeletions();
     enqueue({kind:"book",id:b.id});enqueue({kind:"cover",id:b.id});
     imgKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
   }
@@ -8983,9 +9097,28 @@ async function commitCur(){
   const before=i>=0?JSON.parse(JSON.stringify(books[i])):null;
   const strip=o=>{const c={...o};delete c.modified;return JSON.stringify(c);};
   if(before&&strip(before)===strip(after)){setSaved(true);return;}
+  /* The other tab may have written this same book while it sat open here — the
+     one case the tab-to-tab catch-up deliberately steps around, because these
+     edits are still being typed. Ours wins, as it always has. But when a copy is
+     overwritten between two DEVICES the losing version goes to Recently deleted
+     first, and between two TABS nothing caught it: the other tab's work was
+     simply gone, and the tab that lost it was never told. Same net, same bin. */
+  let diskAt=0;
+  try{
+    const onDisk=await dbGet("books",cur.id);
+    if(onDisk&&(onDisk.modified||0)>((before&&before.modified)||0)){
+      diskAt=onDisk.modified||0;
+      await dbPut("trash",{id:cur.id+"~tab"+diskAt,at:Date.now(),
+        conflict:true,book:JSON.parse(JSON.stringify(onDisk)),cover:null,images:{}});
+      tabClashed.add(cur.id);tabClashNote();
+    }
+  }catch(e){}
+  /* that look at the disk is a wait, and a book can be deleted during one — the
+     same reason the check at the top of this function exists at all */
+  if(!cur)return;
   /* beat our previous save AND anything the cloud has shown us, so a device whose
      clock runs fast can't have its older copy win forever */
-  after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,seenFloor(cur.id)+1);
+  after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,diskAt+1,seenFloor(cur.id)+1);
   after.touched=true;cur.touched=true;   /* you've worked on it — no longer a raw import */
   cur.modified=after.modified;
   try{await dbPut("books",after);}
@@ -13431,7 +13564,7 @@ async function applyBackup(data){
   saveBgList();savePadList();saveFandoms();saveGroupArt();saveKwColors();saveLibArt();
   saveMeta();
   if(SYNC.on){
-    for(const b of data.books){delete deletions[b.id];enqueue({kind:"book",id:b.id});}
+    for(const b of data.books){unDelete(b.id);enqueue({kind:"book",id:b.id});}
     for(const id of Object.keys(data.covers||{}))enqueue({kind:"cover",id});
     for(const k of Object.keys(data.images||{}))enqueue({kind:"img",key:k});
     saveDeletions();flushQueue();
