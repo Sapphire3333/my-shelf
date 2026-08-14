@@ -5065,7 +5065,7 @@ q("#fabJump").onclick=()=>{
 document.addEventListener("pointerdown",e=>{
   if(!e.target.closest)return;
   if(!e.target.closest("#fab"))closeFabMenu();
-  if(stPickFor&&!e.target.closest(".stpick,[data-cyc]")){stPickFor=null;renderMain();}
+  if(stPickFor&&!e.target.closest(".stpick,[data-cyc]")){stPickFor=null;paintStPick();}
 });
 
 /* =============== shared row / card html =============== */
@@ -5131,6 +5131,30 @@ const progHtml=b=>{
 const stSym=b=>b.dnf?"✕":holdOf(b)?"⏸":statusOf(b)==="finished"?"✓":statusOf(b)==="reading"?"📖":"★";
 const stName=b=>b.dnf?"Did not finish":holdOf(b)?"On hold":statusOf(b)==="finished"?"Finished":statusOf(b)==="reading"?"Reading now":"Want to read";
 let stPickFor=null;   /* which row has its stage chooser open */
+const stPickHtml=b=>`<div class="stpick">
+      ${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
+      <button data-setst="${b.id}|hold" class="${holdOf(b)?"on":""}">⏸ On hold</button>
+      <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
+    </div>`;
+/* Opening this little list is a change to one row, and it was being paid for
+   with a redraw of the entire shelf — measured at 985ms on a four-thousand-book
+   shelf, to show a popover 180 pixels wide. Twice over, in fact: once to open it
+   and once more the moment you chose, so one change of stage cost 2.2 seconds of
+   waiting. Choosing genuinely rearranges the shelf and still redraws it; opening
+   the list does not and no longer pretends to. The buttons need no wiring of
+   their own — the row's click handler is delegated, so it catches them wherever
+   they appear. */
+function paintStPick(){
+  const old=document.querySelector(".stpick");
+  if(old)old.remove();
+  if(!stPickFor)return;
+  const b=books.find(x=>x.id===stPickFor);
+  if(!b)return;
+  const m=q("#main");if(!m)return;
+  const row=m.querySelector(`.row[data-open="${CSS.escape(stPickFor)}"]:not([data-openen])`);
+  if(!row)return;
+  row.insertAdjacentHTML("afterbegin",stPickHtml(b));
+}
 
 /* ---- a fic's own line on the shelf ----
    Fandom, then who is with whom, then who is in it — three parts sharing one
@@ -5169,11 +5193,7 @@ function ficLine(b){
    what it means; the row only shows it. */
 function rowHtml(b,withDel,note){
   return `<div class="row" data-open="${b.id}"${b._story?` data-openen="${esc(b._story)}"`:""} tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}${b.author?" — "+esc(b.author):""}">
-    ${stPickFor===b.id&&!b._story?`<div class="stpick">
-      ${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
-      <button data-setst="${b.id}|hold" class="${holdOf(b)?"on":""}">⏸ On hold</button>
-      <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
-    </div>`:""}
+    ${stPickFor===b.id&&!b._story?stPickHtml(b):""}
     <div class="thumb" data-cover="${b.id}"${b._cover?` data-covkey="${esc(b._cover)}"`:""}><a class="tgo" href="${esc(bookHash(b.id,b._story))}" tabindex="-1" aria-hidden="true">${coverInner(b,false)}</a>${withDel&&!b._story?`<button class="stdot ${b.dnf?"dnf":holdOf(b)?"hold":statusOf(b)}" data-cyc="${b.id}" title="${stName(b)} — tap to change">${stSym(b)}</button>`:""}${b.favorite?`<span class="favdot${b._story?" story":""}">♥</span>`:""}</div>
     <div class="rmain">
       <div class="rtitle serif"><a class="tgo" href="${esc(bookHash(b.id,b._story))}">${esc(b.title)||"Untitled"}</a>${isFic(b)?`<span class="rby">${kindOf(b)==="fanfic"?"FANFIC":"AI"}${b.author?" · "+esc(b.author):""}${b.pages?" · "+esc(String(b.pages))+" p.":""}</span>`:""} ${(()=>{const L=linkLabel(b.link);
@@ -5342,7 +5362,9 @@ async function hydrateCovers(root){
 async function setStatus(id,what){
   const b=books.find(x=>x.id===id);if(!b)return;
   /* said no to starting it again — touch nothing, not even the edited-at stamp */
-  if(markStatus(b,what)===false){stPickFor=null;renderMain();return;}
+  /* declined the "start it again?" question — nothing changed, so nothing to
+     rebuild. Only the little list goes away. */
+  if(markStatus(b,what)===false){stPickFor=null;paintStPick();return;}
   b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
@@ -5380,7 +5402,7 @@ function wireOpen(root,withDel){
     const set=e.target.closest("[data-setst]");
     if(set){e.stopPropagation();const [id,what]=set.dataset.setst.split("|");setStatus(id,what);return;}
     const cyc=e.target.closest("[data-cyc]");
-    if(cyc){e.stopPropagation();stPickFor=stPickFor===cyc.dataset.cyc?null:cyc.dataset.cyc;renderMain();return;}
+    if(cyc){e.stopPropagation();stPickFor=stPickFor===cyc.dataset.cyc?null:cyc.dataset.cyc;paintStPick();return;}
     const del=e.target.closest("[data-del]");
     if(del){e.stopPropagation();deleteBookById(del.dataset.del);return;}
     /* the ! sits inside the row, so it has to answer before the row does */
