@@ -11407,14 +11407,18 @@ function renderEditor(){
       <button class="btn" id="fpClose" style="margin-left:auto;padding:4px 10px">Close</button></div>`;
     const wireClose=()=>{const c=q("#fpClose",box);if(c)c.onclick=closeFetch;};
     const title=((en?en.title:cur.title)||"").trim();
-    if(!title){alert(`Give the ${en?"story":"book"} a title first — that's what it searches by.`);return;}
+    /* A number is a question all by itself, and this used to insist on a title
+       anyway — "that's what it searches by", which stopped being true the day
+       books could be added by their barcode. The barcode sheet asks with no
+       title at all and gets one back; there was no reason this could not. */
+    const askIsbn=(en?String(en.isbn||"").trim():(cur.isbn||"").trim());
+    if(!title&&!askIsbn){alert(`Give the ${en?"story":"book"} a title or an ISBN first — one of the two is what it searches by.`);return;}
     box.hidden=false;
-    box.innerHTML=head+`<div class="none">Looking up “${esc(title)}”${cur.author?" by "+esc(cur.author):""}…</div>`;
+    box.innerHTML=head+`<div class="none">Looking up ${askIsbn?`by its number ${esc(askIsbn)}`:`“${esc(title)}”${cur.author?" by "+esc(cur.author):""}`}…</div>`;
     wireClose();
     let info=null,unreachable=false;
     const probe={};
-    try{info=await fetchBookInfo(title,(cur.author||"").trim(),
-      en?String(en.isbn||"").trim():(cur.isbn||"").trim(),probe);}
+    try{info=await fetchBookInfo(title,(cur.author||"").trim(),askIsbn,probe);}
     catch(e){unreachable=true;}
     if(box.hidden)return;   /* closed while we were fetching */
     if(!info){
@@ -11447,13 +11451,33 @@ function renderEditor(){
     const newAuthor=(info.author||"").trim();
     const showAuth=!!newAuthor&&newAuthor.toLowerCase()!==curAuthor.toLowerCase();
     const showPages=!!info.pages&&String(info.pages)!==String(curPages||"");
+    /* only where there is no title to lose. Looking a book up by its number and
+       being shown its name is no use if you then have to type the name out; but
+       a title you wrote is never overwritten by this — that is the one field the
+       whole panel is normally searching BY. */
+    const showTitle=!title&&!!(info.title||"").trim();
     /* one button for the lot is only worth its space when there is a lot; with a
        single thing on offer it would sit directly above its own duplicate */
-    const manyToApply=[showAuth,!!covers.length,!!blurbs.length,showPages].filter(Boolean).length>1;
+    const manyToApply=[showTitle,showAuth,!!covers.length,!!blurbs.length,showPages].filter(Boolean).length>1;
     box.innerHTML=head+`
-      ${(info.loose||(info.title&&!titleSame(title,info.title)))?`<div style="margin:0 0 10px;padding:7px 9px;border-radius:8px;background:var(--warn-bg);color:var(--warn-ink);font-size:12.5px">
-        ${info.title&&!titleSame(title,info.title)?`They call it <b>${esc(info.title)}</b>. `:""}
-        ${info.loose?`Nothing matched with the author on this ${en?"story's collection":"book"}, so this was found by the title alone — check it is the same book before applying any of it.`:""}</div>`:""}
+      ${(()=>{
+        /* A different title back is a warning when the book was GUESSED at from
+           a title, and merely a fact when it was asked for by its number — the
+           number cannot fetch the wrong book, so the edition simply has another
+           name, which is worth telling you and is no reason for alarm. Said in
+           the alarming voice it made the surest answers look like the doubtful
+           ones. The same distinction the bulk sheet already draws. */
+        const differs=info.title&&!titleSame(title,info.title);
+        if(askIsbn)return differs?`<div class="hint" style="margin:0 0 10px">Asked by its number${title?`; that edition is called <b>${esc(info.title)}</b>`:`, which found <b>${esc(info.title)}</b>`}.</div>`:"";
+        if(!info.loose&&!differs)return "";
+        return `<div style="margin:0 0 10px;padding:7px 9px;border-radius:8px;background:var(--warn-bg);color:var(--warn-ink);font-size:12.5px">
+          ${differs?`They call it <b>${esc(info.title)}</b>. `:""}
+          ${info.loose?`Nothing matched with the author on this ${en?"story's collection":"book"}, so this was found by the title alone — check it is the same book before applying any of it.`:""}</div>`;
+      })()}
+      ${showTitle?`<div style="margin-bottom:12px">
+        <div class="lbl" style="display:block;margin-bottom:3px">Title</div>
+        <div style="font-size:13px;margin-bottom:5px;overflow-wrap:anywhere">${esc(info.title)}</div>
+        <button class="btn" id="fpTitle">Use as title</button></div>`:""}
       ${manyToApply?`<button class="btn pri" id="fpAll" style="width:100%">Use everything</button>
         <div class="hint" id="fpAllMsg" style="margin:4px 0 12px">Takes the cover and the blurb you have showing, plus whatever you have ticked below.</div>`:""}
       ${showAuth?`<div style="margin-bottom:12px">
@@ -11566,6 +11590,16 @@ function renderEditor(){
       ft.textContent=`Added ${n} ✓`;ft.disabled=true;tagSel.clear();
       return n;
     };
+    const applyTitle=()=>{
+      const ft=q("#fpTitle",box);
+      if(!ft||ft.disabled)return false;
+      const nm=(info.title||"").trim();
+      if(!nm)return false;
+      if(en){en.title=nm;renderEntries();}
+      else{cur.title=nm;const el=q("#fTitle");if(el)el.value=nm;}
+      scheduleSave();ft.disabled=true;ft.textContent="Title set ✓";
+      return true;
+    };
     const applyAuthor=()=>{
       const fa=q("#fpAuth",box);
       if(!fa||fa.disabled)return false;
@@ -11646,6 +11680,7 @@ function renderEditor(){
     const wire=(id,fn)=>{const el=q("#"+id,box);if(el)el.onclick=fn;};
     wire("fpGen",applyGenres);
     wire("fpTags",applyTags);
+    wire("fpTitle",applyTitle);
     wire("fpAuth",applyAuthor);
     wire("fpPages",applyPages);
     wire("fpCover",applyCover);
@@ -11675,6 +11710,7 @@ function renderEditor(){
       const all=q("#fpAll",box);
       all.disabled=true;all.textContent="Filling in…";
       const did=[];
+      if(applyTitle())did.push("the title");
       if(applyAuthor())did.push("the author");
       if(applySummary())did.push("the blurb");
       if(applyPages())did.push("the pages");
