@@ -288,6 +288,8 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .bimprow .bimpa{padding:0 3px;font-size:11px;opacity:.65;text-decoration:none;
     vertical-align:baseline;line-height:1}
   .bimprow .bimpa:hover{opacity:1}
+  /* the tick that lets a handful be filed in one press instead of thirteen */
+  .bimpc{width:16px;height:16px;accent-color:var(--teal);flex:none;margin-top:2px;cursor:pointer;align-self:flex-start}
   /* ---- emptying a box from inside it ----
      Typing a search is cheap and undoing one was not: you had to select the
      words and delete them, or backspace through them, on every box in the app.
@@ -14402,7 +14404,11 @@ function markDupes(){
    what every picture, note and drawn mark on the page is measured from, so
    growing it moves all of them — a mistake already made twice here. */
 let bImpOpen=false,bImpQ="",bImpHave=false;
-function bImpReset(){bImpOpen=false;bImpQ="";bImpHave=false;}
+/* which rows you have ticked. Kept across a redraw, because typing in the search
+   box redraws the whole panel and a tick you made before searching is a decision
+   you already took — losing it would make gathering a handful impossible. */
+let bImpSel=new Set();
+function bImpReset(){bImpOpen=false;bImpQ="";bImpHave=false;bImpSel.clear();}
 /* Two tiers, the way the shelf's own matching works: plainly this thing, then
    merely by the same hand. With nothing typed the question is asked of the book
    you are standing in; type something and it is asked of the whole list. */
@@ -14461,6 +14467,8 @@ const LOOKUPS=[
 const lookupLinks=it=>LOOKUPS.map(([icon,name,tip,url])=>
   `<a class="bimpa" href="${esc(url(it))}" target="_blank" rel="noopener" title="${esc(tip)}">${icon}</a>`).join("");
 const bImpRow=(it,coll)=>`<div class="snap bimprow" style="padding:6px 10px">
+  <input type="checkbox" class="bimpc" data-bimpc="${esc(it.id)}" ${bImpSel.has(it.id)?"checked":""}
+    aria-label="Pick ${esc(it.title)||"this book"}">
   <div style="min-width:0;flex:1">
     <div class="bimpt">${esc(it.title)||"Untitled"}
       <button class="bimpa" data-bimpt="${esc(it.title||"")}" title="Search this list for this title">🔍</button>
@@ -14505,7 +14513,16 @@ function bookImportHtml(b){
       ${dupeN?`<label class="chk" style="margin-top:7px"><input type="checkbox" id="bImpHave" ${bImpHave?"checked":""}> Include the ${dupeN} already on your shelf</label>`:""}
       ${hit.length?`<div class="hrow2" style="margin-top:8px">
         <button class="btn pri" id="bImpAll" style="padding:5px 11px">${coll?`＋ Add all ${hit.length} inside`:`📚 Make it a collection and add all ${hit.length}`}</button>
-        ${near.length?`<span class="none" style="font-size:12px">the ${near.length} same-author guess${near.length===1?"":"es"} below stay out — add those one by one</span>`:""}
+        ${near.length?`<span class="none" style="font-size:12px">the ${near.length} same-author guess${near.length===1?"":"es"} below aren't in that — tick the ones you want</span>`:""}
+      </div>`:""}
+      ${total?`<div class="hrow2" style="margin-top:8px;align-items:center">
+        <button class="btn" id="bImpTickAll" style="padding:5px 11px">${
+          total&&[...hit,...near].every(it=>bImpSel.has(it.id))?`Untick all ${total}`:`☑ Tick all ${total} shown`}</button>
+        <button class="btn pri" id="bImpSelGo" style="padding:5px 11px" ${bImpSel.size?"":"disabled"}>${bImpSel.size?`＋ Add ${bImpSel.size} inside`:"Nothing ticked"}</button>
+        ${bImpSel.size&&![...hit,...near].some(it=>bImpSel.has(it.id))
+          ?`<span class="none" style="font-size:12px">ticked earlier, and not in what you are looking at now</span>`
+          :(()=>{const away=[...bImpSel].filter(id=>![...hit,...near].some(it=>it.id===id)).length;
+              return away?`<span class="none" style="font-size:12px">${away} of them ${away===1?"is":"are"} not shown here</span>`:"";})()}
       </div>`:""}
       ${list(hit,bImpQ.trim()?"Matches":"Part of this")}
       ${list(near,bImpQ.trim()?"Close matches":"Same author")}
@@ -14557,6 +14574,9 @@ function wireBookImport(b){
       const fresh2=JSON.parse(JSON.stringify(b));
       if(i>=0)books[i]=fresh2;else books.unshift(fresh2);
       saveImportQueue();
+      /* filed, so no longer ticked — a tick left behind would count towards the
+         next press and try to file a row that has already gone */
+      items.forEach(it=>bImpSel.delete(it.id));
       if(SYNC.on)flushQueue();
     }catch(e){alert("They couldn't be saved into the collection — storage may be full. Export a backup from the Overview tab and free some space.");}
     if(q("#busyMsg"))q("#busyMsg").textContent="";
@@ -14566,6 +14586,35 @@ function wireBookImport(b){
     const it=importQueue.find(i=>i.id===x.dataset.bimpadd);
     if(it)file([it],x);
   });
+  /* Ticking must not redraw the panel. This list is inside the open book's page,
+     and rebuilding it for one tick would throw away the place you had scrolled to
+     — thirteen rows in, which is exactly where you tick from. The button's words
+     are patched instead. */
+  const selGo=q("#bImpSelGo"),tickAll=q("#bImpTickAll");
+  const shown=()=>{const {hit,near}=bImpRows(b);return [...hit,...near];};
+  const refreshSel=()=>{
+    if(selGo){selGo.disabled=!bImpSel.size;selGo.textContent=bImpSel.size?`＋ Add ${bImpSel.size} inside`:"Nothing ticked";}
+    if(tickAll){const all=shown();
+      tickAll.textContent=all.length&&all.every(it=>bImpSel.has(it.id))?`Untick all ${all.length}`:`☑ Tick all ${all.length} shown`;}
+  };
+  qa("[data-bimpc]").forEach(x=>x.onchange=()=>{
+    x.checked?bImpSel.add(x.dataset.bimpc):bImpSel.delete(x.dataset.bimpc);
+    refreshSel();
+  });
+  if(tickAll)tickAll.onclick=()=>{
+    /* every row the search has left, not merely the twelve on screen — "all of
+       them" has to mean the number the button just said */
+    const all=shown();
+    const on=all.length&&all.every(it=>bImpSel.has(it.id));
+    all.forEach(it=>on?bImpSel.delete(it.id):bImpSel.add(it.id));
+    qa("[data-bimpc]").forEach(c=>{c.checked=bImpSel.has(c.dataset.bimpc);});
+    refreshSel();
+  };
+  if(selGo)selGo.onclick=()=>{
+    const items=importQueue.filter(it=>bImpSel.has(it.id));
+    if(!items.length)return;
+    file(items,selGo);
+  };
   const all=q("#bImpAll");
   /* the sweep takes only the rows the TITLE vouches for — a same-author row
      is a guess, and the Overview list's rule holds here too: a sweep must
