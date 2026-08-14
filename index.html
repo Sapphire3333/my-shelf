@@ -4502,7 +4502,12 @@ async function applyOp(op,inv){
       if(!body){
         await dbDel("books",it.id);
         books=books.filter(x=>x.id!==it.id);
-        if(SYNC.on){deletions[it.id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id:it.id});}
+        if(SYNC.on){deletions[it.id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id:it.id});
+          /* the picture went up with the book, so it comes down with it. Only the
+             cloud's copy: this device keeps its own, so redoing gets it back */
+          enqueue({kind:"coverDel",id:it.id});
+          if(it.after)imgKeysOf(it.after).forEach(key=>enqueue({kind:"imgDel",key}));
+        }
         continue;
       }
       const clone=JSON.parse(JSON.stringify(body));
@@ -4510,7 +4515,17 @@ async function applyOp(op,inv){
       await dbPut("books",clone);
       const i=books.findIndex(x=>x.id===it.id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
-      if(SYNC.on)enqueue({kind:"book",id:it.id});
+      if(SYNC.on){
+        enqueue({kind:"book",id:it.id});
+        /* putting back one the undo had DELETED, rather than merely changed: its
+           tombstone has to come off, and its pictures have to go up again — the
+           undo took them down */
+        if(!it.before){
+          if(unDelete(it.id))saveDeletions();
+          enqueue({kind:"cover",id:it.id});
+          imgKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));
+        }
+      }
     }
     const lb=op.label;
     if(lb){
@@ -5816,7 +5831,7 @@ async function openBulkFill(ids){
   }
 
   /* ---------- what one answer means ---------- */
-  function weigh(job,info){
+  function weigh(job,info,byIsbn){
     const {b,en}=job,want={},found=[];
     if(en){
       if(S.fields.pages&&looksBlank(en.pages)&&info.pages){want.pages=parseInt(info.pages)||"";found.push(want.pages+" pages");}
@@ -5855,21 +5870,30 @@ async function openBulkFill(ids){
        "The" and a missing apostrophe — so a title that still differs after all
        that is a different book far more often than it is a retitled edition */
     const renamed=!!(info.title&&!titleSame(asked,info.title));
-    if(renamed)notes.push(`They call it “${info.title}” — check it is the same book.`);
+    /* A number is not a guess. Asked by its ISBN, the answer IS the book — a
+       title that comes back differently means that edition is called something
+       else, which is worth saying and is not a reason to refuse it. Refusing
+       those was the one thing filling the number in could not cure, and filling
+       the number in is precisely what the rest of this went to the trouble of
+       doing so it would never have to guess at that book again. */
+    const doubtful=renamed&&!byIsbn;
+    if(renamed)notes.push(byIsbn
+      ? `Found by its number; that edition is called “${info.title}”.`
+      : `They call it “${info.title}” — check it is the same book.`);
     if(info.loose)notes.push("Found only by the title: the author on your shelf matched nothing at either site.");
     /* the difference between "there is no blurb" and "the blurb didn't arrive"
        matters, because the second one is worth simply running again */
     if(info.blurbMissed&&!info.summary&&S.fields.blurb)
       notes.push("The blurb is the one thing that needs a request of its own, and that request didn't answer — running this book again is likely to get it.");
-    if(renamed||info.loose)notes.push("Left unticked on purpose.");
+    if(doubtful||info.loose)notes.push("Left unticked on purpose.");
     if(!en){const d=doubt(b,info);if(d)notes.push(d);}
-    return {info,want,found,newTags,newGen,chips:[],renamed,
+    return {info,want,found,newTags,newGen,chips:[],renamed,byIsbn:!!byIsbn,
             note:notes.join(" "),
             dead:found.length?"":"Nothing on it that this one is missing.",
             /* Neither an unconfirmed match nor a differently-titled one is ever
                ticked for you — which is also what keeps "just fill them in" from
                writing one, since that writes exactly what is ticked. */
-            on:found.length>0&&!info.loose&&!renamed};
+            on:found.length>0&&!info.loose&&!doubtful};
   }
   /* An answer can be confidently wrong. Open Library files The Goblin Emperor
      under the author's legal name, not the one on the cover — so where a book
@@ -5903,12 +5927,16 @@ async function openBulkFill(ids){
     if(busy)return;
     busy=true;
     try{
-    S.stage="running";S.done=0;S.gDown=0;S.oDown=0;stop=false;
+    S.stage="running";S.done=0;S.gDown=0;S.oDown=0;stop=false;S.stopped=false;
     const todo=[];
     groups.forEach(g=>g.jobs.forEach(j=>{j.row=null;if(j.needs.length)todo.push(j);}));
     S.capped=Math.max(0,todo.length-BULK_CAP);
     const run=todo.slice(0,BULK_CAP);
-    S.total=run.length;
+    /* how many were ASKED ABOUT, kept apart from the running total — that total
+       is set again for the writing, so by the time the last screen said Google
+       had not answered "for 100 of 5" it was counting failed lookups against
+       the number of books ticked */
+    S.total=S.asked=run.length;
     draw();
     for(const j of run){
       if(stop){S.stopped=true;break;}
@@ -5928,7 +5956,7 @@ async function openBulkFill(ids){
       try{info=await fetchBookInfo(title,author,ask,probe);}
       catch(e){info=null;}
       if(!info){j.row={dead:"Nothing came back for this title.",asked:probe.asked||[],found:[],want:{},chips:[]};continue;}
-      j.row=weigh(j,info);
+      j.row=weigh(j,info,!!ask);
       if(info.gErr)S.gDown++;
       if(info.oErr)S.oDown++;
       /* a small gap so two free sites are not hammered flat */
@@ -5998,18 +6026,32 @@ async function openBulkFill(ids){
     if(busy)return;
     busy=true;
     try{
-    S.stage="writing";S.done=0;S.filled=0;S.failedCovers=[];stop=false;
+    S.stage="writing";S.done=0;S.filled=0;S.failedCovers=[];stop=false;S.stopped=false;
+    S.vanished=0;S.storageFull=false;
     S.total=groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.on&&j.row.info).length,0);
     draw();
     const items=[];let coversAdded=0;
     for(const g of groups){
       if(stop){S.stopped=true;break;}
-      const b=g.b;
+      /* A run can take twenty minutes, and the books were taken hold of when the
+         sheet opened. In twenty minutes a book can be deleted on your phone, or
+         changed there and pulled down here — and either way the copy held here
+         is a copy of something that no longer exists. Writing it back put a
+         deleted book on every device, or quietly undid what the phone had
+         written, so the shelf is asked again for each one at the moment it is
+         actually written. Gone means left alone, and said so at the end. */
+      const b=books.find(x=>x.id===g.b.id);
+      if(!b){S.vanished++;continue;}
       const before=JSON.parse(JSON.stringify(b));
       let changed=false;
       for(const j of g.jobs){
         if(stop){S.stopped=true;break;}
-        const r=j.row,en=j.en;
+        const r=j.row;
+        /* the story too, and by its id: a pull replaces the whole book, entries
+           and all, so the entry taken hold of earlier is no longer the one on
+           the shelf even when it is still there under the same name */
+        const en=j.en?((b.entries||[]).find(e=>e.id===j.en.id)||null):null;
+        if(j.en&&!en){S.vanished++;continue;}
         if(!r||!r.on||!r.info)continue;
         S.now=titleOf(j)||"Untitled";S.done++;drawProgress();
         /* a story's own three, or a plain book's four. Everything a story cannot
@@ -6069,7 +6111,14 @@ async function openBulkFill(ids){
       if(!changed)continue;
       b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
       b.touched=true;
-      await dbPut("books",b);
+      /* Storage filling up mid-run threw straight out of the button. Everything
+         written so far was already written and already queued to go up, but the
+         undo step is only pushed after this loop — so the one thing that could
+         put it all back never happened, and the sheet sat there saying "filling
+         them in" for ever. It stops here instead, keeps what it managed, and the
+         last screen says so. */
+      try{await dbPut("books",b);}
+      catch(e){S.storageFull=true;break;}
       if(SYNC.on)enqueue({kind:"book",id:b.id});
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
     }
@@ -6188,8 +6237,8 @@ async function openBulkFill(ids){
       inner.innerHTML=head("Found for "+plural(usable.length,"book"))+`
         <div class="hint" style="margin:0 0 4px">${S.stopped?"Stopped early. ":""}Nothing is written until you press the button at the bottom.</div>
         ${(S.gDown||S.oDown)?`<div class="bs-w" style="margin:0 0 7px">${
-          S.gDown?`<b>Google Books didn't answer</b> for ${S.gDown} of ${S.total} — its shared quota runs dry most days. That is where the blurbs and the tidy genres come from, so this run is thinner than it would otherwise be${S.oDown?"; ":". "}`:""}${
-          S.oDown?`<b>Open Library didn't answer</b> for ${S.oDown} of ${S.total}. `:""}Nothing is lost by running it again later — only blanks are filled, so a second pass adds what a first one missed.</div>`:""}
+          S.gDown?`<b>Google Books didn't answer</b> for ${S.gDown} of ${S.asked} — its shared quota runs dry most days. That is where the blurbs and the tidy genres come from, so this run is thinner than it would otherwise be${S.oDown?"; ":". "}`:""}${
+          S.oDown?`<b>Open Library didn't answer</b> for ${S.oDown} of ${S.asked}. `:""}Nothing is lost by running it again later — only blanks are filled, so a second pass adds what a first one missed.</div>`:""}
         <div class="bs-list" id="bsList">${groups.map((g,gi)=>{
           if(!g.coll)return jobRow(g,gi,g.jobs[0],0);
           const asked=g.jobs.filter(j=>j.needs.length).length;
@@ -6242,11 +6291,13 @@ async function openBulkFill(ids){
     }
     else{
       const strips=groups.filter(g=>g.coll&&g.strip.length);
-      const loose=groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.info&&(j.row.info.loose||j.row.renamed)).length,0);
+      const loose=groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.info&&(j.row.info.loose||(j.row.renamed&&!j.row.byIsbn))).length,0);
       inner.innerHTML=head("Done")+`
         <div style="font-size:14px">Filled in ${plural(S.filled,"book")}.${S.stopped?" Stopped early — the rest are untouched.":""}</div>
+        ${S.storageFull?`<div class="bs-w" style="margin:7px 0 0"><b>Storage ran out part of the way through.</b> What you see above was written and can be undone; the rest is untouched. Export a backup from the Overview tab, then clear out old backups or pictures and run this again.</div>`:""}
+        ${S.vanished?`<div class="hint" style="margin:6px 0 0">${plural(S.vanished,"thing")} went missing while the run was going — deleted on another device, or on another tab — so ${S.vanished===1?"it was":"they were"} left alone rather than written back onto the shelf.</div>`:""}
         <div class="hint" style="margin:6px 0 0">Undo puts every one of them back as it was. The covers stay where they are — take one off from its own page if you don't want it.</div>
-        ${S.gDown?`<div class="hint" style="margin:6px 0 0">Google Books didn't answer for ${S.gDown} of ${S.total} — that is where the blurbs come from, so running these again another day is worth doing. Only blanks are filled, so nothing is undone by trying twice.</div>`:""}
+        ${S.gDown?`<div class="hint" style="margin:6px 0 0">Google Books didn't answer for ${S.gDown} of ${S.asked} — that is where the blurbs come from, so running these again another day is worth doing. Only blanks are filled, so nothing is undone by trying twice.</div>`:""}
         ${loose?`<div class="hint" style="margin:6px 0 0">${plural(loose,"book")} came back under a different title, or only once the author was dropped from the search, so ${loose===1?"it was":"they were"} left alone — an unconfirmed match is not something to write for you. Run it again without “just fill them in” to look at ${loose===1?"it":"them"}.</div>`:""}
         ${strips.map((g,si)=>`<div class="lbl" style="display:block;margin:14px 0 4px">A cover for ${esc(g.b.title)||"the collection"}, from its own books</div>
           <div class="hint" style="margin:0 0 6px">These are already downloaded, so picking one is instant and can't be refused. Nothing is picked unless you press one.</div>
@@ -13948,6 +13999,10 @@ function markDupes(){
     if(!isColl(b))continue;
     for(const en of ((b.entries)||[])){
       put(byKey,dupeKey(en.title,entAuthorOf(b,en)),{b,en});
+      /* a story keeps a number of its own, and this was the one index that never
+         learned to look at it — so an import row matching a story BY ITS NUMBER,
+         under an edition's different title, came through as new */
+      put(byIsbn,cleanIsbn(en.isbn),{b,en});
       putTitles(en.title,{b,en});
     }
   }
@@ -14497,9 +14552,16 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
        edition the blurb came from. */
     const wa=items.find(v=>(v.authors||[]).length);
     if(wa)out.author=(wa.authors||[]).map(a=>String(a).trim()).filter(Boolean).join(", ");
-    const wt=items.find(v=>String(v.title||"").trim());
-    if(wt)out.title=String(wt.title||"").trim()+(wt.subtitle?": "+String(wt.subtitle).trim():"");
     const vi=items.find(v=>v.description)||items[0];
+    /* The title has to name the record everything else came from. It was taken
+       from the first result that had one, while the blurb, the pages and the
+       number came from the first result with a DESCRIPTION — which is often a
+       different edition, and can be a different book. So the check that guards
+       all of this, "is what came back called what I asked for", could be
+       vouching for a record that none of the content came from. Same record now,
+       and only if that record has no title of its own does it borrow one. */
+    const wt=(vi&&String(vi.title||"").trim())?vi:items.find(v=>String(v.title||"").trim());
+    if(wt)out.title=String(wt.title||"").trim()+(wt.subtitle?": "+String(wt.subtitle).trim():"");
     if(vi){
       /* Google blurbs sometimes arrive with <b> and <p> tags in them — shown as
          literal angle brackets once escaped, so take them out at the door */
@@ -14816,7 +14878,18 @@ function openIsbnAdd(){
   const inner=q(".bs-in",sheet);
   const shut=()=>{stop=true;sheet.remove();render();};
   const plural=(n,w)=>`${n} ${w}${n===1?"":"s"}`;
-  const onShelf=code=>books.find(b=>isbn13Of(b.isbn)===code)||null;
+  /* A book folded into a collection keeps its own number on its own line, and
+     this only ever looked at the top level — so scanning the barcode of a book
+     that is already on the shelf as one of a series said "new", and added a
+     second copy of it standing on its own. Most of the shelf lives inside
+     collections, which makes the inside the place it most needed to look. */
+  const onShelf=code=>{
+    for(const b of books){
+      if(isbn13Of(b.isbn)===code)return b;
+      for(const en of b.entries||[])if(isbn13Of(en.isbn)===code)return b;
+    }
+    return null;
+  };
 
   function addCodes(text){
     let added=0,bad=0;
@@ -14843,7 +14916,7 @@ function openIsbnAdd(){
   async function lookUp(){
     if(busy)return;busy=true;
     try{
-    S.stage="running";S.done=0;S.rows=[];S.total=S.codes.length;stop=false;draw();
+    S.stage="running";S.done=0;S.rows=[];S.total=S.codes.length;stop=false;S.stopped=false;draw();
     for(const c of S.codes){
       if(stop){S.stopped=true;break;}
       S.now=c.code;S.done++;drawProgress();
@@ -14869,7 +14942,9 @@ function openIsbnAdd(){
   async function addAll(){
     if(busy)return;busy=true;
     try{
-    S.stage="writing";S.done=0;S.added=0;stop=false;
+    /* stopping the LOOKING has to stop meaning stopped once the writing starts,
+       or a run written out to the end still calls itself stopped early */
+    S.stage="writing";S.done=0;S.added=0;stop=false;S.stopped=false;
     S.total=S.rows.filter(r=>r.on&&r.info).length;draw();
     const items=[];let covers=0;
     for(const r of S.rows){
