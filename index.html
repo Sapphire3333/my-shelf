@@ -8408,7 +8408,7 @@ async function refreshStorage(){
   if(hb)hb.onclick=async()=>{
     const out=q("#stoHunt");
     hb.disabled=true;hb.textContent="Asking…";
-    if(out){out.hidden=false;out.textContent="Adding up the offline caches — this reads every file in them, so give it a moment…";}
+    if(out){out.hidden=false;out.textContent="Counting the databases and adding up the offline caches — give it a moment…";}
     const h=await storageHunt();
     const ours=(sizeReport&&sizeReport.total)||0;
     const rows=[];
@@ -8417,12 +8417,21 @@ async function refreshStorage(){
       rows.push("<b>The browser's own account</b>: "
         +Object.keys(d).map(k=>`${esc(k)} ${fmtBytes(d[k])}`).join(" · "));
     }else rows.push("<b>The browser's own account</b>: this one won't break its total down.");
-    if(ours)rows.push(`<b>What the app can find</b>: ${fmtBytes(ours)} across its own stores — the difference is room the browser is counting but the app doesn't own.`);
-    rows.push(`<b>Databases here</b>: ${h.dbs.length?h.dbs.map(esc).join(", "):"none it will name"}`
-      +(h.dbs.filter(n=>n!=="myShelf").length?" — anything other than myShelf is a stray and can go.":""));
+    if(ours)rows.push(`<b>What this app can find</b>: ${fmtBytes(ours)} across its own stores.`);
+    /* Every page published under one github.io name shares ONE store, so the
+       browser's figure is the whole address's, not this app's. The first version
+       of this line called the other databases strays that "can go", which was
+       wrong and worse than useless: they are other apps' living data, and the
+       cookbook's records are no more disposable than the shelf's. */
+    const mine=h.dbs.filter(d=>d.name==="myShelf");
+    const others=h.dbs.filter(d=>d.name!=="myShelf");
+    const one=d=>`${esc(d.name)} — ${fmtBytes(d.bytes)}${d.records?` in ${d.records} record${d.records===1?"":"s"}`:""}${d.sampled?"*":""}${d.note?` (${esc(d.note)})`:""}`;
+    rows.push(`<b>This app's database</b>: ${mine.length?mine.map(one).join(" · "):"not found"}`);
+    if(others.length)rows.push(`<b>Other things at this address</b>: ${others.map(one).join(" · ")}`
+      +`<br><span style="opacity:.85">Everything you have published under the same <b>github.io</b> name shares one pot of room, so the total at the top is the whole address's, not this shelf's. These belong to your other pages — <b>do not delete them</b>; that is their data, not spare room.</span>`);
     rows.push(`<b>Offline caches</b>: ${h.caches.length?h.caches.map(c=>`${esc(c.name)} (${c.files} files, ${fmtBytes(c.bytes)})`).join(" · "):"none"}`
       +(h.caches.length>1?" — more than one means an old build's cache was never cleared.":""));
-    rows.push(`<span style="opacity:.8">A record you delete does not hand its room straight back. A backup written and thrown away each day leaves its weight in the browser's count until it tidies up, which is the usual reason this number is far bigger than the one above it.</span>`);
+    rows.push(`<span style="opacity:.8">* an estimate: every record is counted, a couple of dozen are read to see what one weighs. And a record you delete does not hand its room straight back — a backup written and thrown away each day leaves its weight in the browser's count until it tidies up, which is the other reason that number runs ahead of these.</span>`);
     huntReport=rows.join("<br>");
     if(q("#stoHunt")){q("#stoHunt").innerHTML=huntReport;q("#stoHunt").hidden=false;}
     hb.disabled=false;hb.textContent="🕵 Where the browser thinks it went";
@@ -14057,10 +14066,76 @@ async function storageInfo(){
    A deleted record does not hand its room straight back, which is the usual
    answer — a fourteen-megabyte backup written and thrown away every day leaves
    its weight behind in the count until the browser tidies up after itself. */
+/* roughly what one stored record weighs. Blobs report their own size; anything
+   else is measured as the text it would serialise to, which is what this app
+   stores anyway (its pictures are text). An estimate, and labelled as one. */
+function weighRecord(v){
+  try{
+    if(v==null)return 0;
+    if(typeof v==="string")return v.length;
+    if(typeof Blob!=="undefined"&&v instanceof Blob)return v.size;
+    if(v instanceof ArrayBuffer)return v.byteLength;
+    let extra=0;
+    if(typeof v==="object")for(const k in v){
+      const x=v[k];
+      if(typeof Blob!=="undefined"&&x instanceof Blob)extra+=x.size;
+      else if(x instanceof ArrayBuffer)extra+=x.byteLength;
+    }
+    return JSON.stringify(v).length+extra;
+  }catch(e){return 0;}
+}
+/* What one database weighs, without reading the whole of it. A store of several
+   hundred megabytes would otherwise be pulled into memory to answer a question
+   about its size, which is a poor trade. Every record is counted — count() is
+   cheap and exact — and a couple of dozen are read to find what one weighs. */
+function dbWeigh(name){
+  return new Promise(res=>{
+    const out={name,records:0,bytes:0,sampled:false,note:""};
+    let req;
+    try{req=indexedDB.open(name);}catch(e){out.note="couldn't be opened";return res(out);}
+    req.onerror=()=>{out.note="couldn't be opened";res(out);};
+    req.onblocked=()=>{out.note="in use elsewhere";res(out);};
+    req.onsuccess=async()=>{
+      const d=req.result;
+      try{
+        for(const s of [...d.objectStoreNames]){
+          const n=await new Promise(r=>{
+            try{const c=d.transaction(s,"readonly").objectStore(s).count();
+              c.onsuccess=()=>r(c.result||0);c.onerror=()=>r(0);}catch(e){r(0);}
+          });
+          out.records+=n;
+          if(!n)continue;
+          const SAMPLE=25;
+          let seen=0,bytes=0;
+          await new Promise(r=>{
+            try{
+              const cur=d.transaction(s,"readonly").objectStore(s).openCursor();
+              cur.onsuccess=e=>{
+                const c=e.target.result;
+                if(!c||seen>=SAMPLE){r();return;}
+                bytes+=weighRecord(c.value);seen++;c.continue();
+              };
+              cur.onerror=()=>r();
+            }catch(e){r();}
+          });
+          if(seen<n)out.sampled=true;
+          out.bytes+=seen?Math.round(bytes/seen*n):0;
+        }
+      }catch(e){out.note=e.message||"partly unreadable";}
+      try{d.close();}catch(e){}
+      res(out);
+    };
+  });
+}
 async function storageHunt(){
   const out={details:null,dbs:[],caches:[],cacheBytes:0};
   try{const e=await navigator.storage.estimate();out.details=e.usageDetails||null;}catch(e){}
-  try{if(indexedDB.databases)out.dbs=(await indexedDB.databases()).map(d=>d.name).filter(Boolean);}catch(e){}
+  try{
+    if(indexedDB.databases){
+      const names=(await indexedDB.databases()).map(d=>d.name).filter(Boolean);
+      for(const n of names)out.dbs.push(await dbWeigh(n));
+    }
+  }catch(e){}
   try{
     const names=await caches.keys();
     for(const n of names){
