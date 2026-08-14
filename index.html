@@ -2886,6 +2886,10 @@ let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="no
 let libFind="";                               /* the library's type-to-narrow box; forgotten on reload */
 let kindFilter=["book","fanfic","ai"];        /* which kinds show in the Library */
 let libSelMode=false,libSel=new Set();        /* ticking books to group them */
+/* ...and whether ticking is what a row click means RIGHT NOW. The mode belongs
+   to the Library, so it is only true while you are standing in it — the rows on
+   the other screens are drawn by the same code and must go on opening books. */
+const libTicking=()=>libSelMode&&view==="library";
 let libFandomMode=false;                      /* the shelf shown as fandom cards */
 let gavPick=null;                             /* showing one group on its own; forgotten on reload */
 let gapsOpen=false;                           /* the "show me which" list under Insights' gaps line */
@@ -4480,7 +4484,7 @@ async function applyOp(op,inv){
       }
     }
     if(view==="book"&&cur&&cur.id===id){
-      if(!body){view="library";render();}else{openBook(id,false,true);}
+      if(!body){view="library";cur=null;render();}else{openBook(id,false,true);}
       refreshHistBtns();return;
     }
   }
@@ -4534,7 +4538,16 @@ async function applyOp(op,inv){
       }else{saveKwColors();saveKwCats();}
     }
     if(SYNC.on)flushQueue();
-    if(view==="book"&&cur&&(op.items||[]).some(it=>it.id===cur.id)){openBook(cur.id,false,true);refreshHistBtns();return;}
+    if(view==="book"&&cur&&(op.items||[]).some(it=>it.id===cur.id)){
+      /* The same care the single-book branch above takes, which this never had.
+         Undoing books added by their number DELETES the book you are standing
+         on, and openBook quite rightly refuses to open one that is gone — so the
+         page just sat there still showing it, as though the undo had not
+         happened, quietly refusing everything typed into it. */
+      if(!books.some(b=>b.id===cur.id)){view="library";cur=null;render();}
+      else openBook(cur.id,false,true);
+      refreshHistBtns();return;
+    }
   }
   if(op.t==="meta"){
     const v=inv?op.before:op.after;
@@ -4750,9 +4763,14 @@ function hashSpot(){
 }
 function syncHistory(){
   if(navRestoring)return;
-  const st={v:view,b:view==="book"&&cur?cur.id:null,m:view==="book"?bookMode:null};
+  /* the story too, not only the collection it lives in. A story's own row links
+     to the story, but the address bar was rewritten the moment the page opened
+     and dropped it — so reloading, or opening the bookmark you had just made,
+     put you back at the top of a collection of twenty and left you to find it */
+  const en=(view==="book"&&cur&&lastOpenedId===cur.id)?(lastOpenedEn||""):"";
+  const st={v:view,b:view==="book"&&cur?cur.id:null,m:view==="book"?bookMode:null,e:en};
   const h=history.state;
-  if(h&&h.v===st.v&&h.b===st.b&&h.m===st.m)return;
+  if(h&&h.v===st.v&&h.b===st.b&&h.m===st.m&&(h.e||"")===st.e)return;
   /* Reading a book and writing in it are two faces of the same page, not two
      places you travelled to. Swapping between them used to add a step, so back
      put you into the other face first and only left the book on a second press.
@@ -4760,7 +4778,7 @@ function syncHistory(){
   const sameSpot=h&&h.v===st.v&&h.b===st.b;
   /* the address goes with the step, so a reload, a bookmark or a tab opened
      from a link all land back on the same book */
-  const url=(st.v==="book"&&st.b)?bookHash(st.b):(location.pathname+location.search);
+  const url=(st.v==="book"&&st.b)?bookHash(st.b,st.e):(location.pathname+location.search);
   try{(h&&!sameSpot)?history.pushState(st,"",url):history.replaceState(st,"",url);}catch(e){}
 }
 window.addEventListener("popstate",async e=>{
@@ -4775,7 +4793,7 @@ window.addEventListener("popstate",async e=>{
        the browser's arrow dropped you at the top, which is the same journey
        ending two different ways depending on which control you reached for. */
     if(st&&st.v==="book"&&st.b&&books.some(x=>x.id===st.b)){
-      if(!cur||cur.id!==st.b)await openBook(st.b,false);
+      if(!cur||cur.id!==st.b)await openBook(st.b,false,false,st.e||"");
       view="book";bookMode=st.m||"view";renderBook();restoreScroll("book");
     }else{
       /* the browser's own arrow leaving a book is the same journey as the
@@ -4893,6 +4911,12 @@ function render(){
 /* which screen goes under the tabs. Written out twice before, once here and
    once in renderMain, so adding a tab meant remembering both. */
 function renderView(){
+  /* What a row does when you click it depends on this, and it belongs to the
+     LIBRARY. It was only ever switched on and never off, so it stayed set while
+     you were on any other screen — where the very same rows are drawn, and a
+     click on one of them ticked the book into the library's selection instead of
+     opening it, with nothing to say so but a teal outline. */
+  document.documentElement.setAttribute("data-selmode",libTicking()?"1":"0");
   if(view==="library")renderLibrary();
   else if(view==="overview")renderHub();
   else if(view==="history")renderHistory();
@@ -5194,13 +5218,21 @@ async function hydrateCovers(root){
   /* exactly one of these per row, recorded where the row finally lands */
   const paint=(el,src)=>{
     const shown=el.querySelector("img");
-    if(!shown||shown.getAttribute("src")!==src){
-      /* the drawn stand-in must not survive a real cover arriving — but if this
-         cover is already on screen, leave the DOM alone: replacing it re-decodes
-         the picture and makes the shelf blink for no reason */
-      const keep=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
-      el.innerHTML=`<img src="${src}" alt="">`+keep;
-    }
+    /* if this cover is already on screen, leave the DOM alone: replacing it
+       re-decodes the picture and makes the shelf blink for no reason */
+    if(shown&&shown.getAttribute("src")===src)return;
+    /* The picture belongs exactly where the drawn stand-in it replaces was —
+       which, since a cover became a real link to its book, is INSIDE the link.
+       It was being put beside the link instead, so the stand-in went on sitting
+       in the link on top of it; the stand-in covers the whole box, so it won.
+       Every book whose picture arrives after the page is drawn — that is, every
+       book on the shelf after every reload — showed the drawn one instead of
+       its own cover, and the cover was no longer part of the link either. */
+    const box=el.querySelector("a.tgo");
+    if(box){box.innerHTML=`<img src="${src}" alt="">`;return;}
+    /* a cover that is not a link: the badges around it still have to survive */
+    const keep=[...el.children].filter(c=>c.tagName!=="IMG"&&!c.classList.contains("gencov")).map(c=>c.outerHTML).join("");
+    el.innerHTML=`<img src="${src}" alt="">`+keep;
   };
   const one=async el=>{
     /* a story that has stepped out of its collection keeps its own picture,
@@ -5271,7 +5303,14 @@ function wireOpen(root,withDel){
     const op=e.target.closest&&e.target.closest("[data-open]");
     /* the story id travels here too — Enter on a story's row lands on the
        story, the same place a click has always landed */
-    if(op&&e.target===op){e.preventDefault();openBook(op.dataset.open,false,false,op.dataset.openen||"");}
+    if(op&&e.target===op){
+      e.preventDefault();
+      /* the keyboard does what the mouse does. While books are being ticked the
+         whole row IS the tick for a click, and Enter opened the book instead —
+         the same row answering to two different rules. */
+      if(libTicking()&&!op.dataset.openen){toggleLibPick(op.dataset.open);return;}
+      openBook(op.dataset.open,false,false,op.dataset.openen||"");
+    }
   };
   root.onclick=e=>{
     /* the little ↗ opens the book's own link instead of the book's page */
@@ -5300,7 +5339,7 @@ function wireOpen(root,withDel){
        that could go wrong in that mode, and the cost of missing was losing your
        place entirely. A story's row still can't be ticked — the tick belongs to
        the collection it lives in — so those open as they always did. */
-    if(op&&libSelMode&&!op.dataset.openen){toggleLibPick(op.dataset.open);return;}
+    if(op&&libTicking()&&!op.dataset.openen){toggleLibPick(op.dataset.open);return;}
     /* A story's row opens its collection, because that is where the story lives —
        but it used to drop you at the top of it, so finding the story you had just
        tapped meant scrolling a list of twenty. It takes you to the story now. */
@@ -5598,7 +5637,11 @@ function sortCmp(a,b){
 /* All three switches are remembered per grouping, not once for the whole
    library: the big pictures are worth having under Genre, where you set them
    yourself, and usually not under Author, where there are none to show. */
-const gartShutFor=()=>{const v=settings.gartShutBy;
+const gartShutFor=()=>{
+  /* a borrowed look at one group's picture shows the big pictures whatever the
+     setting says — by answering differently here, not by changing the setting */
+  if(gartPeek&&gartPeek.by===groupBy&&gartPeek.open!==false)return false;
+  const v=settings.gartShutBy;
   return v&&typeof v==="object"?!!v[groupBy]:false;};
 const gavActFor=()=>{const v=settings.gavActBy;
   return (v&&typeof v==="object"?v[groupBy]:settings.gavAct)==="filter";};
@@ -5719,7 +5762,11 @@ async function openBulkFill(ids){
   sheet.innerHTML=`<div class="bs-in"></div>`;
   document.body.appendChild(sheet);
   const inner=q(".bs-in",sheet);
-  const shut=()=>{stop=true;sheet.remove();renderLibrary();};
+  /* the whole page, not just the shelf under the tabs: the browser's own Back
+     can move you off the Library while this sheet is still over it, and drawing
+     the shelf into whatever screen you had landed on left the tabs pointing one
+     way and the page showing another */
+  const shut=()=>{stop=true;sheet.remove();render();};
 
   const FIELDS=[["cover","Cover"],["author","Author"],["pages","Pages"],["blurb","Blurb"],["isbn","ISBN"]];
   const plural=(n,w)=>`${n} ${w}${n===1?"":"s"}`;
@@ -6391,7 +6438,7 @@ function renderLibrary(){
   else{
     const gsAll=groupsFor(list);
     shownGroupKeys=gsAll.map(g=>groupBy+"|"+g.label);
-    const collapsed=new Set(settings.collapsed||[]);
+    const collapsed=collapsedNow();
     const allShut=gsAll.length&&gsAll.every(g=>collapsed.has(groupBy+"|"+g.label));
     /* Tapping one of these does one of two things, and which is your choice: it
        either skips you down to that group or shows that group on its own. The
@@ -6510,7 +6557,12 @@ function renderLibrary(){
   const saveShut=s=>{settings.collapsed=[...s];saveSettings();};
   qa("[data-gh]",m).forEach(h=>h.onclick=e=>{
     if(e.target.closest("[data-gart]"))return;
-    const s=shutSet(),k=h.dataset.gh;
+    const k=h.dataset.gh;
+    /* the group a borrowed look is holding open is not unfolded in your settings
+       at all — it only looks it, so closing it means giving the look back rather
+       than writing anything down */
+    if(gartPeek&&gartPeek.key===k&&gartPeek.open!==false){gartPeek.open=false;renderLibrary();return;}
+    const s=shutSet();
     s.has(k)?s.delete(k):s.add(k);
     saveShut(s);renderLibrary();
   });
@@ -6604,7 +6656,7 @@ function renderLibrary(){
   const aa=q("#artAdd",m);
   if(aa)aa.onclick=()=>q("#libArtFile").click();
   /* the CSS needs to know, because what a row does depends on it */
-  document.documentElement.setAttribute("data-selmode",libSelMode?"1":"0");
+  document.documentElement.setAttribute("data-selmode",libTicking()?"1":"0");
   if(libSelMode){
     qa("[data-open]",m).forEach(el=>{
       /* a story's row carries its collection's id — a tick there would stamp
@@ -6925,7 +6977,7 @@ function renderLibArt(m){
   m.classList.toggle("artmode",libArtMode);
   let layer=q("#libArtLayer",m);
   if(!layer){layer=document.createElement("div");layer.id="libArtLayer";m.appendChild(layer);}
-  const shut=new Set(settings.collapsed||[]);
+  const shut=collapsedNow();
   /* one tied to a heading folds away with it; a loose one always stays */
   const shown=libArt.filter(a=>!a.group||!shut.has(a.group));
   /* clamped into view at draw time, exactly like the scraps on a book's page:
@@ -8226,20 +8278,30 @@ let sizeReturn=null;
 /* ---- going to look at a group's picture, and leaving things as you found them ----
    Three separate things can be hiding it: the shelf grouped some other way, the
    heading folded shut, and the "hide the big pictures" switch for that grouping.
-   A peek undoes all three, and puts all three back when you leave. None of it is
-   ever saved, so this cannot leave your shelf rearranged — and a reload in the
-   middle of a peek finds everything as it was. */
+   A peek sees past all three for as long as it lasts. Only the grouping is
+   actually changed and put back; the other two are answered around rather than
+   altered, so nothing of yours is written down and no save made while you are
+   looking can turn the borrowed view into your real one. A reload in the middle
+   of a peek finds everything as it was. */
 let gartPeek=null;
+/* The groups folded away, as the screen should show them: what you have folded,
+   less the one group a look is holding open. */
+function collapsedNow(){
+  const s=new Set(settings.collapsed||[]);
+  if(gartPeek&&gartPeek.open!==false)s.delete(gartPeek.key);
+  return s;
+}
 function peekGroupArt(key){
   if(!key||!groupArt[key])return false;
   const by=key.slice(0,key.indexOf("|"));
-  const shutBy=(settings.gartShutBy&&typeof settings.gartShutBy==="object")?settings.gartShutBy:null;
-  gartPeek={key,by,prevGroupBy:groupBy,
-    wasCollapsed:(settings.collapsed||[]).includes(key),
-    wasArtShut:!!(shutBy&&shutBy[by])};
+  /* The look used to be arranged by writing into the settings and putting them
+     back on the way out. Nothing saved them either way — but anything else that
+     saved the settings WHILE you were looking did, and folding another heading
+     does exactly that. The borrowed state then became your real one: a group you
+     had folded stayed open for good, and the big pictures you had hidden stayed
+     showing. Nothing is written now; the two readers ask about the look instead. */
+  gartPeek={key,by,prevGroupBy:groupBy,open:true};
   groupBy=by;
-  settings.collapsed=(settings.collapsed||[]).filter(k=>k!==key);
-  if(shutBy&&shutBy[by])shutBy[by]=false;
   view="library";render();
   /* The heading goes to the TOP, not the middle. The picture hangs underneath
      its heading, so centring the heading put the thing you came to look at
@@ -8253,17 +8315,21 @@ function peekGroupArt(key){
     const y=window.scrollY+el.getBoundingClientRect().top-12;
     window.scrollTo(0,Math.max(0,Math.round(y)));
   };
+  /* You asked to be brought here — by pressing the button that brought you. But
+     pressing anything counts as taking hold of the page, and taking hold is
+     exactly what stops the shelf moving under you, so every one of these was
+     called off by the very click that ordered it and the group's picture never
+     came to the top at all. The press that asks to be moved is not the same as
+     the scroll that asks to be left alone: the slate is wiped here, and taking
+     hold DURING the next second still stops it, which is the part worth keeping. */
+  userTookOver=false;
   [90,300,700,1300].forEach(ms=>setTimeout(()=>{if(gartPeek&&gartPeek.key===key&&!userTookOver)toTop();},ms));
   return true;
 }
 function endGartPeek(){
   if(!gartPeek)return;
-  const {key,by,prevGroupBy,wasCollapsed,wasArtShut}=gartPeek;
+  groupBy=gartPeek.prevGroupBy;
   gartPeek=null;
-  groupBy=prevGroupBy;
-  if(wasCollapsed){const s=new Set(settings.collapsed||[]);s.add(key);settings.collapsed=[...s];}
-  if(wasArtShut){const v=settings.gartShutBy=(settings.gartShutBy&&typeof settings.gartShutBy==="object")?settings.gartShutBy:{};
-    v[by]=true;}
 }
 /* Put that line back at the same height on the screen. Working in the line's
    own position rather than the page's means anything growing above it — the
