@@ -203,6 +203,25 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   /* the way through to the book, right beside its name and nothing more */
   .tlink{text-decoration:none;font-size:1.15em;line-height:1;opacity:.72;display:inline-block}
   .tlink:hover{opacity:1;transform:scale(1.14)}
+  /* look it up elsewhere: the same three the import list offers, now on a book
+     you already have and on every story inside a collection */
+  .lookl{padding:0 3px;font-size:11px;opacity:.62;text-decoration:none;line-height:1;
+    vertical-align:baseline;display:inline-block}
+  .lookl:hover{opacity:1;transform:scale(1.14)}
+  /* against a 27px serif title they need to sit up out of the baseline, and be
+     sized off the title so they shrink with it on a narrow screen */
+  .vtitle .lookl{font-size:.5em;vertical-align:.3em}
+  /* opened out, the chip and its three links are wider than a 253px phone leaves
+     a story's row — measured at 4px of sideways scroll. They wrap instead: the
+     links drop under the chip rather than pushing the box off the screen. */
+  .lookwrap{display:inline-flex;align-items:center;gap:2px;flex-wrap:wrap;min-width:0}
+  .lookchip{border:1px solid var(--line);background:var(--card);color:var(--mut);
+    border-radius:7px;padding:2px 8px;font-size:11.5px;white-space:nowrap}
+  .lookchip:hover,.lookchip.on{border-color:var(--teal);color:var(--teal)}
+  /* opened out of the chip they're targets to hit, not marks beside a title */
+  .lookwrap .lookl{font-size:13px;opacity:.9;padding:1px 5px;border:1px solid var(--line);
+    border-radius:6px;background:var(--card)}
+  .lookwrap .lookl:hover{border-color:var(--teal);transform:none;opacity:1}
   .stpick{position:absolute;left:10px;top:10px;z-index:25;background:var(--card);border:1px solid var(--line);
     border-radius:11px;padding:5px;box-shadow:0 12px 30px rgba(0,0,0,.3);display:flex;flex-direction:column;min-width:180px}
   .stpick button{text-align:left;padding:8px 11px;border-radius:8px;font-size:13px;white-space:nowrap}
@@ -2944,6 +2963,7 @@ let gapsOpen=false;                           /* the "show me which" list under 
 let vEntRate=null;                            /* which story's star picker is open in the reading view */
 let vEntStatus=null;                          /* ...and which story's status list is open */
 let vEntReads=null;                           /* ...and which story's readings are unfolded */
+let vEntLook=null;                            /* ...and which story has its look-it-up links out */
 let onlyRaw=false;                            /* show only imports you haven't worked on */
 /* came from a Goodreads/StoryGraph import and hasn't been opened and edited since */
 const isRaw=b=>!!b.imported&&!b.touched;
@@ -9982,7 +10002,7 @@ function renderBookView(){
     <div class="vhead" id="secDetails">
       <div class="vcover" id="vCover">${curCover?`<img src="${curCover}">`:genCoverHtml(b,true)}</div>
       <div class="vmain">
-        <h1 class="serif vtitle">${esc(b.title)||"Untitled"}</h1>
+        <h1 class="serif vtitle">${esc(b.title)||"Untitled"} ${lookupIcons(b,null)}</h1>
         <div class="vauthor">${(b.author||"").trim()
           ? `<button class="alink" id="vAuthor" title="Everything on your shelf by ${esc(b.author)} — open one, link them as a series, fold them into a collection, or tidy a spelling">${esc(b.author)}</button>`
           : (kindOf(b)==="ai"?"":"Unknown author")}
@@ -10059,6 +10079,7 @@ function renderBookView(){
           :genCoverHtml({title:en.title||"Untitled",genres:b.genres},false)}</div>
         <div class="entmain">
           <div class="hrow2"><b>${esc(en.title)||"Untitled"}</b>
+            ${lookupChip(b,en)}
             ${(()=>{const dnf=entDnfOf(b,en),stk=entStatusOf(b,en);
               const own=!!(en.dnf||String(en.status||"").trim());
               const stl=dnf?"Did not finish":(STATUSES.find(([k])=>k===stk)||["","—"])[1];
@@ -10210,6 +10231,11 @@ function renderBookView(){
   qa("[data-enrd]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
     vEntReads=vEntReads===x.dataset.enrd?null:x.dataset.enrd;
+    renderBookView();
+  });
+  qa("[data-enlook]",page).forEach(x=>x.onclick=e=>{
+    e.stopPropagation();
+    vEntLook=vEntLook===x.dataset.enlook?null:x.dataset.enlook;
     renderBookView();
   });
   /* A reading on this page belongs either to the book or to one of the stories
@@ -14761,22 +14787,57 @@ function bImpRows(b){
    way the author's already worked, and the row grew a second one that leaves
    the app entirely: whether a book belongs to this series is a question the
    import file cannot answer and the web can. */
-const lookupQ=it=>String(it.title||"")+" "+String(it.author||"");
+const lookupQ=it=>(String(it.title||"")+" "+String(it.author||"")).trim();
 const lookupUrl=it=>"https://www.google.com/search?q="+
   encodeURIComponent(lookupQ(it)).replace(/%20/g,"+");
 /* Google answers "what is this", but the two reading sites answer the question
    actually being asked of an import row — which book in a series this is, and
-   whether it is one you would want. Same query, three places to take it. */
+   whether it is one you would want. Same query, three places to take it.
+
+   Goodreads can do better than a search when there's an ISBN to hand: it has a
+   page addressed by the number, so you land on the book instead of a list to
+   pick through. Only a full-length one is trusted for that — a half-copied or
+   made-up number would send you to a dead page, and a search never dies. */
+const grIsbnUrl=it=>{
+  const n=cleanIsbn(it.isbn);
+  return (n.length===10||n.length===13)?"https://www.goodreads.com/book/isbn/"+n:"";
+};
 const LOOKUPS=[
-  ["🌐","Google","Look it up on Google — what it is, whether it belongs to this series",
+  ["🌐","Google",()=>"Look it up on Google — what it is, whether it belongs to this series",
     it=>lookupUrl(it)],
-  ["📚","Goodreads","Find it on Goodreads — the series, the number, the blurb",
-    it=>"https://www.goodreads.com/search?q="+encodeURIComponent(lookupQ(it)).replace(/%20/g,"+")],
-  ["🌱","StoryGraph","Find it on StoryGraph — moods, pace, content warnings",
+  ["📚","Goodreads",it=>grIsbnUrl(it)
+      ?"Open its own page on Goodreads — you have its ISBN, so this isn't a search"
+      :"Find it on Goodreads — the series, the number, the blurb",
+    it=>grIsbnUrl(it)||"https://www.goodreads.com/search?q="+encodeURIComponent(lookupQ(it)).replace(/%20/g,"+")],
+  ["🌱","StoryGraph",()=>"Find it on StoryGraph — moods, pace, content warnings",
     it=>"https://app.thestorygraph.com/browse?search_term="+encodeURIComponent(lookupQ(it))],
 ];
-const lookupLinks=it=>LOOKUPS.map(([icon,name,tip,url])=>
-  `<a class="bimpa" href="${esc(url(it))}" target="_blank" rel="noopener" title="${esc(tip)}">${icon}</a>`).join("");
+const lookupLinks=(it,cls)=>LOOKUPS.map(([icon,name,tip,url])=>
+  `<a class="${cls||"bimpa"}" href="${esc(url(it))}" target="_blank" rel="noopener" title="${esc(tip(it))}">${icon}</a>`).join("");
+/* The same three, asked of a book already on the shelf and of every story inside
+   a collection. A story with no author of its own was written by whoever wrote
+   the collection — entAuthorOf is what decides that everywhere else, so it
+   decides it here too. Fanfic and AI stories get nothing: neither site has ever
+   heard of them, a fic already carries its own link to where it lives, and bulk
+   fill skips them by the same test. A book with neither title nor author has
+   nothing to search for, so it gets nothing either. */
+const lookupOf=(b,en)=>en
+  ?{title:en.title||"",author:entAuthorOf(b,en),isbn:en.isbn||""}
+  :{title:b.title||"",author:b.author||"",isbn:b.isbn||""};
+const canLookUp=(b,en)=>kindOf(b)==="book"&&!!lookupQ(lookupOf(b,en));
+const lookupIcons=(b,en)=>canLookUp(b,en)?lookupLinks(lookupOf(b,en),"lookl"):"";
+/* The book's own header has room for three icons on the title line. A story's
+   row has not — it is already carrying a stage, a heart, a rating, a length and
+   sometimes a readings button, and a twenty-four-story series would have put
+   seventy-two icons in one box. So the rows get one chip that opens them, and
+   only one is open at a time, the way that row's other pickers already work. */
+const lookupChip=(b,en)=>{
+  if(!canLookUp(b,en))return "";
+  const open=vEntLook===en.id;
+  return `<span class="lookwrap"><button class="lookchip${open?" on":""}" data-enlook="${esc(en.id)}"
+      title="${open?"Put them away":"Look this story up on Google, Goodreads and StoryGraph"}"
+      >🔎${open?" ▴":" Look it up ▾"}</button>${open?lookupLinks(lookupOf(b,en),"lookl"):""}</span>`;
+};
 const bImpRow=(it,coll)=>`<div class="snap bimprow" style="padding:6px 10px">
   <input type="checkbox" class="bimpc" data-bimpc="${esc(it.id)}" ${bImpSel.has(it.id)?"checked":""}
     aria-label="Pick ${esc(it.title)||"this book"}">
