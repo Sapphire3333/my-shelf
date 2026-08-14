@@ -882,6 +882,18 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .tagmv{border:none;background:transparent;color:inherit;font:inherit;cursor:pointer;
     padding:0 0 0 5px;opacity:.6;line-height:1}
   .tagmv:hover{opacity:1}
+  /* a genre or a tag on the reading page: the whole chip is the way to what it
+     can do, so it has to look and behave like something you can press */
+  .chipmenu{font:inherit;cursor:pointer;border:1px solid transparent;text-align:left}
+  .kw.chipmenu{border-color:var(--line)}
+  .chipmenu:hover{filter:brightness(1.06);box-shadow:0 1px 4px rgba(0,0,0,.16)}
+  .kw.chipmenu:hover{border-color:var(--teal);color:var(--teal)}
+  .cmenu{display:flex;flex-direction:column;gap:3px}
+  .cmrow{font:inherit;font-size:13px;text-align:left;padding:8px 10px;border:1px solid var(--line);
+    border-radius:9px;background:var(--card);color:var(--ink);cursor:pointer;line-height:1.4}
+  .cmrow:hover{border-color:var(--teal);color:var(--teal)}
+  .cmsep{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--faint);margin:9px 0 2px}
   .stagrow{display:flex;gap:7px;align-items:baseline;flex-wrap:wrap;margin:0 0 5px}
   .stagwho{font-size:12px;color:var(--mut);min-width:0;overflow-wrap:anywhere}
   #bulkSheet,#isbnSheet{position:fixed;inset:0;z-index:400;background:rgba(28,25,23,.45);display:flex;
@@ -9395,6 +9407,213 @@ let vStatusOpen=false,vRateOpen=false,viewArrange=false,vReadsOpen=false;
    there is one way a picture arrives, wherever you are standing. */
 /* the two things worth changing without opening the form. Saved and undoable
    exactly like an edit made inside it. */
+/* ---- a word, and everything it can become ----
+   A genre is a filing decision — where the thing sits — and a tag describes it.
+   Which of the two a word is turns out to be a judgement you change your mind
+   about: "Locks and Keys" was filed as a genre and is really a description.
+   Moving one across was the thing there was no way to do at all.
+   It is the whole chip that opens this, not another little arrow. The chips
+   already carried ↓ and ↑ meaning "down to some stories" and "up to the
+   collection"; a second pair meaning "to tags" and "to genres" would have put
+   four meanings on two symbols an inch apart. The two old arrows have moved in
+   here with the rest, so there is one place to ask what a word can do. */
+/* The genre list written down WITHOUT an undo step of its own. saveMeta pushes
+   one, and a move that pushed two — the vocabulary and then the books — took two
+   presses of Undo to reverse, the first of which appeared to do nothing at all.
+   The step for a move is the bulk one, which carries the vocabulary with it in
+   its `label`. */
+function saveGenresQuiet(){
+  metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
+  dbPut("meta",{k:"genres",v:genres});enqueue({kind:"meta",key:"genres"});touchMeta("genres");
+}
+const ensureGenre=nm=>{
+  if(!genres[nm]){genres[nm]=genreColor(nm);unmarkMetaDel("genre:"+nm);saveGenresQuiet();}
+};
+/* Across the whole shelf, rather than this one book. A word that was never
+   really a genre is usually not really a genre anywhere. */
+async function moveWordEverywhere(name,toGenre){
+  const gn=titleCase(String(name).trim());
+  const low=name.toLowerCase();
+  const items=[],was=new Map(),touched=new Map();
+  const take=bk=>{if(!was.has(bk.id))was.set(bk.id,JSON.parse(JSON.stringify(bk)));touched.set(bk.id,bk);};
+  let storiesLeft=0;
+  for(const bk of books){
+    if(toGenre){
+      if((bk.keywords||[]).some(w=>w.toLowerCase()===low)){
+        take(bk);
+        bk.keywords=bk.keywords.filter(w=>w.toLowerCase()!==low);
+        bk.kwBreaks=(bk.kwBreaks||[]).filter(w=>w.toLowerCase()!==low);
+        bk.genres=bk.genres||[];
+        if(!bk.genres.includes(gn))bk.genres.push(gn);
+      }
+      /* a story's own tag stays where it is: a story cannot hold a genre without
+         dropping its collection's, which is the same rule the tidy-up keeps */
+      if(isColl(bk))for(const en of (bk.entries||[]))
+        if((en.keywords||[]).some(w=>w.toLowerCase()===low))storiesLeft++;
+    }else{
+      if((bk.genres||[]).includes(name)){
+        take(bk);
+        bk.genres=bk.genres.filter(g=>g!==name);
+        bk.genreBreaks=(bk.genreBreaks||[]).filter(g=>g!==name);
+        bk.keywords=bk.keywords||[];
+        if(!bk.keywords.some(w=>w.toLowerCase()===low))bk.keywords.push(name);
+      }
+      /* a story that had it as a genre of its own keeps it, as a tag of its own */
+      if(isColl(bk))for(const en of (bk.entries||[])){
+        if(!(en.genres||[]).includes(name))continue;
+        take(bk);
+        en.genres=en.genres.filter(g=>g!==name);
+        en.keywords=en.keywords||[];
+        if(!en.keywords.some(w=>w.toLowerCase()===low))en.keywords.push(name);
+      }
+    }
+  }
+  for(const bk of touched.values()){
+    bk.touched=true;
+    bk.modified=Math.max(Date.now(),(bk.modified||0)+1,seenFloor(bk.id)+1);
+    try{await dbPut("books",bk);}
+    catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
+    if(SYNC.on)enqueue({kind:"book",id:bk.id});
+    items.push({id:bk.id,before:was.get(bk.id),after:JSON.parse(JSON.stringify(bk))});
+  }
+  /* the vocabulary travels with the books as ONE step: undoing a move has to put
+     the genre back in your list as well as back on the books */
+  let label=null;
+  if(toGenre){
+    ensureGenre(gn);
+    /* the word's colour and its family go with it — unless a story still holds
+       it, in which case it is still a word and still needs them */
+    if(!storiesLeft){
+      label={kind:"kw",name,color:kwColors[name]||"",cat:kwCats[name]||""};
+      delete kwColors[name];delete kwCats[name];markMetaDel("kw:"+name);saveKwColors();saveKwCats();
+    }
+  }else{
+    label={kind:"genre",name,color:genres[name]||genreColor(name)};
+    delete genres[name];markMetaDel("genre:"+name);saveGenresQuiet();
+  }
+  if(items.length)pushOp(label?{t:"bulk",items,label}:{t:"bulk",items});
+  if(SYNC.on)flushQueue();
+  /* the open page is drawn from its own copy, which the loop above went around */
+  const me=books.find(x=>x.id===cur.id);
+  if(me)cur=JSON.parse(JSON.stringify(me));
+  return {n:items.length,storiesLeft};
+}
+function chipMoveMenu(b,kind,name){
+  if(panelOpen("chipMenu"))return;
+  const ens=(b.entries)||[];
+  const isC=isColl(b)&&ens.length>1;
+  const row=kind==="s"?storyTagRows(b).find(r=>r.name===name):null;
+  if(kind==="s"&&!row)return;
+  const gn=titleCase(String(name).trim());
+  const acts=[];
+  if(kind==="g"){
+    acts.push(["Make it a tag on this book","gt"]);
+    acts.push(["Take it off this book","off"]);
+    acts.push(["Everywhere on the shelf","sep"]);
+    acts.push([`Make it a tag on every book — it stops being one of your genres`,"gt-all"]);
+  }else if(kind==="t"){
+    acts.push([`Make it a genre on this book${isC?" — every story inside gets it":""}`,"tg"]);
+    if(isC)acts.push(["Keep it on only some of the stories","down"]);
+    acts.push(["Take it off this book","off"]);
+    acts.push(["Everywhere on the shelf","sep"]);
+    acts.push(["Make it a genre on every book that has it","tg-all"]);
+  }else{
+    acts.push([`Make it a genre — it goes on the whole collection`,"sg"]);
+    acts.push(["Put it on the whole collection as a tag","up"]);
+    acts.push([`Take it off ${row.on.length===1?"that story":"all "+row.on.length}`,"soff"]);
+  }
+  const wrap=document.createElement("div");
+  wrap.id="chipMenu";wrap.className="ratepanel";
+  wrap.innerHTML=`<div class="hrow2" style="margin-bottom:4px">
+      <b style="font-size:13px;overflow-wrap:anywhere">“${esc(name)}”</b>
+      <button class="btn" id="cmX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+    <div class="hint" style="margin:0 0 9px">${kind==="g"
+      ?"A genre on this book. Genres are where a book is filed; tags describe it."
+      :kind==="t"?`A tag on this ${isC?"collection, carried by every story inside":"book"}.`
+      :`A tag on ${row.on.length===1?"one story":row.on.length+" stories"} — ${esc(row.on.map(en=>en.title||"Untitled").join(", "))}.`}</div>
+    <div class="cmenu">${acts.map(([label,a])=>a==="sep"
+      ?`<div class="cmsep">${esc(label)}</div>`
+      :`<button class="cmrow" data-cm="${a}">${esc(label)}</button>`).join("")}</div>`;
+  document.body.appendChild(wrap);
+  const close=dismissable(wrap);
+  q("#cmX",wrap).onclick=()=>close();
+  qa("[data-cm]",wrap).forEach(x=>x.onclick=async()=>{
+    const a=x.dataset.cm;
+    close();
+    const low=name.toLowerCase();
+    if(a==="gt"){
+      await quickEdit(bk=>{
+        bk.genres=(bk.genres||[]).filter(g=>g!==name);
+        bk.genreBreaks=(bk.genreBreaks||[]).filter(g=>g!==name);
+        bk.keywords=bk.keywords||[];
+        if(!bk.keywords.some(w=>w.toLowerCase()===low))bk.keywords.push(name);
+      });
+    }else if(a==="tg"){
+      ensureGenre(gn);
+      await quickEdit(bk=>{
+        bk.keywords=(bk.keywords||[]).filter(w=>w.toLowerCase()!==low);
+        bk.kwBreaks=(bk.kwBreaks||[]).filter(w=>w.toLowerCase()!==low);
+        bk.genres=bk.genres||[];
+        if(!bk.genres.includes(gn))bk.genres.push(gn);
+      });
+    }else if(a==="off"){
+      await quickEdit(bk=>{
+        if(kind==="g"){bk.genres=(bk.genres||[]).filter(g=>g!==name);bk.genreBreaks=(bk.genreBreaks||[]).filter(g=>g!==name);}
+        else{bk.keywords=(bk.keywords||[]).filter(w=>w.toLowerCase()!==low);bk.kwBreaks=(bk.kwBreaks||[]).filter(w=>w.toLowerCase()!==low);}
+      });
+    }else if(a==="down"){
+      openTagDownPanel(b,name);return;
+    }else if(a==="sg"){
+      /* The one that cannot be quiet. A story has no way to hold a genre of its
+         own without giving up its collection's, so this word can only become a
+         genre by going on the whole collection — every story in it, not the one
+         or two it is actually about. Said plainly, and asked. */
+      if(!confirm(`Make “${name}” a genre?\n\n`
+        +`It is a tag on ${row.on.length===1?"one story":row.on.length+" of "+ens.length+" stories"}`
+        +` — ${row.on.map(en=>en.title||"Untitled").join(", ")}.\n\n`
+        +`A story can't be filed under its own genre without giving up the collection's, so this puts “${gn}” on `
+        +`“${b.title||"the collection"}” and all ${ens.length} of its stories, and takes the tag off.\n\n`
+        +`Undo puts it back.`))return;
+      ensureGenre(gn);
+      await quickEdit(bk=>{
+        bk.genres=bk.genres||[];
+        if(!bk.genres.includes(gn))bk.genres.push(gn);
+        (bk.entries||[]).forEach(en=>{
+          if((en.keywords||[]).length)en.keywords=en.keywords.filter(w=>w.toLowerCase()!==low);
+        });
+      });
+    }else if(a==="up"){
+      if(row.on.length<ens.length&&!confirm(`Put “${name}” on the whole collection?\n\nIt is on ${row.on.length} of ${ens.length} — moving it up gives it to all of them.`))return;
+      await quickEdit(bk=>{
+        bk.keywords=bk.keywords||[];
+        if(!bk.keywords.some(w=>w.toLowerCase()===low))bk.keywords.push(name);
+        (bk.entries||[]).forEach(en=>{
+          if((en.keywords||[]).length)en.keywords=en.keywords.filter(w=>w.toLowerCase()!==low);
+        });
+      });
+    }else if(a==="soff"){
+      if(!confirm(`Take “${name}” off ${row.on.length===1?"“"+(row.on[0].title||"Untitled")+"”":"all "+row.on.length+" stories"}?`))return;
+      await quickEdit(bk=>{
+        (bk.entries||[]).forEach(en=>{
+          if((en.keywords||[]).length)en.keywords=en.keywords.filter(w=>w.toLowerCase()!==low);
+        });
+      });
+    }else if(a==="gt-all"||a==="tg-all"){
+      const toGenre=a==="tg-all";
+      const n=books.filter(bk=>toGenre
+        ?(bk.keywords||[]).some(w=>w.toLowerCase()===low)
+        :(bk.genres||[]).includes(name)).length;
+      if(!confirm(toGenre
+        ?`Make “${name}” a genre everywhere?\n\n${n} book${n===1?"":"s"} carr${n===1?"ies":"y"} it as a tag — on ${n===1?"it":"them"} it becomes the genre “${gn}”.\n\nA word on a story inside a collection is left as a tag: a story can't hold a genre of its own without giving up its collection's.\n\nUndo puts all of it back.`
+        :`Make “${name}” a tag everywhere?\n\nIt comes off ${n} book${n===1?"":"s"} as a genre and goes on ${n===1?"it":"them"} as a tag, and it stops being one of your genres altogether.\n\nUndo puts all of it back.`))return;
+      const res=await moveWordEverywhere(name,toGenre);
+      renderBookView();
+      if(res.storiesLeft)alert(`Done on ${res.n} book${res.n===1?"":"s"}.\n\n${res.storiesLeft} stor${res.storiesLeft===1?"y":"ies"} inside collections still carr${res.storiesLeft===1?"ies":"y"} it as a tag, and ${res.storiesLeft===1?"was":"were"} left alone.`);
+      return;
+    }
+    renderBookView();
+  });
+}
 /* Down from the collection onto only some of its stories — for when a word went
    on the whole series and then turned out to be true of two books in it. Tick
    the ones it stays on; it comes off the collection, so the rest lose it. */
@@ -9651,20 +9870,19 @@ function renderBookView(){
       ${(b.genres||[]).length||(b.keywords||[]).length||storyTagRows(b).length?`<div class="vside">
         ${(b.genres||[]).length?`<div class="vsec"><div class="vsectitle">Genres</div>
           <div class="rgen vgen">${(()=>{const br=new Set(b.genreBreaks||[]);
-            return (b.genres||[]).map(g=>chipHtml(g,false)+(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div></div>`:""}
+            /* the whole chip is the way in — see chipMoveMenu for why it is the
+               chip rather than another little arrow beside it */
+            return (b.genres||[]).map(g=>`<button class="chip big chipmenu" style="${chipStyle(genres[g])}" data-cmenu="g|${esc(g)}" title="What this word can do">${esc(g)}</button>`
+              +(br.has(g)?'<span class="rowbreak"></span>':"")).join("");})()}</div></div>`:""}
         ${(b.keywords||[]).length?`<div class="vsec"><div class="vsectitle">Tags</div>
           <div class="chiprow vkw">${(()=>{const br=new Set(b.kwBreaks||[]);
-            /* on a collection every one of these is on every story inside, so
-               each offers a way down to only some of them */
-            const down=isColl(b)&&((b.entries)||[]).length>1;
-            return (b.keywords||[]).map(k=>`<span class="kw" style="${kwStyle(k)}">${esc(k)}${
-              down?`<button class="tagmv" data-kdown="${esc(k)}" title="Keep it on only some of the stories">↓</button>`:""}</span>`
+            return (b.keywords||[]).map(k=>`<button class="kw chipmenu" style="${kwStyle(k)}" data-cmenu="t|${esc(k)}" title="What this word can do">${esc(k)}</button>`
               +(br.has(k)?'<span class="rowbreak"></span>':"")).join("");})()}</div>
           ${isColl(b)&&((b.entries)||[]).length>1?`<div class="hint" style="margin:4px 0 0">These are on every story inside.</div>`:""}</div>`:""}
         ${storyTagRows(b).length?`<div class="vsec"><div class="vsectitle">On the stories</div>
           <div class="hint" style="margin:0 0 5px">Words that belong to some of them and not the rest.</div>
           ${storyTagRows(b).map(r=>`<div class="stagrow">
-            <span class="kw" style="${kwStyle(r.name)}">${esc(r.name)}<button class="tagmv" data-kup="${esc(r.name)}" title="Put it on the whole collection instead">↑</button></span>
+            <button class="kw chipmenu" style="${kwStyle(r.name)}" data-cmenu="s|${esc(r.name)}" title="What this word can do">${esc(r.name)}</button>
             <span class="stagwho">${esc(r.on.length===(b.entries||[]).length?"all "+r.on.length:r.on.map(en=>en.title||"Untitled").join(", "))}</span>
           </div>`).join("")}</div>`:""}
       </div>`:""}
@@ -9800,6 +10018,13 @@ function renderBookView(){
      which then hands it back to all of them; down takes it off the collection
      and writes it onto the ones you keep it for. Neither is done for you — a
      word on three of seven books is a judgement, not arithmetic. */
+  /* every chip in the side column opens the same little menu — the two arrows
+     that used to live on them are inside it now */
+  qa("[data-cmenu]",page).forEach(x=>x.onclick=e=>{
+    e.stopPropagation();
+    const [kind,...rest]=x.dataset.cmenu.split("|");
+    chipMoveMenu(b,kind,rest.join("|"));
+  });
   qa("[data-kup]",page).forEach(x=>x.onclick=async e=>{
     e.stopPropagation();
     const k=x.dataset.kup,ens=(b.entries||[]).length;
