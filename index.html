@@ -5790,6 +5790,20 @@ function groupsFor(list){
 function booksHtml(list,withDel){
   return layout==="list"?list.map(b=>rowHtml(b,withDel)).join(""):`<div class="grid">${list.map(gridHtml).join("")}</div>`;
 }
+/* ---- how much of the shelf is DRAWN ----
+   Timed on a shelf of 4,335: the whole of it is 95,403 elements and about a
+   second of the browser measuring and placing them, and almost none of that is
+   this app's own work — sorting all of them takes 1ms, the counts 1ms, building
+   every row's markup 36ms. It is the drawing. 400 rows is 100ms; 1,000 is 233;
+   2,000 is 384. So a few hundred are drawn and the rest wait for a press.
+   The cap is on DRAWING ONLY. Every count, every pill, the find box, the sort,
+   and Tick all keep working from the whole list — those are answers about your
+   shelf, not about what fits on a screen, and a cap that changed them would be
+   a lie rather than a saving. */
+const LIB_PAGE=400;
+/* `libSig` was taken — it is the backup's "has anything changed" stamp, far
+   below. This one is "is the shelf being asked a different question". */
+let libShown=LIB_PAGE,libListSig="";
 /* =============== filling in many books at once ===============
    Auto-fill asks two sites about one book, which is the right size when you are
    looking at that book and the wrong size when an import has just handed you two
@@ -6534,6 +6548,12 @@ function renderLibrary(){
       <div id="selApply"></div>
       <div class="hint" style="margin:7px 0 0">A series keeps every book's own page. A collection folds them into one shelf item — the originals move to Recently deleted.</div></div>`;
   }
+  /* Narrowing the shelf a different way starts the counting again; pressing
+     "show more" does not, which is the whole difference between the two. */
+  {const sig=[statusFilter,sortBy,groupBy,layout,libFind,kindFilter.join(","),gavPick,libFandomMode].join("|");
+   if(sig!==libListSig){libListSig=sig;libShown=LIB_PAGE;}}
+  let budget=libShown;
+  const take=arr=>{const out=arr.slice(0,Math.max(0,budget));budget-=out.length;return out;};
   /* Most people arriving at a book tracker already keep their books somewhere
      else, and the importer is one of the best things here — but an empty shelf
      used to mention only the long way round, one book typed in at a time. */
@@ -6552,10 +6572,11 @@ function renderLibrary(){
     const onGo=b=>statusOf(b)==="reading"&&!b.dnf&&!holdOf(b);
     const now=list.filter(onGo),rest=list.filter(b=>!onGo(b));
     if(statusFilter==="all"&&now.length&&rest.length){
+      /* the headings keep the TRUE counts — what is drawn is not what you have */
       const head=(t,n)=>`<div class="grouphead"><h2 class="serif" style="margin:0;font-size:17px">${t}</h2><span class="n">${n}</span><span class="ghline"></span></div>`;
-      html+=head("📖 Reading now",now.length)+booksHtml(now,true)
-           +head("Everything else",rest.length)+booksHtml(rest,true);
-    }else html+=booksHtml(list,true);
+      html+=head("📖 Reading now",now.length)+booksHtml(take(now),true)
+           +head("Everything else",rest.length)+booksHtml(take(rest),true);
+    }else html+=booksHtml(take(list),true);
   }
   else{
     const gsAll=groupsFor(list);
@@ -6605,6 +6626,10 @@ function renderLibrary(){
       const key=groupBy+"|"+g.label;
       const shut=collapsed.has(key);
       const art=groupArt[key];
+      /* a folded group costs a heading and nothing else, so it is always drawn;
+         an open one waits its turn once the page is full */
+      const rows=shut?[]:take(g.items);
+      if(!shut&&g.items.length&&!rows.length)return "";
       return `<div class="ghwrap">
         <div class="grouphead" data-gh="${esc(key)}">
           <button class="gcar" title="${shut?"Open":"Close"} this group">${shut?"▸":"▾"}</button>
@@ -6618,9 +6643,14 @@ function renderLibrary(){
             <button class="gartx" data-gartx="${esc(key)}" title="Remove this picture">✕</button>
             <div class="gartgrip" data-gartgrip="${esc(key)}" title="Drag the corner to resize"></div>
           </div>`:""}
-        ${shut?"":booksHtml(g.items,true)}
+        ${shut?"":booksHtml(rows,true)}
       </div>`;}).join("");
   }
+  /* what is left, and how to have it. The number is the truth about the shelf,
+     not about the page: "still on the shelf" counts everything the filters left,
+     drawn or not. */
+  if(list.length>libShown)html+=`<div class="hrow2" style="margin-top:12px;justify-content:center">
+    <button class="btn" id="libMore">Show ${Math.min(LIB_PAGE,list.length-libShown)} more — ${list.length-libShown} still on the shelf</button></div>`;
   /* ---- the fandom cards ----
      Only fics and AI stories can be here, because only they carry a fandom —
      books are kept out by having nothing to be filed under rather than by a
@@ -6736,6 +6766,14 @@ function renderLibrary(){
     window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);
   }));
   renderLibArt(m);
+  const lmore=q("#libMore",m);
+  if(lmore)lmore.onclick=()=>{
+    /* the button you just pressed is at the bottom of what you have read; the
+       new rows belong under it, not over you */
+    const y=window.scrollY;
+    libShown+=LIB_PAGE;renderLibrary();
+    window.scrollTo(0,y);
+  };
   qa("[data-jump]",m).forEach(b=>b.onclick=()=>{
     if(gavActFor()){
       const l=b.dataset.glabel;
@@ -6743,7 +6781,10 @@ function renderLibrary(){
       renderLibrary();window.scrollTo(0,0);
       return;
     }
-    const h=qa("[data-gh]",m)[+b.dataset.jump];
+    /* skipping to a heading that has not been drawn yet has to draw it first,
+       or the row of headings would offer places the page cannot go */
+    let h=qa("[data-gh]",m)[+b.dataset.jump];
+    if(!h){libShown=Infinity;renderLibrary();h=qa("[data-gh]",q("#main"))[+b.dataset.jump];}
     if(h)h.scrollIntoView({behavior:"smooth",block:"start"});
   });
   hydrateGroupArt(m);
