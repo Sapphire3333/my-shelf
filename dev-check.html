@@ -61,11 +61,27 @@ const frame=document.getElementById("frame");
 const prog=document.getElementById("prog");
 const detail=document.getElementById("detail");
 
+/* Waiting a fixed 900ms for the app to boot was a guess, and the wrong one
+   whenever this page is in the background: a hidden tab has every one of its
+   timers slowed to about one a second, so our 900ms could pass long before the
+   app had drawn anything. Wait for the app to actually be there, and give up
+   out loud rather than silently. */
 function freshLoad(w){
   return new Promise(res=>{
     frame.width=w;
-    frame.onload=()=>setTimeout(res,900);           /* let the app boot */
+    let done=false;
+    const finish=()=>{if(!done){done=true;res();}};
+    frame.onload=()=>{
+      const t0=Date.now();
+      const poll=setInterval(()=>{
+        let ready=false;
+        try{ready=!!(frame.contentDocument&&frame.contentDocument.querySelector("#app,#auLocal"));}catch(e){}
+        if(ready||Date.now()-t0>20000){clearInterval(poll);finish();}
+      },120);
+    };
     frame.src="index.html?devcheck="+Date.now();
+    /* a load event that never arrives must not take the whole sweep with it */
+    setTimeout(finish,25000);
   });
 }
 
@@ -74,23 +90,38 @@ function freshLoad(w){
 function runInFrame(code){
   return new Promise((res,rej)=>{
     const W=frame.contentWindow,D=frame.contentDocument;
-    delete W.__devResult;
+    if(!W||!D||!D.body){rej(new Error("the page never opened"));return;}
+    try{delete W.__devResult;W.__devStep="starting";}catch(e){}
     const s=D.createElement("script");
-    s.textContent="(async()=>{try{window.__devResult=await(async()=>{"+code+"})()}catch(e){window.__devResult={ERROR:e.message}}})();";
+    s.textContent="(async()=>{try{window.__devResult=await(async()=>{"+code+"})()}"
+      +"catch(e){window.__devResult={ERROR:e.message+\" — while \"+(window.__devStep||\"?\")}}})();";
     D.body.appendChild(s);
-    let n=0;
+    /* Counting tries was counting the wrong thing. A hidden tab slows timers to
+       about one a second, so "120 tries, 250ms apart" meant thirty seconds with
+       this page in front and two full minutes with it behind — long enough to
+       read as a hang, and it never said what it had been doing. Wall clock now,
+       and a pass that gives up says where it got to. */
+    const t0=Date.now();
     const t=setInterval(()=>{
-      if(W.__devResult){clearInterval(t);res(W.__devResult);}
-      else if(++n>120){clearInterval(t);rej(new Error("timed out"));}
-    },250);
+      let r=null,step="?";
+      try{r=W.__devResult;step=W.__devStep||"?";}catch(e){}
+      if(r){clearInterval(t);res(r);}
+      else if(Date.now()-t0>60000){clearInterval(t);rej(new Error("gave up after 60s — it was still "+step));}
+    },200);
   });
 }
 
 const SWEEP=`
   const wait=ms=>new Promise(s=>setTimeout(s,ms));
+  /* Say where we are as we go. A pass that stops answering used to be a blank —
+     the runner could only report "timed out", which named neither the screen nor
+     the step, and left the whole sweep looking broken when one screen was. */
+  const step=s=>{window.__devStep=s;};
+  step("signing in");
   /* past the sign-in screen without an account */
   const au=document.querySelector("#auLocal");
   if(au){au.click();await wait(1200);}
+  step("waiting for the app to settle");
   /* in memory only — saveSettings is never called, so nothing sticks */
   settings.fontScale=100;settings.simple=SIMPLE;settings.bookEdit=false;applySimple();
   /* an empty library used to skip the reading, editing and collection columns
@@ -115,6 +146,7 @@ const SWEEP=`
   const out={};
   const CW=()=>document.documentElement.clientWidth;
   const look=async name=>{
+    step("measuring "+name);
     await wait(450);
     const over=[...document.querySelectorAll("body *")].filter(e=>{
       const q=e.getBoundingClientRect();return q.width>0&&q.right>CW()+3;});
@@ -129,19 +161,20 @@ const SWEEP=`
       /* the History tab has two faces and both must be walked */
       if(v==="timeline"){settings.histView="timeline";view="history";}
       else{if(v==="history")settings.histView="edited";view=v;}
+      step("drawing "+v);
       render();await look(v);
     }catch(e){out[v]={ok:false,offenders:["view crashed: "+e.message]};}
   }
   const bk=books[0];
   const col=books.find(b=>(b.entries||[]).length>1);
   if(bk){
-    try{settings.bookEdit=false;await openBook(bk.id,false);await look("reading");}
+    try{step("opening the reading page");settings.bookEdit=false;await openBook(bk.id,false);await look("reading");}
     catch(e){out.reading={ok:false,offenders:["crashed: "+e.message]};}
-    try{settings.bookEdit=true;await openBook(bk.id,false);await look("editing");}
+    try{step("opening the editor");settings.bookEdit=true;await openBook(bk.id,false);await look("editing");}
     catch(e){out.editing={ok:false,offenders:["crashed: "+e.message]};}
   }else out.reading=out.editing={skip:true};
   if(col){
-    try{settings.bookEdit=false;await openBook(col.id,false);await look("collection");
+    try{step("opening the collection");settings.bookEdit=false;await openBook(col.id,false);await look("collection");
       /* a collection must open at its top rather than part-way down. This was
          being worked out and then never shown anywhere, so the check could fail
          in silence — it now fails the cell like everything else does. */
