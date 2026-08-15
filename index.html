@@ -8945,7 +8945,17 @@ function textMatches(b,qstr){
   return groups.some(g=>g.split(/\s+/).filter(Boolean).every(w=>hay.indexOf(w)>=0));
 }
 
+/* Which books have a stored cover, by id. The books themselves don't say — a
+   cover lives in its own store and is only fetched when a thumbnail scrolls
+   into view — so "how many have none?" needs the store's key list. Keys only,
+   never the pictures; refreshed every time the tab is opened, and the body
+   redrawn once the honest set arrives. */
+let searchCoverIds=new Set();
 function renderSearchView(){
+  dbAllKeys("covers").then(ks=>{
+    searchCoverIds=new Set(ks.map(String));
+    if(view==="search")renderSearchBody();
+  });
   q("#main").innerHTML=`
     <div class="searchbox fclear"><span class="sic">🔍</span>
       <input class="field" id="sq" placeholder="Search…" value="${esc(S.q)}">
@@ -9007,6 +9017,23 @@ function renderSearchBody(){
      on-hold book answers to ⏸, not to 📖 */
   const plainSt2=k=>books.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
   const readN=plainSt2("reading"),wantN=plainSt2("want");
+  /* ---- what's missing ----
+     One list-maker per kind of gap, used twice — once to put the count on the
+     button, once to answer it when pressed — so the number IS the promise.
+     Fics and AI stories sit out covers and genres: the lookup sites have never
+     heard of them, and fandoms do their filing. A collection counts as covered
+     when it has a cover of its own or any story inside does — its shelf row
+     shows the mosaic, which is not a gap. "Read, but no date" is the History
+     timeline's own undated count, so the two screens quote one shelf. */
+  const GAPS=[
+    ["cover","No cover",()=>books.filter(b=>!isFic(b)
+      &&!(searchCoverIds.has(b.id)||(isColl(b)&&(b.entries||[]).some(en=>en.cover))))],
+    ["blurb","No blurb or summary",()=>books.filter(b=>looksBlank(b.summary))],
+    ["genres","No genres",()=>books.filter(b=>!isFic(b)&&!((b.genres||[]).length))],
+    ["dates","Read, but no date",()=>readUnits().filter(u=>u.times>0&&!u.reads.some(r=>r.end))
+      .map(u=>u.en?storyProxy(u.book,u.en):u.book)],
+    ["emptycoll","Empty collections",()=>books.filter(b=>isColl(b)&&!((b.entries||[]).length))]
+  ];
 
   let results=null,heading="";
   const matchScope=(b,s)=>{switch(s){
@@ -9080,6 +9107,7 @@ function renderSearchBody(){
     if(f.type==="rating")results=(f.value==="unrated"
       ?sUnits.filter(u=>u.rating==null)
       :sUnits.filter(u=>u.rating!=null&&u.rating>=f.value.min&&u.rating<=f.value.max)).map(unitRow);
+    if(f.type==="gap"){const g=GAPS.find(x=>x[0]===f.value);results=g?g[2]():[];}
     heading=esc(f.label);
   }else if(S.multi.length){
     results=sUnits.filter(u=>S.multi.every(g=>(u.genres||[]).includes(g))).map(unitRow);
@@ -9144,6 +9172,16 @@ function renderSearchBody(){
         ${LEN_BUCKETS.map((bk,i)=>`<button class="rb ${lenCounts[i]?"has":"no"}" ${lenCounts[i]?`data-len="${i}"`:""} style="${lenCounts[i]?"border-color:#bae6fd;background:#f0f9ff":""}"><span>📄 ${bk.label}</span><b>${lenCounts[i]}</b></button>`).join("")}
         <button class="rb ${noPages?"has":"no"}" ${noPages?'data-len="none"':""} style="${noPages?"border-color:#d6d3d1;background:#fff":""}"><span>No page count</span><b>${noPages}</b></button>
       </div></div>`;
+      /* the family "Unrated" and "No page count" always belonged to — the books
+         auto-fill couldn't finish, and the ones nothing has told a date about.
+         Each button's count is the number of rows pressing it gives you; from
+         the list, ☑ Select books and Auto-fill finish what can be finished. */
+      const gapCounts=GAPS.map(g=>g[2]().length);
+      html+=`<div class="sec"><h2 class="serif">What's missing</h2>
+        <div class="hint" style="margin:0 0 8px">Every book still missing that one thing — press a number to see them. Unrated and No page count above are part of the same family.</div>
+        <div class="rbuckets">
+        ${GAPS.map((g,i)=>`<button class="rb ${gapCounts[i]?"has":"no"}" ${gapCounts[i]?`data-gap="${g[0]}"`:""} style="${gapCounts[i]?"border-color:#fcd34d;background:#fffbeb":""}"><span>${g[1]}</span><b>${gapCounts[i]}</b></button>`).join("")}
+        </div></div>`;
       if(books.length){
         /* the same arithmetic Insights does, on the same units, so the two
            screens finally quote one shelf the same way — including Insights'
@@ -9213,6 +9251,8 @@ function renderSearchBody(){
   qa("[data-len]",m).forEach(b=>b.onclick=()=>{const v=b.dataset.len;
     if(v==="none")pick({type:"pages",value:"none",label:"No page count"});
     else{const bk=LEN_BUCKETS[+v];pick({type:"pages",value:bk,label:`Length: ${bk.label} pages`});}});
+  qa("[data-gap]",m).forEach(b=>b.onclick=()=>{const g=GAPS.find(x=>x[0]===b.dataset.gap);
+    if(g)pick({type:"gap",value:g[0],label:g[1]});});
   const aq=q("#aq",m);
   if(aq){
     const renderAuth=()=>{const box=q("#authChips",m);
