@@ -6593,13 +6593,64 @@ async function openBulkFill(ids){
               style="width:54px;height:78px;object-fit:cover;border-radius:6px;cursor:pointer">`).join("")}</div>
           <div class="hint" id="bsStripMsg${si}" style="margin:4px 0 0"></div>`).join("")}
         ${S.failedCovers.length?`<div class="lbl" style="display:block;margin:14px 0 4px">${plural(S.failedCovers.length,"cover")} wouldn't come</div>
-          <div class="hint" style="margin:0 0 7px">Whoever hosts these forbids the download — Google's picture host always does. Open one, save it, and drop it on the cover box.</div>
-          <div class="bs-list">${S.failedCovers.map(f=>`<div class="bs-row">
+          <div class="hint" style="margin:0 0 7px">The pictures themselves still show here even when their host forbids the download — so look, then tap the one you want. Some hosts relent on a second ask; the stubborn ones (Google's picture host always) get you an open-save-drop route instead. The old way was a row of blind links opened tab by tab, and the owner rightly called it a chore.</div>
+          <div class="bs-list">${S.failedCovers.map((f,fi)=>`<div class="bs-row">
             <div style="min-width:0;flex:1"><div class="bs-t">${esc((f.en?f.en.title:f.b.title))||"Untitled"}</div>
-              <div class="bs-f">${f.en?`inside ${esc(f.b.title||"a collection")} · `:""}${(f.cover||[]).slice(0,3).map((u,i)=>`<a href="${esc(u)}" target="_blank" rel="noopener" style="color:var(--teal)">picture ${i+1}</a>`).join(" · ")}</div></div>
-            <button class="btn" data-bsopen="${esc(f.b.id)}" style="padding:3px 9px;flex:none">Open it</button></div>`).join("")}</div>`:""}
+              ${f.en?`<div class="bs-f">inside ${esc(f.b.title||"a collection")}</div>`:""}
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">${(f.cover||[]).slice(0,4).map((u,ci)=>
+                `<img class="fpcov" data-bsfc="${fi}.${ci}" src="${esc(u)}" loading="lazy" alt="picture ${ci+1}" title="Tap to try taking it as the cover"
+                  style="width:44px;height:64px;object-fit:cover;border-radius:5px;cursor:pointer">`).join("")}</div>
+              <div class="hint" data-bsfcmsg="${fi}" style="margin:3px 0 0"></div></div>
+            <div style="flex:none;display:flex;flex-direction:column;gap:4px">
+              <button class="btn" data-bsfcauto="${fi}" style="padding:3px 9px" title="Ask every host again — a refusal is sometimes just a bad moment">↻ Try again</button>
+              <button class="btn" data-bsopen="${esc(f.b.id)}" style="padding:3px 9px">Open the book</button></div></div>`).join("")}</div>`:""}
         <div class="hrow2" style="margin-top:13px"><button class="btn pri" id="bsDone">Back to the shelf</button></div>`;
       qa("[data-bsopen]",inner).forEach(b=>b.onclick=()=>{const id=b.dataset.bsopen;sheet.remove();openBook(id);});
+      /* one write path for a cover taken from this list — the same fields the
+         run's own loop writes, book or story */
+      async function takeFailedCover(f,urls,fi){
+        const msg=q(`[data-bsfcmsg="${fi}"]`,inner);
+        if(msg)msg.textContent="Asking…";
+        try{
+          const data=await fetchCoverData(urls,600);
+          const b=f.b;
+          if(f.en){
+            f.en.cover=true;f.en.coverV=Date.now();
+            await dbPut("images",{key:b.id+"|"+f.en.id,data,v:f.en.coverV});
+            coverCache.set(b.id+"|"+f.en.id,data);
+            if(SYNC.on)enqueue({kind:"img",key:b.id+"|"+f.en.id});
+          }else{
+            await dbPut("covers",{id:b.id,data});
+            coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);
+            b.coverV=Date.now();
+            if(SYNC.on)enqueue({kind:"cover",id:b.id});
+          }
+          b.modified=Math.max(Date.now(),(b.modified||0)+1);
+          await dbPut("books",b);
+          if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+          bumpCovers();
+          if(msg)msg.textContent="Got it — that's the cover now ✓";
+          return true;
+        }catch(e){
+          if(msg)msg.innerHTML=`Still refused — that host won't hand it over. <a href="${esc(urls[0])}" target="_blank" rel="noopener" style="color:var(--teal)">Open it in a tab ↗</a>, save the picture, and drop it on the cover box.`;
+          return false;
+        }
+      }
+      qa("[data-bsfc]",inner).forEach(img=>{
+        /* a candidate that won't even display is no use — same rule as the
+           single-book chooser */
+        img.onerror=()=>img.remove();
+        img.onclick=()=>{
+          const [fi,ci]=img.dataset.bsfc.split(".").map(Number);
+          const f=S.failedCovers[fi];
+          takeFailedCover(f,[(f.cover||[])[ci]].filter(Boolean),fi);
+        };
+      });
+      qa("[data-bsfcauto]",inner).forEach(b=>b.onclick=()=>{
+        const fi=+b.dataset.bsfcauto;
+        const f=S.failedCovers[fi];
+        takeFailedCover(f,(f.cover||[]).slice(),fi);
+      });
       qa("[data-bsstrip]",inner).forEach(img=>img.onclick=async()=>{
         const [gi,ci]=img.dataset.bsstrip.split(".").map(Number);
         const g=groups[gi],s=g.strip[ci];
@@ -15924,7 +15975,10 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
       if(u)out.gCovers.push(u);
       (v.categories||[]).forEach(c=>String(c).split("/").forEach(p=>{const t=p.trim();if(t)out.genres.push(t);}));
     });
-    tell("Google Books",stamp.g,true);
+    /* answering is not the same as knowing: an empty answer for an ISBN reads
+       as "answered in 1.0s" and then a panel with nothing of Google's in it,
+       which looks like a contradiction unless it says this */
+    tell("Google Books",stamp.g,true,items.length?"":"but it doesn't know this one");
   }catch(e){gErr=true;noteGoogleDry(e);
     tell("Google Books",stamp.g,false,
       /not asked again yet/.test(String(e&&e.message||""))?"being rested after a refusal — skipped, not slow":"");}
@@ -15970,7 +16024,12 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
       if(d.key&&!(quick&&out.summary)){
         const tB=performance.now();
         try{
-          const w=await fetchJson("https://openlibrary.org"+d.key+".json",3);
+          /* Two tries on a short leash, down from three long ones. The old
+             patience — three tries at nine seconds — was measured twice at
+             29.1s of a person watching one optional field not arrive. Now that
+             a missed blurb says so on the panel and carries its own Ask-again
+             button, a cheap retry beats a long vigil. */
+          const w=await fetchJson("https://openlibrary.org"+d.key+".json",2,6000);
           const desc=w&&w.description;
           const txt=String(typeof desc==="string"?desc:(desc&&desc.value)||"").trim();
           if(txt){
