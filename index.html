@@ -11950,6 +11950,7 @@ function renderEditor(){
         ? "Couldn't reach the book sites just now — they're free and sometimes busy. Your connection may also be down."
         : "Nothing found under that title. Try a shorter title, or check the spelling."}</div>
         ${(probe.asked||[]).length?`<div class="hint" style="margin:7px 0 0">This is what was asked:<br>${probe.asked.map(a=>esc(a)).join("<br>")}</div>`:""}
+        ${(probe.times||[]).length?`<div class="hint" style="margin:7px 0 0">${probe.times.map(t=>esc(`${t.what} ${t.ok?"answered":"didn't answer"} in ${(t.ms/1000).toFixed(1)}s${t.note?" — "+t.note:""}`)).join(" · ")}</div>`:""}
         <button class="btn pri" id="fpRetry" style="margin-top:9px">Try again</button>`;
       wireClose();
       q("#fpRetry",box).onclick=()=>openFetchPanel(en);
@@ -12000,6 +12001,10 @@ function renderEditor(){
           ${differs?`They call it <b>${esc(info.title)}</b>. `:""}
           ${info.loose?`Nothing matched with the author on this ${en?"story's collection":"book"}, so this was found by the title alone — check it is the same book before applying any of it.`:""}</div>`;
       })()}
+      ${(info.gErr||info.blurbMissed)?`<div style="margin:0 0 10px;padding:7px 9px;border-radius:8px;background:var(--warn-bg);color:var(--warn-ink);font-size:12.5px">
+        ${info.gErr?`<b>Google Books didn't answer</b> — its shared quota runs dry most days, and the blurb, the pages and the tidy genres mostly come from it, so this is thinner than the book likely deserves. `:""}
+        ${info.blurbMissed?`<b>The blurb didn't arrive</b> — it needs a request of its own and that one didn't land, which is not the same as the book having none. `:""}Asking again often does better.
+        <button class="btn" id="fpAgain" style="padding:3px 10px;font-size:12px;margin-left:4px">↻ Ask again</button></div>`:""}
       ${showTitle?`<div style="margin-bottom:12px">
         <div class="lbl" style="display:block;margin-bottom:3px">Title</div>
         <div style="font-size:13px;margin-bottom:5px;overflow-wrap:anywhere">${esc(info.title)}</div>
@@ -12033,11 +12038,16 @@ function renderEditor(){
         <div>${newTags.map(t=>`<button class="mg" data-fpt="${esc(t)}"><span class="bx"></span>${esc(t)}</button>`).join("")}</div>
         <button class="btn" id="fpTags" style="margin-top:6px" disabled>Add ticked as keywords</button>`:""}
       ${showPages?`<div style="margin-top:11px"><button class="btn" id="fpPages">Set pages to ${info.pages}</button></div>`:""}
-      <div class="hint" style="margin:11px 0 0">Found via ${info.source.join(" & ")}${info.year?` · first published ${esc(info.year)}`:""}. Nothing is applied until you press a button.</div>
+      <div class="hint" style="margin:11px 0 0">Found via ${info.source.join(" & ")}${info.year?` · first published ${esc(info.year)}`:""}. Nothing is applied until you press a button.${
+        /* the wait, with names on it — twenty silent seconds turned out to be
+           one site's timeouts, and nothing on screen said whose */
+        (probe.times||[]).length?`<br>${probe.times.map(t=>esc(`${t.what} ${t.ok?"answered":"didn't answer"} in ${(t.ms/1000).toFixed(1)}s${t.note?" — "+t.note:""}`)).join(" · ")}`:""}</div>
       ${(info.links||[]).length?`<div class="lbl" style="display:block;margin:9px 0 4px">Read more about it</div>
         <div style="display:flex;flex-wrap:wrap;gap:6px">${info.links.map(l=>
           `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener" style="text-decoration:none;padding:4px 10px;font-size:12px">${esc(l.name)} ↗</a>`).join("")}</div>`:""}`;
     wireClose();
+    const ag=q("#fpAgain",box);
+    if(ag)ag.onclick=()=>openFetchPanel(en);
     /* a candidate that won't even display is no use — drop it from the row, and
        hide the section if none of them show */
     qa("[data-fpcov]",box).forEach(img=>{
@@ -15859,6 +15869,17 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   /* both are awaited below; this only stops a rejection being called unhandled
      while the other one is still being waited on */
   gP.catch(()=>{});oP.catch(()=>{});
+  /* Each site's own settling moment, stamped as it happens — measuring at the
+     `await` below would charge the second one waited on for the first one's
+     time. This is the readout that turned "auto-fill took twenty seconds and
+     said nothing" into a wait with names on it. */
+  const t0=performance.now();
+  const stamp={};
+  gP.then(()=>stamp.g=performance.now()-t0,()=>stamp.g=performance.now()-t0);
+  oP.then(()=>stamp.o=performance.now()-t0,()=>stamp.o=performance.now()-t0);
+  /* `say` was taken — it feeds probe.asked further down. This one feeds the
+     timings. */
+  const tell=(what,ms,ok,note)=>{if(probe)(probe.times=probe.times||[]).push({what,ms:Math.round(ms||0),ok:!!ok,note:note||""});};
   try{
     const j=await gP;
     const items=(j.items||[]).map(x=>x.volumeInfo||{});
@@ -15903,11 +15924,15 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
       if(u)out.gCovers.push(u);
       (v.categories||[]).forEach(c=>String(c).split("/").forEach(p=>{const t=p.trim();if(t)out.genres.push(t);}));
     });
-  }catch(e){gErr=true;noteGoogleDry(e);}
+    tell("Google Books",stamp.g,true);
+  }catch(e){gErr=true;noteGoogleDry(e);
+    tell("Google Books",stamp.g,false,
+      /not asked again yet/.test(String(e&&e.message||""))?"being rested after a refusal — skipped, not slow":"");}
   try{
     /* subjects only come back when asked for explicitly via `fields` — the
        asking already started, alongside Google's, up at the top */
     const j=await oP;
+    tell("Open Library",stamp.o,true);
     const docs=j.docs||[];
     const d=docs[0];
     /* a cover from every edition the search returned, not only the first.
@@ -15943,6 +15968,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
          caller said it only wants one. That is a third of a lookup's requests
          on every book Google answered for. */
       if(d.key&&!(quick&&out.summary)){
+        const tB=performance.now();
         try{
           const w=await fetchJson("https://openlibrary.org"+d.key+".json",3);
           const desc=w&&w.description;
@@ -15951,10 +15977,12 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
             if(!out.summary)out.summary=txt;
             if(txt.length>40)out.blurbs.push({text:txt,from:"Open Library"});
           }
-        }catch(e){out.blurbMissed=true;}
+          tell("its blurb request",performance.now()-tB,true);
+        }catch(e){out.blurbMissed=true;
+          tell("its blurb request",performance.now()-tB,false);}
       }
     }
-  }catch(e){oErr=true;}
+  }catch(e){oErr=true;tell("Open Library",stamp.o,false);}
   out.tags=[...new Set(out.tags.map(t=>t.replace(/\s+/g," ").trim()))]
     .filter(t=>t&&t.length<=30&&!/^(fiction|general)$/i.test(t)).slice(0,15);
   /* the shelf's own genres are a shorter, tidier list than the subject tags */
