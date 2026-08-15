@@ -7922,9 +7922,14 @@ function intoPanelHtml(){
     <div class="hint" style="margin:7px 0 0">Each one becomes a story inside it, keeping its own rating, pages, dates and writing. A stage that matches the collection's is left unsaid, so the collection stays one row on your shelf.</div>
   </div>`;
 }
-function refreshImport(){
+/* `light` redraws skip the duplicate scan. Typing in the search box, ticking a
+   row or flipping a filter changes what is SHOWN, never what is on the shelf —
+   yet every such redraw was re-indexing all 4,335 books plus every story and
+   title variant just to learn the same answers. The scan still runs whenever
+   the queue or the shelf actually changed: those callers pass nothing. */
+function refreshImport(light){
   const box=q("#impList");if(!box)return;
-  markDupes();
+  if(!light)markDupes();
   impSel=new Set([...impSel].filter(id=>importQueue.some(it=>it.id===id&&!it.dupe)));
   const n=q("#impN"),clr=q("#impClear");
   const pend=importQueue.filter(it=>!it.dupe);
@@ -8024,19 +8029,27 @@ function refreshImport(){
   if(!shown)html+='<div class="none" style="margin-top:10px">Nothing in the list matches that search.</div>';
   box.innerHTML=html;
   const dOnly=q("#impDupeOnly",box);
-  if(dOnly)dOnly.onchange=()=>{impOnlyFlagged=dOnly.checked;refreshImport();};
-  qa("[data-impflag]",box).forEach(b=>b.onclick=()=>{impOnlyFlagged=true;impQ="";refreshImport();});
+  if(dOnly)dOnly.onchange=()=>{impOnlyFlagged=dOnly.checked;refreshImport(true);};
+  qa("[data-impflag]",box).forEach(b=>b.onclick=()=>{impOnlyFlagged=true;impQ="";refreshImport(true);});
   const se=q("#impSearch",box);
-  se.oninput=()=>{impQ=se.value;keepCaret(se,refreshImport,()=>q("#impSearch"));};
+  /* the same 160ms breather every other search box got — this one redrew a
+     list of thousands on every letter, with the duplicate scan in front of it */
+  se.oninput=()=>{
+    impQ=se.value;
+    clearTimeout(se._t);
+    /* the box is still the live one until redraw runs, so the place can be
+       read here even though the wait has already happened */
+    se._t=setTimeout(()=>keepCaret(se,()=>refreshImport(true),()=>q("#impSearch")),160);
+  };
   qa("[data-impc]",box).forEach(c=>c.onchange=()=>{
-    c.checked?impSel.add(c.dataset.impc):impSel.delete(c.dataset.impc);refreshImport();});
+    c.checked?impSel.add(c.dataset.impc):impSel.delete(c.dataset.impc);refreshImport(true);});
   qa("[data-impa]",box).forEach(b=>b.onclick=()=>{
     const a=b.dataset.impa;
     const ids=importQueue.filter(it=>!it.dupe&&(it.author||"")===a).map(it=>it.id);
     if(!ids.length)return;
     const allIn=ids.every(id=>impSel.has(id));
     ids.forEach(id=>allIn?impSel.delete(id):impSel.add(id));
-    refreshImport();
+    refreshImport(true);
   });
   const selItems=()=>importQueue.filter(it=>impSel.has(it.id));
   const doneSel=()=>{impSel.clear();saveImportQueue();if(SYNC.on)flushQueue();render();};
@@ -8067,9 +8080,13 @@ function refreshImport(){
     doneSel();
   };
   const bInto=q("#impSelInto",box);
-  if(bInto)bInto.onclick=()=>{impIntoOpen=!impIntoOpen;refreshImport();};
+  if(bInto)bInto.onclick=()=>{impIntoOpen=!impIntoOpen;refreshImport(true);};
   const iSe=q("#impIntoSearch",box);
-  if(iSe)iSe.oninput=()=>{impIntoQ=iSe.value;keepCaret(iSe,refreshImport,()=>q("#impIntoSearch"));};
+  if(iSe)iSe.oninput=()=>{
+    impIntoQ=iSe.value;
+    clearTimeout(iSe._t);
+    iSe._t=setTimeout(()=>keepCaret(iSe,()=>refreshImport(true),()=>q("#impIntoSearch")),160);
+  };
   qa("[data-into]",box).forEach(b=>b.onclick=async()=>{
     const coll=books.find(x=>x.id===b.dataset.into);
     const items=selItems();
@@ -8097,7 +8114,7 @@ function refreshImport(){
     doneSel();
   });
   const bNo=q("#impSelNo",box);
-  if(bNo)bNo.onclick=()=>{impSel.clear();impIntoOpen=false;refreshImport();};
+  if(bNo)bNo.onclick=()=>{impSel.clear();impIntoOpen=false;refreshImport(true);};
   qa("[data-impone]",box).forEach(b=>b.onclick=async()=>{
     const it=importQueue.find(x=>x.id===b.dataset.impone);if(!it)return;
     b.disabled=true;
@@ -8955,6 +8972,13 @@ function renderSearchView(){
   renderSearchBody();
 }
 
+/* the Library's and History's 400-row drawing cap, missing here — an author
+   with a whole shelf of books, or a genre on half of it, drew every matching
+   row at once, and at 4,335 books that is the same second of layout the other
+   two lists were cured of. The (count) beside the heading keeps answering for
+   every match, drawn or not — the cap is on drawing only. */
+const SRCH_PAGE=400;
+let srchShown=SRCH_PAGE,srchSig="";
 function renderSearchBody(){
   const m=q("#sbody");
   const qlc=S.q.trim().toLowerCase();
@@ -9061,8 +9085,15 @@ function renderSearchBody(){
 
   let html="",tailHtml="";
   if(results){
+    /* asking a different question starts the counting again; pressing
+       "show more" does not — the same rule the Library's cap follows */
+    {const sig=[qlc,S.scopes.join(","),JSON.stringify(S.filter||null),S.multi.join(",")].join("|");
+     if(sig!==srchSig){srchSig=sig;srchShown=SRCH_PAGE;}}
+    const show=results.slice(0,srchShown);
     html+=`<div class="sec"><div class="heading"><h2 class="serif">${heading}</h2><span class="n">(${results.length})</span>${S.filter&&S.filter.type==="author"?`<button class="btn" id="sgrp" style="padding:3px 10px;font-size:12px" title="Link as a series, fold into a collection, or merge duplicate spellings">📚 Group / tidy…</button>`:""}<button class="clearbtn" id="sclear">✕ Clear</button></div>
-      ${results.length?results.map(b=>rowHtml(b,false)).join(""):'<div class="none" style="text-align:center;padding:30px 0">Nothing here yet.</div>'}</div>`;
+      ${show.length?show.map(b=>rowHtml(b,false)).join(""):'<div class="none" style="text-align:center;padding:30px 0">Nothing here yet.</div>'}
+      ${results.length>show.length?`<div class="hrow2" style="margin-top:10px;justify-content:center">
+        <button class="btn" id="srchMore">Show ${Math.min(SRCH_PAGE,results.length-show.length)} more — ${results.length-show.length} further matches</button></div>`:""}</div>`;
   }
   if(!results||S.multi.length){
     if(!results){
@@ -9152,6 +9183,14 @@ function renderSearchBody(){
     settings.searchShut=[...s];saveSettings();renderSearchBody();
   });
 
+  const sm=q("#srchMore",m);
+  if(sm)sm.onclick=()=>{
+    /* the button you just pressed is at the bottom of what you have read; the
+       new rows belong under it, not over you */
+    const y=window.scrollY;
+    srchShown+=SRCH_PAGE;renderSearchBody();
+    window.scrollTo(0,y);
+  };
   const clear=q("#sclear",m);if(clear)clear.onclick=()=>{S.q="";S.filter=null;S.multi=[];q("#sq").value="";renderSearchBody();};
   const sg=q("#sgrp",m);if(sg)sg.onclick=()=>openAuthorPanel(S.filter.value);
   const pick=f=>{S.q="";S.multi=[];S.filter=f;q("#sq").value="";renderSearchBody();};
