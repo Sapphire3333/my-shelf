@@ -3142,7 +3142,15 @@ const opStamp=()=>(lastOpAt=Math.max(Date.now(),lastOpAt+1));
 function enqueue(op){
   if(!SYNC.on)return;
   op.at=opStamp();
-  SYNC.queue=SYNC.queue.filter(o=>opKey(o)!==opKey(op));
+  /* In place, stopping at the first hit. filter() built a fresh copy of the
+     whole list once per op — invisible day to day, but a first sync enqueues
+     thousands in one loop, and copying a growing list per op is how 4,335
+     books became seconds of stalling before a single byte went up. */
+  const id=op.id||op.key||"";
+  for(let i=0;i<SYNC.queue.length;i++){
+    const o=SYNC.queue[i];
+    if(o.kind===op.kind&&(o.id||o.key||"")===id){SYNC.queue.splice(i,1);break;}
+  }
   SYNC.queue.push(op);saveQueue();flushQueue();
 }
 function saveDeletions(){saveSharedMap("deletions",deletions);enqueue({kind:"meta",key:"deletions"});}
@@ -3162,15 +3170,32 @@ async function flushQueue(){
   let op=null;
   try{
     while(SYNC.queue.length){
-      op=SYNC.queue[0];
-      await runOp(op);
-      /* remove by identity, not position — enqueue() may replace the array
-         while an upload is in flight, so [0] might now be a different op */
-      const i=SYNC.queue.indexOf(op);
-      if(i>=0)SYNC.queue.splice(i,1);
-      /* written down as finished, not merely dropped from the list — the disk
-         copy and the other tab both need telling, and neither can see memory */
-      markOpDone(op);
+      /* Waiting book rows go up several to a request. One at a time, a first
+         sync of 4,335 books was two round trips each — a quarter of an hour of
+         queueing behind the network. The batch only forms when its lead op has
+         never failed: after any failure everything runs singly until the stuck
+         op has passed or stepped aside, so one poisoned row cannot keep failing
+         a whole batch around itself. */
+      const batch=collectBookBatch();
+      if(batch.length>1&&!batch[0].fails){
+        op=batch[0];
+        await runBookBatch(batch);
+        for(const o of batch){
+          const i=SYNC.queue.indexOf(o);
+          if(i>=0)SYNC.queue.splice(i,1);
+          markOpDone(o);
+        }
+      }else{
+        op=SYNC.queue[0];
+        await runOp(op);
+        /* remove by identity, not position — enqueue() may replace the array
+           while an upload is in flight, so [0] might now be a different op */
+        const i=SYNC.queue.indexOf(op);
+        if(i>=0)SYNC.queue.splice(i,1);
+        /* written down as finished, not merely dropped from the list — the disk
+           copy and the other tab both need telling, and neither can see memory */
+        markOpDone(op);
+      }
       saveQueue();
     }
     setSync("synced");
@@ -3243,6 +3268,62 @@ async function runOp(op){
   }else if(op.kind==="imgDel"){
     await s.storage.from("shelf").remove([imgPath(op.key)]);
   }
+}
+/* How many book rows share one request. Books can carry long notes and
+   summaries, so this stays modest rather than clever. */
+const SYNC_BATCH=25;
+/* The book ops waiting near the front, gathered across the covers and meta
+   sitting between them — those don't mind being passed (different stores, and
+   a book's own cover was queued after it anyway). A delete of any kind is a
+   wall: a book re-added after a queued delete of itself must never jump the
+   queue, or the delete would land second and take the fresh upload with it. */
+function collectBookBatch(){
+  const out=[];
+  for(const o of SYNC.queue){
+    if(/Del$/.test(o.kind))break;
+    if(o.kind==="book"){out.push(o);if(out.length>=SYNC_BATCH)break;}
+  }
+  return out;
+}
+/* The same three steps runOp takes for one book — is the cloud's copy newer
+   than anything this device has seen, snapshot it if so, then upsert — asked
+   about the whole batch in one request each. The trash snapshots, the `seen`
+   bookkeeping and the held-back releases are per book, exactly as before. */
+async function runBookBatch(ops){
+  const s=SYNC.supa,uid=SYNC.user.id;
+  const live=[];
+  for(const o of ops){
+    const b=await dbGetOrThrow("books",o.id);
+    if(b)live.push({op:o,b});
+  }
+  if(!live.length)return;
+  const ids=live.map(x=>x.b.id);
+  try{
+    const {data:crs}=await s.from("books").select("id,modified").eq("user_id",uid).in("id",ids);
+    const cloud=new Map((crs||[]).map(r=>[r.id,r.modified||0]));
+    const conflicted=live.filter(({op,b})=>{
+      const cm=cloud.get(op.id)||0;
+      return cm>(SYNC.seen[op.id]||0)&&cm!==(b.modified||0);
+    }).map(x=>x.op.id);
+    if(conflicted.length){
+      const {data:fulls}=await s.from("books").select("id,data,modified").eq("user_id",uid).in("id",conflicted);
+      for(const full of (fulls||[])){
+        if(!full||!full.data)continue;
+        const cb=full.data;cb.id=full.id;cb.modified=full.modified||cb.modified||0;
+        /* row id includes the cloud's stamp: a retry after a failed upload
+           overwrites this same row instead of piling up copies */
+        await dbPut("trash",{id:full.id+"~sync"+(full.modified||0),at:Date.now(),
+          conflict:true,book:JSON.parse(JSON.stringify(cb)),cover:null,images:{}});
+      }
+    }
+  }catch(e){/* the safety net must never block the save itself */}
+  const {error}=await s.from("books").upsert(live.map(({b})=>({user_id:uid,id:b.id,data:b,modified:b.modified||b.created||0})));
+  if(error)throw error;
+  for(const {op,b} of live){
+    SYNC.seen[op.id]=Math.max(SYNC.seen[op.id]||0,b.modified||0);
+    delete SYNC.held[op.id];
+  }
+  dbPut("meta",{k:"seenMod",v:SYNC.seen});
 }
 
 async function pullAll(){
