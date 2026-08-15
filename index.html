@@ -683,6 +683,10 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
      (Dark mode recolours the text just below: its teal is the bright one.) */
   .mg.on{background:var(--teal);border-color:var(--teal);color:#fff}
   .mg.on .bx{border-color:rgba(255,255,255,.7);background:rgba(255,255,255,.2)}
+  /* a found genre the shelf hasn't got yet, and the fate it was given */
+  .mg .nwb{font-size:9px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;
+    background:var(--warn-bg);color:var(--warn-ink);border-radius:4px;padding:0 4px}
+  .mg .asw{font-style:normal;font-size:11px;opacity:.8}
   .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
   .stat{border:1px solid var(--line);background:#fff;border-radius:14px;padding:12px}
   .stat .v{font-size:22px;font-weight:700;font-family:Georgia,serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -6370,7 +6374,7 @@ async function openBulkFill(ids){
         ${r&&(r.asked||[]).length?`<div class="bs-ask">${r.asked.map(a=>esc(a)).join("<br>")}</div>`:""}
         ${r&&r.note?`<div class="bs-w">${esc(r.note)}</div>`:""}
         ${r&&r.chips&&r.chips.length?`<div style="margin-top:4px">${r.chips.map((c,ci)=>
-          `<button class="mg ${c.on?"on":""}" data-bsc="${gi}.${ji}.${ci}"><span class="bx">${c.on?"✓":""}</span>${esc(c.name)}</button>`).join("")}</div>`:""}
+          foundChipHtml(c,`data-bsc="${gi}.${ji}.${ci}"`)).join("")}</div>`:""}
       </div></div>`;
   }
   function head(t){
@@ -6445,7 +6449,8 @@ async function openBulkFill(ids){
             ${g.jobs.map((j,ji)=>jobRow(g,gi,j,ji)).join("")}
             ${g.pile.length?`<div class="bs-pile">
               <div class="lbl" style="display:block;margin-bottom:3px;text-transform:none">Shared by the books inside — goes on ${esc(g.b.title)||"the collection"}</div>
-              <div>${g.pile.map((v,pi)=>`<button class="mg ${v.on?"on":""}" data-bsp="${gi}.${pi}"><span class="bx">${v.on?"✓":""}</span>${esc(v.name)}${v.kind==="tag"?` <b style="opacity:.6">${v.n}</b>`:""}</button>`).join("")}</div>
+              <div>${g.pile.map((v,pi)=>
+                foundChipHtml(v,`data-bsp="${gi}.${pi}"`,v.kind==="tag"?` <b style="opacity:.6">${v.n}</b>`:"")).join("")}</div>
               <div class="hint" style="margin:4px 0 0">Genres always go here — a genre on one book would take it out from under the series. A word only one of them returned is on that book's own line instead.</div>
             </div>`:""}
           </div>`;}).join("")}</div>
@@ -6463,13 +6468,11 @@ async function openBulkFill(ids){
         w.disabled=!n;w.textContent=n?"Fill in "+plural(n,"book"):"Nothing ticked";
       });
       qa("[data-bsc]",inner).forEach(b=>b.onclick=()=>{
-        const c=at(b.dataset.bsc).c;c.on=!c.on;
-        b.classList.toggle("on",c.on);q(".bx",b).textContent=c.on?"✓":"";
+        tapFoundChip(b,at(b.dataset.bsc).c);
       });
       qa("[data-bsp]",inner).forEach(b=>b.onclick=()=>{
         const [gi,pi]=b.dataset.bsp.split(".").map(Number);
-        const v=groups[gi].pile[pi];v.on=!v.on;
-        b.classList.toggle("on",v.on);q(".bx",b).textContent=v.on?"✓":"";
+        tapFoundChip(b,groups[gi].pile[pi]);
       });
       qa("[data-bsa]",inner).forEach(b=>b.onclick=()=>{
         const au=groups[+b.dataset.bsa].author;au.on=!au.on;
@@ -9734,6 +9737,76 @@ function saveGenresQuiet(){
 const ensureGenre=nm=>{
   if(!genres[nm]){genres[nm]=genreColor(nm);unmarkMetaDel("genre:"+nm);saveGenresQuiet();}
 };
+/* =============== a genre the shelf hasn't got yet is a decision ===============
+   Every fill surface used to wave a ticked genre straight into the vocabulary —
+   which is how the sites' category names ("Adventure and Adventurers",
+   "Ballerinas") became shelf-wide genres one tick at a time. A name that isn't
+   one of your genres now asks before it joins: genre, tag instead, or skip.
+   A name you already have still ticks without ceremony. */
+function genreKnown(n){
+  const low=String(n||"").trim().toLowerCase();
+  return !!low&&Object.keys(genres).some(g=>g.toLowerCase()===low);
+}
+/* pick(fate) fires only for "genre" or "tag" — Skip, Cancel, Esc and the
+   backdrop all just close, leaving the chip unticked. */
+function askNewWord(name,pick){
+  if(panelOpen("newWordAsk"))return;
+  const wrap=document.createElement("div");
+  wrap.id="newWordAsk";wrap.className="ratepanel";
+  /* the fill sheets sit at z 400, far over this panel's usual 60 */
+  wrap.style.zIndex=410;
+  wrap.innerHTML=`<div class="hrow2" style="margin-bottom:4px">
+      <b style="font-size:13px;overflow-wrap:anywhere">“${esc(name)}”</b>
+      <button class="btn" id="nwX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+    <div class="hint" style="margin:0 0 9px">Not one of your genres yet. The sites' category names often describe a book rather than file it — a tag may be its truer home.</div>
+    <div class="cmenu">
+      <button class="cmrow" data-nw="genre">Make it a genre — it joins your list, offered on every book after</button>
+      <button class="cmrow" data-nw="tag">Put it on as a tag instead — your genre list stays as it is</button>
+      <button class="cmrow" data-nw="skip">Skip it</button>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close=dismissable(wrap);
+  const bk=wrap.nextElementSibling;
+  if(bk&&bk.classList&&bk.classList.contains("ratebackdrop"))bk.style.zIndex=409;
+  q("#nwX",wrap).onclick=()=>close();
+  qa("[data-nw]",wrap).forEach(x=>x.onclick=()=>{
+    const f=x.dataset.nw;
+    close();
+    if(f==="genre"||f==="tag")pick(f);
+  });
+}
+/* One chip, three states, shared by the bulk sheet and the barcode sheet: off,
+   on as what it came as, or on as a tag after the ask flipped its kind. The
+   write loops already branch on `kind`, so a flipped chip needs nothing new
+   from them. Unticking a flipped chip puts its kind back, so the next tap
+   asks again rather than remembering an answer you walked back. */
+function foundChipHtml(c,attr,extra){
+  return `<button class="mg ${c.on?"on":""}" ${attr}><span class="bx">${c.on?"✓":""}</span>${esc(c.name)}${extra||""}`
+    +(c.kind==="genre"&&!genreKnown(c.name)?' <i class="nwb">new</i>':"")
+    +`<i class="asw">${c.asTag?" · as a tag":""}</i></button>`;
+}
+function paintFoundChip(btn,c){
+  btn.classList.toggle("on",c.on);
+  q(".bx",btn).textContent=c.on?"✓":"";
+  const aw=q(".asw",btn);if(aw)aw.textContent=c.asTag?" · as a tag":"";
+}
+function tapFoundChip(btn,c){
+  if(c.on){
+    c.on=false;
+    if(c.asTag){c.kind="genre";c.asTag=false;}
+    paintFoundChip(btn,c);
+    return;
+  }
+  if(c.kind==="genre"&&!genreKnown(c.name)){
+    askNewWord(c.name,fate=>{
+      c.on=true;
+      if(fate==="tag"){c.kind="tag";c.asTag=true;}
+      paintFoundChip(btn,c);
+    });
+    return;
+  }
+  c.on=true;paintFoundChip(btn,c);
+}
 /* Across the whole shelf, rather than this one book. A word that was never
    really a genre is usually not really a genre anywhere. */
 async function moveWordEverywhere(name,toGenre){
@@ -11752,6 +11825,8 @@ function renderEditor(){
     const blurbs=(info.blurbs||[]).length?info.blurbs:(info.summary?[{text:info.summary,from:info.source.join(" & ")}]:[]);
     let covI=0,blurbI=0;
     const genSel=new Set();
+    /* the fate the ask gave each ticked name: "genre" or "tag" */
+    const genAs={};
     const newGenres=(info.genres||[]).filter(g=>!cur.genres.some(x=>x.toLowerCase()===g.toLowerCase()));
     const hadCover=en?!!curEnt[en.id]:!!curCover;
     const hadSummary=!!stripHtml((en?en.summary:cur.summary)||"").trim();
@@ -11810,8 +11885,8 @@ function renderEditor(){
         <div id="fpBlurb" style="font-size:13px;max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px"></div>
         <button class="btn" id="fpSum" style="margin-top:6px">${hadSummary?"Replace my summary":"Use as summary"}</button>`:""}
       ${newGenres.length?`<div class="lbl" style="display:block;margin:12px 0 3px">Genres — tick any to add to ${en?"the collection":"this book"}</div>
-        <div>${newGenres.map(g=>`<button class="mg" data-fpg="${esc(g)}"><span class="bx"></span>${esc(g)}</button>`).join("")}</div>
-        <button class="btn" id="fpGen" style="margin-top:6px" disabled>Add ticked as genres</button>`:""}
+        <div>${newGenres.map(g=>`<button class="mg" data-fpg="${esc(g)}"><span class="bx"></span>${esc(g)}${genreKnown(g)?"":' <i class="nwb">new</i>'}<i class="asw"></i></button>`).join("")}</div>
+        <button class="btn" id="fpGen" style="margin-top:6px" disabled>Add the ticked ones</button>`:""}
       ${newTags.length?`<div class="lbl" style="display:block;margin:12px 0 3px">Tags — tick the ones worth keeping${en?" (they go on this story, beside the collection's)":""}</div>
         <div>${newTags.map(t=>`<button class="mg" data-fpt="${esc(t)}"><span class="bx"></span>${esc(t)}</button>`).join("")}</div>
         <button class="btn" id="fpTags" style="margin-top:6px" disabled>Add ticked as keywords</button>`:""}
@@ -11851,10 +11926,16 @@ function renderEditor(){
     if(nx)nx.onclick=()=>{blurbI=(blurbI+1)%blurbs.length;showBlurb();};
     qa("[data-fpg]",box).forEach(b=>b.onclick=()=>{
       const g=b.dataset.fpg;
-      genSel.has(g)?genSel.delete(g):genSel.add(g);
-      b.classList.toggle("on",genSel.has(g));
-      q(".bx",b).textContent=genSel.has(g)?"✓":"";
-      const gb=q("#fpGen",box);if(gb)gb.disabled=!genSel.size;
+      const done=()=>{
+        b.classList.toggle("on",genSel.has(g));
+        q(".bx",b).textContent=genSel.has(g)?"✓":"";
+        const aw=q(".asw",b);if(aw)aw.textContent=genAs[g]==="tag"?" · as a tag":"";
+        const gb=q("#fpGen",box);if(gb)gb.disabled=!genSel.size;
+      };
+      if(genSel.has(g)){genSel.delete(g);delete genAs[g];done();return;}
+      /* a name the shelf hasn't got asks first — see askNewWord */
+      if(!genreKnown(g)){askNewWord(g,f=>{genSel.add(g);genAs[g]=f;done();});return;}
+      genSel.add(g);genAs[g]="genre";done();
     });
     /* Each field's apply is a function of its own, and its own button does
        nothing but call it. That is what lets one button do the lot without
@@ -11872,8 +11953,19 @@ function renderEditor(){
          and clearing any "removed everywhere" mark left on that genre — with the
          mark still standing, the next sync deleted the genre again and the chip
          stayed on the book pointing at nothing. */
+      const addTagWord=t=>{
+        /* the same two homes applyTags writes to: the story's own words when a
+           story was looked up, the book's otherwise */
+        if(en){
+          en.keywords=en.keywords||[];
+          if(![...entKeywordsOf(cur,en)].some(k=>k.toLowerCase()===t.toLowerCase())){
+            en.keywords.push(t);renderEntries();scheduleSave();
+          }
+        }else addKw(t);
+      };
       genSel.forEach(g=>{
         const nm=titleCase(String(g||"").trim());if(!nm)return;
+        if(genAs[g]==="tag"){addTagWord(nm);return;}
         addGenre(nm,genres[nm]||genreColor(nm));
       });
       fg.textContent=`Added ${n} ✓`;fg.disabled=true;genSel.clear();
@@ -15985,7 +16077,7 @@ function openIsbnAdd(){
               <div class="bs-f">${r.info?esc([r.info.author,r.info.pages?r.info.pages+" pages":"",r.info.summary?"a blurb":"",(r.info.covers||[]).filter(Boolean).length?"a cover":""].filter(Boolean).join(" · ")):""}</div>
               ${r.dead?`<div class="bs-w">${esc(r.dead)}</div>`:""}
               ${r.chips&&r.chips.length&&!r.dupe?`<div style="margin-top:4px">${r.chips.map((c,ci)=>
-                `<button class="mg ${c.on?"on":""}" data-isc="${i}.${ci}"><span class="bx">${c.on?"✓":""}</span>${esc(c.name)}</button>`).join("")}</div>`:""}
+                foundChipHtml(c,`data-isc="${i}.${ci}"`)).join("")}</div>`:""}
             </div>
           </div>`).join("")}</div>
         <div class="hrow2" style="margin-top:13px">
@@ -15999,8 +16091,7 @@ function openIsbnAdd(){
       });
       qa("[data-isc]",inner).forEach(b=>b.onclick=()=>{
         const [ri,ci]=b.dataset.isc.split(".").map(Number);
-        const c=S.rows[ri].chips[ci];c.on=!c.on;
-        b.classList.toggle("on",c.on);q(".bx",b).textContent=c.on?"✓":"";
+        tapFoundChip(b,S.rows[ri].chips[ci]);
       });
       /* in place, for the same reason as the fill-in sheet's */
       q("#isAll",inner).onclick=()=>{
