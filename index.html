@@ -9876,8 +9876,31 @@ async function moveWordEverywhere(name,toGenre){
   if(me)cur=JSON.parse(JSON.stringify(me));
   return {n:items.length,storiesLeft};
 }
-function chipMoveMenu(b,kind,name){
+/* The shell every word menu shares — the reading page's and the editor's. One
+   look, one Cancel, one Esc; only the rows and what they do differ by where
+   the chip was tapped, because the editor must write through `cur` and its own
+   redraws while the reading page goes through quickEdit. */
+function openWordMenu(name,hint,acts,run){
   if(panelOpen("chipMenu"))return;
+  const wrap=document.createElement("div");
+  wrap.id="chipMenu";wrap.className="ratepanel";
+  wrap.innerHTML=`<div class="hrow2" style="margin-bottom:4px">
+      <b style="font-size:13px;overflow-wrap:anywhere">“${esc(name)}”</b>
+      <button class="btn" id="cmX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+    <div class="hint" style="margin:0 0 9px">${hint}</div>
+    <div class="cmenu">${acts.map(([label,a])=>a==="sep"
+      ?`<div class="cmsep">${esc(label)}</div>`
+      :`<button class="cmrow" data-cm="${a}">${esc(label)}</button>`).join("")}</div>`;
+  document.body.appendChild(wrap);
+  const close=dismissable(wrap);
+  q("#cmX",wrap).onclick=()=>close();
+  qa("[data-cm]",wrap).forEach(x=>x.onclick=async()=>{close();run(x.dataset.cm);});
+}
+/* The rename/colour/delete panel lives in the editor, so a rename asked for on
+   the reading page is handed over: this names the word, the editor opens it on
+   arrival. */
+let tagEditJump=null;
+function chipMoveMenu(b,kind,name){
   const ens=(b.entries)||[];
   const isC=isColl(b)&&ens.length>1;
   const row=kind==="s"?storyTagRows(b).find(r=>r.name===name):null;
@@ -9889,35 +9912,24 @@ function chipMoveMenu(b,kind,name){
     acts.push(["Take it off this book","off"]);
     acts.push(["Everywhere on the shelf","sep"]);
     acts.push([`Make it a tag on every book — it stops being one of your genres`,"gt-all"]);
+    acts.push(["✎ Rename it, or change its colour","edit"]);
   }else if(kind==="t"){
     acts.push([`Make it a genre on this book${isC?" — every story inside gets it":""}`,"tg"]);
     if(isC)acts.push(["Keep it on only some of the stories","down"]);
     acts.push(["Take it off this book","off"]);
     acts.push(["Everywhere on the shelf","sep"]);
     acts.push(["Make it a genre on every book that has it","tg-all"]);
+    acts.push(["✎ Rename it, or change its colour","edit"]);
   }else{
     acts.push([`Make it a genre — it goes on the whole collection`,"sg"]);
     acts.push(["Put it on the whole collection as a tag","up"]);
     acts.push([`Take it off ${row.on.length===1?"that story":"all "+row.on.length}`,"soff"]);
   }
-  const wrap=document.createElement("div");
-  wrap.id="chipMenu";wrap.className="ratepanel";
-  wrap.innerHTML=`<div class="hrow2" style="margin-bottom:4px">
-      <b style="font-size:13px;overflow-wrap:anywhere">“${esc(name)}”</b>
-      <button class="btn" id="cmX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
-    <div class="hint" style="margin:0 0 9px">${kind==="g"
-      ?"A genre on this book. Genres are where a book is filed; tags describe it."
-      :kind==="t"?`A tag on this ${isC?"collection, carried by every story inside":"book"}.`
-      :`A tag on ${row.on.length===1?"one story":row.on.length+" stories"} — ${esc(row.on.map(en=>en.title||"Untitled").join(", "))}.`}</div>
-    <div class="cmenu">${acts.map(([label,a])=>a==="sep"
-      ?`<div class="cmsep">${esc(label)}</div>`
-      :`<button class="cmrow" data-cm="${a}">${esc(label)}</button>`).join("")}</div>`;
-  document.body.appendChild(wrap);
-  const close=dismissable(wrap);
-  q("#cmX",wrap).onclick=()=>close();
-  qa("[data-cm]",wrap).forEach(x=>x.onclick=async()=>{
-    const a=x.dataset.cm;
-    close();
+  const hint=kind==="g"
+    ?"A genre on this book. Genres are where a book is filed; tags describe it."
+    :kind==="t"?`A tag on this ${isC?"collection, carried by every story inside":"book"}.`
+    :`A tag on ${row.on.length===1?"one story":row.on.length+" stories"} — ${esc(row.on.map(en=>en.title||"Untitled").join(", "))}.`;
+  openWordMenu(name,hint,acts,async a=>{
     const low=name.toLowerCase();
     if(a==="gt"){
       await quickEdit(bk=>{
@@ -9976,6 +9988,12 @@ function chipMoveMenu(b,kind,name){
           if((en.keywords||[]).length)en.keywords=en.keywords.filter(w=>w.toLowerCase()!==low);
         });
       });
+    }else if(a==="edit"){
+      /* over to the editor face, which opens the panel on arrival — see
+         tagEditJump. One visit: their read-or-edit default is left alone. */
+      tagEditJump={kind:kind==="g"?"genre":"keyword",name};
+      bookMode="edit";renderBook();
+      return;
     }else if(a==="gt-all"||a==="tg-all"){
       const toGenre=a==="tg-all";
       const n=books.filter(bk=>toGenre
@@ -13497,10 +13515,10 @@ function renderEditor(){
       cur.kwBreaks=[...s];
       renderKw();scheduleSave();});
     qa("[data-kedit]",w).forEach(x=>x.onclick=e=>{
-      if(e.target.closest("[data-kx],[data-kmv],[data-kbr]")||!tagEdit)return;
-      openTagEditor("keyword",x.dataset.kedit);});
+      if(e.target.closest("[data-kx],[data-kmv],[data-kbr]"))return;
+      tagEdit?openTagEditor("keyword",x.dataset.kedit):editorChipMenu("t",x.dataset.kedit);});
     makeChipsDraggable(w,"[data-kedit]",
-      ()=>cur.keywords,l=>{cur.keywords=l;renderKw();},scheduleSave);
+      ()=>cur.keywords,l=>{cur.keywords=l;renderKw();},scheduleSave,true);
     qa("[data-ks2]",w).forEach(x=>x.onclick=()=>addKw(x.dataset.ks2));
     const ki=q("#kwIn",w);
     /* only the list below redraws as you type, so the box keeps your cursor */
@@ -13763,6 +13781,81 @@ function renderEditor(){
        deletes one for good lives, and it only shows while this is on */
     renderGenres();renderKw();renderKwSug();
   };
+  /* The reading page's chip menu, here too — tapping a chip used to do nothing
+     in the editor unless "Edit names & colours" was on, and what it did then
+     (open the rename panel) was a different thing than the same tap did on the
+     reading page (open the menu). One tap, one menu, both faces. The actions
+     write through `cur` and this editor's own redraws, never quickEdit — a
+     quickEdit here would re-clone `cur` from the shelf and drop anything typed
+     but not yet saved. */
+  function editorChipMenu(kind,name){
+    const isG=kind==="g";
+    const low=name.toLowerCase();
+    const gn=titleCase(String(name).trim());
+    const broken=(isG?(cur.genreBreaks||[]):(cur.kwBreaks||[])).includes(name);
+    const acts=[];
+    acts.push(isG?["Make it a tag on this book","swap"]:["Make it a genre on this book","swap"]);
+    acts.push(["Take it off this book","off"]);
+    acts.push([broken?"Let the next one sit beside this":"Start a new row after this","br"]);
+    acts.push(["Everywhere on the shelf","sep"]);
+    acts.push(isG?["Make it a tag on every book — it stops being one of your genres","all"]
+                 :["Make it a genre on every book that has it","all"]);
+    acts.push(["✎ Rename it, or change its colour","edit"]);
+    openWordMenu(name,isG
+      ?"A genre on this book. Genres are where a book is filed; tags describe it."
+      :"A tag on this book.",acts,async a=>{
+      if(a==="swap"){
+        if(isG){
+          cur.genres=cur.genres.filter(g=>g!==name);
+          cur.genreBreaks=(cur.genreBreaks||[]).filter(g=>g!==name);
+          cur.keywords=cur.keywords||[];
+          if(!cur.keywords.some(w=>w.toLowerCase()===low))cur.keywords.push(name);
+        }else{
+          ensureGenre(gn);
+          cur.keywords=cur.keywords.filter(w=>w.toLowerCase()!==low);
+          cur.kwBreaks=(cur.kwBreaks||[]).filter(w=>w.toLowerCase()!==low);
+          if(!cur.genres.includes(gn))cur.genres.push(gn);
+        }
+        renderGenres();renderKw();scheduleSave();
+      }else if(a==="off"){
+        if(isG){
+          cur.genres=cur.genres.filter(g=>g!==name);
+          cur.genreBreaks=(cur.genreBreaks||[]).filter(g=>g!==name);
+          renderGenres();
+        }else{
+          cur.keywords=cur.keywords.filter(w=>w.toLowerCase()!==low);
+          cur.kwBreaks=(cur.kwBreaks||[]).filter(w=>w!==name);
+          renderKw();
+        }
+        scheduleSave();
+      }else if(a==="br"){
+        const key=isG?"genreBreaks":"kwBreaks";
+        const s=new Set(cur[key]||[]);
+        s.has(name)?s.delete(name):s.add(name);
+        cur[key]=[...s];
+        (isG?renderGenres:renderKw)();
+        scheduleSave();
+      }else if(a==="all"){
+        const toGenre=!isG;
+        const n=books.filter(bk=>toGenre
+          ?(bk.keywords||[]).some(w=>w.toLowerCase()===low)
+          :(bk.genres||[]).includes(name)).length;
+        if(!confirm(toGenre
+          ?`Make “${name}” a genre everywhere?\n\n${n} book${n===1?"":"s"} carr${n===1?"ies":"y"} it as a tag — on ${n===1?"it":"them"} it becomes the genre “${gn}”.\n\nA word on a story inside a collection is left as a tag: a story can't hold a genre of its own without giving up its collection's.\n\nUndo puts all of it back.`
+          :`Make “${name}” a tag everywhere?\n\nIt comes off ${n} book${n===1?"":"s"} as a genre and goes on ${n===1?"it":"them"} as a tag, and it stops being one of your genres altogether.\n\nUndo puts all of it back.`))return;
+        /* anything half-typed is written down first — moveWordEverywhere ends by
+           re-cloning `cur` from the shelf, and an unsaved title would go with it */
+        finishSaveThen(async()=>{
+          const res=await moveWordEverywhere(name,toGenre);
+          renderGenres();renderKw();renderKwSug();
+          if(res.storiesLeft)alert(`Done on ${res.n} book${res.n===1?"":"s"}.\n\n${res.storiesLeft} stor${res.storiesLeft===1?"y":"ies"} inside collections still carr${res.storiesLeft===1?"ies":"y"} it as a tag, and ${res.storiesLeft===1?"was":"were"} left alone.`);
+        });
+      }else if(a==="edit"){
+        openTagEditor(isG?"genre":"keyword",name);
+        const tp=q("#tagPanel");if(tp)tp.scrollIntoView({block:"center"});
+      }
+    });
+  }
 
   /* genres */
   let pendingGenre=null;
@@ -13795,10 +13888,12 @@ function renderEditor(){
       cur.genreBreaks=[...s];
       renderGenres();scheduleSave();});
     qa("[data-gedit]").forEach(x=>x.onclick=e=>{
-      if(e.target.closest("[data-gx],[data-gmv],[data-gbr]")||!tagEdit)return;
-      openTagEditor("genre",x.dataset.gedit);});
+      if(e.target.closest("[data-gx],[data-gmv],[data-gbr]"))return;
+      /* with "Edit names & colours" on, straight to the rename panel as ever;
+         otherwise the same one menu a tap opens on the reading page */
+      tagEdit?openTagEditor("genre",x.dataset.gedit):editorChipMenu("g",x.dataset.gedit);});
     makeChipsDraggable(q("#genChips"),"[data-gedit]",
-      ()=>cur.genres,l=>{cur.genres=l;renderGenres();},scheduleSave);
+      ()=>cur.genres,l=>{cur.genres=l;renderGenres();},scheduleSave,true);
     /* every genre you've already made is on show — typing just narrows it */
     const v=q("#fGenre").value.trim();
     const pool=Object.keys(genres).filter(g=>!cur.genres.includes(g)).sort((a,b)=>a.localeCompare(b));
@@ -13833,6 +13928,13 @@ function renderEditor(){
   q("#fGenre").addEventListener("input",()=>{pendingGenre=null;renderGenres();});
   q("#fGenre").addEventListener("keydown",e=>{if(e.key==="Enter")addGenre(q("#fGenre").value,null);});
   renderGenres();
+  /* a rename asked for on the reading page arrives here — open the panel it
+     was promised, on the word it named */
+  if(tagEditJump){
+    const j=tagEditJump;tagEditJump=null;
+    openTagEditor(j.kind,j.name);
+    const tp=q("#tagPanel");if(tp)tp.scrollIntoView({block:"center"});
+  }
 
   /* lists */
   function renderList(key){
