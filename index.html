@@ -13091,6 +13091,7 @@ function renderEditor(){
             <button class="btn entsub" data-egen="${en.id}" title="Genres for this story on its own">Genres · ${entOwnGenres(en)?en.genres.length:"same"}</button>
             <button class="btn entsub" data-ekw="${en.id}" title="Tags for this story, on top of the collection's">Tags · ${entOwnKeywords(en)?"+"+en.keywords.length:"same"}</button>
             <button class="btn entsub" data-easp="${en.id}" title="What stood out in this story, in words">Words${en.aspects&&Object.keys(en.aspects).length?" ✓":""}</button>
+            <button class="btn entsub" data-eout="${en.id}" title="Make it its own book on the shelf again — its rating, tags, pages, dates, cover and writing all go with it">⤴ Own book</button>
           </div>
           ${entAspOpen.has(en.id)?`<div class="dnfbox aspbox" style="margin:4px 0">${aspectChipsHtml(en,en.id)}${sugHtml(en,en.id)}</div>`:""}
           <div class="entreads" data-enrw="${en.id}">${readListHtml(en,en.id,false)}</div>
@@ -13169,6 +13170,76 @@ function renderEditor(){
     qa("[data-egen]",list).forEach(el=>el.onclick=()=>openEntGenres(el.dataset.egen));
     qa("[data-ekw]",list).forEach(el=>el.onclick=()=>openEntKw(el.dataset.ekw));
     qa("[data-ec]",list).forEach(el=>el.onclick=()=>{pendingEnt=el.dataset.ec;q("#entCoverFile").click();});
+    /* The reverse of folding a book in, which never had one — the owner filed a
+       book into a collection by accident and the only ways back were deleting
+       the story or undoing a whole import. Everything the story VISIBLY had
+       goes with it: the words and genres it inherited from the collection are
+       written onto the book itself, since outside there is nothing to inherit
+       from. One button press is one undo step — the pending autosave is
+       flushed first so the editor's own save cannot add a second. */
+    qa("[data-eout]",list).forEach(el=>el.onclick=()=>{
+      const en=find(el.dataset.eout);if(!en)return;
+      const left=cur.entries.length-1;
+      if(!confirm(`Take “${en.title||"Untitled"}” out of “${cur.title||"this collection"}”?\n\nIt becomes its own book on the shelf again — its rating, tags, pages, dates, cover and writing go with it. The collection keeps its other ${left} ${left===1?"story":"stories"}.\n\nUndo puts it back.`))return;
+      finishSaveThen(async()=>{
+        const coll=books.find(x=>x.id===cur.id);if(!coll)return;
+        const before=JSON.parse(JSON.stringify(coll));
+        const nb=blankBook(uid());
+        nb.title=en.title||"";
+        nb.author=entAuthorOf(coll,en)||"";
+        nb.kind=coll.kind||"book";
+        nb.rating=en.rating;nb.ratingOwn=en.rating!=null;
+        nb.pages=en.pages||"";nb.isbn=String(en.isbn||"").trim();
+        nb.summary=en.summary||"";nb.canvasText=en.notes||"";
+        nb.keywords=entKeywordsOf(coll,en).slice();
+        nb.genres=entGenresOf(coll,en).slice();
+        nb.favorite=!!en.favorite;
+        nb.dnf=!!en.dnf;nb.hold=!!en.hold;
+        nb.status=en.status||statusOf(coll);
+        nb.aspects=en.aspects?JSON.parse(JSON.stringify(en.aspects)):undefined;
+        nb.readings=readsOf(en).map(r=>Object.assign({},r,{id:uid()}));
+        /* derives the finish date from the readings; the entry's own loose date
+           only fills in where no dated reading answers for it */
+        syncReads(nb);
+        if(!nb.dateFinished)nb.dateFinished=String(en.dateFinished||"");
+        nb.modified=Date.now();
+        /* its picture, copied to a cover of its own. The story's copy stays in
+           the images store so Undo can hand the entry back whole — the same
+           30-day patience every other removal shows a picture. */
+        if(en.cover){
+          try{
+            const im=await dbGet("images",coll.id+"|"+en.id);
+            if(im&&im.data){
+              await dbPut("covers",{id:nb.id,data:im.data});
+              coverCache.set(nb.id,im.data);
+              nb.coverV=Date.now();
+            }
+          }catch(e){}
+        }
+        coll.entries=coll.entries.filter(x=>x.id!==en.id);
+        coll.modified=Math.max(Date.now(),(coll.modified||0)+1);
+        await dbPut("books",coll);
+        await dbPut("books",nb);
+        books.unshift(nb);
+        delete curEnt[en.id];
+        /* the open editor keeps drawing from its own copy — bring it along */
+        cur.entries=cur.entries.filter(x=>x.id!==en.id);
+        cur.modified=coll.modified;
+        pushOp({t:"bulk",items:[
+          {id:coll.id,before,after:JSON.parse(JSON.stringify(coll))},
+          {id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))}
+        ]});
+        if(SYNC.on){
+          enqueue({kind:"book",id:coll.id});
+          enqueue({kind:"book",id:nb.id});
+          if(nb.coverV)enqueue({kind:"cover",id:nb.id});
+          flushQueue();
+        }
+        renderEntries();sumEntryPages();
+        if(syncCollRating(cur)){const fr2=q("#fRate");if(fr2)fr2.value=cur.rating??"";}
+        refreshRate();
+      });
+    });
     qa("[data-ex]",list).forEach(el=>el.onclick=()=>{
       const en=find(el.dataset.ex);if(!en)return;
       if(!confirm(`Remove “${en.title||"Untitled"}” from this collection?`))return;
