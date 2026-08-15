@@ -5851,6 +5851,14 @@ let libShown=LIB_PAGE,libListSig="";
    Three things it will not do: write over anything you typed, guess at a fic —
    neither site has ever heard of one — or add a genre nobody chose. */
 const BULK_CAP=250;
+/* How many books are asked about at the same moment. They used to be asked one
+   after another, each one waited out in full before the next was begun — so a
+   run's length was the sum of every book's slowest site, and a single book that
+   took six seconds held the other two hundred and forty-nine behind it. Four at
+   a time is four lookups in flight, not four times the load: each still waits
+   its own gap afterwards, so the two free sites see the same steady trickle,
+   only without the idle time between. */
+const AT_ONCE=4;
 /* an imported field can be filled in and still be empty in every sense that
    matters: "Unknown" is what a shelf writes when it did not know either */
 function looksBlank(v){
@@ -6052,13 +6060,12 @@ async function openBulkFill(ids){
        the number of books ticked */
     S.total=S.asked=run.length;
     draw();
-    for(const j of run){
-      if(stop){S.stopped=true;break;}
+    async function askOne(j){
       const title=titleOf(j);
-      S.now=title||"Untitled";S.done++;drawProgress();
+      S.now=title||"Untitled";drawProgress();
       /* the title is the whole of the question — there is nothing to ask without
          one, and asking anyway returns somebody else's book */
-      if(!title){j.row={dead:"No title to search by.",found:[],want:{},chips:[]};continue;}
+      if(!title){j.row={dead:"No title to search by.",found:[],want:{},chips:[]};return;}
       /* a story is searched under its collection's author, which is the only
          name it has */
       const author=looksBlank(j.b.author)?"":String(j.b.author||"").trim();
@@ -6067,15 +6074,33 @@ async function openBulkFill(ids){
          a story: it names one edition of one thing. */
       const ask=j.en?String(j.en.isbn||"").trim():String(j.b.isbn||"").trim();
       let info=null;const probe={};
-      try{info=await fetchBookInfo(title,author,ask,probe);}
+      /* `quick`: Open Library's blurb is a request of its own, and it is only
+         ever wanted here when Google handed none over. The single-book panel
+         still asks for it every time — it offers you the blurbs to choose
+         between, and this sheet does not. */
+      try{info=await fetchBookInfo(title,author,ask,probe,false,true);}
       catch(e){info=null;}
-      if(!info){j.row={dead:"Nothing came back for this title.",asked:probe.asked||[],found:[],want:{},chips:[]};continue;}
+      if(!info){j.row={dead:"Nothing came back for this title.",asked:probe.asked||[],found:[],want:{},chips:[]};return;}
       j.row=weigh(j,info,!!ask);
       if(info.gErr)S.gDown++;
       if(info.oErr)S.oDown++;
-      /* a small gap so two free sites are not hammered flat */
-      await new Promise(r=>setTimeout(r,150));
     }
+    /* Four askers sharing one list, each taking the next book the moment it is
+       free. The count climbs when a book is FINISHED, not when it is begun —
+       with four in the air at once, counting them as they start would run the
+       bar ahead of the work and finish it before the last three landed. */
+    let nextJob=0;
+    await Promise.all(Array.from({length:Math.min(AT_ONCE,run.length)},async()=>{
+      for(;;){
+        if(stop){S.stopped=true;return;}
+        const i=nextJob++;
+        if(i>=run.length)return;
+        await askOne(run[i]);
+        S.done++;drawProgress();
+        /* a small gap so two free sites are not hammered flat */
+        await new Promise(r=>setTimeout(r,150));
+      }
+    }));
     groups.forEach(buildVocab);
     S.stage="review";draw();
     }finally{busy=false;}
@@ -6140,8 +6165,39 @@ async function openBulkFill(ids){
     if(busy)return;
     busy=true;
     try{
-    S.stage="writing";S.done=0;S.filled=0;S.failedCovers=[];stop=false;S.stopped=false;
+    S.done=0;S.filled=0;S.failedCovers=[];stop=false;S.stopped=false;
     S.vanished=0;S.storageFull=false;
+    /* The pictures, fetched before a word is written and several at a time.
+       They were downloaded inside the writing loop, one at a time, in between
+       saving books — which made the slow part of this button a queue of
+       downloads waiting on each other while nothing else happened. Fetching is
+       all that moves up here; the writing below is untouched, still one book at
+       a time, still re-reading the shelf for each one, because that part has to
+       stay exactly as careful as it was. */
+    const gotCover=new Map();
+    const wantCovers=[];
+    groups.forEach(g=>g.jobs.forEach(j=>{
+      if(j.row&&j.row.on&&j.row.info&&j.row.want.cover)wantCovers.push(j);}));
+    if(wantCovers.length){
+      S.stage="covers";S.total=wantCovers.length;
+      draw();
+      let nextPic=0;
+      await Promise.all(Array.from({length:Math.min(AT_ONCE,wantCovers.length)},async()=>{
+        for(;;){
+          if(stop){S.stopped=true;return;}
+          const i=nextPic++;
+          if(i>=wantCovers.length)return;
+          const j=wantCovers[i];
+          S.now=titleOf(j)||"Untitled";
+          /* null, not simply absent: a picture that refused every one of its
+             candidates here must not be asked for a second time below */
+          try{gotCover.set(j,await fetchCoverData(j.row.want.cover,600));}
+          catch(e){gotCover.set(j,null);}
+          S.done++;drawProgress();
+        }
+      }));
+    }
+    S.stage="writing";S.done=0;
     S.total=groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.on&&j.row.info).length,0);
     draw();
     const items=[];let coversAdded=0;
@@ -6193,7 +6249,13 @@ async function openBulkFill(ids){
              it is asked. Only here: the single-book panel still applies exactly
              the picture you pointed at, because there you chose one. */
           try{
-            const data=await fetchCoverData(r.want.cover,600);
+            /* fetched a moment ago, four at a time. `null` means every candidate
+               was asked and every one refused, so there is nothing to retry;
+               undefined means this one was never reached (a run stopped part
+               way) and it is fetched here as it always was. */
+            const pre=gotCover.get(j);
+            if(pre===null)throw new Error("no cover");
+            const data=pre||await fetchCoverData(r.want.cover,600);
             if(en){
               en.cover=true;en.coverV=Date.now();
               await dbPut("images",{key:b.id+"|"+en.id,data,v:en.coverV});
@@ -6281,7 +6343,7 @@ async function openBulkFill(ids){
     const bar=q("#bsBar",inner),live=q("#bsLive",inner);
     const total=Math.max(1,S.total);
     if(bar)bar.style.width=Math.round(S.done/total*100)+"%";
-    if(live)live.textContent=`${S.stage==="writing"?"Filling in":"Looking up"} ${S.now}… (${S.done} of ${S.total})`;
+    if(live)live.textContent=`${S.stage==="writing"?"Filling in":S.stage==="covers"?"Fetching the cover for":"Looking up"} ${S.now}… (${S.done} of ${S.total})`;
   }
   const liveJobs=()=>groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.on&&j.row.info).length,0);
   const usableJobs=()=>groups.reduce((a,g)=>a.concat(g.jobs.filter(j=>j.row&&j.row.info&&j.row.found.length)),[]);
@@ -6307,19 +6369,27 @@ async function openBulkFill(ids){
   }
   function head(t){
     return `<div class="hrow2" style="margin-bottom:9px"><h2>${t}</h2>
-      <button class="btn" id="bsX" style="margin-left:auto;padding:4px 10px">${S.stage==="running"||S.stage==="writing"?"Stop":"Close"}</button></div>`;
+      <button class="btn" id="bsX" style="margin-left:auto;padding:4px 10px">${S.stage==="running"||S.stage==="writing"||S.stage==="covers"?"Stop":"Close"}</button></div>`;
   }
   function draw(){
     if(S.stage==="setup"){
       const want=plan(),capped=Math.max(0,want-BULK_CAP),willRun=Math.min(want,BULK_CAP);
-      const mins=Math.max(1,Math.round(willRun*1.6/60));
+      /* Measured, not guessed. Twelve real books through the whole button —
+         looking them up, fetching the covers and writing them down — came to
+         0.8s each with four in the air at once, where the same twelve took 2.1s
+         each one at a time. The old figure here was a second and a half and it
+         counted only the looking up: the covers, which were the slow half, were
+         left out of the promise entirely, so a run always ran long. This one
+         covers all of it, and still says "roughly", because either site can
+         have a bad afternoon. */
+      const mins=Math.max(1,Math.round(willRun*0.8/60));
       inner.innerHTML=head("Fill in "+plural(groups.length,"thing"))+`
         <div class="hint" style="margin:0 0 11px">
           ${collN?`${plural(collN,"collection")} ticked, and <b>the ${inside} book${inside===1?"":"s"} inside ${collN===1?"it":"them"} will be looked up too</b> — a collection has nothing of its own to find, its books do. `:""}
           ${notBooks?`${plural(notBooks,"thing")} ticked can't be looked up — Google Books and Open Library only know published books, not fanfic or chats. `:""}
           <b>${willRun} of ${groups.reduce((n,g)=>n+g.jobs.length,0)}</b> need something; the rest already have everything you've ticked below and aren't asked about at all.
           ${capped?`A run is capped at ${BULK_CAP} lookups so the two free sites aren't hammered, so <b>${capped} will be left for next time</b> — filled books drop out of ⭱ Straight from an import, so the count tells you where you got to. `:""}
-          At about a second and a half each, this one takes roughly ${plural(mins,"minute")}.</div>
+          ${AT_ONCE} are asked about at once, and the covers are fetched ${AT_ONCE} at a time as well, so this one takes <b>roughly ${plural(mins,"minute")}</b> — the pictures included. On a bad day at either site, longer.</div>
         <div class="lbl" style="display:block;margin-bottom:4px">Fill in</div>
         <div>${FIELDS.map(([k,l])=>`<button class="mg ${S.fields[k]?"on":""}" data-bsf="${k}"><span class="bx">${S.fields[k]?"✓":""}</span>${l}</button>`).join("")}</div>
         <div class="hint" style="margin:6px 0 0">Only blanks are filled. Anything you typed is left exactly as it is — including a page count you corrected. "Unknown" counts as blank.</div>
@@ -6336,13 +6406,15 @@ async function openBulkFill(ids){
         lookUp();
       };
     }
-    else if(S.stage==="running"||S.stage==="writing"){
-      inner.innerHTML=head(S.stage==="writing"?"Filling them in":"Looking them up")+`
+    else if(S.stage==="running"||S.stage==="writing"||S.stage==="covers"){
+      inner.innerHTML=head(S.stage==="writing"?"Filling them in":S.stage==="covers"?"Fetching the covers":"Looking them up")+`
         <div class="bs-bar"><i id="bsBar"></i></div>
         <div class="hint" id="bsLive" style="margin:0"></div>
         <div class="hint" style="margin:9px 0 0">${S.stage==="writing"
-          ?"Covers are downloaded one at a time, so this part is the slow one."
-          :"Nothing has been written yet. Stopping keeps whatever has been found so far."}</div>`;
+          ?"The pictures are already here — this part is just the writing down."
+          :S.stage==="covers"
+          ?`${AT_ONCE} at a time, and still nothing written. Stopping here writes nothing at all.`
+          :`${AT_ONCE} books are asked about at once. Nothing has been written yet — stopping keeps whatever has been found so far.`}</div>`;
       drawProgress();
     }
     else if(S.stage==="review"){
@@ -6452,7 +6524,11 @@ async function openBulkFill(ids){
     }
     const x=q("#bsX",inner);
     if(x)x.onclick=()=>{
-      if(S.stage==="running"||S.stage==="writing"){stop=true;return;}
+      /* the cover stage belongs with the other two: its button says Stop, and
+         Stop has never meant close. Left out of this line it shut the whole
+         sheet instead, taking the review list with it — everything found,
+         thrown away by a button that promised only to stop. */
+      if(S.stage==="running"||S.stage==="writing"||S.stage==="covers"){stop=true;return;}
       shut();
     };
   }
@@ -15283,9 +15359,30 @@ function bareTitle(s){
     .replace(/\s+/g," ").trim();
 }
 const titleSame=(a,b)=>{const x=bareTitle(a),y=bareTitle(b);return !!x&&!!y&&x===y;};
+/* Google's quota is one number shared by everybody using the app without a key
+   of their own, and it is dry most days. Once it has said so, every further ask
+   is two more requests (it is tried twice) waited out for an answer that cannot
+   come — two hundred and fifty books' worth of them in a single fill-in run. So
+   the first refusal stands for the next ten minutes and Google is not asked
+   again until then. It is never silent: a skipped ask counts as "Google didn't
+   answer", which is what the run already says out loud and what makes running
+   it again another day worth doing. Ten minutes because the quota is a daily
+   one that also resets, and a window that heals itself needs no button. */
+const GDRY={until:0};
+const googleDry=()=>Date.now()<GDRY.until;
+/* only a real refusal from the site trips it — a timeout is bad luck, not a
+   quota, and the skip's own rejection carries no number so it cannot re-arm
+   the window it came from */
+function noteGoogleDry(e){
+  if(/\((429|403)\)/.test(String(e&&e.message||"")))GDRY.until=Date.now()+10*60*1000;
+}
 /* `probe`, when given, is filled in with what was actually asked — but only on
-   the way out of a failure, so it costs nothing when a book is found. */
-async function fetchBookInfo(title,author,isbn,probe,loose){
+   the way out of a failure, so it costs nothing when a book is found.
+   `quick` drops the one request that is a request of its own — Open Library's
+   blurb — whenever Google has already handed a blurb over. Bulk fill passes it;
+   the single-book panel does not, because it offers you every blurb it can find
+   and lets you pick. */
+async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   /* olCovers belongs in here with the rest — it was only ever created further
      down and survived on a `||[]` guard at the one place that reads it.
      Gone from here: coverUrl, which was filled in from Google and then read by
@@ -15306,7 +15403,9 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
   const qs=isbn?`isbn:${isbn}`:`intitle:"${title}"${author?` inauthor:"${author}"`:""}`;
   /* an own key in config.js skips the shared (often exhausted) keyless quota */
   const gk=CFG.googleBooksKey&&!/YOUR_/.test(CFG.googleBooksKey)?"&key="+encodeURIComponent(CFG.googleBooksKey):"";
-  const gP=fetchJson("https://www.googleapis.com/books/v1/volumes?maxResults=5&q="+encodeURIComponent(qs)+gk,2,6000);
+  const gP=googleDry()
+    ?Promise.reject(new Error("out of quota a moment ago — not asked again yet"))
+    :fetchJson("https://www.googleapis.com/books/v1/volumes?maxResults=5&q="+encodeURIComponent(qs)+gk,2,6000);
   /* the two ratings fields this used to ask for were never looked at once they
      arrived, so they are simply weight on the answer */
   /* author_name is asked for so there is still a name to offer on the days
@@ -15364,7 +15463,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
       if(u)out.gCovers.push(u);
       (v.categories||[]).forEach(c=>String(c).split("/").forEach(p=>{const t=p.trim();if(t)out.genres.push(t);}));
     });
-  }catch(e){gErr=true;}
+  }catch(e){gErr=true;noteGoogleDry(e);}
   try{
     /* subjects only come back when asked for explicitly via `fields` — the
        asking already started, alongside Google's, up at the top */
@@ -15400,7 +15499,10 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
          pages and its cover and no blurb is not a book without a blurb, it is a
          request that didn't land. It used to fail in silence; now it says so,
          and it is given a third try before giving up. */
-      if(d.key){
+      /* ...and it is skipped outright when a blurb is already in hand and the
+         caller said it only wants one. That is a third of a lookup's requests
+         on every book Google answered for. */
+      if(d.key&&!(quick&&out.summary)){
         try{
           const w=await fetchJson("https://openlibrary.org"+d.key+".json",3);
           const desc=w&&w.description;
@@ -15478,7 +15580,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose){
      simply the wrong name for one book inside it turns a perfectly findable
      title into nothing at all. One extra request, only ever after a failure,
      and it cannot loop: the second ask carries no author to drop. */
-  if(!isbn&&author&&!loose)return fetchBookInfo(title,"",isbn,probe,true);
+  if(!isbn&&author&&!loose)return fetchBookInfo(title,"",isbn,probe,true,quick);
   if(gErr&&oErr)throw new Error("unreachable");
   return null;
 }
