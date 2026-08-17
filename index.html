@@ -2908,18 +2908,33 @@ let metaTimes={};
    already keeps. What we have deliberately taken OUT is held aside first, so
    that joining cannot hand us back the thing we just removed. */
 const mapGone={deletions:new Set(),metaDel:new Set()};
-async function saveSharedMap(key,map){
-  const gone=mapGone[key];
-  try{
-    const row=await dbGet("meta",key);
-    const disk=(row&&row.v&&typeof row.v==="object"&&!Array.isArray(row.v))?row.v:null;
-    if(disk)for(const k in disk){
-      if(gone&&gone.has(k))continue;
-      if((disk[k]||0)>(map[k]||0))map[k]=disk[k];
-    }
-  }catch(e){}
-  if(gone)gone.clear();
-  await dbPut("meta",{k:key,v:map});
+/* One save at a time per map. Unguarded, overlapping saves each read the disk
+   copy as it stood BEFORE the others wrote — so when an undo unmarks a whole
+   list in a loop (thirty unmark calls, thirty saves in flight at once), the
+   first save to finish released its keys from the held-aside set and every
+   save still parked at its read then joined those keys straight back from the
+   stale disk copy it was holding. Measured: 29 of 30 removals resurrected.
+   Queued one behind another, each save reads what its predecessor wrote, the
+   set can be safely emptied per run, and a key removed while a save is in
+   flight simply rides the next save in the chain. */
+const mapSaveChain={};
+function saveSharedMap(key,map){
+  const run=async()=>{
+    const gone=mapGone[key];
+    try{
+      const row=await dbGet("meta",key);
+      const disk=(row&&row.v&&typeof row.v==="object"&&!Array.isArray(row.v))?row.v:null;
+      if(disk)for(const k in disk){
+        if(gone&&gone.has(k))continue;
+        if((disk[k]||0)>(map[k]||0))map[k]=disk[k];
+      }
+    }catch(e){}
+    if(gone)gone.clear();
+    await dbPut("meta",{k:key,v:map});
+  };
+  const p=(mapSaveChain[key]||Promise.resolve()).then(run,run);
+  mapSaveChain[key]=p;
+  return p;
 }
 function touchMeta(){
   const now=Date.now();
@@ -3443,6 +3458,10 @@ async function pullAll(){
              until the next pull, when takeWhole's keep-what-only-you-know rule
              handed the old assignment straight back from the other device. */
           else if(kind==="kwcat")delete kwCats[nm];
+          /* likewise the word's own colour: "make it plain" was a bare delete,
+             so the plainness never propagated — the other device kept its copy
+             of the colour and politely handed it back */
+          else if(kind==="kwcolor")delete kwColors[nm];
           else if(kind==="fandom")delete fandoms[nm];
           else if(kind==="gart")delete groupArt[nm];
           else if(kind==="bg")bgList=bgList.filter(x=>x.id!==nm);
@@ -4144,7 +4163,10 @@ function repairGroupArt(){
       }
     }
   }catch(e){}
-  if(moved)dbPut("meta",{k:"groupArt",v:groupArt});
+  /* through saveGroupArt, not a bare dbPut — repaired only locally, the cloud
+     kept the stray key and re-delivered it on every pull, so the repair ran
+     forever instead of once */
+  if(moved)saveGroupArt();
   return moved;
 }
 function saveGroupArt(){dbPut("meta",{k:"groupArt",v:groupArt});enqueue({kind:"meta",key:"groupArt"});}
@@ -4728,7 +4750,11 @@ async function applyOp(op,inv){
         /* a fandom's cast comes back with it, or the name returns empty and
            every character that lived under it is quietly gone */
         else if(lb.kind==="fandom")fandoms[lb.name]=lb.cast||[];
-        else{if(lb.color)kwColors[lb.name]=lb.color;if(lb.cat)kwCats[lb.name]=lb.cat;}
+        /* the colour and filing marks too — an older "made it plain" or "took
+           it out of its family" mark would strip what this restores at the
+           next pull */
+        else{if(lb.color){kwColors[lb.name]=lb.color;unmarkMetaDel("kwcolor:"+lb.name);}
+             if(lb.cat){kwCats[lb.name]=lb.cat;unmarkMetaDel("kwcat:"+lb.name);}}
       }else{
         markMetaDel(key);
         if(lb.kind==="genre")delete genres[lb.name];
@@ -5810,7 +5836,9 @@ function renderAuthorPanel(name){
     let movedArt=false;
     authVarSel.forEach(v=>{
       const ok="author|"+v,nk="author|"+name;
-      if(groupArt[ok]&&!groupArt[nk]){groupArt[nk]=groupArt[ok];delete groupArt[ok];movedArt=true;}
+      /* the same two marks genre renames set — see renameGenre */
+      if(groupArt[ok]&&!groupArt[nk]){groupArt[nk]=groupArt[ok];delete groupArt[ok];
+        markMetaDel("gart:"+ok);unmarkMetaDel("gart:"+nk);movedArt=true;}
     });
     if(movedArt)saveGroupArt();
     if(SYNC.on)flushQueue();
@@ -6346,7 +6374,8 @@ async function openBulkFill(ids){
         if(!en&&r.want.author){b.author=r.want.author;did=true;}
         r.chips.filter(c=>c.on).forEach(c=>{
           if(c.kind==="genre"){
-            if(!genres[c.name]){genres[c.name]=genreColor(c.name);unmarkMetaDel("genre:"+c.name);saveMeta();}
+            unmarkMetaDel("genre:"+c.name);   /* even if already here — see ensureGenre */
+            if(!genres[c.name]){genres[c.name]=genreColor(c.name);saveMeta();}
             b.genres=b.genres||[];
             if(!b.genres.includes(c.name)){b.genres.push(c.name);did=true;}
           }else{
@@ -6387,7 +6416,8 @@ async function openBulkFill(ids){
       /* the pile, onto the collection it was gathered for */
       g.pile.filter(v=>v.on).forEach(v=>{
         if(v.kind==="genre"){
-          if(!genres[v.name]){genres[v.name]=genreColor(v.name);unmarkMetaDel("genre:"+v.name);saveMeta();}
+          unmarkMetaDel("genre:"+v.name);   /* even if already here — see ensureGenre */
+          if(!genres[v.name]){genres[v.name]=genreColor(v.name);saveMeta();}
           b.genres=b.genres||[];
           if(!b.genres.includes(v.name)){b.genres.push(v.name);changed=true;}
         }else{
@@ -7157,7 +7187,8 @@ function renderLibrary(){
     };
     const sg=q("#selGen",m);
     if(sg)sg.onclick=()=>openApply("Which genre",Object.keys(genres).sort((a,b)=>a.localeCompare(b)),g=>{
-      if(!genres[g]){genres[g]=genreColor(g);unmarkMetaDel("genre:"+g);saveMeta();}
+      unmarkMetaDel("genre:"+g);   /* even if already here — see ensureGenre */
+      if(!genres[g]){genres[g]=genreColor(g);saveMeta();}
       applyToSel(b=>{b.genres=b.genres||[];if(!b.genres.includes(g))b.genres.push(g);});
     },true);
     const sa=q("#selAud",m);
@@ -7170,6 +7201,7 @@ function renderLibrary(){
     if(sf)sf.onclick=()=>openBulkFill([...libSel]);
     const sk=q("#selKw",m);
     if(sk)sk.onclick=()=>openApply("Which keyword",[...new Set(books.flatMap(allKeywordsOf))].sort((a,b)=>a.localeCompare(b)),k=>{
+      unmarkMetaDel("kw:"+k);   /* its two neighbours above do; a standing mark strips the word's colour and family on every pull */
       applyToSel(b=>{b.keywords=b.keywords||[];if(!b.keywords.some(x=>x.toLowerCase()===k.toLowerCase()))b.keywords.push(k);});
     },true);
     /* everything the shelf is showing, which is not the same as everything on
@@ -9954,7 +9986,10 @@ async function commitCur(){
   }
   pushOp({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))});
   if(i>=0)books[i]=after;else books.unshift(after);
-  if(SYNC.on){if(deletions[cur.id]){delete deletions[cur.id];saveDeletions();}enqueue({kind:"book",id:cur.id});}
+  /* through unDelete, never a bare delete — the join in saveSharedMap reads
+     the disk copy back and would hand the tombstone straight over otherwise,
+     making this the one un-delete in the app that quietly didn't take */
+  if(SYNC.on){if(unDelete(cur.id))saveDeletions();enqueue({kind:"book",id:cur.id});}
   isNew=false;setSaved(true);
 }
 function scheduleSave(){
@@ -9991,7 +10026,11 @@ function saveGenresQuiet(){
   dbPut("meta",{k:"genres",v:genres});enqueue({kind:"meta",key:"genres"});touchMeta("genres");
 }
 const ensureGenre=nm=>{
-  if(!genres[nm]){genres[nm]=genreColor(nm);unmarkMetaDel("genre:"+nm);saveGenresQuiet();}
+  /* the unmark runs even when the genre is already here — same rule as
+     addFandom: a mark still standing (another device's deletion, not yet
+     swept) is enough on its own to take the genre away again at the next pull */
+  unmarkMetaDel("genre:"+nm);
+  if(!genres[nm]){genres[nm]=genreColor(nm);saveGenresQuiet();}
 };
 /* =============== a genre the shelf hasn't got yet is a decision ===============
    Every fill surface used to wave a ticked genre straight into the vocabulary —
@@ -12563,7 +12602,7 @@ function renderEditor(){
     const bC=q("#fcC",out);if(bC)bC.onclick=()=>{
       const home=cur.fandoms[0];
       if(!home){alert("Add a fandom first — characters are filed under one.");return;}
-      fandoms[home]=fandoms[home]||[];
+      addFandom(home);   /* the one door — a hand-made entry skips the mark-clearing */
       cSel.forEach(c=>{const n=titleCase(c);
         if(!fandoms[home].includes(n))fandoms[home].push(n);
         if(!cur.characters.includes(n))cur.characters.push(n);});
@@ -12960,7 +12999,7 @@ function renderEditor(){
     });
     wireAddIn(q("#chIn",w),v=>{
       const c=titleCase(v);
-      fandoms[firstF]=fandoms[firstF]||[];
+      addFandom(firstF);   /* the one door — a hand-made entry skips the mark-clearing */
       if(!fandoms[firstF].includes(c)){fandoms[firstF].push(c);saveFandoms();}
       if(!cur.characters.includes(c))cur.characters.push(c);
       renderFF();scheduleSave();
@@ -13722,6 +13761,9 @@ function renderEditor(){
   function addKw(t){
     const v=titleCase((t||"").trim());if(!v)return;
     if(cur.keywords.some(k=>k.toLowerCase()===v.toLowerCase()))return;
+    /* a word deleted-for-good and now deliberately retyped: rub out the mark,
+       or it goes on stripping the word's colour and family at every pull */
+    unmarkMetaDel("kw:"+v);
     cur.keywords.push(v);renderKw();scheduleSave();
   }
   /* Getting rid of a tag altogether: off every book that carries it, out of the
@@ -13989,9 +14031,13 @@ function renderEditor(){
       const items=[];
       await relabel("genres",oldN,newN,items);
       if(items.length)pushOp({t:"bulk",items});
-      /* the group's picture is filed under the name — take it with us */
+      /* the group's picture is filed under the name — take it with us. Both
+         marks, like the genre itself above: the vacated key is dead (or the
+         other device pushes it back), and a mark left on the new key from art
+         once cleared there would delete the picture just carried over. */
       const ok="genre|"+oldN,nk="genre|"+newN;
-      if(groupArt[ok]&&!groupArt[nk]){groupArt[nk]=groupArt[ok];delete groupArt[ok];saveGroupArt();}
+      if(groupArt[ok]&&!groupArt[nk]){groupArt[nk]=groupArt[ok];delete groupArt[ok];
+        markMetaDel("gart:"+ok);unmarkMetaDel("gart:"+nk);saveGroupArt();}
     }else if(color)genres[oldN]=color;
     saveMeta();
     if(SYNC.on)flushQueue();
@@ -14093,7 +14139,8 @@ function renderEditor(){
     });
     const tp=q("#tePlain",box);
     if(tp)tp.onclick=async()=>{
-      delete kwColors[name];saveKwColors();
+      if(kwColors[name]){delete kwColors[name];markMetaDel("kwcolor:"+name);}
+      saveKwColors();
       box.hidden=true;box.innerHTML="";
       renderKw();
       if(SYNC.on)flushQueue();
@@ -14153,9 +14200,12 @@ function renderEditor(){
              takes it straight back off — the same trap fandoms used to have */
           unmarkMetaDel("cat:"+cat);
           catColors[cat]=color;
-          delete kwColors[key];        /* let it take the family's colour */
+          /* let it take the family's colour — marked, or the own colour it is
+             giving up survives on the other device and outranks the family's */
+          if(kwColors[key]){delete kwColors[key];markMetaDel("kwcolor:"+key);}
         }else{
-          if(color&&color!==catColors[cat])kwColors[key]=color;else delete kwColors[key];
+          if(color&&color!==catColors[cat]){kwColors[key]=color;unmarkMetaDel("kwcolor:"+key);}
+          else if(kwColors[key]){delete kwColors[key];markMetaDel("kwcolor:"+key);}
         }
         if(nn&&nn!==name)delete kwColors[name];
         saveKwColors();saveKwCats();
@@ -14366,9 +14416,10 @@ function renderEditor(){
   }
   function addGenre(name,color){
     const clean=titleCase((name||"").trim());if(!clean)return;
+    unmarkMetaDel("genre:"+clean);   /* even if already here — see ensureGenre */
     if(!genres[clean]){
       if(!color){pendingGenre=clean;renderGenres();return;}
-      genres[clean]=color;unmarkMetaDel("genre:"+clean);saveMeta();
+      genres[clean]=color;saveMeta();
     }
     if(!cur.genres.includes(clean))cur.genres.push(clean);
     pendingGenre=null;q("#fGenre").value="";
@@ -15128,23 +15179,36 @@ async function applyBackup(data){
   const map=new Map(books.map(b=>[b.id,b]));
   for(const b of data.books)map.set(b.id,b);
   books=[...map.values()];
+  /* Everything the backup puts back must also stop being marked as deleted.
+     The books three lines below always had this (unDelete); the vocabularies
+     never did, so a genre or picture removed before the backup was taken came
+     back on screen and was then silently deleted again by the first pull's
+     sweep — "restore complete", then part of it evaporates. unmarkMetaDel's
+     own body, batched: one metaDel save at the end instead of hundreds. */
+  let revived=false;
+  const revive=k=>{if(metaDel[k]){delete metaDel[k];mapGone.metaDel.add(k);revived=true;}};
   genres=Object.assign({},data.genres||{},genres);
+  Object.keys(data.genres||{}).forEach(g=>revive("genre:"+g));
   dnfCustom=[...new Set([...dnfCustom,...(data.dnfReasons||[])])];
+  (data.dnfReasons||[]).forEach(x=>revive("dnf:"+x));
   audCustom=[...new Set([...audCustom,...(data.audiences||[])])];
+  (data.audiences||[]).forEach(x=>revive("aud:"+x));
   const haveB=new Set(bgList.map(x=>x.id));
-  (data.backgrounds||[]).forEach(x=>{if(x&&x.id&&!haveB.has(x.id))bgList.push(x);});
+  (data.backgrounds||[]).forEach(x=>{if(x&&x.id){revive("bg:"+x.id);if(!haveB.has(x.id))bgList.push(x);}});
   const haveP=new Set(padList.map(x=>x.id));
-  (data.padskins||[]).forEach(x=>{if(x&&x.id&&!haveP.has(x.id))padList.push(x);});
+  (data.padskins||[]).forEach(x=>{if(x&&x.id){revive("pad:"+x.id);if(!haveP.has(x.id))padList.push(x);}});
   const fdIn=data.fandoms||{};
-  for(const f in fdIn)fandoms[f]=[...new Set([...(fandoms[f]||[]),...(fdIn[f]||[])])];
+  for(const f in fdIn){fandoms[f]=[...new Set([...(fandoms[f]||[]),...(fdIn[f]||[])])];revive("fandom:"+f);}
   const gaIn=data.groupArt||{};
-  for(const k in gaIn)if(!groupArt[k])groupArt[k]=gaIn[k];
+  for(const k in gaIn){if(!groupArt[k])groupArt[k]=gaIn[k];revive("gart:"+k);}
   const kcIn=data.kwColors||{};
-  for(const k in kcIn)if(!kwColors[k])kwColors[k]=kcIn[k];
+  for(const k in kcIn){if(!kwColors[k])kwColors[k]=kcIn[k];revive("kw:"+k);revive("kwcolor:"+k);}
   const kcatIn=data.kwCats||{};
-  for(const k in kcatIn)if(!kwCats[k])kwCats[k]=kcatIn[k];
+  for(const k in kcatIn){if(!kwCats[k])kwCats[k]=kcatIn[k];revive("kw:"+k);revive("kwcat:"+k);}
   const ccIn=data.catColors||{};
-  for(const c in ccIn)if(!catColors[c])catColors[c]=ccIn[c];
+  for(const c in ccIn){if(!catColors[c])catColors[c]=ccIn[c];revive("cat:"+c);}
+  (data.libArt||[]).forEach(a=>{if(a&&a.id)revive("libart:"+a.id);});
+  if(revived)saveMetaDel();
   saveKwCats();
   const haveLa=new Set(libArt.map(a=>a.id));
   (data.libArt||[]).forEach(a=>{if(a&&a.id&&!haveLa.has(a.id))libArt.push(a);});
@@ -16569,7 +16633,8 @@ function openIsbnAdd(){
       if(r.info.summary)b.summary=esc(r.info.summary).replace(/\n/g,"<br>");
       (r.chips||[]).filter(c=>c.on).forEach(c=>{
         if(c.kind==="genre"){
-          if(!genres[c.name]){genres[c.name]=genreColor(c.name);unmarkMetaDel("genre:"+c.name);saveMeta();}
+          unmarkMetaDel("genre:"+c.name);   /* even if already here — see ensureGenre */
+          if(!genres[c.name]){genres[c.name]=genreColor(c.name);saveMeta();}
           if(!b.genres.includes(c.name))b.genres.push(c.name);
         }else if(!b.keywords.some(x=>x.toLowerCase()===c.name.toLowerCase()))b.keywords.push(c.name);
       });
