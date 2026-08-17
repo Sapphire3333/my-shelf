@@ -9329,16 +9329,22 @@ function renderSearchBody(){
      shows the mosaic, which is not a gap. "Read, but no date" is the History
      timeline's own undated count, so the two screens quote one shelf. */
   const GAPS=[
-    /* A collection with no cover ANYWHERE is one row, and the row now says how
-       many stories inside are bare too — its own cover, or any story getting
-       one, takes it off the list (the shelf row then shows a mosaic, which is
-       not a gap). */
+    /* A collection hides nothing: while any story inside is missing a cover it
+       stays on the list, wearing the count. One covered story used to take the
+       whole collection off and leave the other eleven invisible — the mosaic
+       row looked fine and the gap list agreed, and nothing anywhere said
+       otherwise. Only a collection whose every story is covered leaves. */
     ["cover","No cover",()=>books.flatMap(b=>{
       if(isFic(b))return [];
       if(!isColl(b))return searchCoverIds.has(b.id)?[]:[b];
-      if(searchCoverIds.has(b.id)||(b.entries||[]).some(en=>en.cover))return [];
-      const n=(b.entries||[]).length;
-      return [Object.assign({},b,{_gapNote:n?`the ${n===1?"story inside has":n+" stories inside have"} none either`:""})];
+      const ens=b.entries||[];
+      const miss=ens.filter(en=>!en.cover).length;
+      const anyCover=searchCoverIds.has(b.id)||ens.some(en=>en.cover);
+      if(!miss&&anyCover)return [];
+      if(!miss)return [b];   /* an empty collection with no cover of its own */
+      return [Object.assign({},b,{_gapNote:anyCover
+        ?`${miss} of its ${ens.length} stor${ens.length===1?"y":"ies"} without a cover`
+        :`the ${ens.length===1?"story inside has":ens.length+" stories inside have"} none either`})];
     })],
     /* A collection's own missing blurb still counts — they are being written —
        and the same row says how many stories inside are missing theirs: one
@@ -9450,8 +9456,14 @@ function renderSearchBody(){
     else if(f.type==="hold")results=stUnits.filter(u=>u.hold).map(stRow);
     if(f.type==="status")results=stUnits.filter(u=>u.status===f.value&&!u.dnf&&!u.hold).map(stRow);
     if(f.type==="audience")results=books.filter(b=>audsOf(b).indexOf(f.value)>=0);
-    if(f.type==="pages")results=f.value==="none"?books.filter(b=>!isColl(b)&&!parseInt(b.pages))
-      :books.filter(b=>{if(isColl(b))return false;const p=parseInt(b.pages);return p&&p>=f.value.min&&p<=f.value.max;});
+    if(f.type==="pages"){
+      /* stories one by one, as the buckets count them */
+      const pu=books.flatMap(b=>isColl(b)
+        ?(b.entries||[]).map(en=>({p:parseInt(en.pages)||0,row:()=>storyProxy(b,en)}))
+        :[{p:parseInt(b.pages)||0,row:()=>b}]);
+      results=(f.value==="none"?pu.filter(u=>!u.p)
+        :pu.filter(u=>u.p&&u.p>=f.value.min&&u.p<=f.value.max)).map(u=>u.row());
+    }
     if(f.type==="series")results=books.filter(b=>(b.series||"").trim()===f.value).sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0));
     if(f.type==="rating")results=(f.value==="unrated"
       ?sUnits.filter(u=>u.rating==null)
@@ -9534,10 +9546,14 @@ function renderSearchBody(){
         ${buckets.map(b=>{const n=bCount(b);return `<button class="rb ${n?"has":"no"}" ${n?`data-rb="${b.min}"`:""}><span>★ ${b.label}</span><b>${n}</b></button>`;}).join("")}
         <button class="rb ${unrated?"has":"no"}" ${unrated?'data-rb="unrated"':""} style="${unrated?"border-color:var(--line);background:var(--card)":""}"><span>Unrated</span><b>${unrated}</b></button>
       </div></div>`;
-      /* collections hold many books; their combined length isn't a book length */
-      const lenBooks=books.filter(b=>!isColl(b));
-      const lenCounts=LEN_BUCKETS.map(bk=>lenBooks.filter(b=>{const p=parseInt(b.pages);return p&&p>=bk.min&&p<=bk.max;}).length);
-      const noPages=lenBooks.filter(b=>!parseInt(b.pages)).length;
+      /* collections hold many books; their combined length isn't a book
+         length — but the books INSIDE are books, and they count one by one
+         here exactly as Insights already counts them */
+      const lenUnits=books.flatMap(b=>isColl(b)
+        ?(b.entries||[]).map(en=>({p:parseInt(en.pages)||0,b,en}))
+        :[{p:parseInt(b.pages)||0,b,en:null}]);
+      const lenCounts=LEN_BUCKETS.map(bk=>lenUnits.filter(u=>u.p&&u.p>=bk.min&&u.p<=bk.max).length);
+      const noPages=lenUnits.filter(u=>!u.p).length;
       html+=`<div class="sec"><h2 class="serif">Length</h2><div class="rbuckets">
         ${LEN_BUCKETS.map((bk,i)=>`<button class="rb ${lenCounts[i]?"has":"no"}" ${lenCounts[i]?`data-len="${i}"`:""} style="${lenCounts[i]?"border-color:#bae6fd;background:#f0f9ff":""}"><span>📄 ${bk.label}</span><b>${lenCounts[i]}</b></button>`).join("")}
         <button class="rb ${noPages?"has":"no"}" ${noPages?'data-len="none"':""} style="${noPages?"border-color:#d6d3d1;background:#fff":""}"><span>No page count</span><b>${noPages}</b></button>
@@ -9919,7 +9935,10 @@ function renderInsights(){
   addGap([...new Set(rUnits.filter(u=>u.rating==null).map(u=>u.book))],"unrated",unratedN);
   /* the same undated count Search and History quote — three screens, one shelf */
   addGap(readUnits().filter(u=>u.times>0&&!u.reads.some(r=>r.end)).map(u=>u.en?storyProxy(u.book,u.en):u.book),"finished without a date");
-  addGap(books.filter(b=>!isColl(b)&&!parseInt(b.pages)),"with no page count");
+  /* stories one by one, the same units the Length buckets on Search now use */
+  addGap(books.flatMap(b=>isColl(b)
+    ?(b.entries||[]).filter(en=>!parseInt(en.pages)).map(en=>storyProxy(b,en))
+    :(!parseInt(b.pages)?[b]:[])),"with no page count");
   addGap(books.filter(b=>!(b.genres||[]).length),"with no genre");
 
   const bigYear=yl.length?yl.slice().sort((a,b)=>b[1]-a[1])[0]:null;
