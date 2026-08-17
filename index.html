@@ -2980,6 +2980,16 @@ let libArt=[],libArtMode=false;
 const libArtCache=new Map();
 const libArtKey=id=>"__libart|"+id;
 function saveLibArt(){dbPut("meta",{k:"libArt",v:libArt});enqueue({kind:"meta",key:"libArt"});}
+/* A loose picture ties itself to a heading by its "kind|Label" key — and no
+   rename or delete of the heading ever touched the tie, so the picture stopped
+   folding with its group and its label went on showing the old name. */
+function moveLibArtGroup(oldKey,newKey){
+  let hit=false;
+  libArt.forEach(a=>{if(a.group===oldKey){a.group=newKey;hit=true;}});
+  if(hit)saveLibArt();
+  return hit;
+}
+const untieLibArt=oldKey=>moveLibArtGroup(oldKey,"");
 /* The year's goal travels between your devices; the rest of `settings` does not,
    and shouldn't. Text size, Fit and how a book opens are answers to "what is this
    screen like", and a phone and a PC deserve different answers. How many books
@@ -3058,6 +3068,10 @@ const SYNC={supa:null,user:null,on:false,queue:[],
 /* the floor a fresh `modified` stamp must clear — everything this device has
    seen from the cloud, absorbed or not */
 const seenFloor=id=>Math.max(SYNC.seen[id]||0,SYNC.held[id]||0);
+/* the stamp any bulk rewrite of an EXISTING book must use: a bare Date.now()
+   loses the last-write race against a cloud copy this device has already seen,
+   and the change quietly un-happens at the next pull */
+const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,(b?seenFloor(b.id):0)+1);
 
 function syncConfigured(){
   return !!(CFG.url&&CFG.anonKey&&!/YOUR_/.test(String(CFG.url)+String(CFG.anonKey))
@@ -5743,15 +5757,21 @@ async function makeSeriesFrom(ids,name){
   sel.sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0)
     ||(a.dateFinished||"9999").localeCompare(b.dateFinished||"9999")||(a.created||0)-(b.created||0));
   let n=1;
+  /* one undo step and the sync-safe stamp, like every other bulk rewrite —
+     linking the wrong books was irreversible before */
+  const items=[];
   for(const b of sel){
+    const before=JSON.parse(JSON.stringify(b));
     b.type="series";b.series=name;
     if(!b.seriesNum)b.seriesNum=String(n);
     if(!b.seriesTotal)b.seriesTotal=String(sel.length);
     n++;
-    b.modified=Date.now();
+    b.modified=nextMod(b);
     await dbPut("books",b);
     if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   }
+  if(items.length)pushOp({t:"bulk",items});
   if(SYNC.on)flushQueue();
   return sel.length;
 }
@@ -5841,16 +5861,41 @@ function renderAuthorPanel(name){
   const mb=q("#apMerge",box);
   if(mb)mb.onclick=async()=>{
     if(!authVarSel.size)return;
-    const affected=books.filter(b=>authVarSel.has((b.author||"").trim()));
+    /* stories inside collections too — a story's own author is what stands it
+       up as its own row under the author grouping, and a spelling left there
+       was the very duplicate this panel exists to remove, unreachable from it
+       forever after */
+    const hitEn=b=>isColl(b)&&(b.entries||[]).some(en=>authVarSel.has(String(en.author||"").trim()));
+    const affected=books.filter(b=>authVarSel.has((b.author||"").trim())||hitEn(b));
     if(!confirm(`Rename the author on ${affected.length} book${affected.length===1?"":"s"} to “${name}”?`))return;
-    for(const b of affected){b.author=name;b.modified=Date.now();await dbPut("books",b);if(SYNC.on)enqueue({kind:"book",id:b.id});}
-    /* group pictures are filed under the name, so bring them along */
+    /* one undo step and the sync-safe stamp — this was the lone bulk rewrite
+       in the app with neither */
+    const items=[];
+    for(const b of affected){
+      const before=JSON.parse(JSON.stringify(b));
+      if(authVarSel.has((b.author||"").trim()))b.author=name;
+      if(isColl(b))(b.entries||[]).forEach(en=>{
+        if(!authVarSel.has(String(en.author||"").trim()))return;
+        /* the field only ever held a difference from the collection's author —
+           merged into sameness, it empties rather than repeating it */
+        if((b.author||"").trim()===name)delete en.author;
+        else en.author=name;
+      });
+      b.modified=nextMod(b);
+      await dbPut("books",b);
+      if(SYNC.on)enqueue({kind:"book",id:b.id});
+      items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    }
+    if(items.length)pushOp({t:"bulk",items});
+    /* group pictures are filed under the name, so bring them along — and the
+       loose pictures tied to the old heading follow too */
     let movedArt=false;
     authVarSel.forEach(v=>{
       const ok="author|"+v,nk="author|"+name;
       /* the same two marks genre renames set — see renameGenre */
       if(groupArt[ok]&&!groupArt[nk]){groupArt[nk]=groupArt[ok];delete groupArt[ok];
         markMetaDel("gart:"+ok);unmarkMetaDel("gart:"+nk);movedArt=true;}
+      moveLibArtGroup(ok,nk);
     });
     if(movedArt)saveGroupArt();
     if(SYNC.on)flushQueue();
@@ -10175,6 +10220,10 @@ async function moveWordEverywhere(name,toGenre){
   }else{
     label={kind:"genre",name,color:genres[name]||genreColor(name)};
     delete genres[name];markMetaDel("genre:"+name);saveGenresQuiet();
+    /* the picture and the loose-art tie go with the heading — see the tag
+       editor's delete, which does the same */
+    await clearGroupArt("genre|"+name);
+    untieLibArt("genre|"+name);
   }
   if(items.length)pushOp(label?{t:"bulk",items,label}:{t:"bulk",items});
   if(SYNC.on)flushQueue();
@@ -12953,8 +13002,23 @@ function renderEditor(){
       const items=[];
       await relabel("fandoms",f,"",items);
       delete fandoms[f];markMetaDel("fandom:"+f);saveFandoms();
-      /* characters that belonged only to it have nowhere left to be filed */
+      /* characters that belonged only to it have nowhere left to be filed —
+         on EVERY book, not only the open one: the orphaned names rendered on
+         every shelf row and could be neither picked nor removed anywhere.
+         Swept into the same undo step, so one ↶ hands the cast back with the
+         fandom. */
       const stillOk=new Set(Object.values(fandoms).flat());
+      for(const b of books){
+        const kept=(b.characters||[]).filter(c=>stillOk.has(c));
+        if(kept.length===(b.characters||[]).length)continue;
+        const it=items.find(x=>x.id===b.id);
+        const before=it?null:JSON.parse(JSON.stringify(b));
+        b.characters=kept;b.modified=nextMod(b);
+        await dbPut("books",b);
+        if(SYNC.on)enqueue({kind:"book",id:b.id});
+        if(it)it.after=JSON.parse(JSON.stringify(b));
+        else items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+      }
       cur.characters=(cur.characters||[]).filter(c=>stillOk.has(c));
       /* pushed even when it was on no story, so Undo can still hand the name
          back — the promise in the message above has to be true either way */
@@ -13985,7 +14049,6 @@ function renderEditor(){
   }
 
   /* ---- editing a genre or keyword everywhere it appears ---- */
-  const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,(b?seenFloor(b.id):0)+1);
   /* rewrite one label across every book — the open book's stored copy included.
      It used to be left to its own autosave, which is how "delete this tag for
      good" quietly kept the tag on the one book you were looking at: nothing
@@ -14004,6 +14067,12 @@ function renderEditor(){
     const swapEnts=b=>{let hit=false;
       entsOf(b).forEach(en=>{if(((en[field])||[]).indexOf(oldN)>=0){en[field]=swap(en[field]);hit=true;}});
       return hit;};
+    /* the row breaks are keyed by NAME and were never renamed along with it —
+       so a rename silently killed the break you had placed, and a deleted
+       word's break lurked in the list, ready to reattach to any future word
+       spelled the same */
+    const brk=field==="genres"?"genreBreaks":"kwBreaks";
+    const swapBrk=o=>{if((o[brk]||[]).includes(oldN))o[brk]=[...new Set(o[brk].map(x=>x===oldN?newN:x))].filter(Boolean);};
     for(const b of books){
       const list=b[field]||[];
       const mine=list.indexOf(oldN)>=0;
@@ -14011,11 +14080,11 @@ function renderEditor(){
       if(!mine&&!inStories)continue;
       const before=collect?JSON.parse(JSON.stringify(b)):null;
       if(mine)b[field]=swap(list);
-      swapEnts(b);
+      swapEnts(b);swapBrk(b);
       b.modified=nextMod(b);
       if(cur&&b.id===cur.id){
         if((cur[field]||[]).indexOf(oldN)>=0)cur[field]=swap(cur[field]);
-        swapEnts(cur);
+        swapEnts(cur);swapBrk(cur);
         cur.modified=b.modified;
       }
       await dbPut("books",b);
@@ -14025,7 +14094,7 @@ function renderEditor(){
     /* a brand-new book not yet on the shelf still gets its working copy fixed */
     if(cur&&!books.some(b=>b.id===cur.id)){
       if((cur[field]||[]).indexOf(oldN)>=0)cur[field]=swap(cur[field]);
-      swapEnts(cur);
+      swapEnts(cur);swapBrk(cur);
     }
   }
   async function renameGenre(oldN,newN,color){
@@ -14050,6 +14119,10 @@ function renderEditor(){
       const ok="genre|"+oldN,nk="genre|"+newN;
       if(groupArt[ok]&&!groupArt[nk]){groupArt[nk]=groupArt[ok];delete groupArt[ok];
         markMetaDel("gart:"+ok);unmarkMetaDel("gart:"+nk);saveGroupArt();}
+      /* renaming INTO a genre that already has art: the old picture would be
+         left keyless forever — cleared properly instead */
+      else if(groupArt[ok])await clearGroupArt(ok);
+      moveLibArtGroup(ok,nk);
     }else if(color)genres[oldN]=color;
     saveMeta();
     if(SYNC.on)flushQueue();
@@ -14168,6 +14241,12 @@ function renderEditor(){
       markMetaDel((isG?"genre:":"kw:")+name);
       if(isG){
         delete genres[name];
+        /* its heading picture goes too, marked — left behind it lived on in the
+           cloud with no heading, and repairGroupArt would later hand it to any
+           future genre spelled the same. A loose picture tied to the heading is
+           only untied; the picture itself is yours, not the genre's. */
+        await clearGroupArt("genre|"+name);
+        untieLibArt("genre|"+name);
         /* persisted by hand, not through saveMeta — the vocabulary change
            belongs to the same undo step as the books, not to one of its own */
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
