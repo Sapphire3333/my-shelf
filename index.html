@@ -2466,6 +2466,23 @@ function rateUnits(){
   }
   return out;
 }
+/* Stages and flags, counted the same way readings and ratings already are: a
+   collection where any story has a say of its own — a stage, a set-aside, an
+   on-hold — is counted as its stories, the silent ones answering with the
+   collection's word; one where no story speaks is counted as itself. Search's
+   buttons, the header's DNF and Insights all quote this one list, so the
+   screens stop giving two answers about one shelf. */
+function stageUnits(){
+  const out=[];
+  for(const b of books){
+    const ens=isColl(b)?((b.entries)||[]):[];
+    if(ens.some(en=>String(en.status||"").trim()||en.dnf||en.hold)){
+      for(const en of ens)out.push({book:b,en,
+        status:entStatusOf(b,en),dnf:entDnfOf(b,en),hold:entHoldOf(b,en)});
+    }else out.push({book:b,en:null,status:statusOf(b),dnf:!!b.dnf,hold:!!holdOf(b)});
+  }
+  return out;
+}
 /* every year a reading ended in, across the whole shelf */
 function readYears(){
   const years={};
@@ -2545,10 +2562,13 @@ const storySurfaces=en=>{
   if(findMatchesStory(en))return true;
   return false;
 };
-/* the Library's find box, as a test one story can answer */
+/* the Library's find box, as a test one story can answer — by its title, or by
+   an author of its OWN. A silent story's author is the collection's, and the
+   collection's row already answers for that. */
 const findMatchesStory=en=>{
   const f=(libFind||"").trim().toLowerCase();
-  return !!f&&(en.title||"").toLowerCase().includes(f);
+  return !!f&&((en.title||"").toLowerCase().includes(f)
+    ||String(en.author||"").toLowerCase().includes(f));
 };
 /* A word common enough to match half a collection would otherwise put half a
    collection on the shelf — forty stories, forty rows, for one search. So a
@@ -5197,7 +5217,7 @@ function renderMain(){
 }
 /* the header's counts — one sentence, whether it is being written into a header
    being built or into one already on screen */
-const shelfSubText=()=>`${shelfUnits()} on the shelf · ${favUnits()} favorites · ${books.filter(b=>b.dnf).length} DNF`;
+const shelfSubText=()=>`${shelfUnits()} on the shelf · ${favUnits()} favorites · ${stageUnits().filter(u=>u.dnf).length} DNF`;
 /* refreshed without rebuilding the header */
 function refreshShelfSub(){
   const el=q("header .sub");
@@ -5811,7 +5831,11 @@ function renderAuthorPanel(name){
   authSel=new Set([...authSel].filter(id=>mine.some(b=>b.id===id)));
   const variants={};
   books.forEach(b=>{const a=(b.author||"").trim();
-    if(a&&a!==name)(variants[a]=variants[a]||[]).push(b);});
+    if(a&&a!==name)(variants[a]=variants[a]||[]).push(b);
+    /* a spelling living only on a story inside a collection is a variant too —
+       the merge reaches stories now, so the list must offer them */
+    if(isColl(b))(b.entries||[]).forEach(en=>{const ea=String(en.author||"").trim();
+      if(ea&&ea!==name&&ea!==a&&!(variants[ea]||[]).includes(b))(variants[ea]=variants[ea]||[]).push(b);});});
   const likely=Object.keys(variants).filter(a=>looksLikeSameAuthor(name,a)).sort((a,b)=>a.localeCompare(b));
   const fq=(authFindQ||"").trim().toLowerCase();
   /* the likely ones by default; anything at all once you search */
@@ -9262,7 +9286,11 @@ function renderSearchBody(){
      units, so the number on the button is the number of rows you get. */
   const sUnits=rateUnits();
   const unitRow=u=>u.en?storyProxy(u.book,u.en):u.book;
-  const authors={};books.forEach(b=>{const a=(b.author||"").trim();if(a)authors[a]=(authors[a]||0)+1;});
+  /* a story with an author of its OWN counts under that author — it is what
+     stands it up as its own row under the Library's author grouping, and the
+     two screens have to agree about who wrote what */
+  const authors={};books.forEach(b=>{const a=(b.author||"").trim();if(a)authors[a]=(authors[a]||0)+1;
+    if(isColl(b))(b.entries||[]).forEach(en=>{const ea=String(en.author||"").trim();if(ea&&ea!==a)authors[ea]=(authors[ea]||0)+1;});});
   const authorList=Object.entries(authors).sort((x,y)=>surnameOf(x[0]).localeCompare(surnameOf(y[0]))||x[0].localeCompare(y[0]));
   const topAuthor=Object.entries(authors).sort((x,y)=>y[1]-x[1])[0]||null;
   const gcount={};sUnits.forEach(u=>(u.genres||[]).forEach(g=>gcount[g]=(gcount[g]||0)+1));
@@ -9283,10 +9311,14 @@ function renderSearchBody(){
   const buckets=[];for(let i=1;i<=9;i++)buckets.push({label:`${i}.0 – ${i}.9`,min:i,max:i+.999});buckets.push({label:"10",min:10,max:10});
   const bCount=b=>sUnits.filter(u=>u.rating!=null&&u.rating>=b.min&&u.rating<=b.max).length;
   const unrated=sUnits.filter(u=>u.rating==null).length;
-  const favN=favUnits(),dnfN=books.filter(b=>b.dnf).length,holdN=books.filter(b=>holdOf(b)).length;
+  /* the same units the ratings above use — see stageUnits. The number on each
+     button is the number of rows pressing it opens. */
+  const stUnits=stageUnits();
+  const stRow=u=>u.en?storyProxy(u.book,u.en):u.book;
+  const favN=favUnits(),dnfN=stUnits.filter(u=>u.dnf).length,holdN=stUnits.filter(u=>u.hold).length;
   /* flags beat the stage beneath them, here as on the Library's pills — an
      on-hold book answers to ⏸, not to 📖 */
-  const plainSt2=k=>books.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
+  const plainSt2=k=>stUnits.filter(u=>u.status===k&&!u.dnf&&!u.hold).length;
   const readN=plainSt2("reading"),wantN=plainSt2("want");
   /* ---- what's missing ----
      One list-maker per kind of gap, used twice — once to put the count on the
@@ -9367,10 +9399,18 @@ function renderSearchBody(){
     };
     if(S.scopes.includes("title"))promote(en=>(en.title||"").toLowerCase().includes(qlc));
     if(S.scopes.includes("keyword"))promote(en=>(en.keywords||[]).some(k=>k.toLowerCase().includes(qlc)));
+    /* a story's OWN author and OWN genres answer the same way its own title
+       does — the silent ones are the collection's business, which the row
+       above already covers */
+    if(S.scopes.includes("author"))promote(en=>String(en.author||"").trim().toLowerCase().includes(qlc));
+    if(S.scopes.includes("genre"))promote(en=>(en.genres||[]).some(g=>g.toLowerCase().includes(qlc)));
     heading=`“${esc(S.q)}” in ${SCOPES.filter(([id])=>S.scopes.includes(id)).map(([,l])=>l).join(", ")}`;
   }else if(S.filter){
     const f=S.filter;
-    if(f.type==="author")results=books.filter(b=>(b.author||"").trim()===f.value);
+    if(f.type==="author")results=books.flatMap(b=>[
+      ...((b.author||"").trim()===f.value?[b]:[]),
+      ...(isColl(b)?(b.entries||[]).filter(en=>{const ea=String(en.author||"").trim();
+        return ea&&ea!==(b.author||"").trim()&&ea===f.value;}).map(en=>storyProxy(b,en)):[])]);
     if(f.type==="genre")results=sUnits.filter(u=>(u.genres||[]).includes(f.value)).map(unitRow);
     /* a tag answers with the rows that carry it THEMSELVES — the same units its
        chip counted. A family answers with every row carrying any of its words. */
@@ -9385,9 +9425,9 @@ function renderSearchBody(){
        still one of them, standing beside the stories it holds. */
     if(f.type==="favorite")results=books.flatMap(b=>[...(b.favorite?[b]:[]),
       ...(isColl(b)?(b.entries||[]).filter(en=>en.favorite).map(en=>storyProxy(b,en)):[])]);
-    if(f.type==="dnf")results=books.filter(b=>b.dnf);
-    else if(f.type==="hold")results=books.filter(b=>holdOf(b));
-    if(f.type==="status")results=books.filter(b=>statusOf(b)===f.value&&!b.dnf&&!holdOf(b));
+    if(f.type==="dnf")results=stUnits.filter(u=>u.dnf).map(stRow);
+    else if(f.type==="hold")results=stUnits.filter(u=>u.hold).map(stRow);
+    if(f.type==="status")results=stUnits.filter(u=>u.status===f.value&&!u.dnf&&!u.hold).map(stRow);
     if(f.type==="audience")results=books.filter(b=>audsOf(b).indexOf(f.value)>=0);
     if(f.type==="pages")results=f.value==="none"?books.filter(b=>!isColl(b)&&!parseInt(b.pages))
       :books.filter(b=>{if(isColl(b))return false;const p=parseInt(b.pages);return p&&p>=f.value.min&&p<=f.value.max;});
@@ -9627,7 +9667,10 @@ function renderPick(){
   q("#pkb",m).onclick=()=>{
     let pool=books.filter(b=>!b.dnf);
     if(S.pickWant)pool=pool.filter(b=>statusOf(b)==="want");
-    if(S.pickGenres.length)pool=pool.filter(b=>(b.genres||[]).some(g=>S.pickGenres.includes(g)));
+    /* a genre carried only by a story inside still makes the collection
+       offerable — the same reach the tags line below has always had */
+    if(S.pickGenres.length)pool=pool.filter(b=>[...(b.genres||[]),
+      ...(isColl(b)?(b.entries||[]).flatMap(en=>en.genres||[]):[])].some(g=>S.pickGenres.includes(g)));
     if(S.pickKws.length)pool=pool.filter(b=>allKeywordsOf(b).some(k=>S.pickKws.includes(k)));
     if((S.pickText||"").trim())pool=pool.filter(b=>textMatches(b,S.pickText));
     S.picked=pool.length?pool[Math.floor(Math.random()*pool.length)]:"none";
@@ -9641,12 +9684,18 @@ function renderPick(){
 function renderInsights(){
   const m=q("#main");
   if(!books.length){m.innerHTML='<div class="empty">📖<br>Add a few books first — then this page can tell you something about your reading.</div>';return;}
-  const fin=books.filter(b=>statusOf(b)==="finished"&&!b.dnf);
-  const dnf=books.filter(b=>b.dnf);
+  /* the same units the ratings below use — see stageUnits — so "finished" and
+     "on the shelf" in adjacent tiles finally speak the same language */
+  const stU=stageUnits();
+  const stRow=u=>u.en?storyProxy(u.book,u.en):u.book;
+  const fin=stU.filter(u=>u.status==="finished"&&!u.dnf);
+  const dnf=stU.filter(u=>u.dnf);
   /* set down is not given up on, so it is counted apart and kept out of the
      finishing rate — a series waiting for its next book has not been abandoned */
-  const held=books.filter(b=>holdOf(b));
-  const want=books.filter(b=>statusOf(b)==="want");
+  const held=stU.filter(u=>u.hold);
+  /* flags beat the stage, as on every button — a story given up on inherits
+     its collection's "want" and must not count as waiting to be read */
+  const want=stU.filter(u=>u.status==="want"&&!u.dnf&&!u.hold);
   /* every mark you have given, counted once each: a collection whose stories
      carry their own is counted as those stories rather than as the one averaged
      number that used to stand in for the lot of them */
@@ -9663,7 +9712,8 @@ function renderInsights(){
     if(u.rating!=null){gsum[g]=(gsum[g]||0)+u.rating;gn[g]=(gn[g]||0)+1;}}));
   const topG=Object.entries(gcount).sort((a,b)=>b[1]-a[1]);
   const bestG=Object.keys(gsum).filter(g=>gn[g]>=2).map(g=>[g,gsum[g]/gn[g]]).sort((a,b)=>b[1]-a[1]);
-  const aCount={};books.forEach(b=>{const a=(b.author||"").trim();if(a)aCount[a]=(aCount[a]||0)+1;});
+  const aCount={};books.forEach(b=>{const a=(b.author||"").trim();if(a)aCount[a]=(aCount[a]||0)+1;
+    if(isColl(b))(b.entries||[]).forEach(en=>{const ea=String(en.author||"").trim();if(ea&&ea!==a)aCount[ea]=(aCount[ea]||0)+1;});});
   const topA=Object.entries(aCount).sort((a,b)=>b[1]-a[1]);
   /* A collection is a shelf entry, not a book: counting its combined page count as
      one title made every "how long a book do you read" number nonsense. Its stories
@@ -9686,11 +9736,13 @@ function renderInsights(){
   const thisYear=String(new Date().getFullYear());
   const pace=yl.length?Math.round(yl.reduce((s,x)=>s+x[1],0)/yl.length):0;
   const finRate=(fin.length+dnf.length)?fin.length/(fin.length+dnf.length):null;
-  const dnfReasons={};dnf.forEach(b=>(b.dnfReasons||[]).forEach(r=>dnfReasons[r]=(dnfReasons[r]||0)+1));
+  const dnfReasons={};dnf.forEach(u=>((u.en?u.en.dnfReasons:u.book.dnfReasons)||[]).forEach(r=>dnfReasons[r]=(dnfReasons[r]||0)+1));
   const topDnf=Object.entries(dnfReasons).sort((a,b)=>b[1]-a[1])[0];
   const kwCount={};books.forEach(b=>allKeywordsOf(b).forEach(k=>kwCount[k]=(kwCount[k]||0)+1));
   const topKw=Object.entries(kwCount).filter(x=>x[1]>1).sort((a,b)=>b[1]-a[1]).slice(0,6);
-  const finLens=fin.flatMap(unitPages);
+  /* a finished story answers with its own pages; a silently finished
+     collection still spreads into its stories' pages as before */
+  const finLens=fin.flatMap(u=>u.en?(parseInt(u.en.pages)?[parseInt(u.en.pages)]:[]):unitPages(u.book));
   const avgLen=finLens.length?Math.round(finLens.reduce((s,x)=>s+x,0)/finLens.length):null;
   const fandomCount={};books.forEach(b=>(b.fandoms||[]).forEach(f=>fandomCount[f]=(fandomCount[f]||0)+1));
   const topF=Object.entries(fandomCount).sort((a,b)=>b[1]-a[1])[0];
@@ -9749,11 +9801,16 @@ function renderInsights(){
   /* what the page-by-page records say about the last month */
   const cut=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
   let recentPages=0;const activeDays=new Set();
+  /* a story's own page-by-page log counts too — the book being read is often
+     one inside a collection, and its pages were counting for nothing */
   books.forEach(b=>{
-    const log=(b.progLog||[]).filter(e2=>e2.d>=cut).sort((x,y)=>x.d.localeCompare(y.d));
-    for(let i=1;i<log.length;i++){
-      const d=(log[i].p||0)-(log[i-1].p||0);
-      if(d>0){recentPages+=d;activeDays.add(log[i].d);}
+    const logs=[b.progLog||[],...(isColl(b)?(b.entries||[]).map(en=>en.progLog||[]):[])];
+    for(const lg of logs){
+      const log=lg.filter(e2=>e2.d>=cut).sort((x,y)=>x.d.localeCompare(y.d));
+      for(let i=1;i<log.length;i++){
+        const d=(log[i].p||0)-(log[i-1].p||0);
+        if(d>0){recentPages+=d;activeDays.add(log[i].d);}
+      }
     }
   });
   if(recentPages>0)say.push(`In the last month you've turned about <b>${recentPages.toLocaleString()} pages</b> across <b>${activeDays.size}</b> day${activeDays.size===1?"":"s"} — roughly ${Math.round(recentPages/Math.max(1,activeDays.size))} pages on a day you read.`);
@@ -9767,7 +9824,7 @@ function renderInsights(){
     if(kinds.book)kindBits.push(n(kinds.book,"published book"));
     if(kinds.fanfic)kindBits.push(n(kinds.fanfic,"fanfic"));
     if(kinds.ai)kindBits.push(n(kinds.ai,"AI story"));
-    P.push(`THE SHELF\nYou have ${n(fin.length,"finished book")}, ${want.length} waiting to be read, ${books.filter(b=>statusOf(b)==="reading").length} on the go${held.length?`, ${n(held.length,"on hold")}`:""} and ${n(dnf.length,"you gave up on")}.${kindBits.length>1?` By kind: ${kindBits.join(", ")}.`:""}${pagesRead?` Across everything finished you've read about ${pagesRead.toLocaleString()} pages${rereads?`, re-reads counted — and there have been ${n(rereads,"re-read")}`:""}.`:""}`);
+    P.push(`THE SHELF\nYou have ${n(fin.length,"finished book")}, ${want.length} waiting to be read, ${stU.filter(u=>u.status==="reading"&&!u.dnf&&!u.hold).length} on the go${held.length?`, ${n(held.length,"on hold")}`:""} and ${n(dnf.length,"you gave up on")}.${kindBits.length>1?` By kind: ${kindBits.join(", ")}.`:""}${pagesRead?` Across everything finished you've read about ${pagesRead.toLocaleString()} pages${rereads?`, re-reads counted — and there have been ${n(rereads,"re-read")}`:""}.`:""}`);
     if(avg!=null){
       const spread=sd<1?"You rate consistently; most books land close to your average"
         :sd<2?"Your scores vary a fair amount, but not wildly"
@@ -9813,7 +9870,10 @@ function renderInsights(){
     const themes=[];
     if(topKw.length)themes.push(`Tags that keep recurring: ${topKw.map(x=>`${x[0]} (${x[1]})`).join(", ")}.`);
     if(Object.keys(fandomCount).length)themes.push(`Fandoms: ${Object.entries(fandomCount).sort((a,b)=>b[1]-a[1]).slice(0,5).map(x=>`${x[0]} (${x[1]})`).join(", ")}.`);
-    const favs=books.filter(b=>b.favorite);
+    /* every favourite, favourited stories included — the same count the header
+       and Search's button already give */
+    const favs=books.flatMap(b=>[...(b.favorite?[b]:[]),
+      ...(isColl(b)?(b.entries||[]).filter(en=>en.favorite).map(en=>storyProxy(b,en)):[])]);
     if(favs.length)themes.push(`You've marked ${n(favs.length,"favourite")}${favs.length<=6?`: ${favs.map(b=>b.title||"Untitled").join(", ")}`:""}.`);
     if(themes.length)P.push("THREADS\n"+themes.join(" "));
     const advice=[];
@@ -9836,7 +9896,8 @@ function renderInsights(){
   const addGap=(list,label,count)=>{const n2=count==null?list.length:count;
     if(n2){gaps.push(`${n2} ${label}`);gapLists.push({label,books:list});}};
   addGap([...new Set(rUnits.filter(u=>u.rating==null).map(u=>u.book))],"unrated",unratedN);
-  addGap(fin.filter(b=>!lastEnd(b)),"finished without a date");
+  /* the same undated count Search and History quote — three screens, one shelf */
+  addGap(readUnits().filter(u=>u.times>0&&!u.reads.some(r=>r.end)).map(u=>u.en?storyProxy(u.book,u.en):u.book),"finished without a date");
   addGap(books.filter(b=>!isColl(b)&&!parseInt(b.pages)),"with no page count");
   addGap(books.filter(b=>!(b.genres||[]).length),"with no genre");
 
@@ -12191,7 +12252,10 @@ function renderEditor(){
     inp.addEventListener("focus",show);
     inp.addEventListener("blur",()=>setTimeout(()=>sug.hidden=true,150));
   }
-  autoComplete("#fAuthor","#authSug","author",()=>[...new Set(books.map(x=>(x.author||"").trim()).filter(Boolean))]);
+  autoComplete("#fAuthor","#authSug","author",()=>[...new Set(books.flatMap(x=>[
+    (x.author||"").trim(),
+    ...(isColl(x)?(x.entries||[]).map(en=>String(en.author||"").trim()):[])
+  ]).filter(Boolean))]);
   q("#authBooks").onclick=()=>{
     const a=(cur.author||"").trim();
     if(!a){alert("Give the book an author first.");return;}
@@ -13996,7 +14060,9 @@ function renderEditor(){
   }
   function renderKw(){
     const w=q("#kwWrap");
-    const others=[...new Set(books.flatMap(b=>b.id===cur.id?[]:(b.keywords||[])))];
+    /* stories' own tags included — a word living only inside collections was
+       offered by the pool below but never by this hint, which needs it most */
+    const others=[...new Set(books.flatMap(b=>b.id===cur.id?[]:allKeywordsOf(b)))];
     const btext=stripHtml([cur.title,cur.summary,cur.canvasText,...(cur.quotes||[]),...(cur.pros||[]),...(cur.cons||[]),...(cur.meh||[]),
       ...(cur.pads||[]).map(p=>p.html||""),...(cur.entries||[]).map(en=>(en.title||"")+" "+(en.summary||"")+" "+(en.notes||""))].join(" ")).toLowerCase();
     const sug=others.filter(k=>!cur.keywords.some(x=>x.toLowerCase()===k.toLowerCase())&&btext.includes(k.toLowerCase())).slice(0,10);
