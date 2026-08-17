@@ -9805,6 +9805,9 @@ async function openBook(id,fresh,keepPlace,goToStory){
   /* asked to open a book that is gone (deleted since this row was drawn):
      opening a blank page under its old id would create a ghost book */
   if(!found&&!fresh)return;
+  /* the ticket back to a word panel survives only its own trip: out to the
+     carrier it named, and back. Opening any other book means you moved on. */
+  if(panelReturn&&id!==panelReturn.id&&id!==panelReturn.via)panelReturn=null;
   const heldFace=bookMode,heldMode=mode,heldFit=fitScreen,heldScroll=window.scrollY;
   /* the import fold starts closed on every book, and whatever was typed into it
      belonged to the book you were on — keepPlace means the same book redrawn,
@@ -9812,6 +9815,9 @@ async function openBook(id,fresh,keepPlace,goToStory){
   if(!keepPlace)bImpReset();
   isNew=!found;
   bookMode=keepPlace?heldFace:((!found||isRaw(found))?"edit":(settings.bookEdit?"edit":"view"));
+  /* a held ticket means you left THIS book from its editor, mid-panel — the
+     return goes back to that face whatever the usual opening face is */
+  if(panelReturn&&panelReturn.id===id)bookMode="edit";
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
   const c=await dbGet("covers",id);curCover=c?c.data:null;
   curImgs={};curEnt={};
@@ -10096,6 +10102,12 @@ function openWordMenu(name,hint,acts,run){
    the reading page is handed over: this names the word, the editor opens it on
    arrival. */
 let tagEditJump=null;
+/* The word panel's "Show them" list sends you to a book; this is the ticket
+   back. It names the book the panel was open on, the word (or family) it was
+   open to, and the carrier it sent you to — so the return trip can put the
+   mode, the panel and the unfolded list back exactly, and a trip anywhere
+   else quietly tears the ticket up. */
+let panelReturn=null;
 function chipMoveMenu(b,kind,name){
   const ens=(b.entries)||[];
   const isC=isColl(b)&&ens.length>1;
@@ -13944,7 +13956,7 @@ function renderEditor(){
      titles, and a title walks you over to the book — with anything half-typed
      written down first. The native confirm on the delete button cannot hold a
      link, so the list lives here, one step before it. */
-  function wireWhoList(box,carriers){
+  function wireWhoList(box,carriers,kind,name){
     const who=q("#teWho",box);if(!who)return;
     who.onclick=()=>{
       const list=q("#teWhoList",box);
@@ -13953,7 +13965,12 @@ function renderEditor(){
       list.innerHTML=carriers.slice(0,CAP).map(b=>`<button class="rsn" data-tewho="${esc(b.id)}">${esc(b.title||"Untitled")}</button>`).join("")
         +(carriers.length>CAP?`<span class="hint" style="display:inline-block">…and ${carriers.length-CAP} more</span>`:"");
       list.hidden=false;who.textContent="Hide them";
-      qa("[data-tewho]",list).forEach(x=>x.onclick=()=>finishSaveThen(()=>openBook(x.dataset.tewho)));
+      /* walking over writes the return ticket first, so coming back to this
+         book puts the mode, this panel and this list back where they were */
+      qa("[data-tewho]",list).forEach(x=>x.onclick=()=>{
+        panelReturn={id:cur.id,via:x.dataset.tewho,kind,name};
+        finishSaveThen(()=>openBook(x.dataset.tewho));
+      });
     };
   }
   function openTagEditor(kind,name){
@@ -13985,7 +14002,7 @@ function renderEditor(){
       <div class="hrow2" style="margin-top:12px"><button class="btn pri" id="teSave">Save</button>
         <button class="btn danger" id="teDel" title="Take it off every book and out of the list">🗑 Remove everywhere</button></div>`;
     q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
-    wireWhoList(box,carriers);
+    wireWhoList(box,carriers,kind,name);
     /* opens on whatever it already is — a colour if it has one, plain if it doesn't */
     drawColorPicker(q("#teCol",box),color||catColors[cat]||"",c=>{color=c;},!isG);
     const paintCats=()=>{
@@ -14116,7 +14133,7 @@ function renderEditor(){
       <div class="hrow2" style="margin-top:12px"><button class="btn pri" id="teSave">Save</button>
         <button class="btn danger" id="teDis" title="The keywords stay on every book — just loose, with no family">Disband — set its keywords loose</button></div>`;
     q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
-    wireWhoList(box,carriers);
+    wireWhoList(box,carriers,"family",name);
     drawColorPicker(q("#teCol",box),color,c=>{color=c;},true);
     q("#teSave",box).onclick=()=>{
       const nn=titleCase(q("#teName",box).value.trim());
@@ -14312,6 +14329,16 @@ function renderEditor(){
     const j=tagEditJump;tagEditJump=null;
     openTagEditor(j.kind,j.name);
     const tp=q("#tagPanel");if(tp)tp.scrollIntoView({block:"center"});
+  }
+  /* back from a book the word panel sent you to: the mode, the panel and the
+     unfolded list return with you. Without this, every look at "which books
+     carry it" cost a scroll up to the toggle and the whole way back in. */
+  if(panelReturn&&panelReturn.id===cur.id){
+    const p=panelReturn;panelReturn=null;
+    if(!tagEdit)q("#tagEditTog").onclick();
+    p.kind==="family"?openFamilyEditor(p.name):openTagEditor(p.kind,p.name);
+    const tp=q("#tagPanel");
+    if(tp){const w=q("#teWho",tp);if(w)w.onclick();tp.scrollIntoView({block:"center"});}
   }
 
   /* lists */
