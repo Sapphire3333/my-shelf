@@ -3000,7 +3000,7 @@ let mode="write";
 /* fit-to-screen: stack the free-canvas items readably instead of free placement */
 let fitScreen=false;
 const coverCache=new Map();
-const S={q:"",scopes:["title","author","fandom"],authorQ:"",filter:null,multi:[],pickGenres:[],pickKws:[],pickKwOpen:false,pickWant:true,pickText:"",picked:null};
+const S={q:"",scopes:["title","author","fandom"],authorQ:"",filter:null,multi:[],kmulti:[],pickGenres:[],pickKws:[],pickKwOpen:false,pickWant:true,pickText:"",picked:null};
 let deletions={};
 let lastExport=0;                              /* when this browser last downloaded a backup file */
 /* backups into a real folder on this PC. The folder's handle lives in this
@@ -9161,6 +9161,18 @@ function renderSearchBody(){
   const topAuthor=Object.entries(authors).sort((x,y)=>y[1]-x[1])[0]||null;
   const gcount={};sUnits.forEach(u=>(u.genres||[]).forEach(g=>gcount[g]=(gcount[g]||0)+1));
   const allG=Object.keys(genres).sort((a,b)=>a.localeCompare(b));
+  /* Tags, counted the way their buttons answer: a book's own tags, and a
+     story's own tags as their own row — never a collection standing in for a
+     word that is only true of one book inside it, which is the rule the text
+     search already keeps. The count on the chip is the number of rows it opens. */
+  const kwCount={};
+  {const bump=k=>kwCount[k]=(kwCount[k]||0)+1;
+   books.forEach(b=>{(b.keywords||[]).forEach(bump);
+     if(isColl(b))(b.entries||[]).forEach(en=>(en.keywords||[]).forEach(bump));});}
+  const kwRowsWhere=test=>books.flatMap(b=>[
+    ...(test(b.keywords||[])?[b]:[]),
+    ...(isColl(b)?(b.entries||[]).filter(en=>test(en.keywords||[])).map(en=>storyProxy(b,en)):[])
+  ]);
   const seriesMap={};books.forEach(b=>{const s=(b.series||"").trim();if(s)(seriesMap[s]=seriesMap[s]||[]).push(b);});
   const buckets=[];for(let i=1;i<=9;i++)buckets.push({label:`${i}.0 – ${i}.9`,min:i,max:i+.999});buckets.push({label:"10",min:10,max:10});
   const bCount=b=>sUnits.filter(u=>u.rating!=null&&u.rating>=b.min&&u.rating<=b.max).length;
@@ -9188,6 +9200,18 @@ function renderSearchBody(){
     ["emptycoll","Empty collections",()=>books.filter(b=>isColl(b)&&!((b.entries||[]).length))]
   ];
 
+  /* the fold-away sections. searchShut remembers where you LEFT each one, as
+     "not its default": Authors and Series open by default, so the set holds the
+     shut ones; Tags and Combine tags start CLOSED, so for those the set holds
+     the opened ones. One toggle serves all four. */
+  const shutS=new Set(settings.searchShut||[]);
+  const secShut=id=>(id==="tags"||id==="ktags")
+    ?((id==="ktags"&&S.kmulti.length)?false:!shutS.has(id))
+    :shutS.has(id);
+  const secHead=(id,title,count)=>`<div class="heading" data-ssec="${id}" style="cursor:pointer">
+    <button class="gcar">${secShut(id)?"▸":"▾"}</button>
+    <h2 class="serif" style="margin:0;font-size:17px">${title}</h2>
+    <span class="n">${count}</span><span class="ghline"></span></div>`;
   let results=null,heading="";
   const matchScope=(b,s)=>{switch(s){
     /* a collection answers for its own title; a story of its own that matches is
@@ -9242,6 +9266,11 @@ function renderSearchBody(){
     const f=S.filter;
     if(f.type==="author")results=books.filter(b=>(b.author||"").trim()===f.value);
     if(f.type==="genre")results=sUnits.filter(u=>(u.genres||[]).includes(f.value)).map(unitRow);
+    /* a tag answers with the rows that carry it THEMSELVES — the same units its
+       chip counted. A family answers with every row carrying any of its words. */
+    if(f.type==="kw")results=kwRowsWhere(l=>l.includes(f.value));
+    if(f.type==="kwfam"){const fw=new Set(Object.keys(kwCats).filter(k=>kwCats[k]===f.value));
+      results=kwRowsWhere(l=>l.some(k=>fw.has(k)));}
     /* Every favourite, the stories inside collections included — the same count
        the button carries. It listed whole books only, so a favourited story
        inside a collection was counted on the button and then missing from what
@@ -9265,13 +9294,16 @@ function renderSearchBody(){
   }else if(S.multi.length){
     results=sUnits.filter(u=>S.multi.every(g=>(u.genres||[]).includes(g))).map(unitRow);
     heading="Tagged: "+S.multi.map(esc).join(" + ");
+  }else if(S.kmulti.length){
+    results=kwRowsWhere(l=>S.kmulti.every(k=>l.includes(k)));
+    heading="Tagged: "+S.kmulti.map(esc).join(" + ");
   }
 
   let html="",tailHtml="";
   if(results){
     /* asking a different question starts the counting again; pressing
        "show more" does not — the same rule the Library's cap follows */
-    {const sig=[qlc,S.scopes.join(","),JSON.stringify(S.filter||null),S.multi.join(",")].join("|");
+    {const sig=[qlc,S.scopes.join(","),JSON.stringify(S.filter||null),S.multi.join(","),S.kmulti.join(",")].join("|");
      if(sig!==srchSig){srchSig=sig;srchShown=SRCH_PAGE;}}
     const show=results.slice(0,srchShown);
     html+=`<div class="sec"><div class="heading"><h2 class="serif">${heading}</h2><span class="n">(${results.length})</span>${S.filter&&S.filter.type==="author"?`<button class="btn" id="sgrp" style="padding:3px 10px;font-size:12px" title="Link as a series, fold into a collection, or merge duplicate spellings">📚 Group / tidy…</button>`:""}<button class="clearbtn" id="sclear">✕ Clear</button></div>
@@ -9279,7 +9311,7 @@ function renderSearchBody(){
       ${results.length>show.length?`<div class="hrow2" style="margin-top:10px;justify-content:center">
         <button class="btn" id="srchMore">Show ${Math.min(SRCH_PAGE,results.length-show.length)} more — ${results.length-show.length} further matches</button></div>`:""}</div>`;
   }
-  if(!results||S.multi.length){
+  if(!results||S.multi.length||S.kmulti.length){
     if(!results){
       html+=`<div class="sec"><h2 class="serif">Collections</h2>
         <button class="colbtn f" data-cf="favorite" ${favN?"":"disabled"}>♥ Favorites <b>${favN}</b></button>
@@ -9293,11 +9325,6 @@ function renderSearchBody(){
       html+=`<div class="sec"><h2 class="serif">Who it's for</h2>${audAll.map(a=>{const n=audCounts[a]||0;return `<button class="aut" data-aud="${esc(a)}" ${n?"":'disabled style="opacity:.4;cursor:default"'}>${esc(a)} <b>${n}</b></button>`;}).join("")}</div>`;
       /* these two grow without limit, so they wait at the bottom and can be folded
          away — and stay folded until you open them again */
-      const shutS=new Set(settings.searchShut||[]);
-      const secHead=(id,title,count)=>`<div class="heading" data-ssec="${id}" style="cursor:pointer">
-        <button class="gcar">${shutS.has(id)?"▸":"▾"}</button>
-        <h2 class="serif" style="margin:0;font-size:17px">${title}</h2>
-        <span class="n">${count}</span><span class="ghline"></span></div>`;
       tailHtml+=`<div class="sec">${secHead("authors","Authors",authorList.length)}
         ${shutS.has("authors")?"":`<span class="fclear" style="margin-bottom:8px"><input class="field" id="aq" placeholder="Filter authors…" value="${esc(S.authorQ)}" style="font-size:13px;padding:7px 11px">
           <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the filter">✕</button></span>
@@ -9309,9 +9336,32 @@ function renderSearchBody(){
             return `<button class="aut" data-ser="${esc(s)}">${esc(s)} <b>${arr.length}${total?` of ${total}`:""}</b></button>`;}).join("")}</div>`;
       }
       html+=`<div class="sec"><h2 class="serif">Genres</h2>${Object.entries(gcount).sort((a,b)=>a[0].localeCompare(b[0])).map(([g,n])=>`<button data-gen="${esc(g)}" style="border:none;background:none;padding:0"><span class="chip big" style="${chipStyle(genres[g])}">${esc(g)} <b>${n}</b></span></button>`).join("")||'<span class="none">No genres yet.</span>'}</div>`;
+      /* the tags, gathered under their families exactly as the editor's pool
+         gathers them — folded by default, because at full size this section is
+         the longest thing on the page. A family name is a button of its own:
+         every book carrying ANY of its words. */
+      {const kwNames=Object.keys(kwCount).sort((a,b)=>a.localeCompare(b));
+       if(kwNames.length){
+         const fams={};kwNames.forEach(k=>{const c=kwCats[k]||"";(fams[c]=fams[c]||[]).push(k);});
+         const famNames=Object.keys(fams).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+         const chip=k=>`<button data-kw="${esc(k)}" style="border:none;background:none;padding:0"><span class="kw" style="cursor:pointer;${kwStyle(k)}">${esc(k)} <b>${kwCount[k]}</b></span></button>`;
+         html+=`<div class="sec">${secHead("tags","Tags",kwNames.length)}
+           ${secShut("tags")?"":famNames.map(c=>`<div class="kwfam" style="margin-bottom:4px"><span class="kwfamname"><button data-kwfam="${esc(c)}" title="Every book carrying any “${esc(c)}” tag" style="border:none;background:none;padding:0;cursor:pointer;font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit">${catColors[c]?`<span class="fampill" style="background:${catColors[c]};color:${inkOn(catColors[c])}">${esc(c)}</span>`:esc(c)}</button></span>${fams[c].map(chip).join("")}</div>`).join("")
+             +(fams[""]?`<div class="kwfam">${famNames.length?'<span class="kwfamname">Loose</span>':""}${fams[""].map(chip).join("")}</div>`:"")}
+         </div>`;
+       }}
     }
-    html+=`<div class="sec"><h2 class="serif">Combine genres</h2><div class="hint">Check several — shows only books that carry <b>all</b> of them.</div>
+    if(!results||S.multi.length)html+=`<div class="sec"><h2 class="serif">Combine genres</h2><div class="hint">Check several — shows only books that carry <b>all</b> of them.</div>
       ${allG.map(g=>{const on=S.multi.includes(g);return `<button class="mg ${on?"on":""}" data-mg="${esc(g)}" style="${on?`background:${genres[g]};border-color:${genres[g]}`:""}"><span class="bx">${on?"✓":""}</span>${esc(g)}</button>`;}).join("")||'<span class="none">No genres yet.</span>'}</div>`;
+    /* the same, for tags — folded by default like the Tags list above, and held
+       open while any tag is ticked, or the ticks would vanish under the fold */
+    if(!results||S.kmulti.length){
+      const kAll=Object.keys(kwCount).sort((a,b)=>a.localeCompare(b));
+      if(kAll.length)html+=`<div class="sec">${secHead("ktags","Combine tags",kAll.length)}
+        ${secShut("ktags")?"":`<div class="hint">Check several — shows only books that carry <b>all</b> of them.</div>
+        ${kAll.map(k=>{const on=S.kmulti.includes(k);const c=kwColor(k);return `<button class="mg ${on?"on":""}" data-kmg="${esc(k)}" style="${on&&c?`background:${c};border-color:${c};color:${inkOn(c)}`:""}"><span class="bx">${on?"✓":""}</span>${esc(k)}</button>`;}).join("")}`}
+      </div>`;
+    }
     if(!results){
       html+=`<div class="sec"><h2 class="serif">Ratings</h2><div class="rbuckets">
         ${buckets.map(b=>{const n=bCount(b);return `<button class="rb ${n?"has":"no"}" ${n?`data-rb="${b.min}"`:""}><span>★ ${b.label}</span><b>${n}</b></button>`;}).join("")}
@@ -9385,12 +9435,12 @@ function renderSearchBody(){
     srchShown+=SRCH_PAGE;renderSearchBody();
     window.scrollTo(0,y);
   };
-  const clear=q("#sclear",m);if(clear)clear.onclick=()=>{S.q="";S.filter=null;S.multi=[];q("#sq").value="";renderSearchBody();};
+  const clear=q("#sclear",m);if(clear)clear.onclick=()=>{S.q="";S.filter=null;S.multi=[];S.kmulti=[];q("#sq").value="";renderSearchBody();};
   const sg=q("#sgrp",m);if(sg)sg.onclick=()=>openAuthorPanel(S.filter.value);
   /* A pressed count redraws the page with the answer at its top — but the
      window kept the scroll of the long page of buttons you pressed it on, so
      the list opened part-way down itself. Same cure History's pills use. */
-  const pick=f=>{S.q="";S.multi=[];S.filter=f;q("#sq").value="";renderSearchBody();window.scrollTo(0,0);};
+  const pick=f=>{S.q="";S.multi=[];S.kmulti=[];S.filter=f;q("#sq").value="";renderSearchBody();window.scrollTo(0,0);};
   qa("[data-cf]",m).forEach(b=>b.onclick=()=>{const t=b.dataset.cf;
     if(t==="favorite")pick({type:"favorite",label:"Favorites"});
     else if(t==="dnf")pick({type:"dnf",label:"Did not finish"});
@@ -9399,8 +9449,12 @@ function renderSearchBody(){
   qa("[data-ser]",m).forEach(b=>b.onclick=()=>pick({type:"series",value:b.dataset.ser,label:"Series: "+b.dataset.ser}));
   qa("[data-aud]",m).forEach(b=>b.onclick=()=>pick({type:"audience",value:b.dataset.aud,label:"For: "+b.dataset.aud}));
   qa("[data-gen]",m).forEach(b=>b.onclick=()=>pick({type:"genre",value:b.dataset.gen,label:"Genre: "+b.dataset.gen}));
-  qa("[data-mg]",m).forEach(b=>b.onclick=()=>{const g=b.dataset.mg;S.filter=null;S.q="";q("#sq").value="";
+  qa("[data-mg]",m).forEach(b=>b.onclick=()=>{const g=b.dataset.mg;S.filter=null;S.q="";S.kmulti=[];q("#sq").value="";
     S.multi=S.multi.includes(g)?S.multi.filter(x=>x!==g):[...S.multi,g];renderSearchBody();});
+  qa("[data-kw]",m).forEach(b=>b.onclick=()=>pick({type:"kw",value:b.dataset.kw,label:"Tag: "+b.dataset.kw}));
+  qa("[data-kwfam]",m).forEach(b=>b.onclick=()=>pick({type:"kwfam",value:b.dataset.kwfam,label:"Tag family: "+b.dataset.kwfam}));
+  qa("[data-kmg]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.kmg;S.filter=null;S.q="";S.multi=[];q("#sq").value="";
+    S.kmulti=S.kmulti.includes(k)?S.kmulti.filter(x=>x!==k):[...S.kmulti,k];renderSearchBody();});
   qa("[data-rb]",m).forEach(b=>b.onclick=()=>{const v=b.dataset.rb;
     if(v==="unrated")pick({type:"rating",value:"unrated",label:"Not rated yet"});
     else{const min=parseInt(v);pick({type:"rating",value:{min,max:min===10?10:min+.999},label:min===10?"Rated 10":`Rated ${min}.0 – ${min}.9`});}});
