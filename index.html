@@ -757,6 +757,11 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .kwfam{display:flex;flex-wrap:wrap;gap:3px;align-items:center;width:100%}
   .kwfamname{width:100%;font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
     color:var(--faint);margin:5px 0 1px}
+  /* a family with a colour wears it as a little pill, so the heading says what
+     its keywords will look like instead of only hinting at it */
+  .kwfamname .fampill{display:inline-block;padding:1px 8px;border-radius:99px}
+  .kwfamname[data-kfam]{cursor:pointer}
+  .kwfamname[data-kfam]:hover{color:var(--ink)}
   /* the way in to wherever the book actually is — deliberately hard to miss */
   .linkchip{text-decoration:none}
   /* ---- reading a book rather than editing it ---- */
@@ -3433,6 +3438,11 @@ async function pullAll(){
           /* one prefix covers both maps — the second kw branch this used to have
              could never be reached, so category assignments outlived the keyword */
           else if(kind==="kw"){delete kwColors[nm];delete kwCats[nm];}
+          /* the word itself stays — only its filing was undone. Without this
+             mark, taking a word out of its family (or disbanding one) held only
+             until the next pull, when takeWhole's keep-what-only-you-know rule
+             handed the old assignment straight back from the other device. */
+          else if(kind==="kwcat")delete kwCats[nm];
           else if(kind==="fandom")delete fandoms[nm];
           else if(kind==="gart")delete groupArt[nm];
           else if(kind==="bg")bgList=bgList.filter(x=>x.id!==nm);
@@ -13690,10 +13700,18 @@ function renderEditor(){
     const chips=list=>list.map(k=>`<span class="kw" data-ks="${esc(k)}" style="cursor:pointer;${kwStyle(k)}">${esc(k)}`
       +(tagEdit?`<button class="x" data-kdel="${esc(k)}" title="Delete “${esc(k)}” for good — off every book and out of this list">✕</button>`:"")
       +`</span>`).join("");
+    /* the heading wears the family's colour the way its keywords will, and with
+       "Edit names & colours" on it is the door to the family itself — the only
+       one there is, since a family is nothing but this heading */
+    const famName=c=>{
+      const col=catColors[c]||"";
+      const inner=col?`<span class="fampill" style="background:${col};color:${inkOn(col)}">${esc(c)}</span>`:esc(c);
+      return `<span class="kwfamname"${tagEdit?` data-kfam="${esc(c)}" title="Rename or recolour the family “${esc(c)}”, or disband it"`:""}>${inner}${tagEdit?" ✎":""}</span>`;
+    };
     box.innerHTML=(shown.length
-        ?`<div class="lbl" style="display:block;margin:6px 0 3px">${typed?`Matching (${shown.length})`:`Already in use (${shown.length}) — ${tagEdit?"tap one to rename, recolour or delete it":"tap to add"}`}</div>
+        ?`<div class="lbl" style="display:block;margin:6px 0 3px">${typed?`Matching (${shown.length})`:`Already in use (${shown.length}) — ${tagEdit?"tap a word to rename, recolour or delete it; a family name to edit the family":"tap to add"}`}</div>
           <div class="kwpick">${named.map(c=>
-              `<div class="kwfam"><span class="kwfamname"${catColors[c]?` style="color:${catColors[c]}"`:""}>${esc(c)}</span>${chips(fams[c])}</div>`).join("")
+              `<div class="kwfam">${famName(c)}${chips(fams[c])}</div>`).join("")
             }${fams[""]&&fams[""].length?`<div class="kwfam">${named.length?'<span class="kwfamname">Loose</span>':""}${chips(fams[""])}</div>`:""}</div>`
         :(typed?`<div class="lbl" style="margin-top:6px">Nothing like that yet — press Enter to make it.</div>`:""))
       +(typed&&!exact&&shown.length?`<div class="lbl" style="margin-top:4px">…or press Enter for a new one.</div>`:"");
@@ -13708,6 +13726,10 @@ function renderEditor(){
     qa("[data-kdel]",box).forEach(x=>x.onclick=async e=>{
       e.stopPropagation();
       await deleteTagForGood(x.dataset.kdel);
+    });
+    qa("[data-kfam]",box).forEach(x=>x.onclick=()=>{
+      openFamilyEditor(x.dataset.kfam);
+      const tp=q("#tagPanel");if(tp)tp.scrollIntoView({block:"center"});
     });
   }
   /* Relationships. Chips like the fandoms, not the keyword machinery — these
@@ -14025,9 +14047,16 @@ function renderEditor(){
            just chosen would quietly vanish, here and everywhere else. Rubbed
            out, exactly as the families below already were. */
         unmarkMetaDel("kw:"+key);
-        /* the family and the colour travel with the name */
-        if(cat)kwCats[key]=cat;else delete kwCats[key];
-        if(nn&&nn!==name)delete kwCats[name];
+        /* the family and the colour travel with the name. Taking a word OUT of
+           its family needs a mark of its own: the delete alone lasted only
+           until the next pull, which kept the other device's copy of the old
+           assignment and quietly re-filed the word. */
+        if(cat){kwCats[key]=cat;unmarkMetaDel("kwcat:"+key);}
+        else if(kwCats[key]){delete kwCats[key];markMetaDel("kwcat:"+key);}
+        /* the old name's vocabulary entry goes with the rename — the same mark
+           genre renames have always set, or the other device's copy of the old
+           colour and family came back as a ghost tag at the next sync */
+        if(nn&&nn!==name){delete kwCats[name];markMetaDel("kw:"+name);}
         if(wholeFamily&&cat&&color){
           /* a family that emptied once carries a mark saying its colour has gone;
              giving the name a colour again has to rub that out, or the next sync
@@ -14043,6 +14072,61 @@ function renderEditor(){
         await renameKeyword(name,nn);
         renderKw();
       }
+    };
+  }
+  /* The family itself — which is nothing but a label its keywords share, plus
+     at most one colour. So this panel touches no book at all: renaming rewrites
+     the label on every word in one go, and merging into an existing family is
+     just renaming to its name. The books never knew the family existed. */
+  function openFamilyEditor(name){
+    const box=q("#tagPanel");box.hidden=false;
+    const words=Object.keys(kwCats).filter(k=>kwCats[k]===name).sort((a,b)=>a.localeCompare(b));
+    const used=books.filter(b=>allKeywordsOf(b).some(k=>kwCats[k]===name)).length;
+    const listed=words.slice(0,10).map(esc).join(", ")+(words.length>10?"…":"");
+    let color=catColors[name]||"";
+    box.innerHTML=`
+      <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">✎ Family</b>
+        <button class="btn" id="teClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+      <div class="hint" style="margin:0 0 7px">${words.length} keyword${words.length===1?"":"s"} in it — ${listed} — across ${used} book${used===1?"":"s"}. What you change here changes all of them.</div>
+      <input class="field" id="teName" value="${esc(name)}" placeholder="Name">
+      <div class="hint" style="margin:5px 0 0">Renaming to a family you already have pours these keywords into it.</div>
+      <div class="lbl" style="display:block;margin:12px 0 6px">Colour — worn by every keyword without one of its own</div>
+      <div id="teCol"></div>
+      <div class="hrow2" style="margin-top:12px"><button class="btn pri" id="teSave">Save</button>
+        <button class="btn danger" id="teDis" title="The keywords stay on every book — just loose, with no family">Disband — set its keywords loose</button></div>`;
+    q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+    drawColorPicker(q("#teCol",box),color,c=>{color=c;},true);
+    q("#teSave",box).onclick=()=>{
+      const nn=titleCase(q("#teName",box).value.trim());
+      box.hidden=true;box.innerHTML="";
+      const renaming=nn&&nn!==name;
+      const target=renaming?nn:name;
+      if(renaming){
+        for(const k of words){kwCats[k]=nn;unmarkMetaDel("kwcat:"+k);}
+        /* the colour travels with the name — unless the family it is poured
+           into already has one, which then wins */
+        if(catColors[name]&&!catColors[nn])catColors[nn]=catColors[name];
+        delete catColors[name];
+        /* both marks, exactly as renaming a genre sets them: without the first
+           the old family colour survives on the other device, without the
+           second renaming TO a name whose colour was once removed walks into
+           the leftover mark and loses the colour again */
+        markMetaDel("cat:"+name);unmarkMetaDel("cat:"+nn);
+      }
+      if(color){catColors[target]=color;unmarkMetaDel("cat:"+target);}
+      else if(catColors[target]){delete catColors[target];markMetaDel("cat:"+target);}
+      saveKwCats();
+      if(SYNC.on)flushQueue();
+      renderKw();renderKwSug();
+    };
+    q("#teDis",box).onclick=()=>{
+      if(!confirm(`Disband the family “${name}”?\n\nIts ${words.length===1?"one keyword stays":`${words.length} keywords stay`} on every book — just loose, with no family and no family colour.\n\nThere is no Undo for this: putting the family back means re-filing each word by hand.`))return;
+      box.hidden=true;box.innerHTML="";
+      for(const k of words){delete kwCats[k];markMetaDel("kwcat:"+k);}
+      delete catColors[name];markMetaDel("cat:"+name);
+      saveKwCats();
+      if(SYNC.on)flushQueue();
+      renderKw();renderKwSug();
     };
   }
   q("#tagEditTog").onclick=()=>{
