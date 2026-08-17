@@ -2726,6 +2726,7 @@ function openRatePanel(){
   wrap.id="ratePanel";wrap.className="ratepanel";
   /* whatever was filled in shows on the page behind it, however it was closed */
   let close=()=>wrap.remove();
+  let touched=false;   /* a look that changed nothing must not rebuild the page behind it */
   const draw=()=>{
     const gaps=entUnrated(cur);
     wrap.innerHTML=`<div class="hrow2" style="margin-bottom:9px">
@@ -2743,13 +2744,16 @@ function openRatePanel(){
       const en=(cur.entries||[]).find(x=>x.id===el.dataset.rp);if(!en)return;
       const v=el.value;
       en.rating=v===""?null:Math.min(10,Math.max(0,parseFloat(v)||0));
+      touched=true;
       syncCollRating(cur);scheduleSave();draw();
     }));
   };
   draw();
   document.body.appendChild(wrap);
   close=dismissable(wrap,()=>{
-    if(view==="book")bookMode==="edit"?renderEditor():renderBookView();
+    /* only a panel that changed something rebuilds the page behind it — the
+       rebuild wiped every open panel and half-typed rename for a mere look */
+    if(touched&&view==="book")bookMode==="edit"?renderEditor():renderBookView();
   });
 }
 /* what to say beside the mark: whose it is, and what the stories come to */
@@ -5861,6 +5865,12 @@ function renderAuthorPanel(name){
   const mb=q("#apMerge",box);
   if(mb)mb.onclick=async()=>{
     if(!authVarSel.size)return;
+    /* the editor stays live and typeable behind this panel — anything
+       half-typed is written down FIRST, exactly as the panel's own Open button
+       always did: the refresh below re-clones `cur` from the shelf, and a
+       pending autosave firing mid-merge would write stale copies back over
+       the books just rewritten */
+    await new Promise(r=>finishSaveThen(r));
     /* stories inside collections too — a story's own author is what stands it
        up as its own row under the author grouping, and a spelling left there
        was the very duplicate this panel exists to remove, unreachable from it
@@ -5899,7 +5909,8 @@ function renderAuthorPanel(name){
     });
     if(movedArt)saveGroupArt();
     if(SYNC.on)flushQueue();
-    if(view==="book"&&cur&&affected.some(b=>b.id===cur.id))await openBook(cur.id,false);else render();
+    /* keepPlace: the same book redrawn keeps its face and its scroll */
+    if(view==="book"&&cur&&affected.some(b=>b.id===cur.id))await openBook(cur.id,false,true);else render();
     renderAuthorPanel(name);
   };
   q("#apColl",box).onclick=async()=>{
@@ -5907,6 +5918,7 @@ function renderAuthorPanel(name){
     const nm=prompt("Name for the collection (its title on the shelf):",name?name+" — collection":"");
     if(nm==null||!nm.trim())return;
     if(!confirm(`Fold ${authSel.size} books into “${nm.trim()}”?\n\nTheir own pages move to Recently deleted (Overview tab) — notes, ratings, pages and covers carry into the collection.`))return;
+    await new Promise(r=>finishSaveThen(r));   /* the same guard the merge has */
     const openId=view==="book"&&cur?cur.id:null;
     const nid=await makeCollectionFrom([...authSel],nm.trim(),name);
     authSel=new Set();
@@ -5917,10 +5929,11 @@ function renderAuthorPanel(name){
     if(authSel.size<2)return;
     const nm=prompt("Series name — every ticked book keeps its page, linked under:","");
     if(nm==null||!nm.trim())return;
+    await new Promise(r=>finishSaveThen(r));   /* the same guard the merge has */
     const ids=[...authSel];
     await makeSeriesFrom(ids,nm.trim());
     authSel=new Set();
-    if(view==="book"&&cur&&ids.includes(cur.id))await openBook(cur.id,false);else render();
+    if(view==="book"&&cur&&ids.includes(cur.id))await openBook(cur.id,false,true);else render();
     renderAuthorPanel(name);
   };
 }
@@ -7060,14 +7073,18 @@ function renderLibrary(){
     return;
   }
   m.innerHTML=html;
-  qa("[data-sf]",m).forEach(b=>b.onclick=()=>{statusFilter=b.dataset.sf;renderLibrary();});
+  /* a pressed pill answers a NEW question, and the answer starts at its top —
+     the same cure History's pills and Search's counts use. The grid/list flip
+     below is deliberately exempt: same rows, only re-shaped, so it keeps your
+     place. */
+  qa("[data-sf]",m).forEach(b=>b.onclick=()=>{statusFilter=b.dataset.sf;renderLibrary();window.scrollTo(0,0);});
   qa("[data-kf]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.kf;
     kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
     if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
     renderLibrary();});
   const fdT=q("#fdTog",m);if(fdT)fdT.onclick=()=>{libFandomMode=true;renderLibrary();};
-  qa("[data-sort]",m).forEach(b=>b.onclick=()=>{sortBy=b.dataset.sort;renderLibrary();});
-  qa("[data-gb]",m).forEach(b=>b.onclick=()=>{groupBy=b.dataset.gb;gavPick=null;renderLibrary();});
+  qa("[data-sort]",m).forEach(b=>b.onclick=()=>{sortBy=b.dataset.sort;renderLibrary();window.scrollTo(0,0);});
+  qa("[data-gb]",m).forEach(b=>b.onclick=()=>{groupBy=b.dataset.gb;gavPick=null;renderLibrary();window.scrollTo(0,0);});
   const lt=q("#layTog",m);if(lt)lt.onclick=()=>{layout=layout==="list"?"grid":"list";renderLibrary();};
   /* ---- group headings: fold away, and give one its own picture ---- */
   const shutSet=()=>new Set(settings.collapsed||[]);
@@ -7156,7 +7173,7 @@ function renderLibrary(){
   const stg=q("#selTog",m);
   if(stg)stg.onclick=()=>{libSelMode=!libSelMode;if(!libSelMode)libSel.clear();renderLibrary();};
   const rt=q("#rawTog",m);
-  if(rt)rt.onclick=()=>{onlyRaw=!onlyRaw;renderLibrary();};
+  if(rt)rt.onclick=()=>{onlyRaw=!onlyRaw;renderLibrary();window.scrollTo(0,0);};
   qa("[data-bmode]",m).forEach(b=>b.onclick=()=>{
     settings.bookEdit=b.dataset.bmode==="edit";saveSettings();renderLibrary();});
   const tt=q("#toolsTog",m);
@@ -9524,7 +9541,9 @@ function renderSearchBody(){
     srchShown+=SRCH_PAGE;renderSearchBody();
     window.scrollTo(0,y);
   };
-  const clear=q("#sclear",m);if(clear)clear.onclick=()=>{S.q="";S.filter=null;S.multi=[];S.kmulti=[];q("#sq").value="";renderSearchBody();};
+  /* clearing is answering a new question too — pressed at the bottom of a long
+     list, it used to leave you stranded mid-page of the browse screen */
+  const clear=q("#sclear",m);if(clear)clear.onclick=()=>{S.q="";S.filter=null;S.multi=[];S.kmulti=[];q("#sq").value="";renderSearchBody();window.scrollTo(0,0);};
   const sg=q("#sgrp",m);if(sg)sg.onclick=()=>openAuthorPanel(S.filter.value);
   /* A pressed count redraws the page with the answer at its top — but the
      window kept the scroll of the long page of buttons you pressed it on, so
@@ -9538,12 +9557,19 @@ function renderSearchBody(){
   qa("[data-ser]",m).forEach(b=>b.onclick=()=>pick({type:"series",value:b.dataset.ser,label:"Series: "+b.dataset.ser}));
   qa("[data-aud]",m).forEach(b=>b.onclick=()=>pick({type:"audience",value:b.dataset.aud,label:"For: "+b.dataset.aud}));
   qa("[data-gen]",m).forEach(b=>b.onclick=()=>pick({type:"genre",value:b.dataset.gen,label:"Genre: "+b.dataset.gen}));
+  /* the FIRST tick makes the results appear at the top, out of sight of the
+     combine box you are standing in — so that one scrolls up. Later ticks are
+     refinements made knowing where the answer lives, and keep your place. */
   qa("[data-mg]",m).forEach(b=>b.onclick=()=>{const g=b.dataset.mg;S.filter=null;S.q="";S.kmulti=[];q("#sq").value="";
-    S.multi=S.multi.includes(g)?S.multi.filter(x=>x!==g):[...S.multi,g];renderSearchBody();});
+    const was=S.multi.length;
+    S.multi=S.multi.includes(g)?S.multi.filter(x=>x!==g):[...S.multi,g];renderSearchBody();
+    if(!was&&S.multi.length)window.scrollTo(0,0);});
   qa("[data-kw]",m).forEach(b=>b.onclick=()=>pick({type:"kw",value:b.dataset.kw,label:"Tag: "+b.dataset.kw}));
   qa("[data-kwfam]",m).forEach(b=>b.onclick=()=>pick({type:"kwfam",value:b.dataset.kwfam,label:"Tag family: "+b.dataset.kwfam}));
   qa("[data-kmg]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.kmg;S.filter=null;S.q="";S.multi=[];q("#sq").value="";
-    S.kmulti=S.kmulti.includes(k)?S.kmulti.filter(x=>x!==k):[...S.kmulti,k];renderSearchBody();});
+    const was=S.kmulti.length;
+    S.kmulti=S.kmulti.includes(k)?S.kmulti.filter(x=>x!==k):[...S.kmulti,k];renderSearchBody();
+    if(!was&&S.kmulti.length)window.scrollTo(0,0);});
   qa("[data-rb]",m).forEach(b=>b.onclick=()=>{const v=b.dataset.rb;
     if(v==="unrated")pick({type:"rating",value:"unrated",label:"Not rated yet"});
     else{const min=parseInt(v);pick({type:"rating",value:{min,max:min===10?10:min+.999},label:min===10?"Rated 10":`Rated ${min}.0 – ${min}.9`});}});
@@ -10256,6 +10282,11 @@ function openWordMenu(name,hint,acts,run){
    the reading page is handed over: this names the word, the editor opens it on
    arrival. */
 let tagEditJump=null;
+/* "Edit names & colours" and the fandom "Tidy the list" are working modes, and
+   a mode you switched on must survive the app redrawing the same book under
+   you — an undo, a closed popup, the trip back from a "Show them" book. Keyed
+   by book id, so opening a DIFFERENT book still starts with both off. */
+let editModesHold={id:null,tagEdit:false,fdTidy:false};
 /* The word panel's "Show them" list sends you to a book; this is the ticket
    back. It names the book the panel was open on, the word (or family) it was
    open to, and the carrier it sent you to — so the return trip can put the
@@ -11925,8 +11956,15 @@ function renderEditor(){
 
   const page=q("#edPage");
   wireBookImport(b);
-  /* declared up here because the chip rendering below reads it */
-  let tagEdit=false,fdTidy=false;
+  /* declared up here because the chip rendering below reads it. Both modes
+     survive a redraw of the SAME book — undo, a popup closing, a round trip —
+     via the hold below; opening a different book still starts them off. They
+     used to be plain false here, and every app-initiated re-render quietly
+     switched the mode off mid-task. */
+  let tagEdit=editModesHold.id===cur.id&&editModesHold.tagEdit,
+      fdTidy=editModesHold.id===cur.id&&editModesHold.fdTidy;
+  editModesHold={id:cur.id,tagEdit,fdTidy};
+  const holdModes=()=>{editModesHold={id:cur.id,tagEdit,fdTidy};};
 
 
   /* pictures, notes, drawing and every tool that goes with them — the same code
@@ -12971,7 +13009,7 @@ function renderEditor(){
     const ff=q("#ficFill",tools||document);
     if(ff)ff.onclick=()=>{const p=q("#fetchPanel");p.hidden?openFicPanel():closeFetch();};
     const ft=q("#fdTidy",w);
-    if(ft)ft.onclick=()=>{fdTidy=!fdTidy;renderFF();};
+    if(ft)ft.onclick=()=>{fdTidy=!fdTidy;holdModes();renderFF();};
     /* Renaming and removing a fandom had no way in at all — the plumbing to
        carry a deletion between devices was there, but nothing on screen could
        ask for one. A paste that fused two names into one was therefore stuck
@@ -14436,13 +14474,16 @@ function renderEditor(){
     };
   }
   q("#tagEditTog").onclick=()=>{
-    tagEdit=!tagEdit;
+    tagEdit=!tagEdit;holdModes();
     page.classList.toggle("tagedit",tagEdit);
     q("#tagEditTog").textContent=tagEdit?"✓ Done":"✎ Edit names & colours";
     /* the list of every tag you own is redrawn too — that's where the ✕ that
        deletes one for good lives, and it only shows while this is on */
     renderGenres();renderKw();renderKwSug();
   };
+  /* the mode held over from before this redraw dresses the page the same way
+     the toggle would have */
+  if(tagEdit){page.classList.add("tagedit");q("#tagEditTog").textContent="✓ Done";}
   /* The reading page's chip menu, here too — tapping a chip used to do nothing
      in the editor unless "Edit names & colours" was on, and what it did then
      (open the rename panel) was a different thing than the same tap did on the
@@ -15921,7 +15962,18 @@ function wireBookImport(b){
     const body=q("#fold-bImp");if(body)body.hidden=!bImpOpen;
     fold.textContent=bImpOpen?"▾ Hide":"▸ Show";
   };
-  const redraw=()=>{bookMode==="edit"?renderEditor():renderBookView();};
+  /* Display-only controls redraw JUST this fold. The whole-page rebuild they
+     used to run threw away every open panel with it — a half-typed rename in
+     the word panel, even a whole pasted fic page — for one keystroke in this
+     search box. Filing is different: it can turn the book into a collection,
+     so that path still redraws the whole page. */
+  const redraw=()=>{
+    const host=document.querySelector(".bimp");
+    if(!host){bookMode==="edit"?renderEditor():renderBookView();return;}
+    host.outerHTML=bookImportHtml(b);
+    wireBookImport(b);
+  };
+  const redrawAll=()=>{bookMode==="edit"?renderEditor():renderBookView();};
   const inp=q("#bImpQ");
   if(inp)inp.oninput=()=>{
     bImpQ=inp.value;
@@ -15964,7 +16016,7 @@ function wireBookImport(b){
       if(SYNC.on)flushQueue();
     }catch(e){alert("They couldn't be saved into the collection — storage may be full. Export a backup from the Overview tab and free some space.");}
     if(q("#busyMsg"))q("#busyMsg").textContent="";
-    redraw();
+    redrawAll();
   };
   qa("[data-bimpadd]").forEach(x=>x.onclick=()=>{
     const it=importQueue.find(i=>i.id===x.dataset.bimpadd);
