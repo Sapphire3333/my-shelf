@@ -14306,6 +14306,56 @@ function renderEditor(){
       renderKw();renderKwSug();
     };
   }
+  /* Thirty genres, one paste. The panel opens holding what every genre wears
+     NOW — copy that anywhere and it is a palette backup — and takes the same
+     lines back with new hexes. Only existing genres are recoloured; nothing is
+     created or renamed from here. The whole apply is one saveMeta, which diffs
+     the map into a single op — so one press of Undo restores the old palette. */
+  function parsePalette(text){
+    const low={};Object.keys(genres).forEach(g=>low[g.toLowerCase()]=g);
+    const hits=[],unknown=[];let pendingName=null;
+    text.split(/\n/).forEach(raw=>{
+      const line=raw.trim();if(!line)return;
+      const m=line.match(/^(.*?)[\s:—–-]*(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3})$/);
+      if(m&&m[1].trim()){
+        const g=low[m[1].trim().toLowerCase()];
+        g?hits.push([g,m[2].toLowerCase()]):unknown.push(m[1].trim());
+        pendingName=null;
+      }else if(m){ /* a lone hex pairs with the bare name on the line above */
+        if(pendingName){const g=low[pendingName.toLowerCase()];
+          g?hits.push([g,m[2].toLowerCase()]):unknown.push(pendingName);}
+        pendingName=null;
+      }else pendingName=line;
+    });
+    return {hits,unknown};
+  }
+  function openPalettePanel(){
+    const box=q("#tagPanel");box.hidden=false;
+    const current=Object.keys(genres).sort((a,b)=>a.localeCompare(b)).map(g=>`${g}: ${genres[g]}`).join("\n");
+    box.innerHTML=`
+      <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">🎨 Genre colours, all at once</b>
+        <button class="btn" id="teClose" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+      <div class="hint" style="margin:0 0 7px">One genre per line, its colour after it. It opens holding what they wear now — paste a whole palette over it, or change a few hexes. Only genres already on your list are recoloured, and one press of ↶ Undo puts the old palette back.</div>
+      <textarea id="palTxt" class="field" spellcheck="false" style="height:220px;font-family:Consolas,ui-monospace,monospace;font-size:12.5px;white-space:pre">${esc(current)}</textarea>
+      <div class="hint" id="palRep" style="margin:6px 0 0"></div>
+      <div class="hrow2" style="margin-top:10px"><button class="btn pri" id="palGo">Recolour</button></div>`;
+    q("#teClose",box).onclick=()=>{box.hidden=true;box.innerHTML="";};
+    const report=()=>{
+      const {hits,unknown}=parsePalette(q("#palTxt",box).value);
+      q("#palRep",box).textContent=`${hits.length} genre${hits.length===1?"":"s"} to recolour`
+        +(unknown.length?` — not on your list, skipped: ${unknown.slice(0,6).join(", ")}${unknown.length>6?` and ${unknown.length-6} more`:""}`:"");
+      return hits;
+    };
+    q("#palTxt",box).addEventListener("input",report);report();
+    q("#palGo",box).onclick=()=>{
+      const hits=report();if(!hits.length)return;
+      box.hidden=true;box.innerHTML="";
+      hits.forEach(([g,c])=>{genres[g]=c;unmarkMetaDel("genre:"+g);});
+      saveMeta();
+      if(SYNC.on)flushQueue();
+      renderGenres();
+    };
+  }
   q("#tagEditTog").onclick=()=>{
     tagEdit=!tagEdit;
     page.classList.toggle("tagedit",tagEdit);
@@ -14431,11 +14481,16 @@ function renderEditor(){
     const v=q("#fGenre").value.trim();
     const pool=Object.keys(genres).filter(g=>!cur.genres.includes(g)).sort((a,b)=>a.localeCompare(b));
     const sug=pendingGenre?[]:(v?pool.filter(g=>g.toLowerCase().includes(v.toLowerCase())):pool);
-    q("#genSug").innerHTML=sug.length
+    q("#genSug").innerHTML=(sug.length
       ?`<div class="lbl" style="display:block;margin-bottom:3px">${v?"Matching":tagEdit?"Tap one to rename or recolour it":"Tap to add"}</div>`
         +sug.map(g=>`<span class="chip" style="${chipStyle(genres[g])};cursor:pointer" data-gs="${esc(g)}">＋ ${esc(g)}</span>`).join("")
-      :(v&&!pendingGenre?`<div class="lbl">No genre by that name yet — press Enter to make it.</div>`:"");
+      :(v&&!pendingGenre?`<div class="lbl">No genre by that name yet — press Enter to make it.</div>`:""))
+      +(tagEdit?`<div style="margin-top:7px"><button class="btn" data-gpal style="padding:3px 10px;font-size:12px" title="Paste a whole palette — one genre and its colour per line">🎨 Recolour many at once…</button></div>`:"");
     qa("[data-gs]").forEach(x=>x.onclick=()=>tagEdit?openTagEditor("genre",x.dataset.gs):addGenre(x.dataset.gs,null));
+    qa("[data-gpal]").forEach(x=>x.onclick=()=>{
+      openPalettePanel();
+      const tp=q("#tagPanel");if(tp)tp.scrollIntoView({block:"center"});
+    });
     q("#genPick").innerHTML=pendingGenre?`<div class="colorpick">
       <div class="hint" style="margin:0 0 9px">Pick a colour for <b>${esc(pendingGenre)}</b> — it will look like this everywhere:</div>
       <div id="genPickCol"></div>
