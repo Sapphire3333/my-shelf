@@ -4237,7 +4237,7 @@ function showHelpSheet(){
     <dl>
       <dt>✎ Edit / 👁 Done</dt><dd>Edit shows every field there is; Done shows only what's filled in, laid out for reading.</dd>
       <dt>★, stage, ♡</dt><dd>All three change right on the page — tap the star badge for a row of stars, no need to open Edit.</dd>
-      <dt>The author's name</dt><dd>Tap it — a panel with everything of theirs on your shelf, and any other spellings imports gave the same person, ready to merge.</dd>
+      <dt>The author's name</dt><dd>Tap it — a panel with everything of theirs on your shelf, any other spellings imports gave the same person ready to merge, and a “More by them?” lookup that shows what you don't have yet, one press from wanting it.</dd>
       <dt>Genre &amp; tag chips</dt><dd>Tap one — its little menu opens: make a genre a tag or a tag a genre, take it off this book, rename or recolour it. The choices that reach the whole shelf say so on the button. On a computer, a small ⌄ appears under the mouse to remind you.</dd>
       <dt>What's inside</dt><dd>On a collection: every story, each able to carry its own author, genres, tags and marks. Where a story says nothing, the collection answers for it.</dd>
       <dt>✥ Move</dt><dd>Drag your pictures and sticky notes wherever you like — or paste a picture straight in. They keep those places outside Edit too.</dd>
@@ -4275,6 +4275,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-18.19",lines:[
+    "The author panel learned “More by them?” — one press asks Open Library what else they've written that isn't on your shelf, and ＋ Want it puts a book straight onto your pile."
+  ]},
   {v:"2026-08-18.18",lines:[
     "The Library grew a 🔗 Series overview — every series as a card with a progress bar, what to read next, and a ⏸ for the ones waiting on an unwritten book."
   ]},
@@ -6047,6 +6050,31 @@ async function makeSeriesFrom(ids,name){
 }
 
 let authSel=new Set(),authVarSel=new Set(),authFindQ="";
+/* the "more by them" lookup — null until asked, "loading" while asking, then
+   {rows} or {err}. Asked only on a press, never by opening the panel: the
+   panel is offline furniture and the lookup is a visit to the internet. */
+let authMore=null,authMoreAll=false;
+async function fetchAuthorWorks(name){
+  const d=await fetchJson("https://openlibrary.org/search.json?limit=100&fields=title,first_publish_year&author="+encodeURIComponent(name),2,9000);
+  const docs=(d&&d.docs)||[];
+  /* everything already on the shelf is out — books and the stories inside
+     collections alike, matched the way the importer matches titles, PLUS a
+     leading article stripped: Open Library says "Screwtape Letters" where the
+     shelf says "The Screwtape Letters". Stripped on the raw title, before the
+     key flattens the spaces away, so "Theodore" keeps his name. */
+  const bareKey=t=>titleKey(volTrim(String(t||"").replace(/^(the|a|an)\s+/i,"")));
+  const have=new Set();
+  books.forEach(b=>{have.add(bareKey(b.title));
+    if(isColl(b))(b.entries||[]).forEach(en=>have.add(bareKey(en.title)));});
+  const seen=new Set(),rows=[];
+  for(const doc of docs){
+    const t=String(doc.title||"").trim();if(!t)continue;
+    const k=bareKey(t);if(!k||seen.has(k)||have.has(k))continue;
+    seen.add(k);rows.push({title:t,year:parseInt(doc.first_publish_year)||0});
+  }
+  rows.sort((a,b)=>(b.year||0)-(a.year||0)||a.title.localeCompare(b.title));
+  return rows;
+}
 /* Two spellings of one person. The surname alone isn't enough: "C.S. Lewis" and
    "C.S. Lewis, Walter Hooper" share no last word, yet one plainly contains the
    other — which is exactly what a co-author tacked on looks like. */
@@ -6067,6 +6095,7 @@ function openAuthorPanel(name){
   name=(name||"").trim();
   if(!name)return;
   authSel=new Set();authVarSel=new Set();authFindQ="";
+  authMore=null;authMoreAll=false;
   renderAuthorPanel(name);
 }
 function closeAuthorPanel(){const box=q("#authPanel");box.hidden=true;box.innerHTML="";}
@@ -6113,8 +6142,48 @@ function renderAuthorPanel(name){
       :`<div class="none">${fq?"No author matches that.":"Nothing here looks like another spelling of this name — search above if you know of one."}</div>`}
     <button class="btn pri" id="apMerge" style="margin-top:7px" ${authVarSel.size?"":"disabled"}>${authVarSel.size
       ?`Make ${authVarSel.size} ${authVarSel.size===1?"spelling":"spellings"} into “${esc(name)}”`
-      :"Tick a spelling above"}</button>`;
+      :"Tick a spelling above"}</button>
+    <div class="grouphead" style="margin:18px 0 8px"><h2 class="serif" style="margin:0;font-size:15px">More by them?</h2><span class="ghline"></span></div>
+    ${authMore==null?`<div class="hint" style="margin:0 0 7px">Ask Open Library — the same service auto-fill uses — what else ${esc(name)} has written. Nothing is asked until you press.</div>
+      <button class="btn" id="apMore">🔎 Look their other books up</button>`
+    :authMore==="loading"?`<div class="none">Asking Open Library…</div>`
+    :authMore.err?`<div class="hint" style="margin:0 0 6px">${esc(authMore.err)}</div><button class="btn" id="apMore">Try again</button>`
+    :`<div class="hint" style="margin:0 0 7px">${authMore.rows.length
+        ?`${authMore.rows.length} not on your shelf, newest first — an edition or translation can slip through under its own title, so the links are there to check.`
+        :"Nothing new — everything Open Library lists for them is already on your shelf."}</div>
+      ${authMore.rows.slice(0,authMoreAll?authMore.rows.length:20).map((r2,i)=>`<div class="snap" style="padding:6px 10px">
+        <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(r2.title)}</div>
+          <div class="meta">${r2.year||"year unknown"}</div></div>
+        ${lookupLinks({title:r2.title,author:name,isbn:""})}
+        ${r2.added?`<span class="lbl" style="white-space:nowrap">✓ on the shelf</span>`
+          :`<button class="btn" data-apwant="${i}" style="padding:3px 9px;white-space:nowrap" title="Put it on your shelf as want-to-read">＋ Want it</button>`}
+      </div>`).join("")}
+      ${authMore.rows.length>20&&!authMoreAll?`<button class="btn" id="apMoreAll" style="margin-top:5px;padding:3px 10px;font-size:12px">Show all ${authMore.rows.length}</button>`:""}`}`;
   q("#apClose",box).onclick=closeAuthorPanel;
+  const am=q("#apMore",box);
+  if(am)am.onclick=async()=>{
+    authMore="loading";renderAuthorPanel(name);
+    let out;
+    try{out={rows:await fetchAuthorWorks(name)};}
+    catch(e2){out={err:"Open Library didn't answer — offline, or the service is busy. Nothing was changed."};}
+    /* the panel may have been closed, or reopened on someone else, meanwhile */
+    const box2=q("#authPanel");
+    if(!box2||box2.hidden||!box2.textContent.includes(name))return;
+    authMore=out;renderAuthorPanel(name);
+  };
+  const ama=q("#apMoreAll",box);
+  if(ama)ama.onclick=()=>{authMoreAll=true;renderAuthorPanel(name);};
+  qa("[data-apwant]",box).forEach(b=>b.onclick=async()=>{
+    const r2=authMore&&authMore.rows&&authMore.rows[+b.dataset.apwant];
+    if(!r2||r2.added)return;
+    /* the same minimal birth an import row gets: title, author, want — the
+       rest is theirs to fill in, or auto-fill's */
+    const nb=blankBook(uid());
+    nb.title=r2.title;nb.author=name;nb.status="want";nb.modified=Date.now();
+    await dbPut("books",nb);books.unshift(nb);
+    if(SYNC.on){enqueue({kind:"book",id:nb.id});flushQueue();}
+    r2.added=true;renderAuthorPanel(name);
+  });
   qa("[data-apb]",box).forEach(c=>c.onchange=()=>{
     c.checked?authSel.add(c.dataset.apb):authSel.delete(c.dataset.apb);
     q("#apColl",box).disabled=q("#apSer",box).disabled=authSel.size<2;
