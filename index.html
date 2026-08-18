@@ -2740,6 +2740,18 @@ document.addEventListener("keydown",e=>{
   const help=q("#helpSheet");
   if(help){e.preventDefault();help.remove();return;}
   if(document.querySelector(".ratepanel"))return;   /* dismissable() handles its own */
+  /* Esc with a Search selection open walks it back to the browse page — the
+     owner kept pressing Esc (and the browser's Back) to undo a genre list,
+     and both did nothing or worse. Back knows the same trick now, through
+     syncHistory's f. Runs only when no box swallowed the press: Esc inside a
+     find box with text is already taken by the ✕-clear capture above. */
+  if(view==="search"&&(S.filter||S.multi.length||S.kmulti.length||S.q.trim())){
+    e.preventDefault();
+    S.q="";S.filter=null;S.multi=[];S.kmulti=[];
+    const sq2=q("#sq");if(sq2)sq2.value="";
+    renderSearchBody();window.scrollTo(0,0);
+    return;
+  }
   const open=[...document.querySelectorAll(".bgpanel")].filter(p=>!p.hidden&&p.innerHTML).pop();
   if(!open)return;
   e.preventDefault();e.stopPropagation();
@@ -4190,6 +4202,7 @@ function showHelpSheet(){
       <dt>The lists below</dt><dd>Your shelf sorted every way at once — authors, genres, tags, series, ratings, stages. Every count is a button, and the number on it is the number of rows it opens.</dd>
       <dt>An author's list</dt><dd>Opens with a button to their own panel: every book of theirs, and the different spellings imports gave them, ready to be merged into one.</dd>
       <dt>What's missing</dt><dd>No cover, no genre, no pages, read but never dated. A collection stays on a list while any story inside is missing something — the number it wears counts those stories.</dd>
+      <dt>Stepping back out</dt><dd>Esc — or your browser's own Back arrow — closes the list you opened and puts the browse page back, ticks and all. ✕ Clear does the same by hand.</dd>
     </dl>
     <h3 id="hs-insights">✨ Insights</h3>
     <dl>
@@ -4255,6 +4268,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-18.16",lines:[
+    "On Search, Esc — or your browser's own Back arrow — now steps you out of a list you opened, back to the browse page. Back even remembers your ticks, one step at a time."
+  ]},
   {v:"2026-08-18.15",lines:[
     "The quotes wall has a tab of its own now — ❝ Quotes, between Insights and Pick. Today's quote on top, a find box, groups by book, genre or kind, a 🎲 shuffle, one-tap ❐ copying, and the whole wall saveable as a text file."
   ]},
@@ -5236,14 +5252,25 @@ function syncHistory(){
      and dropped it — so reloading, or opening the bookmark you had just made,
      put you back at the top of a collection of twenty and left you to find it */
   const en=(view==="book"&&cur&&lastOpenedId===cur.id)?(lastOpenedEn||""):"";
-  const st={v:view,b:view==="book"&&cur?cur.id:null,m:view==="book"?bookMode:null,e:en};
+  /* Search's selection travels with the step now. Opening a genre list, a gap
+     list or a Combine tick is a place you went, and the owner kept pressing
+     the browser's Back to leave it — which instead threw them out of Search
+     entirely, because the selection had never joined the record. The typed
+     text rides along (so a restored step keeps its words) but never MAKES a
+     step: keystrokes replace, selections push. */
+  const fSnap=view==="search"?{fl:S.filter||null,m:S.multi.slice(),k:S.kmulti.slice(),q:S.q||""}:null;
+  const st={v:view,b:view==="book"&&cur?cur.id:null,m:view==="book"?bookMode:null,e:en,f:fSnap};
+  const fSig=x=>x&&x.f?JSON.stringify({fl:x.f.fl||null,m:x.f.m||[],k:x.f.k||[]}):"";
   const h=history.state;
-  if(h&&h.v===st.v&&h.b===st.b&&h.m===st.m&&(h.e||"")===st.e)return;
+  if(h&&h.v===st.v&&h.b===st.b&&h.m===st.m&&(h.e||"")===st.e
+    &&fSig(h)===fSig(st)&&(h.f?h.f.q||"":"")===(fSnap?fSnap.q:""))return;
   /* Reading a book and writing in it are two faces of the same page, not two
      places you travelled to. Swapping between them used to add a step, so back
      put you into the other face first and only left the book on a second press.
-     Same book, only the mode changed -> replace the step rather than add one. */
-  const sameSpot=h&&h.v===st.v&&h.b===st.b;
+     Same book, only the mode changed -> replace the step rather than add one.
+     The same rule keeps typing from spamming steps: same selection, different
+     words -> replace. */
+  const sameSpot=h&&h.v===st.v&&h.b===st.b&&fSig(h)===fSig(st);
   /* the address goes with the step, so a reload, a bookmark or a tab opened
      from a link all land back on the same book */
   const url=(st.v==="book"&&st.b)?bookHash(st.b,st.e):(location.pathname+location.search);
@@ -5274,6 +5301,12 @@ window.addEventListener("popstate",async e=>{
          Back button, and is recorded as one */
       const leavingBook=view==="book";
       view=(st&&st.v&&st.v!=="book")?st.v:"library";
+      /* a Search step carries its selection — put it back exactly, or, for a
+         step from before selections were recorded, put back a clean browse */
+      if(view==="search"){
+        const f2=(st&&st.f)||{};
+        S.filter=f2.fl||null;S.multi=(f2.m||[]).slice();S.kmulti=(f2.k||[]).slice();S.q=f2.q||"";
+      }
       /* leaving the shelf after a look at a group's picture folds it back up and
          puts the grouping where it was — the look was only ever borrowed */
       if(gartPeek&&view!=="library")endGartPeek();
@@ -5318,6 +5351,10 @@ function restoreFromHistory(){
     return true;   /* this render is being taken over */
   }
   if(st.v!=="book")view=st.v;
+  /* a reload keeps the Search selection too, the same promise books have */
+  if(view==="search"&&st.f){
+    S.filter=st.f.fl||null;S.multi=(st.f.m||[]).slice();S.kmulti=(st.f.k||[]).slice();S.q=st.f.q||"";
+  }
   return false;
 }
 function render(){
@@ -9959,6 +9996,10 @@ function renderSearchBody(){
   }
   wireOpen(m,false);
   hydrateCovers(m);
+  /* every road into or out of a selection passes through here, so this is
+     where the step gets written down — the guard inside ignores the redraws
+     that popstate itself causes */
+  syncHistory();
 }
 
 /* =============== pick for me — its own tab =============== */
