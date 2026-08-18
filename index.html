@@ -4163,6 +4163,7 @@ function showHelpSheet(){
     <h3 id="hs-overview">🗂 Overview</h3>
     <dl>
       <dt>A quote a day</dt><dd>One line from your own quotes wall, changing at midnight — tap it to visit the book it came from. Only there once you've kept some quotes.</dd>
+      <dt>What's missing</dt><dd>The same five counts Search keeps — no cover, no blurb, no genres, read-but-no-date, empty collections. Press one and it opens that list on the Search tab.</dd>
       <dt>The year</dt><dd>How many you've finished. Put a number in “Aim for” and it becomes a progress bar that knows today's date — it says whether you're on pace, not just how far along.</dd>
       <dt>Waiting for the next one</dt><dd>Books on hold until the next part is out. Time is what changes that, so the question re-asks itself here. Only appears when there are any.</dd>
       <dt>Export &amp; import</dt><dd>One .json holding every book, cover and picture — your safety net, and how the shelf moves to another device. The line under it says how old your last one is.</dd>
@@ -4242,6 +4243,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-18.8",lines:[
+    "What's missing now greets you twice: at the top of Search instead of the bottom, and as the same five counts on Overview — one press opens the list.",
+    "Ticking a Combine genre or tag keeps the boxes at the top — the narrowed list follows below, no more scrolling past it to tick a second one."
+  ]},
   {v:"2026-08-18.6",lines:[
     "The import list on a book's page now says where your file has each book — ✓ Read, 📖 Currently reading, ★ Want to read, ✕ Did not finish."
   ]},
@@ -8026,6 +8031,17 @@ async function renderHub(){
   const recent=readUnits().flatMap(u=>u.reads.filter(r=>r.end).map(r=>({t:u.title,end:r.end,id:u.book.id,en:u.en?u.en.id:""})))
     .sort((a,b)=>b.end.localeCompare(a.end)).slice(0,3);
   const news=unseenNews();
+  /* the same five What's-missing counts Search keeps, one press from the list —
+     the owner uses them constantly, and Overview is where they land. The cover
+     truth needs the store's key list, same as Search's tab-open refresh. */
+  try{searchCoverIds=new Set((await dbAllKeys("covers")).map(String));}catch(e){}
+  const hubGapCounts=GAPS.map(g=>g[2]().length);
+  const hubGapsHtml=books.length?`<div class="sec">
+    <div class="heading"><h2 class="serif">What's missing</h2></div>
+    <div class="hcard"><div class="rbuckets">
+      ${GAPS.map((g,i)=>`<button class="rb ${hubGapCounts[i]?"has":"no"}" ${hubGapCounts[i]?`data-hubgap="${g[0]}"`:""} style="${hubGapCounts[i]?"border-color:#fcd34d;background:#fffbeb":""}"><span>${g[1]}</span><b>${hubGapCounts[i]}</b></button>`).join("")}
+    </div><div class="hint" style="margin:8px 0 0">Press a number — it opens that list on the Search tab.</div></div>
+  </div>`:"";
   /* one quote from the shelf, changing with the local day — the same gathering
      rule as Insights' quotes wall, so the two never disagree about what counts.
      Deterministic by date rather than random: it holds still all day, needs
@@ -8066,6 +8082,7 @@ async function renderHub(){
           `<button class="btn" data-recb="${r.id}"${r.en?` data-recen="${esc(r.en)}"`:""} style="padding:2px 9px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.t)||"Untitled"}</button>`).join(" ")}</div>`:""}
       </div>
     </div>
+    ${hubGapsHtml}
     ${nextUp.length?`<div class="sec" id="secNext">
       <div class="heading"><h2 class="serif">Waiting for the next one</h2>${nextUp.length>1?`<span class="n">(${nextUp.length})</span>`:""}</div>
       ${nextUp.map(b=>rowHtml(b,false)).join("")}
@@ -8170,6 +8187,12 @@ async function renderHub(){
   const nxSec=q("#secNext",m);
   if(nxSec&&nextUp.length){wireOpen(nxSec,false);hydrateCovers(nxSec);}
   qa("[data-recb]",m).forEach(b=>b.onclick=()=>openBook(b.dataset.recb,false,false,b.dataset.recen||""));
+  qa("[data-hubgap]",m).forEach(b=>b.onclick=()=>{
+    const g=GAPS.find(x=>x[0]===b.dataset.hubgap);if(!g)return;
+    /* the same filter Search's own button sets — one promise, two doors */
+    S.q="";S.multi=[];S.kmulti=[];S.filter={type:"gap",value:g[0],label:g[1]};
+    view="search";render();window.scrollTo(0,0);
+  });
   const qb=q("[data-qodb]",m);
   if(qb){
     qb.onclick=()=>openBook(qb.dataset.qodb,false);
@@ -9437,6 +9460,53 @@ function textMatches(b,qstr){
    never the pictures; refreshed every time the tab is opened, and the body
    redrawn once the honest set arrives. */
 let searchCoverIds=new Set();
+/* ---- what's missing ----
+   One list-maker per kind of gap, used everywhere it is counted or answered —
+   the count on a button and the list it opens come from the same function, so
+   the number IS the promise. Top-level because Overview shows the same five
+   counts Search does. Fics and AI stories sit out covers and genres: the
+   lookup sites have never heard of them, and fandoms do their filing. A
+   collection counts as covered when it has a cover of its own or any story
+   inside does — its shelf row shows the mosaic, which is not a gap. "Read,
+   but no date" is the History timeline's own undated count, so the screens
+   quote one shelf. Callers must refresh searchCoverIds first (keys only,
+   never the pictures) — both tabs do it on open. */
+const GAPS=[
+  /* A collection hides nothing: while any story inside is missing a cover it
+     stays on the list, wearing the count. One covered story used to take the
+     whole collection off and leave the other eleven invisible — the mosaic
+     row looked fine and the gap list agreed, and nothing anywhere said
+     otherwise. Only a collection whose every story is covered leaves. */
+  ["cover","No cover",()=>books.flatMap(b=>{
+    if(isFic(b))return [];
+    if(!isColl(b))return searchCoverIds.has(b.id)?[]:[b];
+    const ens=b.entries||[];
+    const miss=ens.filter(en=>!en.cover).length;
+    const anyCover=searchCoverIds.has(b.id)||ens.some(en=>en.cover);
+    if(!miss&&anyCover)return [];
+    if(!miss)return [b];   /* an empty collection with no cover of its own */
+    return [Object.assign({},b,{_gapNote:anyCover
+      ?`${miss} of its ${ens.length} stor${ens.length===1?"y":"ies"} without a cover`
+      :`the ${ens.length===1?"story inside has":ens.length+" stories inside have"} none either`})];
+  })],
+  /* A collection's own missing blurb still counts — they are being written —
+     and the same row says how many stories inside are missing theirs: one
+     collection row wearing the inner number, not forty story rows. The
+     owner's own design. */
+  ["blurb","No blurb or summary",()=>books.flatMap(b=>{
+    if(!isColl(b))return looksBlank(b.summary)?[b]:[];
+    const miss=(b.entries||[]).filter(en=>looksBlank(en.summary)).length;
+    const own=looksBlank(b.summary);
+    if(!own&&!miss)return [];
+    const bits=[own?"no blurb of its own":"",
+      miss?`${miss===1?"1 story":miss+" stories"} inside without one`:""].filter(Boolean).join(" · ");
+    return [Object.assign({},b,{_gapNote:bits})];
+  })],
+  ["genres","No genres",()=>books.filter(b=>!isFic(b)&&!((b.genres||[]).length))],
+  ["dates","Read, but no date",()=>readUnits().filter(u=>u.times>0&&!u.reads.some(r=>r.end))
+    .map(u=>u.en?storyProxy(u.book,u.en):u.book)],
+  ["emptycoll","Empty collections",()=>books.filter(b=>isColl(b)&&!((b.entries||[]).length))]
+];
 function renderSearchView(){
   dbAllKeys("covers").then(ks=>{
     searchCoverIds=new Set(ks.map(String));
@@ -9523,50 +9593,9 @@ function renderSearchBody(){
      on-hold book answers to ⏸, not to 📖 */
   const plainSt2=k=>stUnits.filter(u=>u.status===k&&!u.dnf&&!u.hold).length;
   const readN=plainSt2("reading"),wantN=plainSt2("want");
-  /* ---- what's missing ----
-     One list-maker per kind of gap, used twice — once to put the count on the
-     button, once to answer it when pressed — so the number IS the promise.
-     Fics and AI stories sit out covers and genres: the lookup sites have never
-     heard of them, and fandoms do their filing. A collection counts as covered
-     when it has a cover of its own or any story inside does — its shelf row
-     shows the mosaic, which is not a gap. "Read, but no date" is the History
-     timeline's own undated count, so the two screens quote one shelf. */
-  const GAPS=[
-    /* A collection hides nothing: while any story inside is missing a cover it
-       stays on the list, wearing the count. One covered story used to take the
-       whole collection off and leave the other eleven invisible — the mosaic
-       row looked fine and the gap list agreed, and nothing anywhere said
-       otherwise. Only a collection whose every story is covered leaves. */
-    ["cover","No cover",()=>books.flatMap(b=>{
-      if(isFic(b))return [];
-      if(!isColl(b))return searchCoverIds.has(b.id)?[]:[b];
-      const ens=b.entries||[];
-      const miss=ens.filter(en=>!en.cover).length;
-      const anyCover=searchCoverIds.has(b.id)||ens.some(en=>en.cover);
-      if(!miss&&anyCover)return [];
-      if(!miss)return [b];   /* an empty collection with no cover of its own */
-      return [Object.assign({},b,{_gapNote:anyCover
-        ?`${miss} of its ${ens.length} stor${ens.length===1?"y":"ies"} without a cover`
-        :`the ${ens.length===1?"story inside has":ens.length+" stories inside have"} none either`})];
-    })],
-    /* A collection's own missing blurb still counts — they are being written —
-       and the same row says how many stories inside are missing theirs: one
-       collection row wearing the inner number, not forty story rows. The
-       owner's own design. */
-    ["blurb","No blurb or summary",()=>books.flatMap(b=>{
-      if(!isColl(b))return looksBlank(b.summary)?[b]:[];
-      const miss=(b.entries||[]).filter(en=>looksBlank(en.summary)).length;
-      const own=looksBlank(b.summary);
-      if(!own&&!miss)return [];
-      const bits=[own?"no blurb of its own":"",
-        miss?`${miss===1?"1 story":miss+" stories"} inside without one`:""].filter(Boolean).join(" · ");
-      return [Object.assign({},b,{_gapNote:bits})];
-    })],
-    ["genres","No genres",()=>books.filter(b=>!isFic(b)&&!((b.genres||[]).length))],
-    ["dates","Read, but no date",()=>readUnits().filter(u=>u.times>0&&!u.reads.some(r=>r.end))
-      .map(u=>u.en?storyProxy(u.book,u.en):u.book)],
-    ["emptycoll","Empty collections",()=>books.filter(b=>isColl(b)&&!((b.entries||[]).length))]
-  ];
+  /* GAPS — the what's-missing list-makers — moved to top level: Overview shows
+     the same five counts now, and two screens quoting one shelf means one
+     list-maker, not a copy. */
 
   /* the fold-away sections. searchShut remembers where you LEFT each one, as
      "not its default": Authors and Series open by default, so the set holds the
@@ -9710,6 +9739,17 @@ function renderSearchBody(){
       </div>`;
     }
     if(!results){
+      /* What's missing leads the page now — the owner uses it more than
+         anything else here, and it lived below four hundred chips. The family
+         "Unrated" and "No page count" belong to sits BELOW it these days.
+         Each button's count is the number of rows pressing it gives you; from
+         the list, ☑ Select books and Auto-fill finish what can be finished. */
+      const gapCounts=GAPS.map(g=>g[2]().length);
+      html+=`<div class="sec"><h2 class="serif">What's missing</h2>
+        <div class="hint" style="margin:0 0 8px">Every book still missing that one thing — press a number to see them. Unrated and No page count below are part of the same family.</div>
+        <div class="rbuckets">
+        ${GAPS.map((g,i)=>`<button class="rb ${gapCounts[i]?"has":"no"}" ${gapCounts[i]?`data-gap="${g[0]}"`:""} style="${gapCounts[i]?"border-color:#fcd34d;background:#fffbeb":""}"><span>${g[1]}</span><b>${gapCounts[i]}</b></button>`).join("")}
+        </div></div>`;
       html+=`<div class="sec"><h2 class="serif">Collections</h2>
         <button class="colbtn f" data-cf="favorite" ${favN?"":"disabled"}>♥ Favorites <b>${favN}</b></button>
         <button class="colbtn r" data-cf="reading" ${readN?"":"disabled"}>📖 Reading now <b>${readN}</b></button>
@@ -9750,7 +9790,11 @@ function renderSearchBody(){
        }}
       html+=ctHtml;
     }
-    if(results)html+=cgHtml+ctHtml;
+    /* ABOVE the results, not below: ticking one box redrew the page with the
+       list on top and the tick-boxes pushed under it — four hundred rows of
+       scrolling to tick a second genre. The boxes stay where your hand just
+       was; the narrowed list follows. */
+    if(results)html=cgHtml+ctHtml+html;
     if(!results){
       html+=`<div class="sec"><h2 class="serif">Ratings</h2><div class="rbuckets">
         ${buckets.map(b=>{const n=bCount(b);return `<button class="rb ${n?"has":"no"}" ${n?`data-rb="${b.min}"`:""}><span>★ ${b.label}</span><b>${n}</b></button>`;}).join("")}
@@ -9768,16 +9812,6 @@ function renderSearchBody(){
         ${LEN_BUCKETS.map((bk,i)=>`<button class="rb ${lenCounts[i]?"has":"no"}" ${lenCounts[i]?`data-len="${i}"`:""} style="${lenCounts[i]?"border-color:#bae6fd;background:#f0f9ff":""}"><span>📄 ${bk.label}</span><b>${lenCounts[i]}</b></button>`).join("")}
         <button class="rb ${noPages?"has":"no"}" ${noPages?'data-len="none"':""} style="${noPages?"border-color:#d6d3d1;background:#fff":""}"><span>No page count</span><b>${noPages}</b></button>
       </div></div>`;
-      /* the family "Unrated" and "No page count" always belonged to — the books
-         auto-fill couldn't finish, and the ones nothing has told a date about.
-         Each button's count is the number of rows pressing it gives you; from
-         the list, ☑ Select books and Auto-fill finish what can be finished. */
-      const gapCounts=GAPS.map(g=>g[2]().length);
-      html+=`<div class="sec"><h2 class="serif">What's missing</h2>
-        <div class="hint" style="margin:0 0 8px">Every book still missing that one thing — press a number to see them. Unrated and No page count above are part of the same family.</div>
-        <div class="rbuckets">
-        ${GAPS.map((g,i)=>`<button class="rb ${gapCounts[i]?"has":"no"}" ${gapCounts[i]?`data-gap="${g[0]}"`:""} style="${gapCounts[i]?"border-color:#fcd34d;background:#fffbeb":""}"><span>${g[1]}</span><b>${gapCounts[i]}</b></button>`).join("")}
-        </div></div>`;
       if(books.length){
         /* the same arithmetic Insights does, on the same units, so the two
            screens finally quote one shelf the same way — including Insights'
