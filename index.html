@@ -3097,6 +3097,7 @@ let libSelMode=false,libSel=new Set();        /* ticking books to group them */
    the other screens are drawn by the same code and must go on opening books. */
 const libTicking=()=>libSelMode&&view==="library";
 let libFandomMode=false;                      /* the shelf shown as fandom cards */
+let libSeriesMode=false;                      /* the shelf shown as series progress cards */
 let gavPick=null;                             /* showing one group on its own; forgotten on reload */
 let gapsOpen=false;                           /* the "show me which" list under Insights' gaps line */
 let vEntRate=null;                            /* which story's star picker is open in the reading view */
@@ -4199,6 +4200,7 @@ function showHelpSheet(){
       <dt>⚙ Arrange</dt><dd>Sorting, grouping under headings — tap a heading to fold it away, give a genre group its own picture with 🖼 — the cover-grid view, and ticking several books at once. Tap the active Sort pill a second time and the order flips — newest becomes oldest, highest rating lowest; the ↑ on the pill says it's flipped.</dd>
       <dt>Ticked books</dt><dd>Fold them into a collection or series, tag them together, or fill in their blanks from the lookup — only blanks are filled, never what you typed. The ☑ Select books button and its panel ride along as you scroll, so the actions are always beside your hand.</dd>
       <dt>★ / ♥ on a row</dt><dd>The little corner disc on a cover changes a book's stage without opening it.</dd>
+      <dt>🔗 Series overview</dt><dd>Every series as a card — a progress bar, how many read of how many there are, which book comes next, and a ⏸ when you're waiting for an unwritten one. Still going, not started and finished each keep to their own section.</dd>
     </dl>
     <h3 id="hs-search">🔍 Search</h3>
     <dl>
@@ -4273,6 +4275,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-18.18",lines:[
+    "The Library grew a 🔗 Series overview — every series as a card with a progress bar, what to read next, and a ⏸ for the ones waiting on an unwritten book."
+  ]},
   {v:"2026-08-18.17",lines:[
     "Overview remembers with you: “Two years ago today you finished…”, whenever your dates have something to say.",
     "Insights grew a finish calendar — the last year of days, deeper teal for days you finished more."
@@ -7137,7 +7142,7 @@ function renderLibrary(){
      row and nothing else: they answer a different question and none of the
      shelf's other controls can reach them. Drawing the whole bar over them left
      a screenful of buttons that did nothing when pressed. */
-  let kindRow="";
+  let kindRow="",seriesRow="";
   if(books.length){
     /* the everyday controls: which books, find one, and a lid over all the rest —
        five rows of tools before the first book helped nobody */
@@ -7167,6 +7172,12 @@ function renderLibrary(){
         return `<button class="mg ${on?"on":""}" data-kf="${k}" style="${on?"background:var(--teal);border-color:var(--teal)":""}"><span class="bx">${on?"✓":""}</span>${l} <b>${kc[k]}</b></button>`;}).join("")}
         <button class="pill ${libFandomMode?"on":""}" id="fdTog" title="Your fics and AI stories as fandom cards">🎭 Fandoms</button></div>`;
     html+=kindRow;
+    /* the series overview — a mode of the shelf like Fandoms, not an eighth
+       tab. Only offered while any book carries a series name. */
+    const seriesNames=new Set(books.map(b=>(b.series||"").trim()).filter(Boolean));
+    if(seriesNames.size)
+      seriesRow=`<div class="pills"><button class="pill ${libSeriesMode?"on":""}" id="serTog" title="Every series as a card — how far you are, what comes next">🔗 Series overview <b>${seriesNames.size}</b></button></div>`;
+    html+=seriesRow;
     if(settings.libTools){
       html+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","favorites","title","author","status","genre","type"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}" title="${sortBy===s?"Tap again to flip the order":""}">${s.charAt(0).toUpperCase()+s.slice(1)}${sortBy===s&&sortRev?" ↑":""}</button>`).join("")}
         <button class="laybtn" id="layTog">${layout==="list"?"▦ Grid":"☰ List"}</button></div>`;
@@ -7324,7 +7335,7 @@ function renderLibrary(){
       count[f].n++;(b.characters||[]).forEach(c=>count[f].chars.add(c));}));
     const loose=pool.filter(b=>!(b.fandoms||[]).length).length;
     const rows=Object.entries(count).sort((a,b)=>b[1].n-a[1].n||a[0].localeCompare(b[0]));
-    m.innerHTML=kindRow+`<div class="fdgrid">${
+    m.innerHTML=kindRow+seriesRow+`<div class="fdgrid">${
       rows.map(([f,v])=>`<button class="fdcard" data-fdgo="${esc(f)}">
         <div class="fdname">${esc(f)}</div>
         <div class="fdmeta">${v.n} ${v.n===1?"story":"stories"}${v.chars.size?` · ${v.chars.size} character${v.chars.size===1?"":"s"}`:""}</div>
@@ -7341,10 +7352,64 @@ function renderLibrary(){
       keepMyPlace();view="search";render();
     });
     const ft=q("#fdTog",m);if(ft)ft.onclick=()=>{libFandomMode=false;renderLibrary();};
+    const sr=q("#serTog",m);if(sr)sr.onclick=()=>{libFandomMode=false;libSeriesMode=true;renderLibrary();};
     qa("[data-kf]",m).forEach(b=>b.onclick=()=>{
       const k=b.dataset.kf;
       kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
       if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
+      renderLibrary();
+    });
+    return;
+  }
+  /* the series overview: every series as a card — how far along, what's next.
+     Read means finished and not set aside; the denominator is the series'
+     own stated length where one is recorded (seriesTotal), else what the
+     shelf holds — and when the shelf holds fewer than the series runs to,
+     the card says so instead of letting 3-of-3 pretend to be the whole. */
+  if(libSeriesMode&&!seriesRow)libSeriesMode=false;
+  if(libSeriesMode){
+    const map={};
+    books.forEach(b=>{const s=(b.series||"").trim();if(s)(map[s]=map[s]||[]).push(b);});
+    const cards=Object.entries(map).map(([name,arr])=>{
+      arr=arr.slice().sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0));
+      const total=Math.max(0,...arr.map(b=>parseInt(b.seriesTotal)||0));
+      const isRead=b=>!b.dnf&&statusOf(b)==="finished";
+      const readN=arr.filter(isRead).length;
+      const next=arr.find(b=>!isRead(b)&&!b.dnf);
+      const waiting=arr.some(b=>holdOf(b)&&(b.holdReasons||[]).includes(HOLD_REASONS[0]));
+      const denom=Math.max(total,arr.length);
+      return {name,arr,total,readN,next,waiting,denom,
+        done:denom>0&&readN>=denom,
+        started:readN>0};
+    });
+    const cardHtml=c=>`<div class="hcard" style="margin-bottom:9px">
+      <div class="hrow2"><b class="serif" style="font-size:16px">${esc(c.name)}</b>
+        ${c.waiting?`<span class="lbl">⏸ waiting for the next one</span>`:""}
+        <span class="lbl" style="margin-left:auto;white-space:nowrap">${c.readN} of ${c.denom} read</span></div>
+      <div class="bar"><i style="width:${c.denom?Math.round(c.readN/c.denom*100):0}%"></i></div>
+      ${c.total>c.arr.length?`<div class="hint" style="margin:5px 0 0">${c.arr.length} of its ${c.total} on your shelf.</div>`:""}
+      <div class="hrow2" style="margin-top:7px">
+        ${c.next?`<span class="lbl">Next:</span><button class="btn" data-serbk="${c.next.id}" style="max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.next.title)||"Untitled"}</button>`
+          :c.done?`<span class="hint" style="margin:0">Finished — every one read.</span>`:""}
+        <button class="btn" data-sergo="${esc(c.name)}" style="margin-left:auto;padding:3px 10px;font-size:12px">Show the books</button>
+      </div></div>`;
+    const secOf2=[["Still going",cards.filter(c=>c.started&&!c.done)],
+      ["Not started",cards.filter(c=>!c.started&&!c.done)],
+      ["Finished",cards.filter(c=>c.done)]];
+    m.innerHTML=kindRow+seriesRow+secOf2.map(([label,list])=>list.length
+      ?`<div class="sec"><div class="heading"><h2 class="serif">${label}</h2><span class="n">(${list.length})</span></div>
+        ${list.sort((a,b)=>a.name.localeCompare(b.name)).map(cardHtml).join("")}</div>`:"").join("");
+    qa("[data-serbk]",m).forEach(b=>b.onclick=()=>{keepMyPlace();openBook(b.dataset.serbk,false);});
+    qa("[data-sergo]",m).forEach(b=>b.onclick=()=>{
+      S.q="";S.multi=[];S.kmulti=[];S.filter={type:"series",value:b.dataset.sergo,label:b.dataset.sergo};
+      keepMyPlace();view="search";render();window.scrollTo(0,0);
+    });
+    const st2=q("#serTog",m);if(st2)st2.onclick=()=>{libSeriesMode=false;renderLibrary();};
+    const ft2=q("#fdTog",m);if(ft2)ft2.onclick=()=>{libSeriesMode=false;libFandomMode=true;renderLibrary();};
+    qa("[data-kf]",m).forEach(b=>b.onclick=()=>{
+      const k=b.dataset.kf;
+      kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
+      if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);
       renderLibrary();
     });
     return;
@@ -7362,7 +7427,8 @@ function renderLibrary(){
     kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
     if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
     renderLibrary();});
-  const fdT=q("#fdTog",m);if(fdT)fdT.onclick=()=>{libFandomMode=true;renderLibrary();};
+  const fdT=q("#fdTog",m);if(fdT)fdT.onclick=()=>{libFandomMode=true;libSeriesMode=false;renderLibrary();};
+  const serT=q("#serTog",m);if(serT)serT.onclick=()=>{libSeriesMode=true;libFandomMode=false;renderLibrary();};
   qa("[data-sort]",m).forEach(b=>b.onclick=()=>{
     if(sortBy===b.dataset.sort)sortRev=!sortRev;   /* the second tap turns it around */
     else{sortBy=b.dataset.sort;sortRev=false;}
