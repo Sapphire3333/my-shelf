@@ -4576,6 +4576,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-21.11",lines:[
+    "Covers can be pasted. Copy a picture anywhere — another tab, a screenshot — and press Ctrl+V on a book's page: it asks, then uses it as the cover. No saving a file and renaming it first.",
+    "Pasting several pictures at once now brings in all of them rather than the first: copy a handful of files in one go and they all land, on a book's page or pinned to the Library."
+  ]},
   {v:"2026-08-21.10",lines:[
     "Auto-fill leads with the LONGEST blurb it found rather than the first, and Show all lays every one of them out with its length so you can pick by reading rather than by paging.",
     "The cover candidates say what is happening to them: the one being fetched wears trying, the one that worked wears a tick, and one whose host refuses is marked and offers to try the next — it never swaps in a different picture behind your back.",
@@ -8307,13 +8311,15 @@ q("#libArtFile").addEventListener("change",async e=>{
 document.addEventListener("paste",e=>{
   if(view!=="library"||!libArtMode)return;
   if(activeBgPicker)return;
-  for(const it of e.clipboardData?.items||[]){
-    if(it.type.startsWith("image/")){
-      e.preventDefault();
-      addLibArt(it.getAsFile(),{x:24,y:24+libArt.length*18}).then(()=>{if(view==="library")renderLibrary();});
-      return;
-    }
-  }
+  /* all of them, one after another, so several copied files pin as several */
+  const pics=[...(e.clipboardData?.items||[])].filter(it=>it.type.startsWith("image/"))
+    .map(it=>it.getAsFile()).filter(Boolean);
+  if(!pics.length)return;
+  e.preventDefault();
+  (async()=>{
+    for(const f of pics)await addLibArt(f,{x:24,y:24+libArt.length*18});
+    if(view==="library")renderLibrary();
+  })();
 });
 q("#gartFile").addEventListener("change",e=>{
   const f=e.target.files[0];e.target.value="";
@@ -12115,7 +12121,7 @@ function renderBookView(){
     </div>
 
     <div class="vhead" id="secDetails">
-      <div class="vcover" id="vCover">${curCover?`<img src="${curCover}">`:genCoverHtml(b,true)}</div>
+      <div class="vcover" id="vCover" title="${curCover?"Copy a picture anywhere and press Ctrl+V to replace this cover":"Copy a picture anywhere and press Ctrl+V to use it as the cover"}">${curCover?`<img src="${curCover}">`:genCoverHtml(b,true)}</div>
       <div class="vmain">
         <h1 class="serif vtitle">${esc(b.title)||"Untitled"} ${lookupIcons(b,null)}</h1>
         <div class="vauthor">${(()=>{
@@ -12384,6 +12390,37 @@ function renderBookView(){
     const off=(bar?bar.getBoundingClientRect().height:0)+12;
     window.scrollTo(0,Math.max(0,window.scrollY+row.getBoundingClientRect().top-off));
   });
+  /* ---- a copied picture becomes the cover ----
+     The cover box was the one picture in the app you could not paste into, so
+     a cover you found in another tab had to be saved to a file first — and the
+     save dialog proposes the same name every time a site serves its pictures
+     from the same address, which is a rename by hand for every book. Copy the
+     picture and press Ctrl+V here instead.
+     This is the reading page with the scrapbook shut, which was the only paste
+     nothing already wanted: in the editor and with the scrapbook open a paste
+     is a new picture on the page, in the Library it is a picture pinned to the
+     shelf, and the background picker takes one while it is open. Nothing that
+     already worked changes. It asks first, because a stray Ctrl+V should not
+     quietly replace a cover you chose. */
+  if(window.__covPaste)document.removeEventListener("paste",window.__covPaste);
+  window.__covPaste=async e=>{
+    if(!document.body.contains(page)){document.removeEventListener("paste",window.__covPaste);window.__covPaste=null;return;}
+    if(view!=="book"||bookMode!=="view"||viewArrange||activeBgPicker)return;
+    const it=[...(e.clipboardData?.items||[])].find(x=>x.type.startsWith("image/"));
+    if(!it)return;
+    e.preventDefault();
+    const f=it.getAsFile();if(!f)return;
+    const had=!!curCover;
+    if(!confirm(had?"Replace this book's cover with the picture you copied?":"Use the picture you copied as this book's cover?"))return;
+    let data;
+    try{data=await compressImage(f,600,.85);}catch(err){alert("That picture couldn't be read.");return;}
+    try{await dbPut("covers",{id:b.id,data});}
+    catch(err){alert("That cover couldn't be saved — storage may be full.");return;}
+    curCover=data;coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);bumpCovers();
+    await quickEdit(bk=>{bk.coverV=Date.now();});
+    if(SYNC.on)enqueue({kind:"cover",id:b.id});
+  };
+  document.addEventListener("paste",window.__covPaste);
   const vAu=q("#vAuthor");if(vAu)vAu.onclick=e=>{e.stopPropagation();askAuthor(authorParts(b.author)[0]||b.author);};
   /* the readings, corrected where you read rather than only where you edit —
      a re-read opened by a mis-tap has to be one tap away from gone */
@@ -12786,8 +12823,13 @@ function wireScrapbook(page,host){
     if(!document.body.contains(page)){document.removeEventListener("paste",window.__scrapPaste);window.__scrapPaste=null;return;}
     if(activeBgPicker)return;   /* background picker is open — let it take the image */
     if(!host.editor&&!viewArrange)return;   /* not while you are only reading */
-    for(const it of e.clipboardData?.items||[]){
-      if(it.type.startsWith("image/")){e.preventDefault();addPicture(it.getAsFile());return;}}
+    /* every image in the paste, not only the first. Copying several files at
+       once in the file manager hands them all over in one paste, and taking
+       one of them and dropping the rest looked like the app losing them. */
+    const pics=[...(e.clipboardData?.items||[])].filter(it=>it.type.startsWith("image/"));
+    if(!pics.length)return;
+    e.preventDefault();
+    pics.map(it=>it.getAsFile()).filter(Boolean).forEach(addPicture);
   };
   document.addEventListener("paste",window.__scrapPaste);
 
