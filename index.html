@@ -4514,6 +4514,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-21.8",lines:[
+    "Turning a collection over from its notes, quotes or liked-and-disliked lists sent you back to the last story inside it instead. The stories no longer outrank everything below them — whatever you last scrolled past is where you land."
+  ]},
   {v:"2026-08-21.7",lines:[
     "Keeping your place when a book turns over now covers the whole book, not just collections: what you liked and disliked, your quotes, the summary, the notes, the genres and the tags all put you back where you were."
   ]},
@@ -11271,42 +11274,63 @@ function renderBook(){bookMode==="edit"?renderEditor():renderBookView();syncHist
    name here and a covers slider there, and comparing those was a rule that
    would have quietly broken the first time one of them was reworded. */
 const PLACE_IDS=["secDetails","secSummary","entWrap","secLists","secQuotes","secNotes"];
-/* every landmark this face is showing, in the order they stand down the page */
+/* Every landmark this face is showing, in the order they stand down the page:
+   the sections, and inside a collection each story too, because a story is
+   simply a finer landmark than the section around it.
+   Keeping the stories in a list of their OWN was the mistake in the first
+   version. They were consulted first and beat everything, so scrolling past
+   the whole list of stories down to the notes still answered "the last story
+   you passed" — and that is where turning the book over sent you back to.
+   One list, sorted by where things actually stand, and the rule that follows
+   is the same for all of them: whatever you last went past is where you are. */
 function placeMarks(page){
   const out=[];
+  page.querySelectorAll("[data-entrow]").forEach(el=>out.push({k:"#"+el.dataset.entrow,el}));
   page.querySelectorAll("[data-place]").forEach(el=>out.push({k:"@"+el.dataset.place,el}));
   PLACE_IDS.forEach(id=>{const el=page.querySelector("#"+id);if(el)out.push({k:id,el});});
-  return out.sort((a,b)=>a.el.getBoundingClientRect().top-b.el.getBoundingClientRect().top);
+  /* Ties are real: on some books the tags block begins at the very top of the
+     details block, so both start at the same height. A tie goes to the deeper
+     element — the finer answer — or the section containing it would win and
+     send you to the head of the page instead of to the tags themselves. */
+  const depth=el=>{let d=0;for(let p=el.parentElement;p;p=p.parentElement)d++;return d;};
+  return out.map(m=>Object.assign(m,{t:m.el.getBoundingClientRect().top,d:depth(m.el)}))
+    .sort((a,b)=>(a.t-b.t)||(a.d-b.d));
 }
 function bookPlace(){
   const page=q("#edPage");if(!page)return null;
   const bar=page.querySelector(".edbar");
   const fold=(bar?bar.getBoundingClientRect().bottom:0)+40;
-  /* a story you are beside beats everything: it is the finest-grained answer
-     the page can give, and the one the owner asked for by name */
-  let en=null,first=null;
-  for(const r of page.querySelectorAll("[data-entrow]")){
-    const t=r.getBoundingClientRect().top;
-    if(t<=fold)en=r.dataset.entrow;                                /* the last one passed */
-    else if(!first&&t<window.innerHeight)first=r.dataset.entrow;   /* or the next one coming */
+  const marks=placeMarks(page);
+  /* At the very bottom of a page that has run out of room, "the last one you
+     passed" stops meaning what it says: nothing further can be brought under
+     the toolbar, so the sections you are actually looking at are the ones
+     standing on screen below it. There the last visible landmark wins — which
+     is what turning a short collection over from its notes needs, since the
+     notes can never reach the top of it. Only where the page genuinely
+     scrolls: one that fits on a screen has passed nothing at all. */
+  const canScroll=document.documentElement.scrollHeight>window.innerHeight+8;
+  if(canScroll&&window.scrollY>=document.documentElement.scrollHeight-window.innerHeight-2){
+    let last=null;
+    for(const m of marks)if(m.el.getBoundingClientRect().top<window.innerHeight)last=m.k;
+    if(last)return {mark:last};
   }
-  if(en||first)return {en:en||first};
-  let mark=null;
-  for(const m of placeMarks(page))if(m.el.getBoundingClientRect().top<=fold)mark=m.k;
-  return mark?{mark}:null;
+  let mark=null,first=null;
+  for(const m of marks){
+    const t=m.el.getBoundingClientRect().top;
+    if(t<=fold)mark=m.k;                                 /* the last one passed */
+    else if(!first&&t<window.innerHeight)first=m.k;      /* or the next one coming */
+  }
+  const k=mark||first;
+  return k?{mark:k}:null;
 }
 function restoreBookPlace(p){
-  if(!p)return;
+  if(!p||!p.mark)return;
   const page=q("#edPage");if(!page)return;
-  const go=el=>{
-    if(!el)return true;
-    const bar=page.querySelector(".edbar");
-    const off=(bar?bar.getBoundingClientRect().height:0)+12;
-    window.scrollTo(0,Math.max(0,window.scrollY+el.getBoundingClientRect().top-off));
-    return true;
-  };
-  if(p.en){const row=page.querySelector(`[data-entrow="${CSS.escape(p.en)}"]`);if(row)return go(row);}
-  if(p.mark){const m=placeMarks(page).find(x=>x.k===p.mark);if(m)return go(m.el);}
+  const m=placeMarks(page).find(x=>x.k===p.mark);
+  if(!m)return;
+  const bar=page.querySelector(".edbar");
+  const off=(bar?bar.getBoundingClientRect().height:0)+12;
+  window.scrollTo(0,Math.max(0,window.scrollY+m.el.getBoundingClientRect().top-off));
 }
 function setBookMode(m){
   const place=view==="book"?bookPlace():null;
