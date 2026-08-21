@@ -4816,6 +4816,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-21.19",lines:[
+    "⧉ Copy the list puts your chapter titles on the clipboard — small enough to paste into a chat and ask where the parts should fall — and § Parts from a list reads the answer back in, in whatever shape it comes: 1 Youth, 1-4 Youth, Chapter 15 — The founding. One Undo takes the lot back.",
+    "A fanfic can have chapters too now: numbers and names you fill in, with the same marks and parts. No text — the fic stays where you read it."
+  ]},
   {v:"2026-08-21.18",lines:[
     "An AI story can be divided into parts: press § on a chapter to start one — Youth, Pains — and every chapter after it belongs to that part until the next. The parts become a contents list at the top of the story, on both faces, and pressing one takes you there.",
     "Chapters can be marked ♥ favourite, ✓ good, ✕ needs work or ○ background in one tap, and the ones you marked gather into a list of their own, each saying which part it is in."
@@ -12877,7 +12881,7 @@ function renderBookView(){
     t.hidden=!t.hidden;
     b.textContent=(t.hidden?"▸":"▾")+b.textContent.slice(1);
   });
-  /* one folder for both long lists \x{2014} the button says what it is hiding, so
+  /* one folder for both long lists — the button says what it is hiding, so
      "Show them" and "Show it" both read as English rather than as a label */
   qa("[data-vchjump]",page).forEach(b=>b.onclick=e=>{
     e.stopPropagation();
@@ -15082,6 +15086,25 @@ function renderEditor(){
     const box=q("#chapWrap");
     if(!box)return;
     const ch=cur.chapters||[],pr=cur.prompts||[],di=cur.discussion||[];
+    /* A fic's chapters are numbers and names, never text: the fic lives on AO3
+       and the app has never held a word of it. So the list is here to be marked
+       and divided, not read — and it has to be offered before it exists,
+       because unlike an AI story nothing imports it. */
+    const ficCh=kindOf(cur)==="fanfic";
+    if(ficCh&&!ch.length){
+      box.innerHTML=`<div class="lbox chapbox"><div class="lhead">
+          <h3>Chapters</h3>
+          <button class="btn" id="chMake">➕ List its chapters…</button></div>
+        <div class="hint" style="margin:0">Numbers and names only — enough to mark the ones you loved and divide a long fic into parts. The fic itself stays where you read it.</div></div>`;
+      const mk=q("#chMake",box);
+      if(mk)mk.onclick=()=>{
+        const n=parseInt(prompt("How many chapters does it have?",""),10);
+        if(!n||n<1||n>2000)return;
+        cur.chapters=Array.from({length:n},(_,i)=>({id:uid(),title:"Chapter "+(i+1),words:0}));
+        renderChapters();scheduleSave();
+      };
+      return;
+    }
     if(!ch.length&&!pr.length&&!di.length){box.innerHTML="";return;}
     const words=ch.reduce((s,c)=>s+(c.words||0),0);
     box.innerHTML=`
@@ -15095,7 +15118,10 @@ function renderEditor(){
         ${(cur.chapters||[]).some(c=>{const t=c.text||"";
             return (!looksLikeChapter(t)&&!HEAD_ANYWHERE.test(t))||splitChapterText(t).before;})
           ?`<button class="btn" id="chTidy" title="Move the replies that were never chapters to the discussion, and fold the working-out into the chapters it belongs to">✂ Tidy the chapters</button>`:""}
-        <button class="btn" id="chSave" title="Save the chapters out as one file">⭳ Save as a file</button></div>
+        ${ficCh?"":`<button class="btn" id="chSave" title="Save the chapters out as one file">⭳ Save as a file</button>`}
+        <button class="btn" id="chCopy" title="Copy the numbered titles — small enough to paste into a chat and ask for parts">⧉ Copy the list</button>
+        <button class="btn" id="chParts" title="Paste a list of parts back in — “1 Youth”, “5 Pains”">§ Parts from a list…</button></div>
+      <div id="chPartsBox"></div>
         ${(()=>{const ps=chapterParts(ch);
           return ps.length?`<div class="chtoc"><span class="lbl" style="margin:0">Contents</span>
             ${ps.map(p=>`<button class="pill" data-chjump="${p.at}" title="${p.n} chapter${p.n===1?"":"s"}">${esc(p.name)} <b>${p.n}</b></button>`).join("")}</div>`
@@ -15118,8 +15144,9 @@ function renderEditor(){
             <span class="chev">${chapOpen.has(c.id)?"▾":"▸"}</span>
             <span class="chn">${i+1}</span>
             <span class="cht">${esc(c.title||"Untitled")}</span>
-            <span class="chw">${(c.words||0).toLocaleString()} w</span>
+            ${ficCh?"":`<span class="chw">${(c.words||0).toLocaleString()} w</span>`}
           </button>
+          ${ficCh?`<button class="cnt" data-chren="${c.id}" title="Name this chapter">✎</button>`:""}
           <span class="chtools">
             ${CHAP_MARKS.map(([k,sym,label])=>`<button class="mkbtn ${k}${c.mark===k?" on":""}" data-chmark="${c.id}|${k}" title="${label}">${sym}</button>`).join("")}
             ${String(c.part||"").trim()?"":`<button class="mkbtn part" data-chpart="${c.id}" title="Start a part here — the chapters after it belong to it">§</button>`}
@@ -15150,6 +15177,73 @@ function renderEditor(){
           <button class="cnt" data-prc="${p.id}" title="Copy it">⧉</button>
           <button class="lx" data-prx="${p.id}" style="opacity:1" title="Remove it">✕</button>
         </div>`).join(""):""}</div>`:""}`;
+    /* ---- out to a chat, and back again ----
+       Two hundred and twenty-one chapters is far too much text to hand a chat,
+       but the TITLES are two or three thousand words — nothing — and they are
+       what carries the shape of a story. So: copy the numbered titles, ask
+       whoever you like where the parts should fall, and paste the answer back.
+       The parser takes the shapes an answer actually comes back in — "1 Youth",
+       "1-4 Youth", "1. Youth", "Chapter 15 — The founding" — because insisting
+       on one exact format would mean hand-editing the reply every time. */
+    {const cp=q("#chCopy",box);
+     if(cp)cp.onclick=async()=>{
+       const txt=(cur.chapters||[]).map((c,i)=>`${i+1}. ${c.title||"Untitled"}`).join("\n");
+       try{await navigator.clipboard.writeText(txt);cp.textContent="Copied ✓";
+         setTimeout(()=>{const e2=q("#chCopy",box);if(e2)e2.textContent="⧉ Copy the list";},2500);}
+       catch(e){
+         const pb=q("#chPartsBox",box);
+         if(pb)pb.innerHTML=`<div class="hint" style="margin:8px 0 4px">Your browser wouldn't let the app reach the clipboard — here is the list, select it and copy:</div>
+           <textarea class="field" id="chCopyOut" style="height:150px;font-size:12.5px">${esc(txt)}</textarea>`;
+         const ta=q("#chCopyOut",box);if(ta){ta.focus();ta.select();}
+       }
+     };}
+    {const pp=q("#chParts",box);
+     if(pp)pp.onclick=()=>{
+       const pb=q("#chPartsBox",box);if(!pb)return;
+       if(pb.innerHTML){pb.innerHTML="";return;}
+       pb.innerHTML=`<div class="hint" style="margin:8px 0 5px">One part per line: the chapter it starts at, then its name — <b>1 Youth</b>, <b>5 Pains</b>, <b>15 The founding</b>. A range like <b>1-4 Youth</b> works too; only the first number is used, since a part runs until the next one starts.</div>
+         <textarea class="field" id="chPartsTxt" spellcheck="false" placeholder="1 Youth&#10;5 Pains&#10;15 The founding" style="height:150px;font-family:Consolas,ui-monospace,monospace;font-size:12.5px"></textarea>
+         <div class="hint" id="chPartsRep" style="margin:6px 0 0"></div>
+         <div class="hrow2" style="margin-top:8px"><button class="btn pri" id="chPartsGo" disabled>Set the parts</button></div>`;
+       const parse=()=>{
+         const n=(cur.chapters||[]).length;
+         const hits=[],bad=[];
+         String(q("#chPartsTxt",box).value||"").split("\n").forEach(line=>{
+           if(!line.trim())return;
+           const m=line.match(/^\s*(?:chapters?\s*)?(\d+)\s*(?:[-–—]\s*\d+|\s+to\s+\d+)?\s*[.)\]:•|–—-]*\s*(.+?)\s*$/i);
+           if(!m){bad.push(line.trim());return;}
+           const at=parseInt(m[1],10),name=m[2].trim();
+           if(!name||!at||at<1||at>n){bad.push(line.trim());return;}
+           hits.push([at-1,name]);
+         });
+         const rep=q("#chPartsRep",box);
+         if(rep)rep.textContent=hits.length
+           ?`${hits.length} part${hits.length===1?"":"s"} — first starts at chapter ${hits[0][0]+1}`
+             +(bad.length?` · ${bad.length} line${bad.length===1?"":"s"} not understood: ${bad.slice(0,2).join(" / ")}${bad.length>2?"…":""}`:"")
+           :(bad.length?`None of those lines said a chapter number and a name.`:"Paste the list above.");
+         const go=q("#chPartsGo",box);if(go)go.disabled=!hits.length;
+         return hits;
+       };
+       q("#chPartsTxt",box).addEventListener("input",parse);parse();
+       q("#chPartsGo",box).onclick=()=>{
+         const hits=parse();if(!hits.length)return;
+         const had=chapterParts(cur.chapters).length;
+         if(had&&!confirm(`Replace the ${had} part${had===1?"":"s"} this story has now with these ${hits.length}?\n\nOne press of ↶ Undo puts the old ones back.`))return;
+         /* one pass, one save, one undo step */
+         (cur.chapters||[]).forEach(c=>{delete c.part;});
+         hits.forEach(([i,name])=>{if(cur.chapters[i])cur.chapters[i].part=name;});
+         pb.innerHTML="";
+         renderChapters();scheduleSave();
+       };
+     };}
+    /* a fic's chapter is a name you type, since nothing imported one */
+    qa("[data-chren]",box).forEach(b=>b.onclick=()=>{
+      const c=(cur.chapters||[]).find(x=>x.id===b.dataset.chren);if(!c)return;
+      const nm=prompt("What is this chapter called?",c.title||"");
+      if(nm===null)return;
+      c.title=nm.trim()||c.title;
+      renderChapters();scheduleSave();
+    });
     /* one tap marks a chapter, the same tap again takes it off */
     qa("[data-chmark]",box).forEach(b=>b.onclick=()=>{
       const [id,k]=b.dataset.chmark.split("|");
@@ -15365,7 +15459,7 @@ function renderEditor(){
         <button class="btn" id="ficFill" title="Read a fic's own page — paste it, or drop the file AO3's Download gives you">⇩ Fill from the fic's page</button>
         ${kindOf(cur)==="ai"?`<button class="btn" id="chatIn" title="Claude's Settings → Privacy → Export Data file — the chapters and your prompts come in as two lists">💬 Bring in a chat…</button>`:""}
       </div>
-      ${kindOf(cur)==="ai"?`<div id="chapWrap"></div>`:""}`;
+      ${kindOf(cur)!=="book"?`<div id="chapWrap"></div>`:""}`;
     w.innerHTML=`<div class="ffbox">
       <div class="lbl" style="display:flex;align-items:center;gap:8px;margin-bottom:3px">Fandom${cur.fandoms.length>1?"s":""}
         <button class="btn" id="fdTidy" style="margin-left:auto;padding:3px 9px;font-size:12px" title="Rename a fandom or take one off your list — everywhere at once">${fdTidy?"✓ Done":"✎ Tidy the list"}</button></div>
