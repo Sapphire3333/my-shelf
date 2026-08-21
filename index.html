@@ -4792,6 +4792,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-21.14",lines:[
+    "Telling a tag pair to be left alone now sticks: they stop being offered after a reload, and they are listed under the pairs as “Pairs you told me to leave” with an Ask me again beside each, in case you change your mind."
+  ]},
   {v:"2026-08-21.13",lines:[
     "Merging a tag no longer throws you to the top of Overview — nor do the import card's Add-all and Fill-in-all, which had the same fault.",
     "The families panel now carries the key to the colours: your genres sorted into the band each one's colour actually falls in, with what that band means — purple for otherworlds, wine red for the dark shelf, leather brown for the form it comes in. The meanings are yours to reword, and one press can give your genres the Shelf sections colours the scheme was designed with."
@@ -9785,11 +9788,43 @@ function kwHolders(k,g){
    the session only: a pair you leave stops asking now, and asks again next
    time you come looking, which is the honest bargain when the alternative is a
    permanent list of exceptions nobody can see. */
-let tagDupeSkip=new Set();
+/* ---- the pairs you have told me to leave ----
+   These were forgotten when the tab was closed, on the reasoning that a
+   permanent list of exceptions nobody can see is worse than being asked twice.
+   The owner asked for the other half of that bargain instead: keep them, and
+   show them somewhere they can be taken back. So they are kept, and listed
+   under the pairs with a way to put any of them back in the queue.
+   Stored by the two names exactly as they are spelled, which makes the list
+   self-cleaning: rename or merge either word and the entry stops matching
+   anything and quietly drops out. Kept on this device, like the text size —
+   say the word if it should travel between them.
+   The key is sorted so a pair is one entry however it was found. */
+const leaveKey=(a,b)=>[a,b].sort((x,y)=>x.localeCompare(y)).join(" | ");
+const tagLeft=()=>new Set(settings.tagLeave||[]);
+function leaveTagPair(a,b){
+  const s=tagLeft();s.add(leaveKey(a,b));
+  settings.tagLeave=[...s];saveSettings();
+}
+function unleaveTagPair(key){
+  const s=tagLeft();s.delete(key);
+  settings.tagLeave=[...s];saveSettings();
+}
 function refreshTagDupes(){
   const box=q("#tagDupBox");if(!box)return;
-  const pairs=tagDupePairs().filter(p=>!tagDupeSkip.has(p.a+"|"+p.b));
-  if(!pairs.length){box.innerHTML="";return;}
+  const left=tagLeft();
+  const pairs=tagDupePairs().filter(p=>!left.has(leaveKey(p.a,p.b)));
+  /* an entry whose words no longer both exist has nothing to say any more */
+  const live=new Set([...new Set(books.flatMap(allKeywordsOf))]);
+  const leftRows=[...left].filter(k=>k.split(" | ").every(w=>live.has(w)));
+  const leftHtml=leftRows.length?`<div class="lbl" style="display:block;margin:14px 0 4px">Pairs you told me to leave <b>${leftRows.length}</b></div>
+    <div class="hint" style="margin:0 0 6px">These stay out of the list above. Put one back if you change your mind.</div>
+    ${leftRows.map(k=>`<div class="snap" style="gap:7px">
+      <span style="flex:1;min-width:0;font-size:13px;overflow-wrap:anywhere">${esc(k)}</span>
+      <button class="btn" data-tdback="${esc(k)}">Ask me again</button></div>`).join("")}`:"";
+  const wireLeft=()=>qa("[data-tdback]",box).forEach(b=>b.onclick=()=>{
+    unleaveTagPair(b.dataset.tdback);refreshTagDupes();
+  });
+  if(!pairs.length){box.innerHTML=leftHtml;wireLeft();return;}
   const CAP=8;
   box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">Tags that may be the same tag twice <b>${pairs.length}</b></div>
     <div class="hint" style="margin:0 0 7px">Merging puts every book under one word and takes the other off the shelf. One press of ↶ Undo puts it all back.</div>
@@ -9800,10 +9835,12 @@ function refreshTagDupes(){
       <button class="btn" data-tdm="${i}|b" title="Everything under “${esc(p.a)}” becomes “${esc(p.b)}”">${esc(p.b)} <b>${p.nb}</b></button>
       <button class="btn" data-tdx="${i}" style="margin-left:auto">Leave them</button>
     </div>`).join("")}
-    ${pairs.length>CAP?`<div class="hint" style="margin:6px 0 0">…and ${pairs.length-CAP} more, once these are dealt with.</div>`:""}`;
+    ${pairs.length>CAP?`<div class="hint" style="margin:6px 0 0">…and ${pairs.length-CAP} more, once these are dealt with.</div>`:""}
+    ${leftHtml}`;
+  wireLeft();
   qa("[data-tdx]",box).forEach(b=>b.onclick=()=>{
     const p=pairs[+b.dataset.tdx];if(!p)return;
-    tagDupeSkip.add(p.a+"|"+p.b);refreshTagDupes();
+    leaveTagPair(p.a,p.b);refreshTagDupes();
   });
   qa("[data-tdm]",box).forEach(b=>b.onclick=async()=>{
     const [i,side]=b.dataset.tdm.split("|");
