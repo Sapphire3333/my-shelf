@@ -1085,6 +1085,25 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
     text-align:left;min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere;
     text-decoration:underline dotted var(--faint);text-underline-offset:3px}
   .alink:hover{color:var(--teal);text-decoration-color:var(--teal)}
+  /* the co-authors behind the ＋, and the way in to an author's own panel */
+  .acoauth{font-size:.92em}
+  .asep{color:var(--faint);font-size:.9em}
+  .amore,.abooks{font:inherit;font-size:12px;line-height:1;border:1px solid var(--line);
+    background:var(--card);color:var(--mut);border-radius:7px;padding:3px 7px;cursor:pointer;flex:none}
+  .amore:hover,.abooks:hover{border-color:var(--teal);color:var(--teal)}
+  /* a story's own words, on the story's own row */
+  .entown{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:2px}
+  .entownlbl{font-size:11px;color:var(--faint);font-weight:700;letter-spacing:.3px}
+  .entown .chip,.entown .kw{font-size:11px;padding:1px 8px}
+  /* the contents of a collection: two columns where there is room, one where
+     there is not, each row a press that takes you down to that story */
+  .toclist{columns:2 230px;column-gap:14px;margin-bottom:14px}
+  .tocrow{display:flex;align-items:baseline;gap:7px;width:100%;text-align:left;padding:3px 6px;
+    border:0;background:none;border-radius:7px;cursor:pointer;break-inside:avoid}
+  .tocrow:hover{background:#0d94881a}
+  .tocn{font-family:Georgia,serif;font-weight:700;color:var(--faint);font-size:12px;flex:none;min-width:15px;text-align:right}
+  .toct{flex:1;min-width:0;font-size:13.5px;overflow-wrap:anywhere}
+  .tocr{flex:none;font-size:11px;padding:1px 7px}
   .vline2{font-size:13px;color:var(--faint)}
   .vbadges{position:relative;display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:1px}
   .vpick{left:0;top:calc(100% + 5px)}
@@ -1883,6 +1902,26 @@ const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre"
 const surnameOf=a=>{a=String(a||"").trim();if(!a)return"";
   const c=a.indexOf(",");if(c>0)return a.slice(0,c).trim().toLowerCase();
   const p=a.replace(/\./g," ").trim().split(/\s+/);return (p[p.length-1]||"").toLowerCase();};
+/* ---- more than one name in the author field ----
+   The field is one line of text and always has been, so several authors arrive
+   as one long string and used to be one long link. Pulled apart here for
+   showing and for asking about, never for storing: what is typed stays exactly
+   as typed, and if this splits it wrongly the whole string is still there to
+   read and the first chip still finds the book.
+   The comma is the hard part, because half of every import writes people
+   surname-first â "Lewis, C.S." is one man, not two. So a lone comma followed
+   by initials or by a single short word is left alone; a comma followed by
+   something with a space in it is two people. An ampersand or a semicolon is
+   never anything but a separator. */
+function authorParts(s){
+  const raw=String(s||"").trim();
+  if(!raw)return [];
+  if(/\s(?:&|and)\s/i.test(raw))return raw.split(/\s(?:&|and)\s/i).map(x=>x.trim()).filter(Boolean);
+  if(raw.includes(";"))return raw.split(";").map(x=>x.trim()).filter(Boolean);
+  const bits=raw.split(",").map(x=>x.trim()).filter(Boolean);
+  if(bits.length===2&&/^(?:[A-Z]\.?\s*){1,3}$|^[A-ZÃ-Å½][\w'â-]{1,12}$/.test(bits[1]))return [raw];
+  return bits.length>1?bits:[raw];
+}
 const fmtEdited=t=>new Date(t).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 /* ---- colour helpers: muting and brightening need HSL, not hex ---- */
@@ -4514,6 +4553,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-21.9",lines:[
+    "Several authors are several people now: the first stands as the book's, the rest wait behind a ＋, and each one can be asked about on its own — with a 📚 beside them for everything on your shelf by the main one.",
+    "A collection with three stories or more wears its contents beside the summary: every story with what you gave it, and a press to go straight down to it.",
+    "A story with genres or tags of its own now says so on its own row — its genres stand instead of the collection's, its tags as well as them."
+  ]},
   {v:"2026-08-21.8",lines:[
     "Turning a collection over from its notes, quotes or liked-and-disliked lists sent you back to the last story inside it instead. The stories no longer outrank everything below them — whatever you last scrolled past is where you land."
   ]},
@@ -11478,6 +11522,9 @@ function scheduleSave(){
    Everything empty simply isn't here: no pickers, no "Add… (Enter)", no boxes
    waiting to be filled. What you did fill in is gathered close together. */
 let vStatusOpen=false,vRateOpen=false,viewArrange=false,vReadsOpen=false;
+/* whether the co-authors behind the ＋ are showing; forgotten on reload, like
+   the rest of the reading page's small openings */
+let vAuthMore=false;
 /* pasting a picture onto the page you're reading used to be its own small copy
    of adding one. The scrapbook does it for both pages now, so this is gone and
    there is one way a picture arrives, wherever you are standing. */
@@ -12007,9 +12054,22 @@ function renderBookView(){
       <div class="vcover" id="vCover">${curCover?`<img src="${curCover}">`:genCoverHtml(b,true)}</div>
       <div class="vmain">
         <h1 class="serif vtitle">${esc(b.title)||"Untitled"} ${lookupIcons(b,null)}</h1>
-        <div class="vauthor">${(b.author||"").trim()
-          ? `<button class="alink" id="vAuthor" title="Everything on your shelf by ${esc(b.author)} — open one, link them as a series, fold them into a collection, or tidy a spelling">${esc(b.author)}</button>`
-          : (kindOf(b)==="ai"?"":"Unknown author")}
+        <div class="vauthor">${(()=>{
+          /* One name reads as one name. Several used to read as one long link
+             saying all of them at once, so you could not ask about just the
+             one you meant. The first stands as the book's own, the rest wait
+             behind a ＋ until you want them, and every one of them can be
+             asked about on its own. */
+          const parts=authorParts(b.author);
+          if(!parts.length)return kindOf(b)==="ai"?"":"Unknown author";
+          const chip=(n,main)=>`<button class="alink${main?"":" acoauth"}" data-auth="${esc(n)}" title="Everything on your shelf by ${esc(n)} — open one, link them as a series, fold them into a collection, or tidy a spelling">${esc(n)}</button>`;
+          const rest=parts.slice(1);
+          return chip(parts[0],true)
+            +(rest.length?(vAuthMore
+              ? rest.map(n=>`<span class="asep">·</span>`+chip(n,false)).join("")+`<button class="amore" id="vAuthLess" title="Tuck them away again">−</button>`
+              : `<button class="amore" id="vAuthMore" title="${esc(rest.join(", "))}">＋${rest.length}</button>`):"")
+            +`<button class="abooks" id="vAuthor" title="Everything on your shelf by ${esc(parts[0])} — open one, link them as a series, fold them into a collection, or tidy a spelling">📚</button>`;
+        })()}
           ${L?`<a class="tlink" href="${esc(L.url)}" target="_blank" rel="noopener" title="Read it — ${esc(L.name)}">📖</a>`:""}</div>
         ${(b.fandoms||[]).length?`<div class="vline2">${(b.fandoms||[]).map(esc).join(", ")}${(b.characters||[]).length?" · "+(b.characters||[]).map(c=>esc(stripFandomEcho(c,b.fandoms))).join(", "):""}</div>`:""}
         ${(b.ships||[]).length?`<div class="vline2">${(b.ships||[]).map(s=>`<span class="shipchip" title="${esc(s)}">${esc(stripFandomEcho(s,b.fandoms))}</span>`).join("")}</div>`:""}
@@ -12076,6 +12136,24 @@ function renderBookView(){
     </div>
 
     ${hasSummary?`<div class="cap2" id="secSummary">Summary</div><div class="vtext sum">${b.summary}</div>`:""}
+    ${(()=>{
+      /* ---- the contents ----
+         A collection of a dozen stories is a book with chapters, and its page
+         had no way of telling you what was in it without scrolling the whole
+         list of them. This is the list at a glance, beside the summary where
+         the contents of a book belong: every story, what you gave it, and a
+         press to go straight down to it. Two of them is not a contents page,
+         so it starts at three. It says nothing about progress or stages on
+         purpose — the rows below say all of that, and a contents page that
+         repeats them is just the list again, less readable. */
+      const ens=isColl(b)?(b.entries||[]):[];
+      if(ens.length<3)return "";
+      return `<div class="cap2">Contents</div>
+        <div class="toclist">${ens.map((en,i)=>`<button class="tocrow" data-toc="${esc(en.id)}">
+          <span class="tocn">${i+1}</span>
+          <span class="toct">${esc(en.title)||"Untitled"}</span>
+          ${en.rating!=null?`<span class="rate ${rateBand(Number(en.rating))} tocr">★ ${Number(en.rating).toFixed(1)}</span>`:""}
+        </button>`).join("")}</div>`;})()}
     ${isColl(b)&&(b.entries||[]).length?`<div class="cap2" id="entWrap">${entCapHtml(b)}</div>
       <div class="entbox">${(b.entries||[]).map((en,i)=>`<div class="ent" data-entrow="${esc(en.id)}">
         <span class="entnum">${i+1}</span>
@@ -12109,6 +12187,22 @@ function renderBookView(){
                 <span class="rr">p.<input class="entpg nospin" type="number" inputmode="numeric" min="0" max="${esc(String(en.pages))}" data-enpg="${en.id}"
                   value="${esc(String(en.progress||""))}" placeholder="–" title="The page you're on in this story"> of ${esc(String(en.pages))}</span></span>`;})()}
             ${readsOf(en).length?`<button class="rdtog" data-enrd="${en.id}" title="Every time you've read this story — correct a date, add one, or take a reading off">${vEntReads===en.id?"▾":"▸"} ${esc(readSummary(en,true))}</button>`:""}</div>
+          ${(()=>{
+            /* What this story says for itself, shown where you are looking at
+               it. A story's own genres REPLACE the collection's while its own
+               tags are added to them, so the two are labelled differently:
+               saying "instead of" and "as well as" is the whole difference
+               between them, and a collection's page was the one place where
+               neither was ever shown. */
+            const g=(en.genres||[]).filter(x=>String(x||"").trim());
+            const k=(en.keywords||[]).filter(x=>String(x||"").trim());
+            if(!g.length&&!k.length)return "";
+            return `<div class="entown">`
+              +(g.length?`<span class="entownlbl" title="This story's own genres, standing instead of the collection's">Its own:</span>`
+                +g.map(x=>`<button class="chip chipmenu" style="${chipStyle(genres[x])}" data-cmenu="g|${esc(x)}" title="What this word can do">${esc(x)}</button>`).join(""):"")
+              +(k.length?`<span class="entownlbl" title="Tags this story carries as well as the collection's">Also tagged:</span>`
+                +k.map(x=>`<button class="kw chipmenu" style="${kwStyle(x)}" data-cmenu="s|${esc(x)}" title="What this word can do">${esc(x)}</button>`).join(""):"")
+              +`</div>`;})()}
           ${vEntReads===en.id?readListHtml(en,en.id,false):""}
           ${vEntStatus===en.id?`<div class="stpick vpick" style="position:static;margin:4px 0;min-width:0;max-width:100%">
             ${STATUSES.map(([k,l])=>`<button data-evst="${en.id}|${k}" class="${!en.dnf&&en.status===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${esc(l)}</button>`).join("")}
@@ -12201,7 +12295,32 @@ function renderBookView(){
   });
   /* the name opens what the editor's 📚 By this author opens — the rest of them,
      ready to be opened, linked as a series, folded together or spelled the same */
-  const vAu=q("#vAuthor");if(vAu)vAu.onclick=e=>{e.stopPropagation();openAuthorPanel(b.author);};
+  /* Each name asks about itself. Where the shelf holds books filed under
+     exactly that name, its own panel opens — the rich one, with the spellings
+     and the folding-together. Where it does not, which is every co-author of a
+     book whose field names two people at once, the question becomes a search
+     of the author field instead, and that finds every book the name appears
+     in however it is written alongside others. */
+  const askAuthor=n=>{
+    const name=String(n||"").trim();if(!name)return;
+    if(books.some(x=>String(x.author||"").trim()===name)){openAuthorPanel(name);return;}
+    S.q=name;S.scopes=["author"];S.filter=null;S.multi=[];S.kmulti=[];
+    keepMyPlace();view="search";render();window.scrollTo(0,0);
+  };
+  qa("[data-auth]",page).forEach(el=>el.onclick=e=>{e.stopPropagation();askAuthor(el.dataset.auth);});
+  const vAm=q("#vAuthMore",page);if(vAm)vAm.onclick=e=>{e.stopPropagation();vAuthMore=true;renderBookView();};
+  const vAl=q("#vAuthLess",page);if(vAl)vAl.onclick=e=>{e.stopPropagation();vAuthMore=false;renderBookView();};
+  /* the contents: a press goes down to that story, put under the toolbar the
+     same way keeping your place does */
+  qa("[data-toc]",page).forEach(el=>el.onclick=e=>{
+    e.stopPropagation();
+    const row=page.querySelector(`[data-entrow="${CSS.escape(el.dataset.toc)}"]`);
+    if(!row)return;
+    const bar=page.querySelector(".edbar");
+    const off=(bar?bar.getBoundingClientRect().height:0)+12;
+    window.scrollTo(0,Math.max(0,window.scrollY+row.getBoundingClientRect().top-off));
+  });
+  const vAu=q("#vAuthor");if(vAu)vAu.onclick=e=>{e.stopPropagation();askAuthor(authorParts(b.author)[0]||b.author);};
   /* the readings, corrected where you read rather than only where you edit —
      a re-read opened by a mis-tap has to be one tap away from gone */
   const vrd=q("#vReads");if(vrd)vrd.onclick=e=>{e.stopPropagation();vReadsOpen=!vReadsOpen;renderBookView();};
