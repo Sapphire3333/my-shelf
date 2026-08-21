@@ -44,7 +44,9 @@ self.addEventListener("fetch", e => {
   // it in the background so updates do land eventually. The photo-reader's language
   // files live on tessdata.projectnaptha.com and get the same treatment, so reading
   // a photo keeps working offline once it has worked online.
-  if (url.hostname === "cdn.jsdelivr.net" || url.hostname === "tessdata.projectnaptha.com") {
+  // unpkg.com is the fallback home for the same libraries, tried when jsdelivr
+  // is blocked or unreachable on a device — whichever one answered gets kept.
+  if (url.hostname === "cdn.jsdelivr.net" || url.hostname === "unpkg.com" || url.hostname === "tessdata.projectnaptha.com") {
     e.respondWith(
       caches.match(req).then(hit => {
         const net = fetch(req).then(res => {

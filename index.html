@@ -652,6 +652,13 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .sbar .sdel:hover{background:var(--rose)}
   .rs{position:absolute;right:-6px;bottom:-6px;width:15px;height:15px;background:#14b8a6;border-radius:4px;cursor:nwse-resize;display:none;box-shadow:0 1px 3px rgba(0,0,0,.3)}
   #edPage.arr .rs{display:block}
+  /* the finder's ring: dropped over a picture or note to say "here", above
+     everything (a picture hiding under a note is the very case it is for) */
+  .findring{position:absolute;z-index:60;border:3px solid #f59e0b;border-radius:12px;
+    pointer-events:none;box-shadow:0 0 0 6px rgba(245,158,11,.28);animation:findpulse 2.6s ease-out both}
+  .findring span{position:absolute;left:-3px;top:-29px;background:#f59e0b;color:#43290b;font-size:12px;
+    font-weight:700;border-radius:6px;padding:2px 8px;white-space:nowrap}
+  @keyframes findpulse{0%{opacity:0}10%{opacity:1}80%{opacity:1}100%{opacity:0}}
 
   /* search page */
   .searchbox{position:relative;margin-bottom:4px}
@@ -1478,6 +1485,10 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   html[data-simple="1"] #edFit,html[data-simple="1"] #artTog,html[data-simple="1"] #artAdd,
   html[data-simple="1"] .gartbox,html[data-simple="1"] .grouphead .gart,
   html[data-simple="1"] #vArr,
+  /* Fit stacks the loose pictures and notes — the very things simple mode
+     hides. Left visible it was a button that did nothing at all, which is
+     exactly how it was reported. It goes with the rest of the scrapbook. */
+  html[data-simple="1"] #vFit,html[data-simple="1"] #vFind,
   html[data-simple="1"] .notehint{display:none!important}
   /* Bigger type is the whole point — the zoom slider is on top of this, not
      instead of it. 16px on anything you type into also stops iOS zooming in. */
@@ -1907,17 +1918,50 @@ function scrapDropY(pageEl){
    merely off the side of a narrow screen is already pulled back into view when
    the page is drawn, without its stored place being touched. */
 const STRAY_X=3000,STRAY_LEFT=-2000;
+/* Beyond the far-off cases, a place or size that is no number at all (NaN from
+   some old mishap turns top: into nonsense and the browser puts the thing
+   wherever the flow drops it), and a width below the resize handle's own 60px
+   floor — nothing today can write one, so one that exists is damage. Both made
+   a picture impossible to find while its row in the editor looked perfectly
+   healthy, the editor overriding exactly the numbers that were broken. */
+const scrapBroken=o=>!isFinite(+(o.x||0))||!isFinite(+(o.y||0))
+  ||(o.w!=null&&(!isFinite(+o.w)||+o.w<30))||(o.h!=null&&(!isFinite(+o.h)||+o.h<30));
 const strayScraps=b=>[...((b&&b.images)||[]),...((b&&b.pads)||[])]
-  .filter(o=>(o.x||0)>STRAY_X||(o.x||0)<STRAY_LEFT||(o.y||0)<0);
+  .filter(o=>scrapBroken(o)||(o.x||0)>STRAY_X||(o.x||0)<STRAY_LEFT||(o.y||0)<0);
 /* mend only the part that is actually broken — a picture stranded sideways
    keeps the height you put it at */
 function gatherStrays(b){
   const list=strayScraps(b);
   list.forEach((o,i)=>{
-    if((o.x||0)>STRAY_X||(o.x||0)<STRAY_LEFT)o.x=18+(i*24)%120;
-    if((o.y||0)<0)o.y=20;
+    if(!isFinite(+(o.x||0))||(o.x||0)>STRAY_X||(o.x||0)<STRAY_LEFT)o.x=18+(i*24)%120;
+    if(!isFinite(+(o.y||0))||(o.y||0)<0)o.y=20;
+    if(o.w!=null&&(!isFinite(+o.w)||+o.w<30))o.w=160;
+    if(o.h!=null&&(!isFinite(+o.h)||+o.h<30))o.h=120;
   });
-  return list.length;
+  return list;
+}
+/* ---- pointing at a thing on the page instead of describing where it is ----
+   An amber ring dropped over a picture or a note, labelled, scrolled to, and
+   gone again in a moment. Positioned in the page's own pixels, so the screen
+   measurement has to be divided back through the page zoom — the same
+   two-rulers rule every measurement here follows. */
+let findWalk={id:null,i:0};
+function flashSpot(el,label){
+  const page=q("#edPage");if(!page||!el)return;
+  qa(".findring",page).forEach(x=>x.remove());
+  const pr=page.getBoundingClientRect();
+  const z=(()=>{const w=page.offsetWidth||pr.width||1;const k=(pr.width||w)/w;return (k>0.05&&k<20)?k:1;})();
+  const er=el.getBoundingClientRect();
+  const ring=document.createElement("div");
+  ring.className="findring";
+  ring.style.left=((er.left-pr.left)/z-8)+"px";
+  ring.style.top=((er.top-pr.top)/z-8)+"px";
+  ring.style.width=(er.width/z+16)+"px";
+  ring.style.height=(er.height/z+16)+"px";
+  if(label){const s=document.createElement("span");s.textContent=label;ring.appendChild(s);}
+  page.appendChild(ring);
+  el.scrollIntoView({behavior:"smooth",block:"center"});
+  setTimeout(()=>ring.remove(),2600);
 }
 function wireAddIn(el,commit){
   if(!el)return;
@@ -3114,6 +3158,17 @@ let activeBgPicker=null,bgPick=null,bgAdd=null;
 let view="overview",sortBy="newest",layout="list",statusFilter="all",groupBy="none";
 let libFind="";                               /* the library's type-to-narrow box; forgotten on reload */
 let kindFilter=["book","fanfic","ai"];        /* which kinds show in the Library */
+/* One place for the Show: ticks, because they are a lasting choice, not a
+   session whim — unticking AI and fics used to hold only until the next
+   reload (a phone quietly restarting the tab was enough), and everything
+   crept back. The choice now lives in settings, per device like the rest
+   of them. */
+function flipKind(k){
+  kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
+  if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
+  settings.kinds=kindFilter;saveSettings();
+  renderLibrary();
+}
 let libSelMode=false,libSel=new Set();        /* ticking books to group them */
 /* ...and whether ticking is what a row click means RIGHT NOW. The mode belongs
    to the Library, so it is only true while you are standing in it — the rows on
@@ -3863,6 +3918,12 @@ async function initSync(){
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
   const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
+  /* the Library's Show: ticks, saved by flipKind — junk filtered so a bad
+     value can never empty the Library with no way back */
+  if(Array.isArray(settings.kinds)){
+    const ok=settings.kinds.filter(k=>["book","fanfic","ai"].includes(k));
+    if(ok.length)kindFilter=ok;
+  }
   /* the goal is kept beside the settings rather than inside them, because it is
      the one of them that travels between devices — see saveGoal */
   const gl=await dbGet("meta","goal");if(gl&&gl.v!==undefined&&gl.v!=="")settings.goal=gl.v;
@@ -4298,6 +4359,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-21.1",lines:[
+    "The Library's Show: ticks stick now — unticking AI or fics used to hold only until the app was next reopened, then everything crept back.",
+    "A book page with pictures or notes grew 🧭 Find: each press rings the next one where it actually sits, even buried under a note or far down the page — and a picture whose file hasn't reached this device is said out loud instead of silently skipped.",
+    "📱 Fit only shows where it has something to stack, and reading a photo or barcode tries a second source when the usual one is blocked — errors now name the address that failed instead of claiming you're offline."
+  ]},
   {v:"2026-08-18.23",lines:[
     "The busy screens — Overview, Search, Insights — wear an “On this page:” row at the top: each button jumps to its section, and together they say what the page holds."
   ]},
@@ -7454,12 +7520,7 @@ function renderLibrary(){
     });
     const ft=q("#fdTog",m);if(ft)ft.onclick=()=>{libFandomMode=false;renderLibrary();};
     const sr=q("#serTog",m);if(sr)sr.onclick=()=>{libFandomMode=false;libSeriesMode=true;renderLibrary();};
-    qa("[data-kf]",m).forEach(b=>b.onclick=()=>{
-      const k=b.dataset.kf;
-      kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
-      if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
-      renderLibrary();
-    });
+    qa("[data-kf]",m).forEach(b=>b.onclick=()=>flipKind(b.dataset.kf));
     return;
   }
   /* the series overview: every series as a card — how far along, what's next.
@@ -7507,12 +7568,7 @@ function renderLibrary(){
     });
     const st2=q("#serTog",m);if(st2)st2.onclick=()=>{libSeriesMode=false;renderLibrary();};
     const ft2=q("#fdTog",m);if(ft2)ft2.onclick=()=>{libSeriesMode=false;libFandomMode=true;renderLibrary();};
-    qa("[data-kf]",m).forEach(b=>b.onclick=()=>{
-      const k=b.dataset.kf;
-      kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
-      if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);
-      renderLibrary();
-    });
+    qa("[data-kf]",m).forEach(b=>b.onclick=()=>flipKind(b.dataset.kf));
     return;
   }
   m.innerHTML=html;
@@ -7524,10 +7580,7 @@ function renderLibrary(){
      the hand is already there — the snap was a jerk that gained nothing. The
      group-label pick below keeps its jump: it replaces the whole list. */
   qa("[data-sf]",m).forEach(b=>b.onclick=()=>{statusFilter=b.dataset.sf;renderLibrary();});
-  qa("[data-kf]",m).forEach(b=>b.onclick=()=>{const k=b.dataset.kf;
-    kindFilter=kindFilter.includes(k)?kindFilter.filter(x=>x!==k):[...kindFilter,k];
-    if(!kindFilter.length)kindFilter=KINDS.map(x=>x[0]);   /* never hide everything */
-    renderLibrary();});
+  qa("[data-kf]",m).forEach(b=>b.onclick=()=>flipKind(b.dataset.kf));
   const fdT=q("#fdTog",m);if(fdT)fdT.onclick=()=>{libFandomMode=true;libSeriesMode=false;renderLibrary();};
   const serT=q("#serTog",m);if(serT)serT.onclick=()=>{libSeriesMode=true;libFandomMode=false;renderLibrary();};
   qa("[data-sort]",m).forEach(b=>b.onclick=()=>{
@@ -11491,7 +11544,11 @@ function renderBookView(){
       <span class="sizectl">${sizeCtrlHtml()}</span>
       <button class="sm ${viewArrange?"on":""}" id="vArr" title="Place, draw on and fiddle with your pictures and notes — right here, where you see them">🖌 Scrapbook${viewArrange?"…":""}</button>
       ${strayScraps(b).length?`<button class="sm" id="vStray" title="Something is sitting off the side of this screen — this brings it back where you can see it">⤾ Bring back ${strayScraps(b).length}</button>`:""}
-      <button class="sm" id="vFit" title="Stack everything to fit your screen (best on a phone)">📱 Fit</button>
+      ${(b.images||[]).length||(b.pads||[]).length
+        ?`<button class="sm" id="vFind" title="Point at each picture and note in turn — an amber ring flashes where it sits, even under something else">🧭 Find</button>
+           <button class="sm" id="vFit" title="Stack the pictures and notes into one readable column instead of where they were placed (best on a phone)">📱 Fit</button>`
+        :""/* with nothing loose on the page there is nothing to stack or find,
+              and a button that does nothing reads as broken — it did */}
       <button class="btn pri" id="toEdit" title="Change anything about this book">✎ Edit</button>
       <button class="delbtn" id="edDel" title="Delete this book — it waits in Recently deleted for 30 days" aria-label="Delete this book">🗑</button>
     </div>
@@ -11887,10 +11944,36 @@ function renderBookView(){
   if(strip&&window.ResizeObserver){window.__sbRO=new ResizeObserver(setSbh);window.__sbRO.observe(strip);}
   const vs=q("#vStray");
   if(vs)vs.onclick=async()=>{
-    const n=gatherStrays(cur);
+    const got=gatherStrays(cur),n=got.length;
     viewArrange=true;
     await quickEdit(()=>{});
-    if(n)alert(`Brought ${n} back onto the page — ${n===1?"it's":"they're"} near the top left. Drag ${n===1?"it":"them"} wherever you like.`);
+    /* show, don't tell: ring the first one where it landed instead of an alert
+       that leaves you hunting for the top left */
+    if(n){
+      const first=got[0];
+      const el=q(`#edPage .scrap[data-im="${first.id}"]`)||q(`#edPage .pad[data-pad="${first.id}"]`);
+      if(el)flashSpot(el,`Brought ${n===1?"it":n+" of them"} back — drag ${n===1?"it":"them"} where you like`);
+    }
+  };
+  /* "I have no idea where it is" — the finder walks the page's pictures and
+     notes one press at a time, ringing each where it actually sits: deep down
+     a long page, faded, or hidden under a note. A picture whose file hasn't
+     reached this device yet can't be rung, so it is said in words instead —
+     that used to be a silent skip, indistinguishable from "lost". */
+  const vfd=q("#vFind");
+  if(vfd)vfd.onclick=()=>{
+    const items=[...(cur.images||[]).map(o=>({o,el:q(`#edPage .scrap[data-im="${o.id}"]`),kind:"Picture"})),
+                 ...(cur.pads||[]).map(o=>({o,el:q(`#edPage .pad[data-pad="${o.id}"]`),kind:"Note"}))]
+      .sort((a,b)=>(a.o.y||0)-(b.o.y||0));
+    const here=items.filter(x=>x.el),missing=items.length-here.length;
+    if(!here.length){
+      alert(`${missing===1?"This book's picture is":missing+" of this book's pictures are"} recorded, but the image file${missing===1?" itself hasn't":"s themselves haven't"} arrived on this device — ${missing===1?"it comes":"they come"} with sync from the device where ${missing===1?"it was":"they were"} added.`);
+      return;
+    }
+    if(findWalk.id!==cur.id)findWalk={id:cur.id,i:0};
+    const k=findWalk.i%here.length,it=here[k];
+    findWalk.i++;
+    flashSpot(it.el,`${it.kind} ${k+1} of ${here.length}${missing?` · ${missing} not on this device yet`:""}`);
   };
   const vf=q("#vFit");
   if(vf){
@@ -17555,18 +17638,42 @@ async function fetchCoverData(urls,maxDim){
 }
 
 /* =============== quick add — a book from pasted text or a photo =============== */
-let ocrLoad=null;
-function loadOcr(){
-  if(window.Tesseract)return Promise.resolve();
-  if(!ocrLoad)ocrLoad=new Promise((res,rej)=>{
+/* One address failing used to be the end of it, reported as "needs an internet
+   connection" — which on a phone that was plainly online read as nonsense and
+   said nothing about the real culprit (a content blocker, or the CDN being
+   unreachable on that network). Each script now has a second home to try, and
+   the error names every address that failed, so a report can say what actually
+   went wrong on the device it went wrong on. */
+function loadScriptFrom(urls){
+  let i=0;
+  const one=()=>new Promise((res,rej)=>{
+    const u=urls[i];
     const s=document.createElement("script");
-    s.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    s.src=u;
     s.crossOrigin="anonymous";   /* lets the service worker keep a copy for offline */
-    s.onload=res;
-    s.onerror=()=>{ocrLoad=null;rej(new Error("The text reader couldn't load — reading photos needs an internet connection."));};
+    s.onload=()=>res(u);
+    s.onerror=()=>{s.remove();i++;i<urls.length?one().then(res,rej):rej(new Error(
+      "couldn't be fetched from "+urls.map(x=>new URL(x).hostname).filter((h,j,a)=>a.indexOf(h)===j).join(" or ")
+      +" — no internet, or something on this device blocks them"));};
     document.head.appendChild(s);
   });
+  return one();
+}
+let ocrLoad=null,ocrFrom="";
+function loadOcr(){
+  if(window.Tesseract)return Promise.resolve();
+  if(!ocrLoad)ocrLoad=loadScriptFrom([
+    "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js",
+    "https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"
+  ]).then(u=>{ocrFrom=u;}).catch(e=>{ocrLoad=null;throw new Error("The text reader "+e.message+".");});
   return ocrLoad;
+}
+/* When the main script had to come from the fallback, the worker and engine it
+   fetches next would still point at the blocked host — hand it matching ones. */
+function ocrWorkerOpts(){
+  if(!/unpkg\.com/.test(ocrFrom))return undefined;
+  return {workerPath:"https://unpkg.com/tesseract.js@5/dist/worker.min.js",
+          corePath:"https://unpkg.com/tesseract.js-core@5"};
 }
 /* =============== reading a barcode =============== */
 /* The barcode on a book IS its ISBN — an EAN-13 back cover is the ISBN-13,
@@ -17580,14 +17687,10 @@ function loadBarcode(){
   /* same bargain as the text reader above: fetched once from a CDN and then
      kept by the service worker, which is the only way to have a decoder at all
      without a build step */
-  if(!barcodeLoad)barcodeLoad=new Promise((res,rej)=>{
-    const s=document.createElement("script");
-    s.src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js";
-    s.crossOrigin="anonymous";
-    s.onload=res;
-    s.onerror=()=>{barcodeLoad=null;rej(new Error("The barcode reader couldn't load — it needs an internet connection the first time."));};
-    document.head.appendChild(s);
-  });
+  if(!barcodeLoad)barcodeLoad=loadScriptFrom([
+    "https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js",
+    "https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"
+  ]).catch(e=>{barcodeLoad=null;throw new Error("The barcode reader "+e.message+".");});
   return barcodeLoad;
 }
 /* an ISBN-13, or "" if the digits don't add up. The check digit is the whole
@@ -18000,7 +18103,7 @@ async function quickOcr(file){
     msg("Reading the photo — this can take a little while…");
     /* English AND Latvian — a cover with diacritics came out mangled before.
        The Latvian language file is a one-time extra download, kept locally. */
-    const worker=await Tesseract.createWorker("eng+lav");
+    const worker=await Tesseract.createWorker("eng+lav",1,ocrWorkerOpts());
     let text="";
     try{const r=await worker.recognize(file);text=(r.data&&r.data.text)||"";}
     finally{try{worker.terminate();}catch(e){}}
