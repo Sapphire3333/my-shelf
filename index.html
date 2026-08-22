@@ -4987,6 +4987,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.10",lines:[
+    "A ReadEra backup's own shelves are now buttons — God, Adventure, Magic and the rest. Press one and its books are staged in the import list above, with their author, blurb, subjects, series and how far you have read, so anything already on your shelf is marked and nothing is added until you pick it.",
+    "The subjects that come with an EPUB are half filing system, so BISAC codes (FIC009020) and the words \"book\" and \"ebook\" are dropped and the rest goes through the same tidier a lookup's subjects already pass through. And where one author is written both ways round in the same batch — \"Matt Koceich\" and \"Koceich Matt\" — the form used more often wins, so they arrive as one person."
+  ]},
   {v:"2026-08-22.9",lines:[
     "A quote brought over from ReadEra now says \"p. 257 of 557\" rather than a bare page number. That page is ReadEra's own pagination rather than a printed one — an EPUB has no printed pages at all — so saying how many there were is what keeps the number honest.",
     "The card also counts the books you have put a bookmark in, alongside everything else it found."
@@ -9922,7 +9926,7 @@ function refreshImport(light){
    many carry quotes, which of them are on your shelf, and — at the bottom,
    folded away — every field name your own file actually uses. Nothing is
    brought in until you tick it. */
-let reFound=null;
+let reFound=null,reWantProgress=true;
 function renderReadEra(){
   const box=q("#reOut");if(!box)return;
   if(!reFound){box.innerHTML="";return;}
@@ -9957,7 +9961,15 @@ function renderReadEra(){
       ${withQ.length&&withQ.length-matched.length?`The other ${withQ.length-matched.length} could not be matched by title — they are listed below so you can see what was missed.`:""}
     </div>
     ${holds.length?`<div class="hint" style="margin:0 0 9px">It also knows: ${holds.map(h=>`<b>${h[1]}</b> ${h[0]}`).join(" · ")}.
-      ${colls.length?`<br>And ${colls.length} shelves of its own: ${colls.map(c=>esc(c.title)+" ("+c.n+")").join(", ")}.`:""}</div>`:""}
+      </div>`:""}
+    ${colls.length?`<div class="lbl" style="display:block;margin:12px 0 5px">Its own shelves — bring one across</div>
+      <div class="pills" style="margin:0 0 7px">${colls.map((c,i)=>
+        `<button class="pill" data-recoll="${i}">${esc(c.title)} <b>${c.have}</b></button>`).join("")}</div>
+      <label class="chk" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--mut);margin-bottom:8px">
+        <input type="checkbox" id="reProg" ${reWantProgress?"checked":""}>
+        Bring how far you have read as well — using ReadEra's own page numbers</label>
+      <div class="hint" style="margin:0 0 9px">They are staged in the import list above, where anything already on
+        your shelf is marked and nothing is added until you pick it.</div>`:""}
     ${!withQ.length?`<div class="hint" style="margin:0 0 9px;padding:9px 11px;border-left:3px solid var(--amber);background:var(--card);border-radius:8px">
       No marked lines in this backup — so there is nothing here to bring across as quotes.
       Highlighting a passage in ReadEra is what fills that list.</div>`:""}
@@ -9984,6 +9996,31 @@ function renderReadEra(){
       <div class="fields" style="margin-top:6px">${Object.keys(shape).sort().map(k=>
         `<div class="meta" style="font-variant-numeric:tabular-nums"><b>${esc(k)}</b> — ${esc(shape[k])}</div>`).join("")}</div>
     </details>`;
+  const pg=q("#reProg",box);
+  if(pg)pg.onchange=()=>{reWantProgress=pg.checked;};
+  qa("[data-recoll]",box).forEach(btn=>btn.onclick=()=>{
+    const c=colls[+btn.dataset.recoll];if(!c||!c.docs.length)return;
+    btn.disabled=true;
+    const fixer=reAuthorFixer(c.docs.map(d=>(d.data||{}).doc_authors));
+    const staged=c.docs.map(d=>fromReadEra(d,fixer.fix,reWantProgress)).filter(it=>it.title);
+    /* the same merge the CSV import does: a row already waiting is replaced by
+       what the file says now, and keeps its id so a tick survives */
+    const keyOf=it=>dupeKey(it.title,it.author);
+    const have=new Map(importQueue.map(it=>[keyOf(it),it]));
+    let fresh=0,again=0;
+    staged.forEach(it=>{const old=have.get(keyOf(it));
+      if(old){Object.assign(old,it,{id:old.id});again++;}else{have.set(keyOf(it),it);fresh++;}});
+    importQueue=[...have.values()];
+    markDupes();saveImportQueue();refreshImport();
+    const known=staged.filter(it=>{const q2=importQueue.find(x=>keyOf(x)===keyOf(it));return q2&&(q2.dupe||q2.near);}).length;
+    alert(`“${c.title}” holds ${c.docs.length} book${c.docs.length===1?"":"s"}.`
+      +`\n\n${fresh} staged in the import list${again?", "+again+" read again from the file":""}.`
+      +(known?`\n\n${known} look like something already on your shelf and are marked as such.`:"")
+      +(fixer.merged?`\n\n${fixer.merged} author name${fixer.merged===1?" was":"s were"} written both ways round and have been made to agree.`:"")
+      +`\n\nNothing has been added yet — pick them in the list above.`);
+    const list=q("#impList");if(list)list.scrollIntoView({block:"start",behavior:"smooth"});
+    btn.disabled=false;
+  });
   qa("[data-rechk]",box).forEach(c=>c.onchange=()=>{
     const r=rows.find(x=>x.key===c.dataset.rechk);if(r)r.on=c.checked;renderReadEra();});
   const all=q("#reAll",box);
@@ -10042,9 +10079,14 @@ q("#reFile").addEventListener("change",async e=>{
         fav:reNum(D.doc_favorites_time)>0,deleted:reNum(D.doc_delete_time)>0,
         format:String(D.doc_format||"")};
     });
-    const colls=(Array.isArray(data.colls)?data.colls:[]).map(c=>({
-      title:String((c.data||{}).coll_title||""),n:reNum((c.data||{}).doc_active_count)}))
-      .filter(c=>c.title);
+    const byUri={};docs.forEach(d=>{if(d.uri)byUri[d.uri]=d;});
+    /* a shelf holds uris; the count ReadEra keeps beside it can disagree with
+       what is really in the file, so the real one is what gets shown */
+    const colls=(Array.isArray(data.colls)?data.colls:[]).map(c=>{
+      const mine=(c.docs||[]).map(u=>byUri[u]).filter(d=>d&&!(reNum((d.data||{}).doc_delete_time)>0));
+      return {title:String((c.data||{}).coll_title||""),n:reNum((c.data||{}).doc_active_count),
+        have:mine.length,docs:mine};
+    }).filter(c=>c.title&&c.have);
     reFound={rows,shape:reShape(docs),total:docs.length,colls};
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     renderReadEra();
@@ -18714,6 +18756,69 @@ function rePos(d){
   catch(e){return {ratio:0,page:0,pages:0};}
 }
 const reTags=d=>String((d.data||{}).doc_genres||"").split(",").map(t=>t.trim()).filter(Boolean);
+/* What an EPUB calls its subjects is half filing system. Alongside the words a
+   person would recognise sit BISAC codes — FIC009020, and runs of them joined
+   by slashes — and the words "book" and "ebook", which say nothing about
+   anything. Those go; the rest goes through the same tidier a lookup's subjects
+   already pass through, so "Juvenile Fiction / Historical / Medieval" arrives
+   as words rather than as a shelf mark. */
+const BISAC=/^[A-Z]{3}\d{6}$/;
+const SUBJECT_JUNK=/^(book|ebook|e-book|books|electronic books?|texts?)$/i;
+function reSubjects(raw){
+  const out=[];
+  String(raw||"").split(",").map(t=>t.trim()).filter(Boolean).forEach(t=>{
+    if(SUBJECT_JUNK.test(t))return;
+    if(t.split("/").every(p=>BISAC.test(p.trim())))return;   /* JUV033040/REL091000 */
+    t.split("/").map(p=>p.trim()).filter(Boolean).forEach(p=>{
+      if(BISAC.test(p)||SUBJECT_JUNK.test(p))return;
+      tidySubject(p).forEach(x=>out.push(x));
+    });
+  });
+  return dedupeWords(out);
+}
+/* "Koceich Matt" and "Matt Koceich" are one person filed two ways, and a
+   library of a hundred books will hold both. Where the same words appear in
+   both orders within one batch, the form used more often wins — which is the
+   only evidence available, since no comma marks the surname. */
+function reAuthorFixer(names){
+  const count={},groups={};
+  names.forEach(n=>{const k=String(n||"").trim();if(!k)return;count[k]=(count[k]||0)+1;});
+  Object.keys(count).forEach(n=>{
+    const key=n.toLowerCase().replace(/[.,]/g,"").split(/\s+/).sort().join(" ");
+    (groups[key]=groups[key]||[]).push(n);
+  });
+  const pick={};
+  Object.values(groups).forEach(g=>{
+    if(g.length<2)return;
+    const best=g.slice().sort((a,b)=>(count[b]-count[a])||a.localeCompare(b))[0];
+    g.forEach(n=>{if(n!==best)pick[n]=best;});
+  });
+  return {fix:s=>pick[String(s||"").trim()]||String(s||"").trim(),merged:Object.keys(pick).length};
+}
+const reYmd=t=>{const n=Number(t);if(!(n>0))return "";const d=new Date(n);
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
+/* a ReadEra book -> the same staged row a Goodreads export makes, so it lands
+   in the list already built for this: dupes marked, nothing added unless ticked */
+function fromReadEra(d,fixAuthor,withProgress){
+  const D=d.data||{},pos=rePos(d);
+  const read=reNum(D.doc_have_read_time)>0;
+  const started=pos.ratio>0&&!read;
+  const ser=String(D.doc_series||"").trim();
+  const m=ser.match(/^(.*?)\s*#\s*(\d+)\s*$/);
+  return {id:uid(),
+    title:String(D.doc_title||D.doc_file_name_title||"").replace(/\.(epub|pdf|fb2|mobi|txt|djvu|rtf|docx?|odt|azw3)$/i,"").trim(),
+    author:fixAuthor(D.doc_authors),
+    isbn:"",
+    status:read?"finished":started?"reading":"want",
+    dnf:false,rating:null,
+    pages:withProgress&&started&&pos.pages?String(pos.pages):"",
+    progress:withProgress&&started&&pos.page?String(pos.page):"",
+    dateFinished:read?reYmd(D.doc_have_read_time):"",
+    readings:[],rereads:0,
+    summary:String(D.doc_annotation||"").trim(),notes:"",
+    series:m?m[1].trim():ser,seriesNum:m?m[2]:"",
+    tags:reSubjects(D.doc_genres)};
+}
 const reSummary=d=>String((d.data||{}).doc_annotation||"").trim();
 const reSeries=d=>String((d.data||{}).doc_series||"").trim();
 const reTitle=d=>String((d.data&&(d.data.doc_title||d.data.doc_file_name_title))
@@ -19551,6 +19656,8 @@ async function importOne(it,extra){
   const b=Object.assign(blankBook(uid()),{
     title:it.title,author:it.author,isbn:it.isbn||"",status:it.status,dnf:!!it.dnf,rating:it.rating,
     pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
+    ...(it.series?{series:it.series}:{}),...(it.seriesNum?{seriesNum:it.seriesNum}:{}),
+    ...(it.progress?{progress:it.progress}:{}),
     readings:readingsFromRow(it),
     summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
     keywords:(it.tags||[]).slice(0,IMPORT_TAG_CAP),imported:Date.now(),modified:Date.now()},extra||{});
