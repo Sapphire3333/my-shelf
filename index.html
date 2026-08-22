@@ -4992,6 +4992,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.14",lines:[
+    "Marked lines now find a book that is a story inside a collection. It was only ever looking at the top of the shelf, so The Prince Warriors and the Swords of Rhema — the third story of a collection — counted as missing, and \"Say which book\" could not find it either because that list held only books.",
+    "A story has no quotes of its own, so the line lands on the collection and names the story it came from — press that and it takes you to it. Its page rides at the end of the line, so nothing the backup knew is dropped."
+  ]},
   {v:"2026-08-22.13",lines:[
     "A book with marked lines in it is found on your shelf even when the two titles are not spelled alike. It was comparing letter for letter, so \"The Prince Warriors and the Swords of Rhema\" on the shelf as \"…(Prince Warriors, #2)\" counted as a different book. It now asks the same question the book import asks — every variant of the title, punctuation and capitals and a trailing series marker ignored, with the author as a gentle check.",
     "And if it still cannot place one, there is a Say which book button beside it: point it at the book yourself, once, and its quotes follow."
@@ -9990,29 +9994,41 @@ function openQuotePick(key){
   reQPick={key,q:""};
   const draw=()=>{
     const ql=reQPick.q.trim().toLowerCase();
-    const pool=books.filter(b=>!ql
-      ||String(b.title||"").toLowerCase().includes(ql)
-      ||String(b.author||"").toLowerCase().includes(ql))
-      .sort((a,b)=>String(a.title||"").localeCompare(String(b.title||"")));
+    /* Books AND the stories inside collections. Searching for "swords" found
+       nothing at all while the book sat on the shelf as the third story of a
+       collection — the list has to hold what the shelf holds. */
+    const all=[];
+    books.forEach(bk=>{
+      all.push({b:bk,en:null,title:String(bk.title||"Untitled"),
+        who:String(bk.author||""),where:""});
+      if(!isColl(bk))return;
+      (bk.entries||[]).forEach((en,i)=>all.push({b:bk,en,
+        title:String(en.title||"Untitled"),who:String(entAuthorOf(bk,en)||bk.author||""),
+        where:(i+1)+" of "+String(bk.title||"a collection")}));
+    });
+    const pool=all.filter(x=>!ql||x.title.toLowerCase().includes(ql)
+      ||x.who.toLowerCase().includes(ql)||x.where.toLowerCase().includes(ql))
+      .sort((a,b)=>a.title.localeCompare(b.title));
     box.hidden=false;
     box.innerHTML=`
       <div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">Which book is this?</b>
         <button class="btn" id="qpX" style="margin-left:auto;padding:4px 10px">Close</button></div>
       <div class="hint" style="margin:0 0 7px">${esc(row.title)} — ${row.quotes.length} marked line${row.quotes.length===1?"":"s"}</div>
-      <input class="field" id="qpSearch" placeholder="Search your shelf…" value="${esc(reQPick.q)}"
+      <input class="field" id="qpSearch" placeholder="Search your shelf — books and stories…" value="${esc(reQPick.q)}"
         style="font-size:13px;padding:7px 11px;margin-bottom:8px">
-      ${pool.slice(0,40).map(b=>`<div class="snap" style="padding:6px 10px">
-        <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(b.title)||"Untitled"}</div>
-          <div class="meta">${esc(b.author)||"Unknown author"}</div></div>
-        <button class="btn" data-qpb="${esc(b.id)}" style="padding:3px 9px">This one</button>
+      ${pool.slice(0,40).map((x,i)=>`<div class="snap" style="padding:6px 10px">
+        <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(x.title)}</div>
+          <div class="meta">${esc(x.who)||"Unknown author"}${x.where?" · story "+esc(x.where):""}</div></div>
+        <button class="btn" data-qpb="${i}" style="padding:3px 9px">This one</button>
       </div>`).join("")||`<div class="none">Nothing matches.</div>`}
       ${pool.length>40?`<div class="none" style="margin-top:5px">…and ${pool.length-40} more — search to narrow it.</div>`:""}`;
+    reQPick.pool=pool;
     q("#qpX",box).onclick=()=>{box.hidden=true;box.innerHTML="";reQPick=null;};
     const se=q("#qpSearch",box);
     if(se)se.oninput=()=>{reQPick.q=se.value;keepCaret(se,draw,()=>q("#qpSearch",box));};
     qa("[data-qpb]",box).forEach(btn=>btn.onclick=()=>{
-      const bk=books.find(x=>x.id===btn.dataset.qpb);
-      if(bk)row.book=bk;
+      const x=(reQPick.pool||[])[+btn.dataset.qpb];
+      if(x)row.hit={b:x.b,en:x.en};
       box.hidden=true;box.innerHTML="";reQPick=null;
       renderReadEra();
     });
@@ -10048,7 +10064,7 @@ function renderReadEra(){
   if(!reFound){box.innerHTML="";return;}
   const {rows,shape,total,colls}=reFound;
   const withQ=rows.filter(r=>r.quotes.length);
-  const matched=withQ.filter(r=>r.book);
+  const matched=withQ.filter(r=>r.hit);
   const chosen=matched.filter(r=>r.on);
   /* What else the file turned out to be carrying. Worth showing whether or not
      there are quotes in it: on a library of four thousand fics the tags, the
@@ -10065,7 +10081,7 @@ function renderReadEra(){
     ["started",tally.started],["marked read",tally.read],["marked to read",tally.toRead],
     ["favourites",tally.fav]].filter(x=>x[1]);
   const newQ=r=>{
-    const have=new Set((r.book.quotes||[]).map(t=>stripHtml(t).replace(/\s+/g," ").trim().toLowerCase()));
+    const have=new Set((r.hit.b.quotes||[]).map(t=>stripHtml(t).replace(/\s+/g," ").trim().toLowerCase()));
     return r.quotes.filter(x=>!have.has(x.text.toLowerCase()));
   };
   const totalNew=chosen.reduce((n,r)=>n+newQ(r).length,0);
@@ -10131,12 +10147,12 @@ function renderReadEra(){
       <label class="hrow2" style="gap:7px;flex:1;min-width:0;align-items:flex-start">
         <input type="checkbox" data-rechk="${esc(r.key)}" ${r.on?"checked":""} style="margin-top:3px">
         <span style="min-width:0">
-          <span class="when" style="font-size:13px">${esc(r.book.title||"Untitled")}</span>
+          <span class="when" style="font-size:13px">${esc(r.hit.b.title||"Untitled")}${r.hit.en?" <span class='meta' style='display:inline'>→ "+esc(r.hit.en.title||"Untitled")+"</span>":""}</span>
           <span class="meta">${r.quotes.length} marked · ${nq?nq+" new":"all of them already on the book"}</span>
           <span class="meta" style="opacity:.85">“${esc(r.quotes[0].text.slice(0,90))}${r.quotes[0].text.length>90?"…":""}”${r.quotes[0].where?" · "+esc(r.quotes[0].where):""}</span>
         </span></label></div>`;}).join("")}
-    ${withQ.filter(r=>!r.book).length?`<div class="lbl" style="display:block;margin:12px 0 4px">Not on your shelf</div>
-      ${withQ.filter(r=>!r.book).map(r=>`<div class="snap" style="padding:5px 10px">
+    ${withQ.filter(r=>!r.hit).length?`<div class="lbl" style="display:block;margin:12px 0 4px">Not on your shelf</div>
+      ${withQ.filter(r=>!r.hit).map(r=>`<div class="snap" style="padding:5px 10px">
         <div style="flex:1;min-width:0"><div class="when" style="font-size:12.5px">${esc(r.title)||"Untitled"}</div>
         <div class="meta">${r.quotes.length} marked line${r.quotes.length===1?"":"s"}</div></div>
         <button class="btn" data-qpick="${esc(r.key)}" style="padding:3px 9px">Say which book</button></div>`).join("")}`:""}
@@ -10215,17 +10231,23 @@ function renderReadEra(){
   const go=q("#reGo",box);
   if(go)go.onclick=async()=>{
     go.disabled=true;go.textContent="Bringing them in…";
-    const items=[];let added=0;
+    const items=[];let added=0,intoStory=false;
     for(const r of chosen){
       const fresh=newQ(r);if(!fresh.length)continue;
-      const b=r.book;
+      const b=r.hit.b,en=r.hit.en;
+      if(en)intoStory=true;
       const before=JSON.parse(JSON.stringify(b));
       b.quotes=b.quotes||[];
       listFromArr(b);
       for(const x of fresh){
-        b.quotes.push(esc(x.text)+(x.note?` <i>— ${esc(x.note)}</i>`:""));
-        /* the page becomes the quote’s own source, in the words ReadEra used */
-        listFromArr(b)[b.quotes.length-1]=x.where?TYPED+x.where:"";
+        /* A story inside a collection has no quotes of its own — only books do
+           — so the line goes on the collection and NAMES the story, which is
+           what a quote's source is for. Then the source is the story rather
+           than the page, and the page rides along at the end of the line so
+           that nothing the file knew is quietly dropped. */
+        const tail=[x.note,en&&x.where?x.where:""].filter(Boolean).join(" · ");
+        b.quotes.push(esc(x.text)+(tail?` <i>— ${esc(tail)}</i>`:""));
+        listFromArr(b)[b.quotes.length-1]=en?en.id:(x.where?TYPED+x.where:"");
         listWArr(b,"quotes")[b.quotes.length-1]=0;
         added++;
       }
@@ -10238,7 +10260,9 @@ function renderReadEra(){
     if(SYNC.on)flushQueue();
     reFound=null;
     alert(added+" quote"+(added===1?"":"s")+" brought in, on "+items.length+" book"+(items.length===1?"":"s")
-      +".\n\nEach one carries the page it came from. Undo puts it all back.");
+      +"."+(intoStory?"\n\nWhere the line came from a story inside a collection, it sits on the collection and says which story — press that to go there. Its page rides at the end of the line."
+        :"\n\nEach one carries the page it came from.")
+      +"\n\nUndo puts it all back.");
     render();
   };
 }
@@ -10252,25 +10276,31 @@ q("#reFile").addEventListener("change",async e=>{
     const docs=Array.isArray(data.docs)?data.docs:[];
     if(!docs.length)throw new Error("that file has no books in it");
     /* A backup carries no ISBN, so the title is all there is to match on — but
-       "the same title" cannot mean the same letters. The owner had The Prince
-       Warriors and the Swords of Rhema on the shelf and this said it was not
-       there. So it now asks the same question the book import asks, through
-       the same three helpers: every variant of the title, reduced to a key
-       that ignores case, punctuation and a trailing series marker, with the
-       author as a forgiving check on top rather than a requirement. */
+       "the same title" cannot mean the same letters, and it cannot mean top
+       shelf only either. The owner's copy of The Prince Warriors and the
+       Swords of Rhema is the third story inside a collection, so looking only
+       at books said it was not there at all. This walks the stories too, the
+       way the Goodreads import has always done, and remembers which story it
+       was as well as which book holds it. */
     const byTitle=new Map();
-    books.forEach(bk=>titleVariants(bk.title).forEach(v=>{
-      const k=titleKey(v);if(k&&!byTitle.has(k))byTitle.set(k,bk);}));
+    const note=(k,v)=>{if(k&&!byTitle.has(k))byTitle.set(k,v);};
+    books.forEach(bk=>{
+      titleVariants(bk.title).forEach(v=>note(titleKey(v),{b:bk,en:null}));
+      if(!isColl(bk))return;
+      (bk.entries||[]).forEach(en=>titleVariants(en.title).forEach(v=>note(titleKey(v),{b:bk,en})));
+    });
     const findBook=(title,author)=>{
       for(const v of titleVariants(title)){
         const hit=byTitle.get(titleKey(v));
-        if(hit&&authorsOverlap(author,hit.author))return hit;
+        if(!hit)continue;
+        const who=hit.en?(entAuthorOf(hit.b,hit.en)||hit.b.author):hit.b.author;
+        if(authorsOverlap(author,who))return hit;
       }
       return null;
     };
     const rows=docs.map((d,i)=>{
       const title=reTitle(d),D=d.data||{};
-      return {key:"r"+i,title,author:reAuthor(d),quotes:reQuotes(d),book:findBook(title,reAuthor(d)),on:true,
+      return {key:"r"+i,title,author:reAuthor(d),quotes:reQuotes(d),hit:findBook(title,reAuthor(d)),on:true,
         tags:reTags(d),summary:reSummary(d),series:reSeries(d),pos:rePos(d),
         bookmarks:(d.bookmarks||[]).length,
         haveRead:reNum(D.doc_have_read_time)>0,toRead:reNum(D.doc_to_read_time)>0,
