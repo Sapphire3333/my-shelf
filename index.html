@@ -4992,6 +4992,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.15",lines:[
+    "The ReadEra backup stays open. Bringing quotes in, adding books or filling them in used to throw the file away and send you to the top of the page, so every single thing meant choosing the file again. Now it works out afresh what is already on your shelf, redraws where you were standing, and waits for the next thing. There is a Close this backup button for when you are done with it.",
+    "And a line already on a book is recognised even though this card added the page to the end of it — it was comparing the whole line, so all three offered to come across a second time."
+  ]},
   {v:"2026-08-22.14",lines:[
     "Marked lines now find a book that is a story inside a collection. It was only ever looking at the top of the shelf, so The Prince Warriors and the Swords of Rhema — the third story of a collection — counted as missing, and \"Say which book\" could not find it either because that list held only books.",
     "A story has no quotes of its own, so the line lands on the collection and names the story it came from — press that and it takes you to it. Its page rides at the end of the line, so nothing the backup knew is dropped."
@@ -9950,6 +9954,62 @@ function refreshImport(light){
    folded away — every field name your own file actually uses. Nothing is
    brought in until you tick it. */
 let reFound=null,reWantProgress=true,reOpen=null;
+/* The shelf changes under this card every time it is used: a book gets added,
+   a quote lands, and every "is this already here" answer it worked out is out
+   of date. Rather than throw the whole file away and make the owner choose it
+   again — which is what it used to do, and which also threw them to the top of
+   the page — the answers are worked out afresh against the shelf as it now is.
+   The file stays open until they close it. */
+function reIndex(){
+  const byTitle=new Map();
+  const note=(k,v)=>{if(k&&!byTitle.has(k))byTitle.set(k,v);};
+  books.forEach(bk=>{
+    titleVariants(bk.title).forEach(v=>note(titleKey(v),{b:bk,en:null}));
+    if(!isColl(bk))return;
+    (bk.entries||[]).forEach(en=>titleVariants(en.title).forEach(v=>note(titleKey(v),{b:bk,en})));
+  });
+  return (title,author)=>{
+    for(const v of titleVariants(title)){
+      const hit=byTitle.get(titleKey(v));
+      if(!hit)continue;
+      const who=hit.en?(entAuthorOf(hit.b,hit.en)||hit.b.author):hit.b.author;
+      if(authorsOverlap(author,who))return hit;
+    }
+    return null;
+  };
+}
+/* Re-ask every question this card had answered, then draw it where it was. */
+function reRematch(){
+  if(!reFound)return;
+  const find=reIndex();
+  reFound.rows.forEach(r=>{if(!r.picked)r.hit=find(r.title,r.author);});
+  if(reOpen){
+    const byBoth={},byTitle2={};
+    books.forEach(b=>{
+      const t=String(b.title||"").toLowerCase().replace(/\s+/g," ").trim();
+      if(!t)return;
+      byBoth[dupeKey(b.title,b.author)]=b;
+      if(!byTitle2[t])byTitle2[t]=b;
+    });
+    reOpen.rows.forEach(r=>{
+      const t=r.it.title.toLowerCase().replace(/\s+/g," ").trim();
+      const both=byBoth[dupeKey(r.it.title,r.it.author)],one=byTitle2[t];
+      r.have=both||one||null;
+      r.near=!both&&!!one;
+      r.fill=r.have?reFillable(r.have,r.it):[];
+      if(r.have)r.on=false;
+    });
+  }
+}
+/* render() rebuilds the whole of Overview and lands at the top of it. Everything
+   this card does is halfway down that page, so the place is put back — the same
+   three-step settle the rest of the app uses after an async redraw. */
+async function reAfterChange(){
+  const y=window.scrollY;
+  reRematch();
+  await Promise.resolve(render());
+  keepPlaceAfterRedraw(y);
+}
 /* Opening a shelf works out, once, what is on it and what you already have.
    Two levels of "already": the same title AND author is certainly it; the same
    title alone might be. Both start unticked, because the honest thing to say
@@ -10028,7 +10088,7 @@ function openQuotePick(key){
     if(se)se.oninput=()=>{reQPick.q=se.value;keepCaret(se,draw,()=>q("#qpSearch",box));};
     qa("[data-qpb]",box).forEach(btn=>btn.onclick=()=>{
       const x=(reQPick.pool||[])[+btn.dataset.qpb];
-      if(x)row.hit={b:x.b,en:x.en};
+      if(x){row.hit={b:x.b,en:x.en};row.picked=true;}
       box.hidden=true;box.innerHTML="";reQPick=null;
       renderReadEra();
     });
@@ -10080,9 +10140,17 @@ function renderReadEra(){
     ["with tags",tally.tags],["with a summary",tally.summary],["in a series",tally.series],
     ["started",tally.started],["marked read",tally.read],["marked to read",tally.toRead],
     ["favourites",tally.fav]].filter(x=>x[1]);
+  /* A line already on the book may be wearing a tail this card put there — the
+     page it came from, or a note written beside the highlight — so comparing
+     the whole string said "new" about something already sitting there, and the
+     button offered to add all three again. The line itself is the identity;
+     what was appended to it is not. */
   const newQ=r=>{
-    const have=new Set((r.hit.b.quotes||[]).map(t=>stripHtml(t).replace(/\s+/g," ").trim().toLowerCase()));
-    return r.quotes.filter(x=>!have.has(x.text.toLowerCase()));
+    const have=(r.hit.b.quotes||[]).map(t=>stripHtml(t).replace(/\s+/g," ").trim().toLowerCase());
+    return r.quotes.filter(x=>{
+      const mine=x.text.toLowerCase();
+      return !have.some(h=>h===mine||h.indexOf(mine)===0);
+    });
   };
   const totalNew=chosen.reduce((n,r)=>n+newQ(r).length,0);
   box.innerHTML=`
@@ -10156,12 +10224,15 @@ function renderReadEra(){
         <div style="flex:1;min-width:0"><div class="when" style="font-size:12.5px">${esc(r.title)||"Untitled"}</div>
         <div class="meta">${r.quotes.length} marked line${r.quotes.length===1?"":"s"}</div></div>
         <button class="btn" data-qpick="${esc(r.key)}" style="padding:3px 9px">Say which book</button></div>`).join("")}`:""}
+    <div class="hrow2" style="margin-top:10px"><button class="btn" id="reClose">Close this backup</button></div>
     <details style="margin-top:12px">
       <summary class="lbl" style="cursor:pointer">What this file actually holds — every field in it</summary>
       <div class="hint" style="margin:7px 0 0">Printed straight from your own backup. If reading progress is in here, it is in this list.</div>
       <div class="fields" style="margin-top:6px">${Object.keys(shape).sort().map(k=>
         `<div class="meta" style="font-variant-numeric:tabular-nums"><b>${esc(k)}</b> — ${esc(shape[k])}</div>`).join("")}</div>
     </details>`;
+  const cl=q("#reClose",box);
+  if(cl)cl.onclick=()=>{reFound=null;reOpen=null;renderReadEra();};
   qa("[data-qpick]",box).forEach(btn=>btn.onclick=()=>openQuotePick(btn.dataset.qpick));
   const pg=q("#reProg",box);
   if(pg)pg.onchange=()=>{
@@ -10191,9 +10262,8 @@ function renderReadEra(){
     addBtn.disabled=true;addBtn.textContent="Adding…";
     const ok=await runBatch(want.map(r=>r.it),it=>importOne(it),"Adding");
     const n=want.length;
-    reOpen=null;
     if(ok)alert(n+" book"+(n===1?"":"s")+" added to your shelf.");
-    render();
+    await reAfterChange();
   };
   /* Filling in is the opposite of adding: it writes into books you already
      have, so it is one undo step, and it only ever writes where there was
@@ -10220,9 +10290,8 @@ function renderReadEra(){
     if(items.length)pushOp({t:"bulk",items,label:"filled in from ReadEra"});
     if(SYNC.on)flushQueue();
     const n=items.length;
-    reOpen=null;
     alert(n+" book"+(n===1?"":"s")+" filled in. Undo puts it all back.");
-    render();
+    await reAfterChange();
   };
   qa("[data-rechk]",box).forEach(c=>c.onchange=()=>{
     const r=rows.find(x=>x.key===c.dataset.rechk);if(r)r.on=c.checked;renderReadEra();});
@@ -10258,12 +10327,11 @@ function renderReadEra(){
     }
     if(items.length)pushOp({t:"bulk",items,label:"quotes from ReadEra"});
     if(SYNC.on)flushQueue();
-    reFound=null;
     alert(added+" quote"+(added===1?"":"s")+" brought in, on "+items.length+" book"+(items.length===1?"":"s")
       +"."+(intoStory?"\n\nWhere the line came from a story inside a collection, it sits on the collection and says which story — press that to go there. Its page rides at the end of the line."
         :"\n\nEach one carries the page it came from.")
       +"\n\nUndo puts it all back.");
-    render();
+    await reAfterChange();
   };
 }
 q("#reFile").addEventListener("change",async e=>{
