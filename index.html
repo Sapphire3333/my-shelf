@@ -4952,11 +4952,12 @@ function setFontScale(v){
   saveSettings();applySimple();replaceScrapItems();
 }
 /* the same little cluster in every top bar, so it's never hunted for */
-const sizeCtrlHtml=()=>`<button class="btn tinybtn" id="simpleTog" title="${settings.simple
+const sizeCtrlHtml=(withCover)=>`<button class="btn tinybtn" id="simpleTog" title="${settings.simple
     ?"Bring back pictures, notes and drawing":"Put away pictures, notes and drawing"}">${settings.simple?"🖥 Full":"📱 Simple"}</button>
   <button class="btn tinybtn" id="fsDown" title="Smaller text">A−</button>
   <span class="lbl" id="fsNow" style="min-width:34px;text-align:center">${settings.fontScale||100}%</span>
   <button class="btn tinybtn" id="fsUp" title="Bigger text">A+</button>
+  ${withCover?covZoomHtml():""}
   ${(()=>{
     const r=Math.round(realWidth()/((settings.fontScale||100)/100));
     return r<300?`<span class="lbl roomwarn" title="At this text size the page has ${r} pixels to lay out in, which is why words break one to a line. A− gives it more. An ordinary phone has 360 to 412.">⚠ ${r}px</span>`:"";})()}
@@ -4965,6 +4966,7 @@ function wireSizeCtrl(){
   const t=q("#simpleTog");if(t)t.onclick=toggleSimple;
   const d=q("#fsDown");if(d)d.onclick=()=>setFontScale((settings.fontScale||100)-10);
   const u=q("#fsUp");if(u)u.onclick=()=>setFontScale((settings.fontScale||100)+10);
+  wireCovZoom(document);   /* the cover slider now rides in this cluster */
   const h=q("#helpBtn");if(h)h.onclick=showHelpSheet;
 }
 /* Hover explains every button — on a screen with a mouse. On a phone nothing
@@ -5089,6 +5091,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.32",lines:[
+    "A refresh leaves you where you were again. Keeping a shared backup around, which was yesterday's fix, was also sending you to Overview on every single reload — away from whatever book you had open. The file is still kept and still read; it just waits on the Overview card instead of dragging you to it. Only an arriving share moves the screen now.",
+    "The cover slider has moved up beside A− and A+, where the other size controls are. It is on a book's own bar rather than the shelf-wide one, since it is a book's cover it changes. ⤓ Sharper stays under the cover with the picture it belongs to."
+  ]},
   {v:"2026-08-22.31",lines:[
     "The cover slider does something again on a narrow screen. A rule left over from before the banner existed was pinning the cover to 70 pixels and quietly beating the slider — measured at 126 across whatever the slider said, from 100% to 200%. That rule is gone.",
     "And the cover on a phone is now a share of the page rather than a fixed number of pixels: a little under half the width in the middle of the slider, filling it at the top. A phone that says it is 271 pixels wide and one that says 412 both get a cover that looks like a cover."
@@ -10494,7 +10500,7 @@ function renderReadEra(){
 }
 /* Reading a backup is the same job whether the file was chosen here or handed
    over by Android's share sheet, so it is one function and two doors into it. */
-async function loadReadEraBlob(f){
+async function loadReadEraBlob(f,quiet){
 
   const msg=q("#busyMsg");if(msg)msg.textContent="Reading the backup…";
   try{
@@ -10589,7 +10595,7 @@ async function loadReadEraBlob(f){
     reFound={rows,shape,counts,total:docs.length,colls};
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     renderReadEra();
-    const box=q("#reOut");if(box)box.scrollIntoView({block:"nearest"});
+    if(!quiet){const box=q("#reOut");if(box)box.scrollIntoView({block:"nearest"});}
   }catch(err){
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     alert("That file could not be read.\n\n"+err.message
@@ -10720,9 +10726,15 @@ async function takeSharedBackup(){
   }
   const kept=await storedSharedBackup();
   if(!kept)return;
-  view="overview";
-  await Promise.resolve(render());
-  await loadReadEraBlob(new File([kept.blob],kept.name));
+  /* A kept file is read quietly on an ordinary opening: it belongs on the
+     Overview card whenever you next go there, and dragging you to that screen
+     on every single refresh — away from whatever book you were reading — is
+     not what keeping it was for. Only an arriving share moves the view. */
+  if(arriving){
+    view="overview";
+    await Promise.resolve(render());
+  }
+  await loadReadEraBlob(new File([kept.blob],kept.name),!arriving);
   /* Only on the way in, not on every refresh afterwards: the quotes go onto
      their books by themselves. Nothing else does. */
   if(arriving&&reFound){
@@ -13773,7 +13785,7 @@ function renderBookView(){
       <button class="backbtn" id="uBtn" title="Undo" disabled>↶</button>
       <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
       <span class="savemsg ok" id="saveMsg"></span>
-      <span class="sizectl">${sizeCtrlHtml()}</span>
+      <span class="sizectl">${sizeCtrlHtml(true)}</span>
       <button class="sm ${viewArrange?"on":""}" id="vArr" title="Place, draw on and fiddle with your pictures and notes — right here, where you see them">🖌 Scrapbook${viewArrange?"…":""}</button>
       ${strayScraps(b).length?`<button class="sm" id="vStray" title="Something is sitting off the side of this screen — this brings it back where you can see it">⤾ Bring back ${strayScraps(b).length}</button>`:""}
       ${(b.images||[]).length||(b.pads||[]).length
@@ -13793,7 +13805,7 @@ function renderBookView(){
              wider the wash is not drawn and this is just the cover in its column. -->
         ${curCover?`<div class="vwash" style="background-image:url(${curCover})"></div>`:""}
         <div class="vcover" id="vCover" title="${curCover?"Copy a picture anywhere and press Ctrl+V to replace this cover":"Copy a picture anywhere and press Ctrl+V to use it as the cover"}">${curCover?`<img src="${curCover}">`:genCoverHtml(b,true)}</div>
-        <div class="covunder">${covZoomHtml()}${curCover?`<button class="btn covsharp" id="vSharpen" title="Look online for a bigger copy of this cover. Nothing is replaced until you have seen it.">⤓ Sharper</button>`:""}</div>
+        <div class="covunder">${curCover?`<button class="btn covsharp" id="vSharpen" title="Look online for a bigger copy of this cover. Nothing is replaced until you have seen it.">⤓ Sharper</button>`:""}</div>
       </div>
       <div class="vmain">
         <h1 class="serif vtitle">${esc(b.title)||"Untitled"} ${lookupIcons(b,null)}</h1>
@@ -15261,7 +15273,7 @@ function renderEditor(){
         <button class="backbtn" id="uBtn" title="Undo" disabled>↶</button>
         <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
         <span class="savemsg ok" id="saveMsg">Saved</span>
-        <span class="sizectl">${sizeCtrlHtml()}</span>
+        <span class="sizectl">${sizeCtrlHtml(true)}</span>
         <button class="sm" id="edFit" title="Stack everything to fit your screen (best on a phone)">📱 Fit</button>
         <!-- "Bring back" belongs on the page you read, where things have places to
              stray from. Here they stand in a row and nothing can be off the side. -->
@@ -15329,7 +15341,7 @@ function renderEditor(){
     <div class="edhead" id="secDetails">
       <div class="vcovwrap">
         <div class="coverbox" id="coverBox"></div>
-        <div class="covunder" style="max-width:calc(160px*var(--covz,1));min-width:160px">${covZoomHtml()}</div>
+        
       </div>
       <div class="edfields">
         <input class="field titlein serif" id="fTitle" placeholder="Book title" value="${esc(b.title)}">
