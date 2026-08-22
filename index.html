@@ -1565,6 +1565,11 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   [data-theme="dark"] .qsrc{background:#312e5b;border-color:#4c469b;color:#c7d2fe}
   /* words you typed are a note, not a door: same shape, no invitation */
   .qsrc.flat{cursor:default;border-style:dashed}
+  /* the books on one ReadEra shelf: a long list that must not run away with
+     the page, so it scrolls inside itself */
+  .relist{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:4px}
+  .resnap{cursor:pointer}
+  .resnap .meta{display:block}
   /* "four years ago today" with the cover beside it. It started at 38 pixels,
      on the reasoning that the sentence is the point — but at that size you
      cannot tell one dark cover from another, which is the one job it has, so
@@ -4987,6 +4992,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.11",lines:[
+    "Pressing a ReadEra shelf now SHOWS you its books, right there, with a tick beside each — title, author, whether you want to read it or are part-way through, its series and its first few subjects. Add the ticked ones straight from that list. It used to stage them invisibly in the Goodreads import list, where four thousand other rows were already waiting, which was no way to see anything.",
+    "Anything already on your shelf is marked and starts unticked, and it says plainly what this does: it adds books. It never writes into a book you already have.",
+    "Author names written surname-first are put right using the comma in the file's own name — \"Koceich, Matt - IMAGINE...\" tells you which word is the surname when \"Koceich Matt\" cannot. It only ever picks a spelling the file already uses, and it leaves a name alone when the evidence disagrees with itself."
+  ]},
   {v:"2026-08-22.10",lines:[
     "A ReadEra backup's own shelves are now buttons — God, Adventure, Magic and the rest. Press one and its books are staged in the import list above, with their author, blurb, subjects, series and how far you have read, so anything already on your shelf is marked and nothing is added until you pick it.",
     "The subjects that come with an EPUB are half filing system, so BISAC codes (FIC009020) and the words \"book\" and \"ebook\" are dropped and the rest goes through the same tidier a lookup's subjects already pass through. And where one author is written both ways round in the same batch — \"Matt Koceich\" and \"Koceich Matt\" — the form used more often wins, so they arrive as one person."
@@ -9926,7 +9936,34 @@ function refreshImport(light){
    many carry quotes, which of them are on your shelf, and — at the bottom,
    folded away — every field name your own file actually uses. Nothing is
    brought in until you tick it. */
-let reFound=null,reWantProgress=true;
+let reFound=null,reWantProgress=true,reOpen=null;
+/* Opening a shelf works out, once, what is on it and what you already have.
+   Two levels of "already": the same title AND author is certainly it; the same
+   title alone might be. Both start unticked, because the honest thing to say
+   is that adding one again makes a second copy \— nothing here writes into a
+   book you already own. */
+function openReColl(i){
+  const c=(reFound&&reFound.colls||[])[i];
+  if(!c){reOpen=null;renderReadEra();return;}
+  const fixer=reAuthorFixer(c.docs.map(d=>(d.data||{}).doc_authors),c.docs.map(reNameHint));
+  const byBoth={},byTitle={};
+  books.forEach(b=>{
+    const t=String(b.title||"").toLowerCase().replace(/\s+/g," ").trim();
+    if(!t)return;
+    byBoth[dupeKey(b.title,b.author)]=b;
+    if(!byTitle[t])byTitle[t]=b;
+  });
+  const rows=c.docs.map(d=>fromReadEra(d,fixer.fix,reWantProgress)).filter(it=>it.title)
+    .map(it=>{
+      const t=it.title.toLowerCase().replace(/\s+/g," ").trim();
+      const both=byBoth[dupeKey(it.title,it.author)];
+      const one=byTitle[t];
+      return {it,have:both||one||null,near:!both&&!!one,on:!(both||one)};
+    });
+  reOpen={i,title:c.title,rows,fixed:fixer.merged,byFile:fixer.byFile};
+  renderReadEra();
+  const box=q("#reOut");if(box)box.scrollIntoView({block:"nearest"});
+}
 function renderReadEra(){
   const box=q("#reOut");if(!box)return;
   if(!reFound){box.innerHTML="";return;}
@@ -9962,14 +9999,39 @@ function renderReadEra(){
     </div>
     ${holds.length?`<div class="hint" style="margin:0 0 9px">It also knows: ${holds.map(h=>`<b>${h[1]}</b> ${h[0]}`).join(" · ")}.
       </div>`:""}
-    ${colls.length?`<div class="lbl" style="display:block;margin:12px 0 5px">Its own shelves — bring one across</div>
+    ${colls.length?`<div class="lbl" style="display:block;margin:12px 0 5px">Its own shelves — press one to see what is inside</div>
       <div class="pills" style="margin:0 0 7px">${colls.map((c,i)=>
-        `<button class="pill" data-recoll="${i}">${esc(c.title)} <b>${c.have}</b></button>`).join("")}</div>
-      <label class="chk" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--mut);margin-bottom:8px">
-        <input type="checkbox" id="reProg" ${reWantProgress?"checked":""}>
-        Bring how far you have read as well — using ReadEra's own page numbers</label>
-      <div class="hint" style="margin:0 0 9px">They are staged in the import list above, where anything already on
-        your shelf is marked and nothing is added until you pick it.</div>`:""}
+        `<button class="pill ${reOpen&&reOpen.i===i?"on":""}" data-recoll="${i}">${esc(c.title)} <b>${c.have}</b></button>`).join("")}</div>`:""}
+    ${reOpen?(()=>{
+      const rows=reOpen.rows,ticked=rows.filter(r=>r.on);
+      const known=rows.filter(r=>r.have).length;
+      const st=k=>rows.filter(r=>r.it.status===k).length;
+      const bits=[st("want")+" want to read",st("reading")+" part-read",st("finished")+" finished"]
+        .filter(b=>!/^0 /.test(b));
+      return `<div class="hcard" style="margin:4px 0 0;padding:11px 13px">
+        <div class="hrow2" style="margin-bottom:7px"><b style="font-size:13px">${esc(reOpen.title)}</b>
+          <span class="rr">${rows.length} book${rows.length===1?"":"s"}${bits.length?" · "+bits.join(" · "):""}</span></div>
+        ${known?`<div class="hint" style="margin:0 0 7px">${known} ${known===1?"is":"are"} already on your shelf and start unticked.
+          Adding one again makes a second copy — nothing is merged into the book you already have.</div>`:""}
+        <label class="chk" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--mut);margin:0 0 8px">
+          <input type="checkbox" id="reProg" ${reWantProgress?"checked":""}>
+          Bring how far you have read as well — using ReadEra's own page numbers</label>
+        <div class="hrow2" style="margin-bottom:8px">
+          <button class="btn" id="reTickAll">${ticked.length===rows.length?"Untick all":"Tick all"}</button>
+          <button class="btn" id="reTickNew" title="Only the ones you do not already have">Tick the new ones</button>
+          <button class="btn pri" id="reAdd" style="margin-left:auto" ${ticked.length?"":"disabled"}>
+            ＋ Add ${ticked.length} book${ticked.length===1?"":"s"}</button></div>
+        <div class="relist">${rows.map((r,i)=>`<label class="snap resnap" style="padding:5px 9px;align-items:flex-start">
+          <input type="checkbox" data-rebk="${i}" ${r.on?"checked":""} style="margin:3px 8px 0 0">
+          <span style="min-width:0;flex:1">
+            <span class="when" style="font-size:13px">${esc(r.it.title)||"Untitled"}</span>
+            <span class="meta">${esc(r.it.author)||"Unknown author"}
+              · ${r.it.status==="want"?"want to read":r.it.status==="reading"?"part-read":"finished"}
+              ${r.it.series?" · "+esc(r.it.series)+(r.it.seriesNum?" #"+esc(r.it.seriesNum):""):""}
+              ${(r.it.tags||[]).length?" · "+(r.it.tags||[]).slice(0,3).map(esc).join(", "):""}</span>
+            ${r.have?`<span class="meta" style="color:#b45309">already on your shelf${r.near?" — a near match":""}</span>`:""}
+          </span></label>`).join("")}</div>
+      </div>`;})():""}
     ${!withQ.length?`<div class="hint" style="margin:0 0 9px;padding:9px 11px;border-left:3px solid var(--amber);background:var(--card);border-radius:8px">
       No marked lines in this backup — so there is nothing here to bring across as quotes.
       Highlighting a passage in ReadEra is what fills that list.</div>`:""}
@@ -9997,30 +10059,37 @@ function renderReadEra(){
         `<div class="meta" style="font-variant-numeric:tabular-nums"><b>${esc(k)}</b> — ${esc(shape[k])}</div>`).join("")}</div>
     </details>`;
   const pg=q("#reProg",box);
-  if(pg)pg.onchange=()=>{reWantProgress=pg.checked;};
-  qa("[data-recoll]",box).forEach(btn=>btn.onclick=()=>{
-    const c=colls[+btn.dataset.recoll];if(!c||!c.docs.length)return;
-    btn.disabled=true;
-    const fixer=reAuthorFixer(c.docs.map(d=>(d.data||{}).doc_authors));
-    const staged=c.docs.map(d=>fromReadEra(d,fixer.fix,reWantProgress)).filter(it=>it.title);
-    /* the same merge the CSV import does: a row already waiting is replaced by
-       what the file says now, and keeps its id so a tick survives */
-    const keyOf=it=>dupeKey(it.title,it.author);
-    const have=new Map(importQueue.map(it=>[keyOf(it),it]));
-    let fresh=0,again=0;
-    staged.forEach(it=>{const old=have.get(keyOf(it));
-      if(old){Object.assign(old,it,{id:old.id});again++;}else{have.set(keyOf(it),it);fresh++;}});
-    importQueue=[...have.values()];
-    markDupes();saveImportQueue();refreshImport();
-    const known=staged.filter(it=>{const q2=importQueue.find(x=>keyOf(x)===keyOf(it));return q2&&(q2.dupe||q2.near);}).length;
-    alert(`“${c.title}” holds ${c.docs.length} book${c.docs.length===1?"":"s"}.`
-      +`\n\n${fresh} staged in the import list${again?", "+again+" read again from the file":""}.`
-      +(known?`\n\n${known} look like something already on your shelf and are marked as such.`:"")
-      +(fixer.merged?`\n\n${fixer.merged} author name${fixer.merged===1?" was":"s were"} written both ways round and have been made to agree.`:"")
-      +`\n\nNothing has been added yet — pick them in the list above.`);
-    const list=q("#impList");if(list)list.scrollIntoView({block:"start",behavior:"smooth"});
-    btn.disabled=false;
-  });
+  if(pg)pg.onchange=()=>{
+    reWantProgress=pg.checked;
+    /* the rows carry the progress decision inside them, so they are made again
+       \— the ticks are kept, since a change of mind about page numbers is not a
+       change of mind about which books */
+    if(reOpen){const on=reOpen.rows.map(r=>r.on),i=reOpen.i;
+      openReColl(i);reOpen.rows.forEach((r,k)=>{if(on[k]!=null)r.on=on[k];});renderReadEra();}
+  };
+  qa("[data-recoll]",box).forEach(btn=>btn.onclick=()=>{openReColl(+btn.dataset.recoll);});
+  const tickAll=q("#reTickAll",box);
+  if(tickAll)tickAll.onclick=()=>{
+    const rr=reOpen.rows,on=rr.filter(r=>r.on).length!==rr.length;
+    rr.forEach(r=>r.on=on);renderReadEra();};
+  const tickNew=q("#reTickNew",box);
+  if(tickNew)tickNew.onclick=()=>{reOpen.rows.forEach(r=>r.on=!r.have);renderReadEra();};
+  qa("[data-rebk]",box).forEach(c=>c.onchange=()=>{
+    const r=reOpen.rows[+c.dataset.rebk];if(r)r.on=c.checked;renderReadEra();});
+  const addBtn=q("#reAdd",box);
+  if(addBtn)addBtn.onclick=async()=>{
+    const want=reOpen.rows.filter(r=>r.on);
+    if(!want.length)return;
+    const dup=want.filter(r=>r.have).length;
+    if(!confirm("Add "+want.length+" book"+(want.length===1?"":"s")+" from \“"+reOpen.title+"\” to your shelf?"
+      +(dup?"\n\n"+dup+" of them "+(dup===1?"is":"are")+" already on your shelf and will arrive as a second copy.":"")))return;
+    addBtn.disabled=true;addBtn.textContent="Adding\…";
+    const ok=await runBatch(want.map(r=>r.it),it=>importOne(it),"Adding");
+    const n=want.length;
+    reOpen=null;
+    if(ok)alert(n+" book"+(n===1?"":"s")+" added to your shelf.");
+    render();
+  };
   qa("[data-rechk]",box).forEach(c=>c.onchange=()=>{
     const r=rows.find(x=>x.key===c.dataset.rechk);if(r)r.on=c.checked;renderReadEra();});
   const all=q("#reAll",box);
@@ -10087,6 +10156,7 @@ q("#reFile").addEventListener("change",async e=>{
       return {title:String((c.data||{}).coll_title||""),n:reNum((c.data||{}).doc_active_count),
         have:mine.length,docs:mine};
     }).filter(c=>c.title&&c.have);
+    reOpen=null;
     reFound={rows,shape:reShape(docs),total:docs.length,colls};
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     renderReadEra();
@@ -18780,20 +18850,83 @@ function reSubjects(raw){
    library of a hundred books will hold both. Where the same words appear in
    both orders within one batch, the form used more often wins — which is the
    only evidence available, since no comma marks the surname. */
-function reAuthorFixer(names){
+/* The file name often knows what the metadata does not. A book downloaded as
+   "Korman, Gordon - Masterminds (2015, Balzer + Bray).epub" carries the comma
+   that says which word is the surname, while doc_authors may hold "Korman
+   Gordon" with nothing to mark it. So the names are read out of the file names
+   too, and where one matches an author written the other way round, the comma
+   decides. This catches the ones written surname-first EVERY time, which
+   nothing inside the metadata could. */
+function reNameHint(d){
+  const f=String((((d.links||[])[0])||{}).file_name||"");
+  /* the comma can sit after a bracketed series marker rather than at the very
+     start: "[Kingdom 1 ] Black, Chuck - Kingdom's Dawn (2001)" is the shape
+     these files actually take, and anchoring to the start missed every one */
+  const m=f.match(/(?:^|\]|\)|^\s*)\s*([\p{L}][\p{L}\x27\x2d]+)\s*,\s*([\p{L}][\p{L}.\x27\x2d]*(?:\s+[\p{L}][\p{L}.\x27\x2d]*)*)\s+-\s+/u);
+  return m?{surname:m[1].trim(),first:m[2].trim()}:null;
+}
+/* Two names are the same person only when they are the same WORDS in a
+   different order. Punctuation is left alone: stripping the dots made
+   "William P. Young" and "William P Young" one group, and then the one
+   without the dot won a coin toss it should never have been in. */
+const reNameKey=n=>String(n||"").toLowerCase().split(/\s+/).filter(Boolean).sort().join(" ");
+function reAuthorFixer(names,hints){
   const count={},groups={};
   names.forEach(n=>{const k=String(n||"").trim();if(!k)return;count[k]=(count[k]||0)+1;});
-  Object.keys(count).forEach(n=>{
-    const key=n.toLowerCase().replace(/[.,]/g,"").split(/\s+/).sort().join(" ");
-    (groups[key]=groups[key]||[]).push(n);
+  Object.keys(count).forEach(n=>{(groups[reNameKey(n)]=groups[reNameKey(n)]||[]).push(n);});
+  /* Which word is the surname, according to the file names, per group of
+     names-made-of-the-same-words. A majority of them, because one file can be
+     scrambled: the owner has "(Mandie Books 1) Gladys, Leppard Lois - ..." for
+     a book by Lois Gladys Leppard, where the comma is in the wrong place and
+     believing it would have renamed her. */
+  const votes={};
+  (hints||[]).forEach(h=>{
+    if(!h)return;
+    const key=reNameKey(h.first+" "+h.surname);
+    if(!groups[key])return;
+    const sn=h.surname.toLowerCase();
+    (votes[key]=votes[key]||{})[sn]=((votes[key]||{})[sn]||0)+1;
   });
-  const pick={};
-  Object.values(groups).forEach(g=>{
+  const surnameOf=key=>{
+    const v=votes[key];if(!v)return "";
+    return Object.keys(v).sort((a,b)=>v[b]-v[a])[0]||"";
+  };
+  const words=n=>String(n).split(/\s+/).filter(Boolean);
+  const bare=w=>String(w).toLowerCase().replace(/[.,]/g,"");
+  const pick={};let byFile=0;
+  Object.keys(groups).forEach(key=>{
+    const g=groups[key],sn=surnameOf(key);
+    if(sn){
+      /* Never invent a spelling. Among the names the metadata itself uses,
+         take the one that already ends in the surname — which is how
+         "Lisa McMann" survives a file that spells her "Mcmann". */
+      const ends=g.filter(n=>bare(words(n).slice(-1)[0])===bare(sn));
+      if(ends.length){
+        const best=ends.sort((a,b)=>count[b]-count[a])[0];
+        g.forEach(n=>{if(n!==best){pick[n]=best;byFile++;}});
+        return;
+      }
+      /* Nothing ends in it. Only the plainest case is worth rewriting: one
+         name, written surname FIRST, which is the shape "Koceich Matt" takes
+         and the shape a scrambled file name does not. */
+      if(g.length===1){
+        const w=words(g[0]);
+        if(w.length>1&&bare(w[0])===bare(sn)){
+          pick[g[0]]=w.slice(1).concat(w[0]).join(" ");byFile++;
+        }
+      }
+      return;
+    }
+    /* No file name to go on. Only a real majority is evidence: two forms used
+       once each say nothing about which is the person and which is the filing
+       card, and guessing turned "Chuck Black" into "Black Chuck". */
     if(g.length<2)return;
-    const best=g.slice().sort((a,b)=>(count[b]-count[a])||a.localeCompare(b))[0];
-    g.forEach(n=>{if(n!==best)pick[n]=best;});
+    const ranked=g.slice().sort((a,b)=>count[b]-count[a]);
+    if(count[ranked[0]]===count[ranked[1]])return;
+    g.forEach(n=>{if(n!==ranked[0])pick[n]=ranked[0];});
   });
-  return {fix:s=>pick[String(s||"").trim()]||String(s||"").trim(),merged:Object.keys(pick).length};
+  return {fix:s=>pick[String(s||"").trim()]||String(s||"").trim(),
+    merged:Object.keys(pick).length,byFile};
 }
 const reYmd=t=>{const n=Number(t);if(!(n>0))return "";const d=new Date(n);
   return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
