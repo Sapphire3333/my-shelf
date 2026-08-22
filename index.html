@@ -1580,6 +1580,21 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   [data-theme="dark"] .qsrc{background:#312e5b;border-color:#4c469b;color:#c7d2fe}
   /* words you typed are a note, not a door: same shape, no invitation */
   .qsrc.flat{cursor:default;border-style:dashed}
+  /* Outside #app, so the text-size zoom does not touch it: this is the one
+     thing that has to stay readable when the page behind it is not. */
+  #shareGot{position:fixed;inset:0;z-index:900;display:flex;align-items:center;justify-content:center;
+    padding:14px;background:rgba(28,25,23,.55)}
+  #shareGot .sgcard{background:#fff;color:#1c1917;border-radius:16px;padding:18px 18px 14px;
+    width:100%;max-width:420px;box-shadow:0 10px 40px rgba(0,0,0,.35);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  [data-theme="dark"] #shareGot .sgcard{background:#2c2724;color:#f5f5f4}
+  #shareGot .sgtitle{font-size:21px;font-weight:700;margin-bottom:7px}
+  #shareGot .sgline{font-size:16px;margin-bottom:14px}
+  #shareGot .sgfoot{font-size:13px;opacity:.7;margin-top:11px}
+  #shareGot .sgrow{display:flex;gap:8px;flex-wrap:wrap}
+  #shareGot .sgbtn{font:inherit;font-size:16px;padding:11px 15px;border-radius:11px;
+    border:1px solid #d6d3d1;background:#fafaf9;color:#1c1917;cursor:pointer;flex:1 1 auto;min-width:110px}
+  [data-theme="dark"] #shareGot .sgbtn{background:#3a3532;color:#f5f5f4;border-color:#57534e}
+  #shareGot .sgbtn.sgmain{background:#0f766e;color:#fff;border-color:#0f766e;font-weight:700}
   /* Said where the size is chosen, because that is where it can be acted on:
      190% on a 271-pixel phone leaves 143 pixels to write in, and no amount of
      tidying a card makes a sentence fit in that. */
@@ -5091,6 +5106,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.33",lines:[
+    "No more refreshing after a share. Sharing a backup now leaves a card — \"✓ 3 quotes added\", with Undo, Open the backup, and Done — instead of rebuilding the whole shelf on a window your phone draws too big. The card is drawn outside the text-size zoom, so it stays readable whatever the page behind it is doing, and there is nothing left to hunt for: the quotes are already on their books by the time you see it."
+  ]},
   {v:"2026-08-22.32",lines:[
     "A refresh leaves you where you were again. Keeping a shared backup around, which was yesterday's fix, was also sending you to Overview on every single reload — away from whatever book you had open. The file is still kept and still read; it just waits on the Overview card instead of dragging you to it. Only an arriving share moves the screen now.",
     "The cover slider has moved up beside A− and A+, where the other size controls are. It is on a book's own bar rather than the shelf-wide one, since it is a book's cover it changes. ⤓ Sharper stays under the cover with the picture it belongs to."
@@ -10704,6 +10722,40 @@ async function autoTakeQuotes(){
   return added;
 }
 let reAutoNote="";
+/* ---- what a share leaves behind ----
+   Sharing a backup opened the whole app on a window at its own scale, which on
+   a phone already enlarging everything is a shelf too big to read, and the only
+   cure was a refresh. But once the quotes let themselves in there is nothing to
+   DO in that window — it is a receipt, not a workplace. So a receipt is what it
+   shows: one card, its own words, its own sizes.
+   It hangs off <body> rather than inside #app on purpose. The text-size zoom
+   lives on #app, so anything in there is drawn at whatever multiple the owner
+   has chosen; out here it is drawn at the size it says. That is the whole
+   reason this is readable when the page behind it is not. */
+function shareReceipt(added,found){
+  const old=document.getElementById("shareGot");if(old)old.remove();
+  const el=document.createElement("div");
+  el.id="shareGot";
+  el.innerHTML=`<div class="sgcard">
+    <div class="sgtitle">${added?"✓ "+added+" quote"+(added===1?"":"s")+" added":"Backup read"}</div>
+    <div class="sgline">${found} book${found===1?"":"s"} in that backup.${added?" The lines you had marked are on their books now.":" Nothing in it was new to your shelf."}</div>
+    <div class="sgrow">
+      ${added?`<button class="sgbtn" id="sgUndo">Undo that</button>`:""}
+      <button class="sgbtn" id="sgOpen">Open the backup</button>
+      <button class="sgbtn sgmain" id="sgDone">Done</button>
+    </div>
+    <div class="sgfoot">The file is kept for an hour, under Read a ReadEra backup.</div>
+  </div>`;
+  document.body.appendChild(el);
+  const go=()=>{el.remove();};
+  el.querySelector("#sgDone").onclick=go;
+  el.querySelector("#sgOpen").onclick=()=>{
+    go();view="overview";render();
+    setTimeout(()=>{const b=q("#reOut");if(b)b.scrollIntoView({block:"start",behavior:"smooth"});},250);
+  };
+  const u=el.querySelector("#sgUndo");
+  if(u)u.onclick=()=>{go();finishSaveThen(doUndo);};
+}
 async function takeSharedBackup(){
   let flag=null;
   try{flag=new URL(location.href).searchParams.get("shared");}catch(e){}
@@ -10730,18 +10782,19 @@ async function takeSharedBackup(){
      Overview card whenever you next go there, and dragging you to that screen
      on every single refresh — away from whatever book you were reading — is
      not what keeping it was for. Only an arriving share moves the view. */
-  if(arriving){
-    view="overview";
-    await Promise.resolve(render());
-  }
-  await loadReadEraBlob(new File([kept.blob],kept.name),!arriving);
-  /* Only on the way in, not on every refresh afterwards: the quotes go onto
-     their books by themselves. Nothing else does. */
+  /* An arriving share stays on whatever page was showing and puts a receipt
+     over it. It does NOT go to Overview any more: there is nothing to do
+     there, the quotes have already gone onto their books, and rebuilding a
+     screen the phone will draw too large is exactly the thing that made a
+     refresh necessary. The receipt is drawn outside the app's own zoom, so it
+     is readable whatever the page behind it is doing. */
+  await loadReadEraBlob(new File([kept.blob],kept.name),true);
   if(arriving&&reFound){
     const n=await autoTakeQuotes();
     reAutoNote=n?(n+" quote"+(n===1?"":"s")+" added by themselves. Undo puts them back."):"";
     reRematch();
     await Promise.resolve(render());
+    shareReceipt(n,reFound.counts?reFound.counts.live:reFound.total);
   }
 }
 q("#csvFile").addEventListener("change",async e=>{
