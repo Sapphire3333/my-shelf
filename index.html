@@ -4992,6 +4992,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.12",lines:[
+    "A ReadEra shelf can now fill in books you already have instead of adding a second copy. Each row that matches something on your shelf says what it could add — \"could fill in blurb, 4 subjects, series\" — or says there is nothing it doesn't have. ✎ Fill in writes only where there was nothing: a blurb you wrote, tags you chose, a series you named are all left exactly as they are, and so is your rating and where you are in the book. One Undo puts the whole batch back.",
+    "The two buttons are separate on purpose: ＋ Add only ever adds the ones that are new, and ✎ Fill in only ever touches the ones you have."
+  ]},
   {v:"2026-08-22.11",lines:[
     "Pressing a ReadEra shelf now SHOWS you its books, right there, with a tick beside each — title, author, whether you want to read it or are part-way through, its series and its first few subjects. Add the ticked ones straight from that list. It used to stage them invisibly in the Goodreads import list, where four thousand other rows were already waiting, which was no way to see anything.",
     "Anything already on your shelf is marked and starts unticked, and it says plainly what this does: it adds books. It never writes into a book you already have.",
@@ -9942,6 +9946,32 @@ let reFound=null,reWantProgress=true,reOpen=null;
    title alone might be. Both start unticked, because the honest thing to say
    is that adding one again makes a second copy \— nothing here writes into a
    book you already own. */
+/* What this backup knows that a book on your shelf does not. Only blanks are
+   ever filled: a blurb you wrote, tags you chose, a series you named all stay
+   exactly as they are, because the file is a second opinion and not a better
+   one. Its rating is never taken at all — ReadEra has none — and neither is
+   its stage, since where you are in a book is something you keep here. */
+function reFillable(b,it){
+  const out=[];
+  if(it.summary&&looksBlank(b.summary))out.push(["summary","blurb"]);
+  if((it.tags||[]).length&&!((b.keywords||[]).length))
+    out.push(["tags",(it.tags.length===1?"1 subject":it.tags.length+" subjects")]);
+  if(it.series&&!String(b.series||"").trim())out.push(["series","series"]);
+  if(it.pages&&!String(b.pages||"").trim())out.push(["pages","page count"]);
+  if(it.progress&&!String(b.progress||"").trim()&&(it.pages||String(b.pages||"").trim()))
+    out.push(["progress","how far you have read"]);
+  if(it.dateFinished&&!String(b.dateFinished||"").trim())out.push(["date","when you finished it"]);
+  return out;
+}
+function reFillInto(b,it,what){
+  const did=new Set(what.map(w=>w[0]));
+  if(did.has("summary"))b.summary=esc(it.summary);
+  if(did.has("tags"))b.keywords=(it.tags||[]).slice(0,IMPORT_TAG_CAP);
+  if(did.has("series")){b.series=it.series;if(it.seriesNum&&!String(b.seriesNum||"").trim())b.seriesNum=it.seriesNum;}
+  if(did.has("pages"))b.pages=it.pages;
+  if(did.has("progress"))b.progress=it.progress;
+  if(did.has("date")){b.dateFinished=it.dateFinished;syncReads(b);}
+}
 function openReColl(i){
   const c=(reFound&&reFound.colls||[])[i];
   if(!c){reOpen=null;renderReadEra();return;}
@@ -9958,7 +9988,9 @@ function openReColl(i){
       const t=it.title.toLowerCase().replace(/\s+/g," ").trim();
       const both=byBoth[dupeKey(it.title,it.author)];
       const one=byTitle[t];
-      return {it,have:both||one||null,near:!both&&!!one,on:!(both||one)};
+      const have=both||one||null;
+      const fill=have?reFillable(have,it):[];
+      return {it,have,near:!both&&!!one,fill,on:!have};
     });
   reOpen={i,title:c.title,rows,fixed:fixer.merged,byFile:fixer.byFile};
   renderReadEra();
@@ -10004,6 +10036,9 @@ function renderReadEra(){
         `<button class="pill ${reOpen&&reOpen.i===i?"on":""}" data-recoll="${i}">${esc(c.title)} <b>${c.have}</b></button>`).join("")}</div>`:""}
     ${reOpen?(()=>{
       const rows=reOpen.rows,ticked=rows.filter(r=>r.on);
+      const addable=ticked.filter(r=>!r.have);
+      const fillable=ticked.filter(r=>r.have&&r.fill.length);
+      const canFill=rows.filter(r=>r.have&&r.fill.length);
       const known=rows.filter(r=>r.have).length;
       const st=k=>rows.filter(r=>r.it.status===k).length;
       const bits=[st("want")+" want to read",st("reading")+" part-read",st("finished")+" finished"]
@@ -10016,11 +10051,16 @@ function renderReadEra(){
         <label class="chk" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--mut);margin:0 0 8px">
           <input type="checkbox" id="reProg" ${reWantProgress?"checked":""}>
           Bring how far you have read as well — using ReadEra's own page numbers</label>
-        <div class="hrow2" style="margin-bottom:8px">
+        <div class="hrow2" style="margin-bottom:8px;flex-wrap:wrap">
           <button class="btn" id="reTickAll">${ticked.length===rows.length?"Untick all":"Tick all"}</button>
           <button class="btn" id="reTickNew" title="Only the ones you do not already have">Tick the new ones</button>
-          <button class="btn pri" id="reAdd" style="margin-left:auto" ${ticked.length?"":"disabled"}>
-            ＋ Add ${ticked.length} book${ticked.length===1?"":"s"}</button></div>
+          ${canFill.length?`<button class="btn" id="reTickFill" title="Only the ones you have that this file could add something to">Tick what it can fill in</button>`:""}
+        </div>
+        <div class="hrow2" style="margin-bottom:8px;flex-wrap:wrap">
+          <button class="btn pri" id="reAdd" ${addable.length?"":"disabled"}>
+            ＋ Add ${addable.length} new book${addable.length===1?"":"s"}</button>
+          <button class="btn" id="reFill" ${fillable.length?"":"disabled"}>
+            ✎ Fill in ${fillable.length} you already have</button></div>
         <div class="relist">${rows.map((r,i)=>`<label class="snap resnap" style="padding:5px 9px;align-items:flex-start">
           <input type="checkbox" data-rebk="${i}" ${r.on?"checked":""} style="margin:3px 8px 0 0">
           <span style="min-width:0;flex:1">
@@ -10029,7 +10069,7 @@ function renderReadEra(){
               · ${r.it.status==="want"?"want to read":r.it.status==="reading"?"part-read":"finished"}
               ${r.it.series?" · "+esc(r.it.series)+(r.it.seriesNum?" #"+esc(r.it.seriesNum):""):""}
               ${(r.it.tags||[]).length?" · "+(r.it.tags||[]).slice(0,3).map(esc).join(", "):""}</span>
-            ${r.have?`<span class="meta" style="color:#b45309">already on your shelf${r.near?" — a near match":""}</span>`:""}
+            ${r.have?`<span class="meta" style="color:#b45309">already on your shelf${r.near?" — a near match":""}${r.fill.length?" · could fill in "+r.fill.map(x=>x[1]).join(", "):" · nothing here it does not have"}</span>`:""}
           </span></label>`).join("")}</div>
       </div>`;})():""}
     ${!withQ.length?`<div class="hint" style="margin:0 0 9px;padding:9px 11px;border-left:3px solid var(--amber);background:var(--card);border-radius:8px">
@@ -10076,18 +10116,47 @@ function renderReadEra(){
   if(tickNew)tickNew.onclick=()=>{reOpen.rows.forEach(r=>r.on=!r.have);renderReadEra();};
   qa("[data-rebk]",box).forEach(c=>c.onchange=()=>{
     const r=reOpen.rows[+c.dataset.rebk];if(r)r.on=c.checked;renderReadEra();});
+  const tickFill=q("#reTickFill",box);
+  if(tickFill)tickFill.onclick=()=>{reOpen.rows.forEach(r=>r.on=!!(r.have&&r.fill.length));renderReadEra();};
   const addBtn=q("#reAdd",box);
   if(addBtn)addBtn.onclick=async()=>{
-    const want=reOpen.rows.filter(r=>r.on);
+    const want=reOpen.rows.filter(r=>r.on&&!r.have);
     if(!want.length)return;
-    const dup=want.filter(r=>r.have).length;
-    if(!confirm("Add "+want.length+" book"+(want.length===1?"":"s")+" from \“"+reOpen.title+"\” to your shelf?"
-      +(dup?"\n\n"+dup+" of them "+(dup===1?"is":"are")+" already on your shelf and will arrive as a second copy.":"")))return;
-    addBtn.disabled=true;addBtn.textContent="Adding\…";
+    if(!confirm("Add "+want.length+" book"+(want.length===1?"":"s")+" from “"+reOpen.title+"” to your shelf?"))return;
+    addBtn.disabled=true;addBtn.textContent="Adding…";
     const ok=await runBatch(want.map(r=>r.it),it=>importOne(it),"Adding");
     const n=want.length;
     reOpen=null;
     if(ok)alert(n+" book"+(n===1?"":"s")+" added to your shelf.");
+    render();
+  };
+  /* Filling in is the opposite of adding: it writes into books you already
+     have, so it is one undo step, and it only ever writes where there was
+     nothing at all. */
+  const fillBtn=q("#reFill",box);
+  if(fillBtn)fillBtn.onclick=async()=>{
+    const want=reOpen.rows.filter(r=>r.on&&r.have&&r.fill.length);
+    if(!want.length)return;
+    const what={};
+    want.forEach(r=>r.fill.forEach(x=>{what[x[1]]=(what[x[1]]||0)+1;}));
+    if(!confirm("Fill in "+want.length+" book"+(want.length===1?"":"s")+" you already have?\n\n"
+      +Object.keys(what).map(k=>what[k]+" × "+k).join("\n")
+      +"\n\nNothing already written is changed — only blanks are filled. One Undo puts it all back."))return;
+    fillBtn.disabled=true;fillBtn.textContent="Filling in…";
+    const items=[];
+    for(const r of want){
+      const bk=r.have,before=JSON.parse(JSON.stringify(bk));
+      reFillInto(bk,r.it,r.fill);
+      bk.modified=nextMod(bk);
+      await dbPut("books",bk);
+      if(SYNC.on)enqueue({kind:"book",id:bk.id});
+      items.push({id:bk.id,before,after:JSON.parse(JSON.stringify(bk))});
+    }
+    if(items.length)pushOp({t:"bulk",items,label:"filled in from ReadEra"});
+    if(SYNC.on)flushQueue();
+    const n=items.length;
+    reOpen=null;
+    alert(n+" book"+(n===1?"":"s")+" filled in. Undo puts it all back.");
     render();
   };
   qa("[data-rechk]",box).forEach(c=>c.onchange=()=>{
