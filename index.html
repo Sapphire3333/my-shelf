@@ -1885,6 +1885,7 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0){
 <input type="file" id="imgFile" accept="image/*" multiple hidden>
 <input type="file" id="entCoverFile" accept="image/*" hidden>
 <input type="file" id="csvFile" accept=".csv,text/csv" hidden>
+<input type="file" id="reFile" accept=".bak,.json,application/json" hidden>
 <input type="file" id="gartFile" accept="image/*" hidden>
 <input type="file" id="libArtFile" accept="image/*" multiple hidden>
 
@@ -4986,6 +4987,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.7",lines:[
+    "Overview can read a ReadEra backup. Make one in ReadEra (≡ → Settings → Backup and restore), bring the .bak here, and every line you marked while reading comes across onto the matching book — each carrying the page it was on. It tells you what it found first and nothing moves until you tick it; Undo puts it all back.",
+    "It also prints every field your backup actually contains, folded away at the bottom. That is deliberate: whether ReadEra keeps your reading progress in there is the next question, and the file can answer it rather than me."
+  ]},
   {v:"2026-08-22.6",lines:[
     "The cover on \"four years ago today\" was too small to recognise a dark cover by, so it is nearly twice the size — and it follows the same 🖼 slider under a book's own cover, so if you want it bigger still, that dial moves it."
   ]},
@@ -9343,6 +9348,19 @@ async function renderHub(){
         <div id="impList"></div>
       </div>
     </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Quotes from ReadEra</h2></div>
+      <div class="hcard">
+        <div class="hrow2"><button class="btn pri" id="reBtn">⭱ Choose a ReadEra backup…</button></div>
+        <div class="hint" style="margin:9px 0 0">
+          In ReadEra: <b>≡ menu → Settings → Backup and restore → Create backup</b>. It writes a file to
+          <b>Internal storage → ReadEra → Backups</b> called something like
+          <i>ReadEra-Premium_2026-08-22_18.30.bak</i> — bring that here, by cable, cloud or
+          e-mail to yourself. Nothing is read from your phone directly; nothing is changed until you say so.
+        </div>
+        <div id="reOut"></div>
+      </div>
+    </div>
     </div>`;
 
   const nxSec=q("#secNext",m);
@@ -9460,6 +9478,7 @@ async function renderHub(){
     refreshSnaps();refreshStorage();
   };
   q("#csvBtn").onclick=()=>q("#csvFile").click();
+  {const rb=q("#reBtn");if(rb)rb.onclick=()=>q("#reFile").click();renderReadEra();}
   q("#impClear").onclick=()=>{
     if(!confirm("Clear the import list? Nothing already added to your shelf is affected."))return;
     importQueue=[];saveImportQueue();refreshImport();
@@ -9890,6 +9909,117 @@ function refreshImport(light){
   });
 }
 
+/* ---- the ReadEra screen ----
+   What it does first is TELL you, because the file's shape is documented by
+   other people's readers rather than by ReadEra: how many books it holds, how
+   many carry quotes, which of them are on your shelf, and — at the bottom,
+   folded away — every field name your own file actually uses. Nothing is
+   brought in until you tick it. */
+let reFound=null;
+function renderReadEra(){
+  const box=q("#reOut");if(!box)return;
+  if(!reFound){box.innerHTML="";return;}
+  const {rows,shape,total}=reFound;
+  const withQ=rows.filter(r=>r.quotes.length);
+  const matched=withQ.filter(r=>r.book);
+  const chosen=matched.filter(r=>r.on);
+  const newQ=r=>{
+    const have=new Set((r.book.quotes||[]).map(t=>stripHtml(t).replace(/\s+/g," ").trim().toLowerCase()));
+    return r.quotes.filter(x=>!have.has(x.text.toLowerCase()));
+  };
+  const totalNew=chosen.reduce((n,r)=>n+newQ(r).length,0);
+  box.innerHTML=`
+    <div class="hint" style="margin:11px 0 8px">
+      <b>${total} book${total===1?"":"s"}</b> in that file · <b>${withQ.length}</b> with lines you marked
+      · <b>${matched.length}</b> of those ${matched.length===1?"is":"are"} on your shelf.
+      ${withQ.length-matched.length?`The other ${withQ.length-matched.length} could not be matched by title — they are listed below so you can see what was missed.`:""}
+    </div>
+    ${matched.length?`<div class="hrow2" style="margin-bottom:7px">
+      <button class="btn" id="reAll">${chosen.length===matched.length?"Untick all":"Tick all"}</button>
+      <span class="rr">${totalNew} new quote${totalNew===1?"":"s"} would come in</span>
+      <button class="btn pri" id="reGo" style="margin-left:auto" ${totalNew?"":"disabled"}>Bring them in</button></div>`:""}
+    ${matched.map(r=>{const nq=newQ(r).length;
+      return `<div class="snap" style="align-items:flex-start">
+      <label class="hrow2" style="gap:7px;flex:1;min-width:0;align-items:flex-start">
+        <input type="checkbox" data-rechk="${esc(r.key)}" ${r.on?"checked":""} style="margin-top:3px">
+        <span style="min-width:0">
+          <span class="when" style="font-size:13px">${esc(r.book.title||"Untitled")}</span>
+          <span class="meta">${r.quotes.length} marked · ${nq?nq+" new":"all of them already on the book"}</span>
+          <span class="meta" style="opacity:.85">“${esc(r.quotes[0].text.slice(0,90))}${r.quotes[0].text.length>90?"…":""}”${r.quotes[0].page?" · p. "+esc(r.quotes[0].page):""}</span>
+        </span></label></div>`;}).join("")}
+    ${withQ.filter(r=>!r.book).length?`<div class="lbl" style="display:block;margin:12px 0 4px">Not on your shelf</div>
+      ${withQ.filter(r=>!r.book).map(r=>`<div class="snap" style="padding:5px 10px">
+        <div style="flex:1;min-width:0"><div class="when" style="font-size:12.5px">${esc(r.title)||"Untitled"}</div>
+        <div class="meta">${r.quotes.length} marked line${r.quotes.length===1?"":"s"}</div></div></div>`).join("")}`:""}
+    <details style="margin-top:12px">
+      <summary class="lbl" style="cursor:pointer">What this file actually holds — every field in it</summary>
+      <div class="hint" style="margin:7px 0 0">Printed straight from your own backup. If reading progress is in here, it is in this list.</div>
+      <div class="fields" style="margin-top:6px">${Object.keys(shape).sort().map(k=>
+        `<div class="meta" style="font-variant-numeric:tabular-nums"><b>${esc(k)}</b> — ${esc(shape[k])}</div>`).join("")}</div>
+    </details>`;
+  qa("[data-rechk]",box).forEach(c=>c.onchange=()=>{
+    const r=rows.find(x=>x.key===c.dataset.rechk);if(r)r.on=c.checked;renderReadEra();});
+  const all=q("#reAll",box);
+  if(all)all.onclick=()=>{const on=chosen.length!==matched.length;matched.forEach(r=>r.on=on);renderReadEra();};
+  const go=q("#reGo",box);
+  if(go)go.onclick=async()=>{
+    go.disabled=true;go.textContent="Bringing them in…";
+    const items=[];let added=0;
+    for(const r of chosen){
+      const fresh=newQ(r);if(!fresh.length)continue;
+      const b=r.book;
+      const before=JSON.parse(JSON.stringify(b));
+      b.quotes=b.quotes||[];
+      listFromArr(b);
+      for(const x of fresh){
+        b.quotes.push(esc(x.text)+(x.note?` <i>— ${esc(x.note)}</i>`:""));
+        /* the page becomes the quote’s own source, in the words ReadEra used */
+        listFromArr(b)[b.quotes.length-1]=x.page?TYPED+"p. "+x.page:"";
+        listWArr(b,"quotes")[b.quotes.length-1]=0;
+        added++;
+      }
+      b.modified=nextMod(b);
+      await dbPut("books",b);
+      if(SYNC.on)enqueue({kind:"book",id:b.id});
+      items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    }
+    if(items.length)pushOp({t:"bulk",items,label:"quotes from ReadEra"});
+    if(SYNC.on)flushQueue();
+    reFound=null;
+    alert(added+" quote"+(added===1?"":"s")+" brought in, on "+items.length+" book"+(items.length===1?"":"s")
+      +".\n\nEach one carries the page it came from. Undo puts it all back.");
+    render();
+  };
+}
+q("#reFile").addEventListener("change",async e=>{
+  const f=e.target.files[0];e.target.value="";if(!f)return;
+  const msg=q("#busyMsg");if(msg)msg.textContent="Reading the backup…";
+  try{
+    const text=/\.json$/i.test(f.name)?await f.text()
+      :await unzipFind(await f.arrayBuffer(),/(^|\/)library\.json$/i);
+    const data=JSON.parse(text);
+    const docs=Array.isArray(data.docs)?data.docs:[];
+    if(!docs.length)throw new Error("that file has no books in it");
+    /* matched by title first, then by title and author together — a backup
+       carries no ISBN, so this is all there is to match on */
+    const byTitle={};
+    books.forEach(b=>{const k=String(b.title||"").toLowerCase().replace(/\s+/g," ").trim();
+      if(k&&!byTitle[k])byTitle[k]=b;});
+    const rows=docs.map((d,i)=>{
+      const title=reTitle(d);
+      const k=title.toLowerCase().replace(/\s+/g," ").trim();
+      return {key:"r"+i,title,author:reAuthor(d),quotes:reQuotes(d),book:byTitle[k]||null,on:true};
+    });
+    reFound={rows,shape:reShape(docs),total:docs.length};
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    renderReadEra();
+    const box=q("#reOut");if(box)box.scrollIntoView({block:"nearest"});
+  }catch(err){
+    if(q("#busyMsg"))q("#busyMsg").textContent="";
+    alert("That file could not be read.\n\n"+err.message
+      +"\n\nIt should be the .bak ReadEra writes to Internal storage → ReadEra → Backups.");
+  }
+});
 q("#csvFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
   const msg=q("#busyMsg");if(msg)msg.textContent="Reading the file…";
@@ -18526,6 +18656,48 @@ const IMPORT_SECTIONS=[["finished","Read"],["reading","Currently reading"],["wan
 const IMPORT_TAG_CAP=12;
 const secOf=it=>it.dnf?"dnf":it.status;
 const dupeKey=(t,a)=>((t||"")+"|"+(a||"")).toLowerCase().replace(/\s+/g," ").trim();
+
+/* ---- reading a ReadEra backup ---------------------------------------
+   A .bak is a plain zip with library.json inside it, so the reader written for
+   Claude's export opens it unchanged. Inside: docs[], each with a data block
+   carrying the title, a links list carrying the file it came from, and a
+   citations list — note_body is the line you marked, note_page is where it
+   was, note_extra is anything you wrote about it.
+   That shape is documented by two independent readers of the same file and
+   NOT by ReadEra, so this reads defensively and, more importantly, SHOWS you
+   what it actually found: the names of every field in your file are printed
+   at the bottom. If reading progress turns out to be in there, that readout
+   is how we will know rather than guess. */
+const reTitle=d=>String((d.data&&(d.data.doc_title||d.data.doc_file_name_title))
+  ||((d.links||[])[0]||{}).file_name||"").replace(/\.(epub|pdf|fb2|mobi|txt|djvu|rtf|doc|docx)$/i,"").trim();
+const reAuthor=d=>String((d.data&&(d.data.doc_authors||d.data.doc_author))||"").trim();
+function reQuotes(d){
+  return (d.citations||[]).map(c=>({
+    text:String(c.note_body||"").replace(/\s+/g," ").trim(),
+    page:String(c.note_page==null?"":c.note_page).trim(),
+    note:String(c.note_extra||"").replace(/\s+/g," ").trim()
+  })).filter(x=>x.text);
+}
+/* every field name your file uses, with one real value beside it, so the next
+   question about this format is answered by the file and not by me */
+function reShape(docs){
+  const seen={};
+  const note=(where,k,v)=>{
+    const key=where+"."+k;
+    if(seen[key])return;
+    let sample=v;
+    if(v&&typeof v==="object")sample=Array.isArray(v)?`[${v.length} items]`:"{"+Object.keys(v).slice(0,4).join(", ")+"}";
+    else sample=String(v).slice(0,44);
+    seen[key]=sample;
+  };
+  docs.slice(0,60).forEach(d=>{
+    Object.keys(d).forEach(k=>note("doc",k,d[k]));
+    Object.keys(d.data||{}).forEach(k=>note("doc.data",k,d.data[k]));
+    ((d.citations||[])[0]?Object.keys(d.citations[0]):[]).forEach(k=>note("citation",k,d.citations[0][k]));
+    (((d.links||[])[0])?Object.keys(d.links[0]):[]).forEach(k=>note("link",k,d.links[0][k]));
+  });
+  return seen;
+}
 /* Goodreads wraps ISBNs in ="…" for Excel; keep just the digits (and a check-X) */
 const cleanIsbn=s=>String(s||"").replace(/[^0-9Xx]/g,"").toUpperCase();
 
