@@ -4826,7 +4826,7 @@ function vwNote(tag){
     const app=document.querySelector("#app");
     const vv=window.visualViewport;
     vwLog.push({t:tag,ms:Math.round(performance.now()),
-      iw:window.innerWidth,ow:window.outerWidth,
+      iw:window.innerWidth,rw:realWidth(),ow:window.outerWidth,
       dpr:Math.round((window.devicePixelRatio||0)*100)/100,
       vv:vv?Math.round(vv.width)+"@"+(Math.round((vv.scale||1)*100)/100):"-",
       cw:document.documentElement.clientWidth,
@@ -4838,8 +4838,25 @@ function vwNote(tag){
     localStorage.setItem(VW_LOG_KEY,JSON.stringify(vwLog));
   }catch(e){}
 }
+/* The window opened by the share sheet does not apply the page's own viewport
+   rule: measured on the owner's phone, it laid the page out 737 CSS pixels
+   wide and then shrank the whole thing to 0.37 to make it fit — a phone 273
+   pixels across being told it was 737. Every width decision after that was
+   made for a window twice the real size, which is what "squeezed" was.
+   So the real width is worked out rather than taken on trust: where the page
+   is being shown at anything other than its own scale, the width times that
+   scale is what the eye actually gets. On an ordinary launch the scale is 1
+   and this is exactly window.innerWidth. */
+function realWidth(){
+  const vv=window.visualViewport;
+  const w=window.innerWidth||document.documentElement.clientWidth||0;
+  if(!vv||!vv.scale)return w;
+  const s=vv.scale;
+  if(s>0.97&&s<1.03)return w;      /* the ordinary case, and a pinch of nothing */
+  return Math.round(w*s);
+}
 function applyWidthClass(){
-  const eff=window.innerWidth/((settings.fontScale||100)/100);
+  const eff=realWidth()/((settings.fontScale||100)/100);
   document.documentElement.setAttribute("data-vw",
     eff<370?"micro":eff<560?"tiny":eff<780?"narrow":"wide");
 }
@@ -4904,7 +4921,23 @@ window.addEventListener("resize",()=>{
    is only redrawn if the answer actually changed. Never over an open book:
    that page holds a scroll position and unsaved keystrokes. */
 let lastVw=null;
+/* Re-stating the viewport rule makes the browser read it again, which is the
+   only lever a page has over this. Done once, and only when the page is
+   demonstrably not at its own scale, so an honest pinch-zoom by hand is left
+   alone. */
+let vpNudged=false;
+function nudgeViewport(){
+  const vv=window.visualViewport;
+  if(vpNudged||!vv||!vv.scale||(vv.scale>0.97&&vv.scale<1.03))return;
+  const m=document.querySelector('meta[name="viewport"]');
+  if(!m)return;
+  vpNudged=true;
+  const want="width=device-width, initial-scale=1.0, viewport-fit=cover";
+  m.setAttribute("content",want+", minimum-scale=1.0");
+  setTimeout(()=>{m.setAttribute("content",want);vwNote("viewport re-stated");applyWidthClass();},60);
+}
 function settleWidth(){
+  nudgeViewport();
   applySimple();                       /* the text zoom, in case that came late too */
   const now=document.documentElement.getAttribute("data-vw");
   if(lastVw===null){lastVw=now;return;}
@@ -5054,6 +5087,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.22",lines:[
+    "Found it. Opened from the share sheet, the window ignores the page's own instruction about how wide a phone is: it laid the shelf out 737 pixels across and then shrank the whole thing to 0.37 to make it fit — a phone 273 pixels wide being told it was 737, so every decision after that was made for a window nearly three times too big. The real width is now worked out rather than taken on trust, and the app also asks the window to read that instruction again. Your numbers, from your own phone, are what found it."
+  ]},
   {v:"2026-08-22.21",lines:[
     "The app opening squeezed after a share is not fixed yet — two goes at it were both wrong, so it now writes down how the window measured itself instead of me guessing a third time. Under the backup card, \"How this window measured itself\" holds the numbers, and they survive a reload. If it happens again, one picture of that table says which width was wrong and when."
   ]},
@@ -10546,14 +10582,14 @@ q("#reFile").addEventListener("change",e=>{
 function vwLogHtml(){
   if(!vwLog.length)return "";
   const row=e=>`<tr><td>${esc(e.t)}</td><td>${e.ms}</td><td>${e.iw}</td><td>${e.cw}</td>`
-    +`<td>${e.vv}</td><td>${e.dpr}</td><td>${esc(String(e.fs))}</td><td>${esc(e.vw)}</td>`
+    +`<td>${e.rw==null?"-":e.rw}</td><td>${e.vv}</td><td>${e.dpr}</td><td>${esc(String(e.fs))}</td><td>${esc(e.vw)}</td>`
     +`<td>${esc(String(e.z))}</td><td>${esc(e.st)}</td></tr>`;
   return `<details style="margin-top:10px">
     <summary class="lbl" style="cursor:pointer">How this window measured itself</summary>
     <div class="hint" style="margin:6px 0">If the app opens looking squeezed, take one picture of this table —
       it says which of the widths was wrong and when.</div>
     <div style="overflow-x:auto"><table class="vwlog"><thead><tr>
-      <th>when</th><th>ms</th><th>inner</th><th>client</th><th>visual</th><th>dpr</th>
+      <th>when</th><th>ms</th><th>inner</th><th>client</th><th>real</th><th>visual</th><th>dpr</th>
       <th>text</th><th>size</th><th>zoom</th><th>as</th></tr></thead>
       <tbody>${vwLog.map(row).join("")}</tbody></table></div>
     <button class="btn" id="vwClear" style="margin-top:7px;padding:3px 10px">Start it again</button>
