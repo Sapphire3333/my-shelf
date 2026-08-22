@@ -4996,6 +4996,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.17",lines:[
+    "The phone ran out of memory reading a backup, and Android threw the page away — which is what was really behind the file needing choosing again and the page starting at the top after every single thing. It was keeping four thousand books in hand when it needed about five hundred. It now keeps a few counts, the books that actually carry marked lines, and the books on ReadEra's own shelves, and lets the rest go: five megabytes down to half a megabyte."
+  ]},
   {v:"2026-08-22.16",lines:[
     "You can do the whole ReadEra thing on the phone now, which saves moving the file anywhere: make the backup in ReadEra, open My Shelf, and pick it straight out of Internal storage → ReadEra → Backups. Whatever you bring in reaches the computer through your own sync, like everything else does.",
     "It was asking the picker for \".bak\" files, and Android hides what it cannot name — which made the backup unpickable on the one device it lives on. It accepts any file now and works out what it is by looking inside it."
@@ -10109,7 +10112,6 @@ function openQuotePick(key){
 function openReColl(i){
   const c=(reFound&&reFound.colls||[])[i];
   if(!c){reOpen=null;renderReadEra();return;}
-  const fixer=reAuthorFixer(c.docs.map(d=>(d.data||{}).doc_authors),c.docs.map(reNameHint));
   const byBoth={},byTitle={};
   books.forEach(b=>{
     const t=String(b.title||"").toLowerCase().replace(/\s+/g," ").trim();
@@ -10117,8 +10119,13 @@ function openReColl(i){
     byBoth[dupeKey(b.title,b.author)]=b;
     if(!byTitle[t])byTitle[t]=b;
   });
-  const rows=c.docs.map(d=>fromReadEra(d,fixer.fix,reWantProgress)).filter(it=>it.title)
-    .map(it=>{
+  /* the staged rows were made when the file was read; the only thing left to
+     decide here is whether the reading position comes with them */
+  const rows=c.items.map(src=>{
+      const it=Object.assign({},src,{id:uid()});
+      if(!reWantProgress){it.pages="";it.progress="";}
+      return it;
+    }).map(it=>{
       const t=it.title.toLowerCase().replace(/\s+/g," ").trim();
       const both=byBoth[dupeKey(it.title,it.author)];
       const one=byTitle[t];
@@ -10126,14 +10133,14 @@ function openReColl(i){
       const fill=have?reFillable(have,it):[];
       return {it,have,near:!both&&!!one,fill,on:!have};
     });
-  reOpen={i,title:c.title,rows,fixed:fixer.merged,byFile:fixer.byFile};
+  reOpen={i,title:c.title,rows};
   renderReadEra();
   const box=q("#reOut");if(box)box.scrollIntoView({block:"nearest"});
 }
 function renderReadEra(){
   const box=q("#reOut");if(!box)return;
   if(!reFound){box.innerHTML="";return;}
-  const {rows,shape,total,colls}=reFound;
+  const {rows,shape,total,colls,counts}=reFound;
   const withQ=rows.filter(r=>r.quotes.length);
   const matched=withQ.filter(r=>r.hit);
   const chosen=matched.filter(r=>r.on);
@@ -10141,16 +10148,10 @@ function renderReadEra(){
      there are quotes in it: on a library of four thousand fics the tags, the
      summaries and the marks ARE the thing, and a card that only counted
      highlights would have reported nothing at all and been wrong about it. */
-  const live=rows.filter(r=>!r.deleted);
-  const tally={bookmarks:live.filter(r=>r.bookmarks).length,
-    tags:live.filter(r=>r.tags.length).length,summary:live.filter(r=>r.summary).length,
-    series:live.filter(r=>r.series).length,started:live.filter(r=>r.pos.ratio>0).length,
-    read:live.filter(r=>r.haveRead).length,toRead:live.filter(r=>r.toRead).length,
-    fav:live.filter(r=>r.fav).length};
-  const holds=[["with a bookmark",tally.bookmarks],
-    ["with tags",tally.tags],["with a summary",tally.summary],["in a series",tally.series],
-    ["started",tally.started],["marked read",tally.read],["marked to read",tally.toRead],
-    ["favourites",tally.fav]].filter(x=>x[1]);
+  const holds=[["with a bookmark",counts.bookmarks],
+    ["with tags",counts.tags],["with a summary",counts.summary],["in a series",counts.series],
+    ["started",counts.started],["marked read",counts.read],["marked to read",counts.toRead],
+    ["favourites",counts.fav]].filter(x=>x[1]);
   /* A line already on the book may be wearing a tail this card put there — the
      page it came from, or a note written beside the highlight — so comparing
      the whole string said "new" about something already sitting there, and the
@@ -10166,7 +10167,7 @@ function renderReadEra(){
   const totalNew=chosen.reduce((n,r)=>n+newQ(r).length,0);
   box.innerHTML=`
     <div class="hint" style="margin:11px 0 8px">
-      <b>${live.length} book${live.length===1?"":"s"}</b> in that file${total-live.length?` (and ${total-live.length} it has since deleted)`:""}
+      <b>${counts.live} book${counts.live===1?"":"s"}</b> in that file${total-counts.live?` (and ${total-counts.live} it has since deleted)`:""}
       · <b>${withQ.length}</b> with lines you marked${withQ.length?`
       · <b>${matched.length}</b> of those ${matched.length===1?"is":"are"} on your shelf.`:"."}
       ${withQ.length&&withQ.length-matched.length?`The other ${withQ.length-matched.length} could not be matched by title — they are listed below so you can see what was missed.`:""}
@@ -10385,25 +10386,59 @@ q("#reFile").addEventListener("change",async e=>{
       }
       return null;
     };
-    const rows=docs.map((d,i)=>{
-      const title=reTitle(d),D=d.data||{};
-      return {key:"r"+i,title,author:reAuthor(d),quotes:reQuotes(d),hit:findBook(title,reAuthor(d)),on:true,
-        tags:reTags(d),summary:reSummary(d),series:reSeries(d),pos:rePos(d),
-        bookmarks:(d.bookmarks||[]).length,
-        haveRead:reNum(D.doc_have_read_time)>0,toRead:reNum(D.doc_to_read_time)>0,
-        fav:reNum(D.doc_favorites_time)>0,deleted:reNum(D.doc_delete_time)>0,
-        format:String(D.doc_format||"")};
+    /* ---- keep almost none of it ----
+       A phone gave up on this: "Unable to complete previous operation due to
+       low memory", and then Android threw the page away, which is what was
+       really behind the file needing to be chosen again and the page starting
+       at the top. Four thousand books read out of eight megabytes of text, and
+       then a row object built for every one of them holding its blurb and its
+       tags a second time, is more than a phone will carry.
+       So the file is read once and almost all of it is let go. What is kept:
+       a handful of counts, a row for each of the books that actually carry
+       marked lines — one, on this shelf — and slim rows for the books on
+       ReadEra's own shelves, which is five hundred rather than four thousand.
+       The parsed backup itself goes out of scope at the end of this handler
+       and is collected. */
+    const alive=d=>!(reNum((d.data||{}).doc_delete_time)>0);
+    const counts={total:docs.length,live:0,bookmarks:0,tags:0,summary:0,series:0,
+      started:0,read:0,toRead:0,fav:0};
+    docs.forEach(d=>{
+      if(!alive(d))return;
+      counts.live++;
+      const D=d.data||{};
+      if((d.bookmarks||[]).length)counts.bookmarks++;
+      if(String(D.doc_genres||"").trim())counts.tags++;
+      if(String(D.doc_annotation||"").trim())counts.summary++;
+      if(String(D.doc_series||"").trim())counts.series++;
+      if(rePos(d).ratio>0)counts.started++;
+      if(reNum(D.doc_have_read_time)>0)counts.read++;
+      if(reNum(D.doc_to_read_time)>0)counts.toRead++;
+      if(reNum(D.doc_favorites_time)>0)counts.fav++;
+    });
+    /* the only rows worth keeping whole are the ones with something to say */
+    const rows=[];
+    docs.forEach((d,i)=>{
+      const qs=reQuotes(d);
+      if(!qs.length)return;
+      const title=reTitle(d),author=reAuthor(d);
+      rows.push({key:"r"+i,title,author,quotes:qs,hit:findBook(title,author),on:true});
     });
     const byUri={};docs.forEach(d=>{if(d.uri)byUri[d.uri]=d;});
     /* a shelf holds uris; the count ReadEra keeps beside it can disagree with
-       what is really in the file, so the real one is what gets shown */
+       what is really in the file, so the real one is what gets shown. Each
+       shelf's books are turned into staged rows here and the documents behind
+       them dropped — the toggle for reading progress is applied when a shelf
+       is opened, from fields the row carries. */
     const colls=(Array.isArray(data.colls)?data.colls:[]).map(c=>{
-      const mine=(c.docs||[]).map(u=>byUri[u]).filter(d=>d&&!(reNum((d.data||{}).doc_delete_time)>0));
+      const mine=(c.docs||[]).map(u=>byUri[u]).filter(d=>d&&alive(d));
+      const fixer=reAuthorFixer(mine.map(d=>(d.data||{}).doc_authors),mine.map(reNameHint));
       return {title:String((c.data||{}).coll_title||""),n:reNum((c.data||{}).doc_active_count),
-        have:mine.length,docs:mine};
+        have:mine.length,
+        items:mine.map(d=>fromReadEra(d,fixer.fix,true)).filter(it=>it.title)};
     }).filter(c=>c.title&&c.have);
+    const shape=reShape(docs);
     reOpen=null;
-    reFound={rows,shape:reShape(docs),total:docs.length,colls};
+    reFound={rows,shape,counts,total:docs.length,colls};
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     renderReadEra();
     const box=q("#reOut");if(box)box.scrollIntoView({block:"nearest"});
