@@ -4987,6 +4987,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.9",lines:[
+    "A quote brought over from ReadEra now says \"p. 257 of 557\" rather than a bare page number. That page is ReadEra's own pagination rather than a printed one — an EPUB has no printed pages at all — so saying how many there were is what keeps the number honest.",
+    "The card also counts the books you have put a bookmark in, alongside everything else it found."
+  ]},
   {v:"2026-08-22.8",lines:[
     "The ReadEra card reads the whole backup now, not only the quotes in it — how many books it holds, how many carry tags or a summary or a series, how many you have started, marked read, marked to read or made a favourite, and what ReadEra's own shelves are called. On a real 3,992-book backup that takes about a second."
   ]},
@@ -9931,11 +9935,13 @@ function renderReadEra(){
      summaries and the marks ARE the thing, and a card that only counted
      highlights would have reported nothing at all and been wrong about it. */
   const live=rows.filter(r=>!r.deleted);
-  const tally={tags:live.filter(r=>r.tags.length).length,summary:live.filter(r=>r.summary).length,
+  const tally={bookmarks:live.filter(r=>r.bookmarks).length,
+    tags:live.filter(r=>r.tags.length).length,summary:live.filter(r=>r.summary).length,
     series:live.filter(r=>r.series).length,started:live.filter(r=>r.pos.ratio>0).length,
     read:live.filter(r=>r.haveRead).length,toRead:live.filter(r=>r.toRead).length,
     fav:live.filter(r=>r.fav).length};
-  const holds=[["with tags",tally.tags],["with a summary",tally.summary],["in a series",tally.series],
+  const holds=[["with a bookmark",tally.bookmarks],
+    ["with tags",tally.tags],["with a summary",tally.summary],["in a series",tally.series],
     ["started",tally.started],["marked read",tally.read],["marked to read",tally.toRead],
     ["favourites",tally.fav]].filter(x=>x[1]);
   const newQ=r=>{
@@ -9966,7 +9972,7 @@ function renderReadEra(){
         <span style="min-width:0">
           <span class="when" style="font-size:13px">${esc(r.book.title||"Untitled")}</span>
           <span class="meta">${r.quotes.length} marked · ${nq?nq+" new":"all of them already on the book"}</span>
-          <span class="meta" style="opacity:.85">“${esc(r.quotes[0].text.slice(0,90))}${r.quotes[0].text.length>90?"…":""}”${r.quotes[0].page?" · p. "+esc(r.quotes[0].page):""}</span>
+          <span class="meta" style="opacity:.85">“${esc(r.quotes[0].text.slice(0,90))}${r.quotes[0].text.length>90?"…":""}”${r.quotes[0].where?" · "+esc(r.quotes[0].where):""}</span>
         </span></label></div>`;}).join("")}
     ${withQ.filter(r=>!r.book).length?`<div class="lbl" style="display:block;margin:12px 0 4px">Not on your shelf</div>
       ${withQ.filter(r=>!r.book).map(r=>`<div class="snap" style="padding:5px 10px">
@@ -9995,7 +10001,7 @@ function renderReadEra(){
       for(const x of fresh){
         b.quotes.push(esc(x.text)+(x.note?` <i>— ${esc(x.note)}</i>`:""));
         /* the page becomes the quote’s own source, in the words ReadEra used */
-        listFromArr(b)[b.quotes.length-1]=x.page?TYPED+"p. "+x.page:"";
+        listFromArr(b)[b.quotes.length-1]=x.where?TYPED+x.where:"";
         listWArr(b,"quotes")[b.quotes.length-1]=0;
         added++;
       }
@@ -10031,6 +10037,7 @@ q("#reFile").addEventListener("change",async e=>{
       const k=title.toLowerCase().replace(/\s+/g," ").trim();
       return {key:"r"+i,title,author:reAuthor(d),quotes:reQuotes(d),book:byTitle[k]||null,on:true,
         tags:reTags(d),summary:reSummary(d),series:reSeries(d),pos:rePos(d),
+        bookmarks:(d.bookmarks||[]).length,
         haveRead:reNum(D.doc_have_read_time)>0,toRead:reNum(D.doc_to_read_time)>0,
         fav:reNum(D.doc_favorites_time)>0,deleted:reNum(D.doc_delete_time)>0,
         format:String(D.doc_format||"")};
@@ -18712,12 +18719,25 @@ const reSeries=d=>String((d.data||{}).doc_series||"").trim();
 const reTitle=d=>String((d.data&&(d.data.doc_title||d.data.doc_file_name_title))
   ||((d.links||[])[0]||{}).file_name||"").replace(/\.(epub|pdf|fb2|mobi|txt|djvu|rtf|doc|docx)$/i,"").trim();
 const reAuthor=d=>String((d.data&&(d.data.doc_authors||d.data.doc_author))||"").trim();
+/* A real backup answered two things a guessed one could not. There is no
+   note_extra: what sits beside a highlight is note_data, and it holds the
+   position — ratio, page, and how many pages ReadEra thinks the book has.
+   So a quote can say "p. 257 of 557" rather than a bare page, which matters
+   because that page is ReadEra's own pagination and not a printed page: on an
+   EPUB there are no printed pages at all. Saying how many there were is what
+   keeps the number honest. */
 function reQuotes(d){
-  return (d.citations||[]).map(c=>({
-    text:String(c.note_body||"").replace(/\s+/g," ").trim(),
-    page:String(c.note_page==null?"":c.note_page).trim(),
-    note:String(c.note_extra||"").replace(/\s+/g," ").trim()
-  })).filter(x=>x.text);
+  return (d.citations||[]).map(c=>{
+    let pages=0;
+    try{pages=Number(JSON.parse(c.note_data||"{}").pagesCount)||0;}catch(e){}
+    const page=String(c.note_page==null?"":c.note_page).trim();
+    return {
+      text:String(c.note_body||"").replace(/\s+/g," ").trim(),
+      page,
+      where:page?("p. "+page+(pages?" of "+pages:"")):"",
+      note:String(c.note_extra||"").replace(/\s+/g," ").trim()
+    };
+  }).filter(x=>x.text);
 }
 /* every field name your file uses, with one real value beside it, so the next
    question about this format is answered by the file and not by me */
