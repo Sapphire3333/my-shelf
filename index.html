@@ -4623,6 +4623,8 @@ async function initSync(){
   maybeFolderBackup();
   maybeFileBackup();
   purgeTrash();
+  /* last, because it opens a screen and wants everything else awake first */
+  takeSharedBackup();
 })();
 
 /* The other half of the conversation started up in the database section. Where
@@ -4996,6 +4998,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.18",lines:[
+    "My Shelf can be shared TO. On the phone, in ReadEra or your files, use Share → My Shelf on a backup and it opens straight onto it — no walking down to Internal storage → ReadEra → Backups and no file picker at all. It only appears in the share sheet once My Shelf is added to your home screen, which is what makes the phone treat it as an app."
+  ]},
   {v:"2026-08-22.17",lines:[
     "The phone ran out of memory reading a backup, and Android threw the page away — which is what was really behind the file needing choosing again and the page starting at the top after every single thing. It was keeping four thousand books in hand when it needed about five hundred. It now keeps a few counts, the books that actually carry marked lines, and the books on ReadEra's own shelves, and lets the rest go: five megabytes down to half a megabyte."
   ]},
@@ -9404,10 +9409,11 @@ async function renderHub(){
           In ReadEra: <b>≡ menu → Settings → Backup and restore → Create backup</b>. It writes a file to
           <b>Internal storage → ReadEra → Backups</b> called something like
           <i>ReadEra-Premium_2026-08-22_18.30.bak</i>.
-          <br><b>Easiest on the phone:</b> make the backup, open My Shelf here, and pick it straight out of
-          that folder — no moving it anywhere. Whatever you bring in reaches the computer through your own
-          sync, like everything else. On the computer instead, bring the file over however suits you.
-          Nothing is read from your phone by itself, and nothing changes until you say so.
+          <br><b>Easiest on the phone:</b> once My Shelf is on your home screen, the backup can be sent
+          here — <b>Share → My Shelf</b>, from ReadEra or from your files — and it opens straight onto it,
+          no folder to walk down and no picker. Otherwise open My Shelf on the phone and choose the file
+          out of that folder yourself. Either way it reaches the computer through your own sync, like
+          everything else. Nothing is read from your phone by itself, and nothing changes until you say so.
         </div>
         <div id="reOut"></div>
         <div class="bgpanel" id="qfromPanel" hidden></div>
@@ -10346,8 +10352,10 @@ function renderReadEra(){
     await reAfterChange();
   };
 }
-q("#reFile").addEventListener("change",async e=>{
-  const f=e.target.files[0];e.target.value="";if(!f)return;
+/* Reading a backup is the same job whether the file was chosen here or handed
+   over by Android's share sheet, so it is one function and two doors into it. */
+async function loadReadEraBlob(f){
+
   const msg=q("#busyMsg");if(msg)msg.textContent="Reading the backup…";
   try{
     /* Decide by what the file IS, not by what it is called. Android hands a
@@ -10448,7 +10456,36 @@ q("#reFile").addEventListener("change",async e=>{
       +"\n\nIt should be the .bak ReadEra writes when you ask it for a backup — on the phone that is Internal storage → ReadEra → Backups."
       +"\n\nYou can do this on the phone itself: make the backup in ReadEra, open My Shelf here, and pick it from that folder. Anything you bring in then reaches the computer through your own sync.");
   }
+}
+q("#reFile").addEventListener("change",e=>{
+  const f=e.target.files[0];e.target.value="";if(!f)return;
+  loadReadEraBlob(f);
 });
+/* ---- a backup shared to the app ----
+   The worker catches the share, puts the file down in a cache and sends the
+   browser here with ?shared=1. This collects it, empties the cache so it cannot
+   arrive twice, tidies the address bar, and opens the card on it. */
+async function takeSharedBackup(){
+  let flag=null;
+  try{flag=new URL(location.href).searchParams.get("shared");}catch(e){}
+  if(flag==null)return;
+  try{history.replaceState(null,"",location.pathname+location.hash);}catch(e){}
+  if(flag!=="1"){alert("That file did not come through. Try choosing it in the app instead.");return;}
+  let blob=null,name="shared";
+  try{
+    const c=await caches.open("my-shelf-share");
+    const hit=await c.match("shared-backup");
+    if(hit){
+      name=decodeURIComponent(hit.headers.get("x-shared-name")||"shared");
+      blob=await hit.blob();
+      await c.delete("shared-backup");
+    }
+  }catch(e){}
+  if(!blob)return;
+  view="overview";
+  await Promise.resolve(render());
+  await loadReadEraBlob(new File([blob],name));
+}
 q("#csvFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
   const msg=q("#busyMsg");if(msg)msg.textContent="Reading the file…";

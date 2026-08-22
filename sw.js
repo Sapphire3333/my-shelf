@@ -11,6 +11,11 @@
    can't outlive the build they belonged to. */
 const CACHE = "my-shelf-" + (new URL(self.location.href).searchParams.get("v") || "v2");
 const SHELL = ["./", "./index.html", "./version.js", "./config.js", "./manifest.json", "./icon.svg", "./icon.png", "./icon-512.png"];
+/* Where a shared file waits between the share sheet handing it over and the app
+   opening to collect it. Its own cache, so the build-stamped one can be thrown
+   away on every update without losing a file that is mid-journey. */
+const SHARE = "my-shelf-share";
+const SHARED_KEY = "shared-backup";
 
 self.addEventListener("install", e => {
   e.waitUntil(
@@ -24,13 +29,42 @@ self.addEventListener("install", e => {
 self.addEventListener("activate", e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE && k !== SHARE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
+/* ---- a file shared to the app from somewhere else ----
+   Android hands the file to a POST, which no page can read on the way past, so
+   the worker takes it, puts it down in a cache of its own, and sends the
+   browser on to the app with a flag. The app collects it on arrival. Sharing a
+   ReadEra backup this way saves walking down to Internal storage → ReadEra →
+   Backups by hand, which is the whole point.
+   The redirect must be an absolute address and a 303, so the browser turns the
+   POST into a GET rather than asking to re-send it. */
 self.addEventListener("fetch", e => {
   const req = e.request;
+
+  if (req.method === "POST" && new URL(req.url).pathname.endsWith("/share-target")) {
+    e.respondWith((async () => {
+      let ok = 0;
+      try {
+        const form = await req.formData();
+        const file = form.get("file");
+        if (file && file.size) {
+          const c = await caches.open(SHARE);
+          await c.put(SHARED_KEY, new Response(file, {
+            headers: { "content-type": file.type || "application/octet-stream",
+                       "x-shared-name": encodeURIComponent(file.name || "shared") }
+          }));
+          ok = 1;
+        }
+      } catch (err) { ok = 0; }
+      return Response.redirect(new URL("./?shared=" + ok, self.registration.scope).href, 303);
+    })());
+    return;
+  }
+
   if (req.method !== "GET") return;
 
   let url;
