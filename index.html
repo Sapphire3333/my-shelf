@@ -4987,6 +4987,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-22.8",lines:[
+    "The ReadEra card reads the whole backup now, not only the quotes in it — how many books it holds, how many carry tags or a summary or a series, how many you have started, marked read, marked to read or made a favourite, and what ReadEra's own shelves are called. On a real 3,992-book backup that takes about a second."
+  ]},
   {v:"2026-08-22.7",lines:[
     "Overview can read a ReadEra backup. Make one in ReadEra (≡ → Settings → Backup and restore), bring the .bak here, and every line you marked while reading comes across onto the matching book — each carrying the page it was on. It tells you what it found first and nothing moves until you tick it; Undo puts it all back.",
     "It also prints every field your backup actually contains, folded away at the bottom. That is deliberate: whether ReadEra keeps your reading progress in there is the next question, and the file can answer it rather than me."
@@ -9349,7 +9352,7 @@ async function renderHub(){
       </div>
     </div>
     <div class="sec">
-      <div class="heading"><h2 class="serif">Quotes from ReadEra</h2></div>
+      <div class="heading"><h2 class="serif">Read a ReadEra backup</h2></div>
       <div class="hcard">
         <div class="hrow2"><button class="btn pri" id="reBtn">⭱ Choose a ReadEra backup…</button></div>
         <div class="hint" style="margin:9px 0 0">
@@ -9919,10 +9922,22 @@ let reFound=null;
 function renderReadEra(){
   const box=q("#reOut");if(!box)return;
   if(!reFound){box.innerHTML="";return;}
-  const {rows,shape,total}=reFound;
+  const {rows,shape,total,colls}=reFound;
   const withQ=rows.filter(r=>r.quotes.length);
   const matched=withQ.filter(r=>r.book);
   const chosen=matched.filter(r=>r.on);
+  /* What else the file turned out to be carrying. Worth showing whether or not
+     there are quotes in it: on a library of four thousand fics the tags, the
+     summaries and the marks ARE the thing, and a card that only counted
+     highlights would have reported nothing at all and been wrong about it. */
+  const live=rows.filter(r=>!r.deleted);
+  const tally={tags:live.filter(r=>r.tags.length).length,summary:live.filter(r=>r.summary).length,
+    series:live.filter(r=>r.series).length,started:live.filter(r=>r.pos.ratio>0).length,
+    read:live.filter(r=>r.haveRead).length,toRead:live.filter(r=>r.toRead).length,
+    fav:live.filter(r=>r.fav).length};
+  const holds=[["with tags",tally.tags],["with a summary",tally.summary],["in a series",tally.series],
+    ["started",tally.started],["marked read",tally.read],["marked to read",tally.toRead],
+    ["favourites",tally.fav]].filter(x=>x[1]);
   const newQ=r=>{
     const have=new Set((r.book.quotes||[]).map(t=>stripHtml(t).replace(/\s+/g," ").trim().toLowerCase()));
     return r.quotes.filter(x=>!have.has(x.text.toLowerCase()));
@@ -9930,10 +9945,16 @@ function renderReadEra(){
   const totalNew=chosen.reduce((n,r)=>n+newQ(r).length,0);
   box.innerHTML=`
     <div class="hint" style="margin:11px 0 8px">
-      <b>${total} book${total===1?"":"s"}</b> in that file · <b>${withQ.length}</b> with lines you marked
-      · <b>${matched.length}</b> of those ${matched.length===1?"is":"are"} on your shelf.
-      ${withQ.length-matched.length?`The other ${withQ.length-matched.length} could not be matched by title — they are listed below so you can see what was missed.`:""}
+      <b>${live.length} book${live.length===1?"":"s"}</b> in that file${total-live.length?` (and ${total-live.length} it has since deleted)`:""}
+      · <b>${withQ.length}</b> with lines you marked${withQ.length?`
+      · <b>${matched.length}</b> of those ${matched.length===1?"is":"are"} on your shelf.`:"."}
+      ${withQ.length&&withQ.length-matched.length?`The other ${withQ.length-matched.length} could not be matched by title — they are listed below so you can see what was missed.`:""}
     </div>
+    ${holds.length?`<div class="hint" style="margin:0 0 9px">It also knows: ${holds.map(h=>`<b>${h[1]}</b> ${h[0]}`).join(" · ")}.
+      ${colls.length?`<br>And ${colls.length} shelves of its own: ${colls.map(c=>esc(c.title)+" ("+c.n+")").join(", ")}.`:""}</div>`:""}
+    ${!withQ.length?`<div class="hint" style="margin:0 0 9px;padding:9px 11px;border-left:3px solid var(--amber);background:var(--card);border-radius:8px">
+      No marked lines in this backup — so there is nothing here to bring across as quotes.
+      Highlighting a passage in ReadEra is what fills that list.</div>`:""}
     ${matched.length?`<div class="hrow2" style="margin-bottom:7px">
       <button class="btn" id="reAll">${chosen.length===matched.length?"Untick all":"Tick all"}</button>
       <span class="rr">${totalNew} new quote${totalNew===1?"":"s"} would come in</span>
@@ -10006,11 +10027,18 @@ q("#reFile").addEventListener("change",async e=>{
     books.forEach(b=>{const k=String(b.title||"").toLowerCase().replace(/\s+/g," ").trim();
       if(k&&!byTitle[k])byTitle[k]=b;});
     const rows=docs.map((d,i)=>{
-      const title=reTitle(d);
+      const title=reTitle(d),D=d.data||{};
       const k=title.toLowerCase().replace(/\s+/g," ").trim();
-      return {key:"r"+i,title,author:reAuthor(d),quotes:reQuotes(d),book:byTitle[k]||null,on:true};
+      return {key:"r"+i,title,author:reAuthor(d),quotes:reQuotes(d),book:byTitle[k]||null,on:true,
+        tags:reTags(d),summary:reSummary(d),series:reSeries(d),pos:rePos(d),
+        haveRead:reNum(D.doc_have_read_time)>0,toRead:reNum(D.doc_to_read_time)>0,
+        fav:reNum(D.doc_favorites_time)>0,deleted:reNum(D.doc_delete_time)>0,
+        format:String(D.doc_format||"")};
     });
-    reFound={rows,shape:reShape(docs),total:docs.length};
+    const colls=(Array.isArray(data.colls)?data.colls:[]).map(c=>({
+      title:String((c.data||{}).coll_title||""),n:reNum((c.data||{}).doc_active_count)}))
+      .filter(c=>c.title);
+    reFound={rows,shape:reShape(docs),total:docs.length,colls};
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     renderReadEra();
     const box=q("#reOut");if(box)box.scrollIntoView({block:"nearest"});
@@ -18668,6 +18696,19 @@ const dupeKey=(t,a)=>((t||"")+"|"+(a||"")).toLowerCase().replace(/\s+/g," ").tri
    what it actually found: the names of every field in your file are printed
    at the bottom. If reading progress turns out to be in there, that readout
    is how we will know rather than guess. */
+/* A real backup turned out to hold far more than quotes, so this reads the
+   rest of it too: what ReadEra knows about each book, whether it has been
+   started, and the marks put on it. All of it is reported; none of it is acted
+   on without being asked for. */
+const reNum=v=>{const n=Number(v);return isFinite(n)&&n>0?n:0;};
+function rePos(d){
+  try{const p=JSON.parse((d.data||{}).doc_position||"{}");
+    return {ratio:reNum(p.ratio),page:reNum(p.page),pages:reNum(p.pagesCount)};}
+  catch(e){return {ratio:0,page:0,pages:0};}
+}
+const reTags=d=>String((d.data||{}).doc_genres||"").split(",").map(t=>t.trim()).filter(Boolean);
+const reSummary=d=>String((d.data||{}).doc_annotation||"").trim();
+const reSeries=d=>String((d.data||{}).doc_series||"").trim();
 const reTitle=d=>String((d.data&&(d.data.doc_title||d.data.doc_file_name_title))
   ||((d.links||[])[0]||{}).file_name||"").replace(/\.(epub|pdf|fb2|mobi|txt|djvu|rtf|doc|docx)$/i,"").trim();
 const reAuthor=d=>String((d.data&&(d.data.doc_authors||d.data.doc_author))||"").trim();
