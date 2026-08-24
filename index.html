@@ -1134,11 +1134,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
      to dismiss the panel also lands on whatever was underneath — opening a book
      you only wanted to click past. */
   .ratebackdrop{position:fixed;inset:0;z-index:59;background:rgba(28,25,23,.18)}
-  /* the paste-several-quotes box */
-  #qManyText{width:100%;min-height:180px;border:1px solid var(--line);border-radius:10px;
+  /* the paste-several-quotes box, and the series paste that shares its shape */
+  #qManyText,#spText{width:100%;min-height:180px;border:1px solid var(--line);border-radius:10px;
     background:var(--card);color:var(--ink);padding:9px 11px;font:inherit;font-size:13px;
     line-height:1.5;resize:vertical;box-sizing:border-box}
-  #qManyText:focus{border-color:var(--teal);outline:none}
+  #qManyText:focus,#spText:focus{border-color:var(--teal);outline:none}
+  #spText{min-height:130px}
   .ratepick{min-width:0}
   .ratestars{display:flex;flex-wrap:wrap;gap:0;padding:2px}
   .ratestars button{padding:6px 3px;font-size:20px;line-height:1;color:#d6d3d1;text-align:center}
@@ -5586,6 +5587,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.36",lines:[
+    "A collection can take the rest of its series in one paste. In its editor, 📋 The rest of the series… opens a window: ask Claude which books you're missing (there's a button that writes that message for you, naming what you already have), paste the answer as #4 The Title one per line, and every missing book lands as a story marked ★ Want to read. Chatter around the list is ignored, stories already inside are skipped, and one paste is one undo step."
+  ]},
   {v:"2026-08-24.35",lines:[
     "The Quotes box takes a whole list at once. 📋 Paste several… in the editor opens a window you paste into — a blank line starts a new quote, a single line break stays inside its quote (so a note under a line travels with it) — it counts what's ready as you paste, and one press adds them all. One paste is one undo step, so a change of heart is one ↶."
   ]},
@@ -18695,6 +18699,7 @@ function renderEditor(){
         <div class="hrow2" style="margin-top:4px">
           <button class="btn pri" id="entAdd">＋ Add a book / story</button>
           <button class="btn" id="entFold" title="Move a book that has its own page into this collection">⤵ Fold in a book from your shelf…</button>
+          <button class="btn" id="entPaste" title="Paste a list from a Claude chat — the missing books land as stories, marked Want to read">📋 The rest of the series…</button>
           <button class="btn" id="entOrder" ${cur.entries.length>1?"":"disabled"} title="Tap the titles in the order you want them">⇅ Reorder…</button>
           ${entNumSortable(cur.entries)?`<button class="btn" id="entNumSort" title="Put them in the order their own titles give — #1, #2, #3">🔢 By the number in the title</button>`:""}
         </div></div>`;
@@ -18916,6 +18921,7 @@ function renderEditor(){
     };
     q("#entFold").onclick=openFoldPanel;
     q("#entOrder").onclick=openOrderPanel;
+    {const ep=q("#entPaste");if(ep)ep.onclick=openSeriesPaste;}
     const ens=q("#entNumSort");
     if(ens)ens.onclick=()=>{
       const sorted=sortByTitleNum(cur.entries);
@@ -19006,6 +19012,77 @@ function renderEditor(){
         if(fr)cur.quotesFrom=order.map(i=>fr[i]);
         renderList(key);scheduleSave();
       }});
+  }
+  /* ---- item 15 (2026-08-21): the rest of the series, from a Claude chat ----
+     The bargain the chapter-parts and quotes pastes made, a third time: an
+     agreed line format, pasted whole, and the app does the filing. One line
+     per missing book, "#4 The Title"; where numbered lines exist, unnumbered
+     ones are chatter and are ignored; a title already inside is skipped by
+     the same loose key the importer matches with; everything new lands as a
+     story marked Want to read — explicitly, because an entry with no stage
+     of its own inherits the collection's, and a finished collection would
+     have made the missing books look read. The panel can also write the
+     asking-message itself, so the chat that produces the list is one paste
+     in the other direction. */
+  function openSeriesPaste(){
+    if(panelOpen("serPaste"))return;
+    const sName=(seriesShown(cur)||cur.series||cur.title||"this series").trim();
+    const have=(cur.entries||[]).map(en=>String(en.title||"").trim()).filter(Boolean);
+    const ask=`Which books are in the “${sName}” series that I don't have yet? I already have: ${have.join("; ")||"none yet"}. Reply with ONLY the missing books, one per line, in series order, each line exactly like:\n#4 The Title\nNo other text.`;
+    const wrap=document.createElement("div");
+    wrap.id="serPaste";wrap.className="ratepanel";
+    wrap.innerHTML=`
+      <div class="hrow2" style="margin-bottom:6px"><b style="font-size:13px">The rest of the series</b>
+        <button class="btn" id="spX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+      <div class="hint" style="margin:0 0 8px">Ask Claude for the missing books, one per line as <b>#4 The Title</b>, and paste the answer here. Chatter around the list is ignored, stories you already have are skipped, and everything new arrives marked ★ Want to read.</div>
+      <button class="btn" id="spAsk" style="margin-bottom:9px">📋 Copy a message that asks for exactly this</button>
+      <textarea id="spText" placeholder="#4 The next book&#10;#5 The one after"></textarea>
+      <div class="hint" id="spSay" style="margin:8px 0 0">Nothing yet</div>
+      <div class="hrow2" style="margin-top:9px"><button class="btn pri" id="spGo" style="margin-left:auto" disabled>Add them</button></div>`;
+    document.body.appendChild(wrap);
+    const close=dismissable(wrap);wrap.__close=close;
+    const ta=q("#spText",wrap),say=q("#spSay",wrap),go=q("#spGo",wrap);
+    const parse=()=>{
+      const lines=String(ta.value).replace(/\r\n?/g,"\n").split("\n").map(s=>s.trim()).filter(Boolean);
+      const rows=[],plain=[];
+      lines.forEach(s=>{
+        const m=s.match(/^(?:#|№|book\s+|vol(?:ume)?\.?\s*)?(\d+(?:\.\d+)?)\s*[.):—–-]?\s+(.{1,200})$/i);
+        if(m)rows.push({num:parseFloat(m[1]),title:m[2].trim()});
+        else plain.push({num:null,title:s});
+      });
+      const use=rows.length?rows:plain;
+      const haveKeys=new Set((cur.entries||[]).map(en=>titleKey(en.title)));
+      const fresh=[],dup=[];
+      use.forEach(r=>{
+        if(!r.title)return;
+        (haveKeys.has(titleKey(r.title))?dup:fresh).push(r);
+      });
+      fresh.sort((a,b)=>((a.num==null?1e9:a.num)-(b.num==null?1e9:b.num)));
+      return {fresh,dup,ignored:rows.length?plain.length:0};
+    };
+    const refresh=()=>{
+      const {fresh,dup,ignored}=parse();
+      const bits=[fresh.length?`${fresh.length} new ${fresh.length===1?"story":"stories"} ready`:"Nothing new yet"];
+      if(dup.length)bits.push(`${dup.length} already inside — skipped`);
+      if(ignored)bits.push(`${ignored} line${ignored===1?"":"s"} of chatter ignored`);
+      say.textContent=bits.join(" · ");
+      go.disabled=!fresh.length;
+      go.textContent=fresh.length?`Add ${fresh.length===1?"it":"all "+fresh.length}`:"Add them";
+    };
+    ta.addEventListener("input",refresh);
+    q("#spX",wrap).onclick=()=>close();
+    q("#spAsk",wrap).onclick=async()=>{
+      try{await navigator.clipboard.writeText(ask);q("#spAsk",wrap).textContent="✓ Copied — paste it to Claude";}
+      catch(e){prompt("Copy this:",ask);}
+    };
+    go.onclick=()=>{
+      const {fresh}=parse();if(!fresh.length)return;
+      cur.entries=cur.entries||[];
+      fresh.forEach(r=>cur.entries.push(Object.assign(blankEntry(),{title:r.title,status:"want"})));
+      renderEntries();scheduleSave();close();
+    };
+    setTimeout(()=>{try{ta.focus();}catch(e){}},30);
+    refresh();
   }
   /* pick a book that has its own page and fold it into this collection */
   function openFoldPanel(){
