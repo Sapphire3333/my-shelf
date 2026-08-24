@@ -2699,14 +2699,21 @@ function flashSpot(el,label){
    with the distance, and remembered for the diagnostics copy. Silent when
    nothing moved, which is every time it has been measured here. */
 let scrapDriftLog=[];
+const scrapWobbleSaid=new Set();
 function scrapPlaces(){
   const page=q("#edPage");if(!page)return null;
   const pr=page.getBoundingClientRect();
   const w=page.offsetWidth||pr.width||1,k=(pr.width||w)/w,z=(k>0.05&&k<20)?k:1;
   const out={};
   qa("#imgLayer .scrap,#padLayer .pad",page).forEach(el=>{
+    const id=el.dataset.im||el.dataset.pad;
+    /* the drawn spot AND the stored one. They can honestly differ: a picture
+       out past the edge is CLAMPED into view at draw time (see cx), and the
+       clamp's edge shifts a few pixels between renders — the stored number
+       never moves. Only the stored number moving is the bug this hunts. */
+    const st=(cur&&[...(cur.images||[]),...(cur.pads||[])].find(o=>o.id===id))||{};
     const r=el.getBoundingClientRect();
-    out[el.dataset.im||el.dataset.pad]={x:(r.left-pr.left)/z,y:(r.top-pr.top)/z};
+    out[id]={x:(r.left-pr.left)/z,y:(r.top-pr.top)/z,sx:+st.x||0,sy:+st.y||0};
   });
   return out;
 }
@@ -2715,13 +2722,24 @@ function scrapDriftCheck(before){
   let rung=false;
   Object.keys(before).forEach(id=>{
     const a=before[id],b=now[id];if(!b)return;
+    const sdx=Math.round(b.sx-a.sx),sdy=Math.round(b.sy-a.sy);
+    if(sdx||sdy){
+      /* a STORED place changed across the toggle — the real thing, rung loud */
+      scrapDriftLog.push(`${id}: ${sdx}px across, ${sdy}px down (its saved place)`);
+      if(!rung){rung=true;
+        const el=q(`#edPage [data-im="${id}"]`)||q(`#edPage [data-pad="${id}"]`);
+        if(el)flashSpot(el,`This moved ${sdx}px across, ${sdy}px down — tell me`);}
+      return;
+    }
+    /* drawn-only wobble: the edge clamp redrawing, not a move. Said once per
+       item in the diagnostics, never rung, never scrolled to — the first
+       version rang this every toggle and dragged the owner across the page
+       to a picture they were not looking at. */
     const dx=Math.round(b.x-a.x),dy=Math.round(b.y-a.y);
-    if(Math.abs(dx)<2&&Math.abs(dy)<2)return;
-    scrapDriftLog.push(`${id}: ${dx}px across, ${dy}px down`);
-    if(rung)return;
-    rung=true;
-    const el=q(`#edPage [data-im="${id}"]`)||q(`#edPage [data-pad="${id}"]`);
-    if(el)flashSpot(el,`This moved ${dx}px across, ${dy}px down — tell me`);
+    if((Math.abs(dx)>=2||Math.abs(dy)>=2)&&!scrapWobbleSaid.has(id)){
+      scrapWobbleSaid.add(id);
+      scrapDriftLog.push(`${id}: drawn ${dx}px across, ${dy}px down of its spot — the edge clamp redrawing, its saved place unchanged`);
+    }
   });
 }
 function wireAddIn(el,commit){
@@ -5590,6 +5608,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.42",lines:[
+    "The scrapbook watchdog stops crying wolf. It was ringing a picture on every Scrapbook toggle and dragging you across the page to it — for a 3-pixel wobble in how an off-the-edge picture gets clamped into view when redrawn, while its saved place never moved. It now checks the saved place, which is the thing that can actually be lost: a real move still gets the amber ring, and the harmless redraw wobble becomes one quiet line in the diagnostics, said once, with no ring and no scrolling you anywhere."
+  ]},
   {v:"2026-08-24.41",lines:[
     "The import reads AO3 now — by way of a CSV, since AO3 itself can never be fetched. Make one with a tool like AO3Scraper and choose it like any export: fics arrive as fanfics with their fandom, relationships, characters, tags, maturity (AO3's own words, never near the 0–10 score) and a link to the work. On fics already on your shelf — the ones ReadEra brought — Fill in adds whatever of that is missing, without touching anything you wrote.",
     "Two honest omissions: a work list can't know whether YOU have read a fic, so everything stages as Want to read; and AO3 counts words while the shelf counts pages, so length is left blank rather than filed under the wrong name."
