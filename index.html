@@ -5368,6 +5368,12 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.9",lines:[
+    "Overview is five sections now, and all five are about your books: this year, how much room the shelf is taking, Tidying up, and the two ways of bringing things in. Export & import, Backups and the whole machinery of Storage moved to ⚙ Settings with the rest of the housekeeping.",
+    "Storage is in both, doing two different jobs. Overview keeps the reading — the number, the bar, the counts — because that is a thing you glance at on the way past. Settings has the same reading plus the two buttons that go looking, and the build and the diagnostics have left the card entirely for “If something looks wrong”, which is where you would go for them.",
+    "Read a ReadEra backup is above Import from Goodreads now, which is the order they actually get used in.",
+    "Tidying up stayed on Overview on purpose, against the suggestion. Duplicates are about your books rather than about the app, and Overview is the screen about your books — but say the word and it moves."
+  ]},
   {v:"2026-08-24.8",lines:[
     "A row can tell you what the book is about. Three lines of the blurb under the genres, on the phone and on the computer both, clamped so a row is the same height whatever the book had to say for itself. Your question was where it would go and whether it would make the listing too large, so here is the price, measured on a phone: none 174 pixels, one line 205, two 228, three 250, four 273. Three costs you about a book and a half a screenful.",
     "It is a setting rather than a decision — ⚙ Settings, “Blurb in the lists”, None through four lines. If three turns out to be too much on the computer where the lines are three times longer, turn it down there; it is remembered per device like the text size."
@@ -10023,6 +10029,42 @@ function renderSettings(){
       </div>
     </div>
     <div class="sec">
+      <div class="heading"><h2 class="serif">Storage</h2></div>
+      <div class="hcard" id="stoCard"><span class="none">Checking…</span></div>
+      <div class="hcard" id="stoBreak" hidden style="margin-top:9px"></div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Export &amp; import</h2></div>
+      <div class="hcard">
+        <div class="hrow2">
+          <button class="btn pri" id="expBtn" ${books.length?"":"disabled"}>⭳ Export backup file</button>
+          <button class="btn" id="impBtn">⭱ Import backup file</button>
+        </div>
+        <div class="hint" style="margin:9px 0 0">Export downloads a single .json holding every book, cover and picture — your safety net, and how you move your shelf onto another device or back into the old offline file.</div>
+        ${books.length?`<div class="hint" id="expAge" style="margin:7px 0 0${lastExport&&Date.now()-lastExport<30*864e5?"":";color:#b45309"}">${
+          lastExport?(()=>{const d=Math.floor((Date.now()-lastExport)/864e5);
+            return "Last exported backup: "+(d===0?"today":d===1?"yesterday":d+" days ago")+(d>=30?" — worth making a fresh one":"");})()
+          :"No backup has ever been exported from this browser — the automatic ones live in the same browser as your books, so they can't help if it loses them."}</div>`:""}
+      </div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Backups</h2><span class="n" id="snapN"></span>
+        <button class="btn foldbtn" data-fold="bk">${settings.bkOpen?"▾ Hide":"▸ Show"}</button></div>
+      <div class="hcard" id="fold-bk" ${settings.bkOpen?"":"hidden"}>
+        <div class="hrow2">
+          <button class="btn pri" id="bkNow" ${books.length?"":"disabled"}>＋ Back up now</button>
+          <label class="hrow2" style="font-size:13px;gap:6px"><input type="checkbox" id="autoBk" ${settings.autoBackup?"checked":""}> Automatic daily backup</label>
+          <label class="hrow2" style="font-size:13px;gap:6px;color:var(--mut)">keep last
+            <select id="keepN" class="btn" style="padding:4px 8px">${[1,2,3,5,10].map(n=>`<option value="${n}" ${settings.keepAuto===n?"selected":""}>${n}</option>`).join("")}</select>
+          </label>
+        </div>
+        <div class="hint" style="margin:9px 0 0">Backups live inside this browser. Restoring merges one back in — books you've added since are kept. For a copy you can keep somewhere safe, use Export above.</div>
+        <div class="hint" style="margin:5px 0 0">Every backup holds the covers as well as the words, so one weighs about what all your pictures weigh — a shelf of four thousand covers makes a backup of a hundred and fifty megabytes or so, where the words on their own would be three or four. That is on purpose: a backup without the pictures can't put them back. It is also why the number kept is a small one.</div>
+        <div id="bkDirBox"></div>
+        <div id="snapList"></div>
+      </div>
+    </div>
+    <div class="sec">
       <div class="heading"><h2 class="serif">If something looks wrong</h2>
         <button class="btn smallbtn" id="diagCopy" style="margin-left:auto">⧉ Copy all of it</button></div>
       <div class="hcard">
@@ -10039,6 +10081,27 @@ function renderSettings(){
    Overview. It moved here whole rather than being rewritten, so a control that
    worked there works here. */
 function wireSettings(m){
+  /* Storage, Export & import and Backups came here from Overview on the
+     owner's second look at it: managing the room is not the same job as
+     glancing at how much of it is left, and Overview keeps the glance. */
+  {const e=q("#expBtn",m);if(e)e.onclick=exportBackup;}
+  {const i=q("#impBtn",m);if(i)i.onclick=()=>q("#importFile").click();}
+  {const a=q("#autoBk",m);if(a)a.onchange=e=>{settings.autoBackup=e.target.checked;saveSettings();};}
+  {const k=q("#keepN",m);if(k)k.onchange=async e=>{settings.keepAuto=+e.target.value;saveSettings();await pruneSnapshots();refreshSnaps();};}
+  {const bn=q("#bkNow",m);if(bn)bn.onclick=async()=>{
+    const b=q("#bkNow");b.disabled=true;b.textContent="Backing up…";
+    try{await makeSnapshot(false);}catch(e){alert("Couldn't make a backup — storage may be full.");}
+    if(q("#bkNow")){q("#bkNow").disabled=false;q("#bkNow").textContent="＋ Back up now";}
+    refreshSnaps();refreshStorage();
+  };}
+  qa("[data-fold]",m).forEach(btn=>btn.onclick=()=>{
+    const k=btn.dataset.fold;
+    settings[k+"Open"]=!settings[k+"Open"];
+    saveSettings();
+    const body=q("#fold-"+k);if(body)body.hidden=!settings[k+"Open"];
+    btn.textContent=settings[k+"Open"]?"▾ Hide":"▸ Show";
+  });
+  refreshSnaps();refreshStorage();renderDirUi();
   qa("[data-bmode]",m).forEach(b=>b.onclick=()=>{
     settings.bookEdit=b.dataset.bmode==="edit";saveSettings();renderSettings();});
   qa("[data-rowsum]",m).forEach(b=>b.onclick=()=>{
@@ -10217,65 +10280,19 @@ async function renderHub(){
       <div class="hcard" id="stoCard"><span class="none">Checking…</span></div>
       <div class="hcard" id="stoBreak" hidden style="margin-top:9px"></div>
     </div>
-    <div class="sec">
-      <div class="heading"><h2 class="serif">Export &amp; import</h2></div>
-      <div class="hcard">
-        <div class="hrow2">
-          <button class="btn pri" id="expBtn" ${books.length?"":"disabled"}>⭳ Export backup file</button>
-          <button class="btn" id="impBtn">⭱ Import backup file</button>
-        </div>
-        <div class="hint" style="margin:9px 0 0">Export downloads a single .json holding every book, cover and picture — your safety net, and how you move your shelf onto another device or back into the old offline file.</div>
-        ${books.length?`<div class="hint" id="expAge" style="margin:7px 0 0${lastExport&&Date.now()-lastExport<30*864e5?"":";color:#b45309"}">${
-          lastExport?(()=>{const d=Math.floor((Date.now()-lastExport)/864e5);
-            return "Last exported backup: "+(d===0?"today":d===1?"yesterday":d+" days ago")+(d>=30?" — worth making a fresh one":"");})()
-          :"No backup has ever been exported from this browser — the automatic ones live in the same browser as your books, so they can't help if it loses them."}</div>`:""}
-      </div>
-    </div>
+    <!-- Export & import, Backups and the whole of Storage's machinery live on
+         the ⚙ tab now, with the settings that went there first. This screen
+         keeps the storage READING — the number, the bar, the counts — because
+         that is a thing you glance at, and glancing at it is not the same job
+         as managing it.
+         Tidying up stays here on purpose: duplicates are about your books, not
+         about the app, and this is the screen about your books. -->
     <div class="sec">
       <div class="heading"><h2 class="serif">Tidying up</h2><span class="n" id="dupN"></span></div>
       <div class="hcard"><div id="dupBox"><span class="none">Checking for duplicates…</span></div>
         <div id="nameDupBox"></div>
         <div id="kwDupBox"></div>
         <div id="tagDupBox"></div></div>
-    </div>
-    <!-- Appearance, Background, Saving and the account moved to the ⚙ tab.
-         They were a fold on a screen that already had thirteen sections, which
-         is why the row of jumps at the top of this page needed thirteen
-         buttons to describe it. -->
-    <div class="sec">
-      <div class="heading"><h2 class="serif">Settings</h2></div>
-      <div class="hcard"><div class="hrow2"><button class="btn pri" id="toSettings">⚙ Settings, and this device</button>
-        <span class="none" style="font-size:12px">how it looks, saving, who you are signed in as, and what to look at when something breaks</span></div></div>
-    </div>
-    <div class="sec">
-      <div class="heading"><h2 class="serif">Backups</h2><span class="n" id="snapN"></span>
-        <button class="btn foldbtn" data-fold="bk">${settings.bkOpen?"▾ Hide":"▸ Show"}</button></div>
-      <div class="hcard" id="fold-bk" ${settings.bkOpen?"":"hidden"}>
-        <div class="hrow2">
-          <button class="btn pri" id="bkNow" ${books.length?"":"disabled"}>＋ Back up now</button>
-          <label class="hrow2" style="font-size:13px;gap:6px"><input type="checkbox" id="autoBk" ${settings.autoBackup?"checked":""}> Automatic daily backup</label>
-          <label class="hrow2" style="font-size:13px;gap:6px;color:var(--mut)">keep last
-            <select id="keepN" class="btn" style="padding:4px 8px">${[1,2,3,5,10].map(n=>`<option value="${n}" ${settings.keepAuto===n?"selected":""}>${n}</option>`).join("")}</select>
-          </label>
-        </div>
-        <div class="hint" style="margin:9px 0 0">Backups live inside this browser. Restoring merges one back in — books you've added since are kept. For a copy you can keep somewhere safe, use Export below.</div>
-        <div class="hint" style="margin:5px 0 0">Every backup holds the covers as well as the words, so one weighs about what all your pictures weigh — a shelf of four thousand covers makes a backup of a hundred and fifty megabytes or so, where the words on their own would be three or four. That is on purpose: a backup without the pictures can't put them back. It is also why the number kept is a small one.</div>
-        <div id="bkDirBox"></div>
-        <div id="snapList"></div>
-      </div>
-    </div>
-    <div class="sec">
-      <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph</h2><span class="n" id="impN"></span></div>
-      <div class="hcard">
-        <div class="hrow2"><button class="btn pri" id="csvBtn">⭱ Choose an export file</button>
-          <button class="btn" id="impClear" hidden>Clear the list</button></div>
-        <div class="hint" style="margin:9px 0 0">
-          <b>Goodreads:</b> My Books → Import and Export → Export Library → download the .csv.<br>
-          <b>StoryGraph:</b> Manage Account → Manage Your Data → Export StoryGraph Library.<br>
-          Nothing is added until you pick it. Titles already on your shelf are marked and skipped.
-        </div>
-        <div id="impList"></div>
-      </div>
     </div>
     <div class="sec">
       <div class="heading"><h2 class="serif">Read a ReadEra backup</h2></div>
@@ -10293,6 +10310,19 @@ async function renderHub(){
         <div id="reShare"></div>
         <div id="reOut"></div>
         <div class="bgpanel" id="qfromPanel" hidden></div>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph</h2><span class="n" id="impN"></span></div>
+      <div class="hcard">
+        <div class="hrow2"><button class="btn pri" id="csvBtn">⭱ Choose an export file</button>
+          <button class="btn" id="impClear" hidden>Clear the list</button></div>
+        <div class="hint" style="margin:9px 0 0">
+          <b>Goodreads:</b> My Books → Import and Export → Export Library → download the .csv.<br>
+          <b>StoryGraph:</b> Manage Account → Manage Your Data → Export StoryGraph Library.<br>
+          Nothing is added until you pick it. Titles already on your shelf are marked and skipped.
+        </div>
+        <div id="impList"></div>
       </div>
     </div>
     </div>`;
@@ -10366,16 +10396,6 @@ async function renderHub(){
     btn.textContent=settings[k+"Open"]?"▾ Hide":"▸ Show";
   });
   refreshDupes();refreshNameDupes();refreshKwDupes();refreshTagDupes();
-  q("#expBtn").onclick=exportBackup;
-  q("#impBtn").onclick=()=>q("#importFile").click();
-  q("#autoBk").onchange=e=>{settings.autoBackup=e.target.checked;saveSettings();};
-  q("#keepN").onchange=async e=>{settings.keepAuto=+e.target.value;saveSettings();await pruneSnapshots();refreshSnaps();};
-  q("#bkNow").onclick=async()=>{
-    const b=q("#bkNow");b.disabled=true;b.textContent="Backing up…";
-    try{await makeSnapshot(false);}catch(e){alert("Couldn't make a backup — storage may be full.");}
-    if(q("#bkNow")){q("#bkNow").disabled=false;q("#bkNow").textContent="＋ Back up now";}
-    refreshSnaps();refreshStorage();
-  };
   q("#csvBtn").onclick=()=>q("#csvFile").click();
   {const rb=q("#reBtn");if(rb)rb.onclick=()=>q("#reFile").click();renderShareHint();renderReadEra();}
   q("#impClear").onclick=()=>{
@@ -10384,7 +10404,7 @@ async function renderHub(){
   };
   /* the bin has moved to History; Overview only needs to know how many are in
      it, which the tab's own button shows */
-  refreshSnaps();refreshStorage();countTrash();refreshImport();renderDirUi();
+  refreshStorage();countTrash();refreshImport();
   addPageToc(m);
 }
 
@@ -12120,11 +12140,13 @@ async function refreshStorage(){
   const bkWarn=window.__backupFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The automatic backup could not be made — storage may be full. Export a backup file now to be safe.</div>':"";
   /* which build this device is actually running — so a "nothing changed" report
      can carry the build's name, instead of us guessing about caches */
-  const buildLine=`<div class="none" style="font-size:11px;margin-top:5px;opacity:.7">Build ${esc(window.APP_VERSION||"unknown")}</div>`;
+  /* Build, tuning and the cover tallies moved to Settings, under "If something
+     looks wrong" — this card is the reading, not the report. */
+  const buildLine="";
   /* what the background did to the quiet text — so "it still blends in" can be
      answered with the numbers instead of another guess */
   const ti=window.__tuneInfo;
-  const tuneLine=ti?`<div class="none" style="font-size:11px;margin-top:3px;opacity:.7">
+  const tuneLine=false?`<div class="none" style="font-size:11px;margin-top:3px;opacity:.7">
     Text over the background, last tuned: hardest patch ${esc(ti.worst)}, quiet greys turned ${esc(ti.mut)} / ${esc(ti.faint)} (contrast ${esc(String(ti.contrast))}:1).</div>`:"";
   /* Where the last shelf-full of pictures actually came from. "My covers are
      gone after a reload" is not reproducible on any machine but theirs, so the
@@ -12139,7 +12161,7 @@ async function refreshStorage(){
       ${s.story} a story's own. ${s.waiting} waiting on sign-in, ${s.none} with none.
       Syncing was ${esc(s.sync)}.</div>`;
   };
-  const covLine=covOne(cs,"This screen")+covOne(coverStatsPrev,"The screen before");
+  const covLine="";
   const dirWarn=window.__dirBkFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The daily backup could not be written into your backup folder — it may have been moved or deleted. Open Backups below to reconnect it.</div>':"";
   /* asked for rather than done: measuring means reading every picture off the
      disk, which is not something to do each time you glance at this screen */
@@ -12148,7 +12170,7 @@ async function refreshStorage(){
      this screen, which built the panel closed again and threw the measurement
      away with it. So every press shut the thing you were reading and charged you
      another measurement to get back to it. */
-  const breakBtn=`<div class="hrow2" style="margin-top:8px"><button class="btn" id="stoBreakBtn">${sizeOpen?"▾ Hide the breakdown":"🔎 What's using the room"}</button>
+  const breakBtn=view!=="settings"?"":`<div class="hrow2" style="margin-top:8px"><button class="btn" id="stoBreakBtn">${sizeOpen?"▾ Hide the breakdown":"🔎 What's using the room"}</button>
     <button class="btn" id="stoHuntBtn" title="Ask the browser for its own account of the room, which need not agree with ours">🕵 Where the browser thinks it went</button></div>
     <div id="stoHunt" class="none" style="font-size:11.5px;margin-top:6px;line-height:1.6"${huntReport?"":" hidden"}>${huntReport||""}</div>`;
   if(si&&si.quota){
