@@ -2595,6 +2595,7 @@ const LINK_SITES=[
   [/(^|\.)amazon\./,"🛒","Amazon"],
   [/(^|\.)goodreads\.com/,"📖","Goodreads"],
   [/(^|\.)thestorygraph\.com/,"📊","StoryGraph"],
+  [/(^|\.)hardcover\.app/,"📙","Hardcover"],
   [/(^|\.)openlibrary\.org/,"📗","Open Library"],
   [/(^|\.)dropbox\.com/,"📦","Dropbox"],
   [/(^|\.)onedrive\.live\.com|(^|\.)1drv\.ms/,"☁️","OneDrive"],
@@ -5619,6 +5620,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-25.1",lines:[
+    "Auto-fill has a third voice: Hardcover, the reader-run Goodreads alternative — and it is the one that knows the moods. One ask brings its blurb, genres, moods, tags, content warnings, pages, year, cover, a link to the book's Hardcover page, and the series with the book's number in it, which the panel now offers as its own Use-as-series button. Because Hardcover's rules forbid a web page asking directly, the asking goes through your own Supabase, where the key lives as a secret — a one-time setup, with the steps written in the new hardcover-function.ts file. Until that's done, nothing changes: the other two sources carry on alone.",
+    "And so you can judge whether Hardcover deserves to be asked first: the lookup panel now ends with a line per source saying what each one actually contributed — blurbs, genres, moods, covers, counted — for the same book, side by side."
+  ]},
   {v:"2026-08-24.43",lines:[
     "The cover-size slider stops sliding itself smaller while you hold it. The measured-pixels half of its readout vanished the moment you started dragging, the label shrank, and the track — pinned to the row's edge — slid rightwards under your held thumb, which the browser read as you turning it down. Both numbers now stay put through the whole drag (the pixel one is still true mid-drag, since covers only resize when you let go), and the label keeps one fixed width so nothing near your finger can move."
   ]},
@@ -8451,7 +8456,7 @@ async function openBulkFill(ids){
   }
   const S={stage:"setup",fields:{cover:true,author:true,pages:true,blurb:true,isbn:true},
            straight:false,done:0,total:0,now:"",filled:0,failedCovers:[],
-           stopped:false,capped:0,gDown:0,oDown:0};
+           stopped:false,capped:0,gDown:0,oDown:0,hDown:0};
   let stop=false,busy=false;
   const sheet=document.createElement("div");
   sheet.id="bulkSheet";
@@ -8608,7 +8613,7 @@ async function openBulkFill(ids){
     if(busy)return;
     busy=true;
     try{
-    S.stage="running";S.done=0;S.gDown=0;S.oDown=0;stop=false;S.stopped=false;
+    S.stage="running";S.done=0;S.gDown=0;S.oDown=0;S.hDown=0;stop=false;S.stopped=false;
     const todo=[];
     groups.forEach(g=>g.jobs.forEach(j=>{j.row=null;if(j.needs.length)todo.push(j);}));
     S.capped=Math.max(0,todo.length-BULK_CAP);
@@ -8643,6 +8648,7 @@ async function openBulkFill(ids){
       j.row=weigh(j,info,!!ask);
       if(info.gErr)S.gDown++;
       if(info.oErr)S.oDown++;
+      if(info.hErr)S.hDown++;
     }
     /* Four askers sharing one list, each taking the next book the moment it is
        free. The count climbs when a book is FINISHED, not when it is begun —
@@ -8983,9 +8989,10 @@ async function openBulkFill(ids){
       const on=liveJobs();
       inner.innerHTML=head("Found for "+plural(usable.length,"book"))+`
         <div class="hint" style="margin:0 0 4px">${S.stopped?"Stopped early. ":""}Nothing is written until you press the button at the bottom.</div>
-        ${(S.gDown||S.oDown)?`<div class="bs-w" style="margin:0 0 7px">${
+        ${(S.gDown||S.oDown||S.hDown)?`<div class="bs-w" style="margin:0 0 7px">${
           S.gDown?`<b>Google Books didn't answer</b> for ${S.gDown} of ${S.asked} — its shared quota runs dry most days. That is where the blurbs and the tidy genres come from, so this run is thinner than it would otherwise be${S.oDown?"; ":". "}`:""}${
-          S.oDown?`<b>Open Library didn't answer</b> for ${S.oDown} of ${S.asked}. `:""}Nothing is lost by running it again later — only blanks are filled, so a second pass adds what a first one missed.</div>`:""}
+          S.oDown?`<b>Open Library didn't answer</b> for ${S.oDown} of ${S.asked}. `:""}${
+          S.hDown?`<b>Hardcover didn't answer</b> for ${S.hDown} of ${S.asked} — the moods come from it. `:""}Nothing is lost by running it again later — only blanks are filled, so a second pass adds what a first one missed.</div>`:""}
         <div class="bs-list" id="bsList">${groups.map((g,gi)=>{
           if(!g.coll)return jobRow(g,gi,g.jobs[0],0);
           const asked=g.jobs.filter(j=>j.needs.length).length;
@@ -17533,10 +17540,18 @@ function renderEditor(){
         <div>${newTags.map(t=>`<button class="mg" data-fpt="${esc(t)}"><span class="bx"></span>${esc(t)}</button>`).join("")}</div>
         <button class="btn" id="fpTags" style="margin-top:6px" disabled>Add ticked as keywords</button>`:""}
       ${showPages?`<div style="margin-top:11px"><button class="btn" id="fpPages">Set pages to ${info.pages}</button></div>`:""}
+      ${info.series&&!en&&!isColl(cur)&&!String(cur.series||"").trim()?`<div style="margin-top:11px">
+        <div class="lbl" style="display:block;margin-bottom:3px">Series — Hardcover's answer</div>
+        <div style="font-size:13px;margin-bottom:5px;overflow-wrap:anywhere">${esc(info.series.name)}${info.series.pos?` · book ${esc(info.series.pos)}`:""}</div>
+        <button class="btn" id="fpSer">Use as series</button></div>`:""}
       <div class="hint" style="margin:11px 0 0">Found via ${info.source.join(" & ")}${info.year?` · first published ${esc(info.year)}`:""}. Nothing is applied until you press a button.${
         /* the wait, with names on it — twenty silent seconds turned out to be
            one site's timeouts, and nothing on screen said whose */
-        (probe.times||[]).length?`<br>${probe.times.map(t=>esc(`${t.what} ${t.ok?"answered":"didn't answer"} in ${(t.ms/1000).toFixed(1)}s${t.note?" — "+t.note:""}`)).join(" · ")}`:""}</div>
+        (probe.times||[]).length?`<br>${probe.times.map(t=>esc(`${t.what} ${t.ok?"answered":"didn't answer"} in ${(t.ms/1000).toFixed(1)}s${t.note?" — "+t.note:""}`)).join(" · ")}`:""}${
+        /* the side-by-side: what each source actually contributed to THIS
+           book. This line is how the asking order gets decided — with more
+           than one source answering there is a comparison worth reading. */
+        (info.per||[]).length>1?`<br>${info.per.map(p=>esc(`${p.src}: ${p.bits.join(", ")||"nothing the others lacked"}`)).join("<br>")}`:""}</div>
       ${(info.links||[]).length?`<div class="lbl" style="display:block;margin:9px 0 4px">Read more about it</div>
         <div style="display:flex;flex-wrap:wrap;gap:6px">${info.links.map(l=>
           `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener" style="text-decoration:none;padding:4px 10px;font-size:12px">${esc(l.name)} ↗</a>`).join("")}</div>`:""}`;
@@ -17650,6 +17665,15 @@ function renderEditor(){
         });
         renderEntries();scheduleSave();
       }else tagSel.forEach(addKw);
+      /* Hardcover's content warnings go in as tags but are also filed under
+         the Warnings family the AO3 import built, so they arrive with its
+         colour and gather together wherever tags are listed */
+      let warned=0;
+      if(info.warnTags)tagSel.forEach(t=>{
+        const v=String(t).trim();
+        if(info.warnTags.has(v.toLowerCase())){fileUnder(titleCase(v),WARN_FAMILY,WARN_COLOR);warned++;}
+      });
+      if(warned){saveMeta();renderKw();}
       ft.textContent=`Added ${n} ✓`;ft.disabled=true;tagSel.clear();
       return n;
     };
@@ -17684,6 +17708,20 @@ function renderEditor(){
       }
       scheduleSave();
       fp.textContent="Pages set ✓";fp.disabled=true;
+      return true;
+    };
+    const applySeries=()=>{
+      const fb=q("#fpSer",box);
+      if(!fb||fb.disabled||!info.series)return false;
+      cur.series=info.series.name;
+      /* only fill the number in where the answer carried one — a blank must
+         never write over a number you typed yourself */
+      if(info.series.pos&&!String(cur.seriesNum||"").trim())cur.seriesNum=info.series.pos;
+      /* a book in a series is not a standalone, and the form draws no series
+         boxes at all until it knows that — the same step the fic panel takes */
+      if(typeOf(cur)==="standalone")cur.type="series";
+      renderSeries();scheduleSave();
+      fb.textContent="Series set ✓";fb.disabled=true;
       return true;
     };
     const applySummary=()=>{
@@ -17778,6 +17816,7 @@ function renderEditor(){
     wire("fpTitle",applyTitle);
     wire("fpAuth",applyAuthor);
     wire("fpPages",applyPages);
+    wire("fpSer",applySeries);
     wire("fpCover",applyCover);
     /* the one place the question is still asked singly: pressed on its own, the
        blurb button is the only one that can silently overwrite something long */
@@ -22399,18 +22438,22 @@ async function importCollection(items,name){
    API — this is the honest way to auto-fill a blurb, tags, pages and a cover. */
 /* Both sites are free and busy: they time out, rate-limit and hiccup. One attempt
    made Auto-fill look broken when it was only unlucky, so give it a few goes. */
-async function fetchJson(url,tries,ms){
+async function fetchJson(url,tries,ms,opts){
   let last=null;
   for(let i=0;i<(tries||3);i++){
     const ac=typeof AbortController==="function"?new AbortController():null;
     const t=ac?setTimeout(()=>ac.abort(),ms||9000):null;
     try{
-      const r=await fetch(url,ac?{signal:ac.signal}:undefined);
+      const r=await fetch(url,Object.assign({},opts||{},ac?{signal:ac.signal}:{}));
       if(t)clearTimeout(t);
       if(r.status===429||r.status>=500)last=new Error("busy ("+r.status+")");
       /* a 403 is Google saying "quota" — parsing its error body used to come back
          as a normal answer with no items, which read as "nothing found" */
-      else if(!r.ok){last=new Error("refused ("+r.status+")");break;}
+      else if(!r.ok){
+        /* the body usually names the reason — "invalid token", "function not
+           found" — and a refusal that can't say why leaves everybody guessing */
+        let why="";try{const j=await r.json();why=String(j.error_description||j.error||j.message||"").slice(0,120);}catch(e){}
+        last=new Error("refused ("+r.status+")"+(why?": "+why:""));break;}
       else return await r.json();
     }catch(e){if(t)clearTimeout(t);last=e;}
     if(i<(tries||3)-1)await new Promise(s=>setTimeout(s,700*(i+1)));
@@ -22455,6 +22498,70 @@ const googleDry=()=>Date.now()<GDRY.until;
 function noteGoogleDry(e){
   if(/\((429|403)\)/.test(String(e&&e.message||"")))GDRY.until=Date.now()+10*60*1000;
 }
+/* ---- Hardcover, by way of your own Supabase --------------------------
+   Hardcover's rules allow its API to be spoken to from servers, never from a
+   web page — so the app never holds the key and never asks Hardcover
+   directly. A small function deployed once into the same Supabase project
+   the shelf already syncs through (the code and the steps are in
+   hardcover-function.ts, next to this file) keeps the key as a secret and
+   passes one book search through per ask. No Supabase, or no function
+   deployed yet — the other two sources simply carry on alone, and the
+   lookup panel says why Hardcover didn't answer. */
+const hardcoverOn=()=>syncConfigured();
+/* Hardcover refills at one request a second, with a burst of ten. The bulk
+   sheet asks faster than that, so every ask passes through this gate: spaced
+   out, they all land; fired at the sheet's own pace, everything past the
+   first burst would be a 429, and what Hardcover alone brings — the moods —
+   is exactly what a throttled run loses. */
+let hcNext=0;
+async function hcSlot(){
+  const now=Date.now(),wait=Math.max(0,hcNext-now);
+  hcNext=Math.max(now,hcNext)+1100;
+  if(wait)await new Promise(r=>setTimeout(r,wait));
+}
+async function fetchHardcover(title,author,isbn){
+  await hcSlot();
+  /* one Typesense search is the whole conversation: its book documents carry
+     the blurb, the top genres/moods/tags/warnings, pages, year, isbns, cover,
+     series and slug all at once, so no second request is ever needed */
+  const ask=isbn?String(isbn):title+(author?" "+author:"");
+  const base=String(CFG.url||"").replace(/\/+$/,"");
+  const j=await fetchJson(base+"/functions/v1/hardcover",2,9000,{
+    method:"POST",
+    headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+CFG.anonKey},
+    body:JSON.stringify({query:ask})});
+  /* a GraphQL failure arrives as a 200 with an errors list inside it */
+  if(j&&j.errors&&j.errors.length)throw new Error(String(j.errors[0].message||"query refused").slice(0,120));
+  let res=j&&j.data&&j.data.search&&j.data.search.results;
+  if(typeof res==="string"){try{res=JSON.parse(res);}catch(e){res=null;}}
+  const hits=((res&&res.hits)||[]).map(h=>h&&(h.document||h)).filter(Boolean);
+  if(!hits.length)return {ok:false,why:"but it doesn't know this one"};
+  const words=v=>(Array.isArray(v)?v:[]).map(x=>typeof x==="string"?x:String((x&&(x.tag||x.name))||"")).map(s=>s.trim()).filter(Boolean);
+  const wanted=cleanIsbn(isbn);
+  /* the hit has to BE the book asked about — by number that means carrying
+     the number, by title that means answering to the title. Moods and
+     warnings from somebody else's book are worse than none. */
+  const doc=wanted
+    ?hits.find(d=>words(d.isbns).some(x=>cleanIsbn(x)===wanted))
+    :hits.find(d=>titleSame(title,String(d.title||"")));
+  if(!doc)return {ok:false,why:"only offered “"+String((hits[0]||{}).title||"").slice(0,60)+"” — a different book, refused"};
+  const fs=doc.featured_series||{};
+  const sName=String(fs.series_name||(fs.series&&fs.series.name)||fs.name
+    ||(Array.isArray(doc.series_names)?doc.series_names[0]:"")||"").trim();
+  const sPos=doc.featured_series_position||fs.position||"";
+  const ns=words(doc.isbns).map(cleanIsbn).filter(Boolean);
+  const img=doc.image;
+  return {ok:true,
+    title:String(doc.title||"").trim()+(doc.subtitle?": "+String(doc.subtitle).trim():""),
+    author:words(doc.author_names).join(", "),
+    blurb:stripHtml(String(doc.description||"")).trim(),
+    genres:words(doc.genres),moods:words(doc.moods),tags:words(doc.tags),warnings:words(doc.content_warnings),
+    pages:parseInt(doc.pages)||"",year:doc.release_year?String(doc.release_year).slice(0,4):"",
+    isbn:ns.find(x=>x.length===13)||ns.find(x=>x.length===10)||"",
+    cover:String((img&&typeof img==="object"?img.url:img)||"").trim(),
+    slug:String(doc.slug||"").trim(),
+    series:sName,seriesPos:sPos?String(sPos):""};
+}
 /* `probe`, when given, is filled in with what was actually asked — but only on
    the way out of a failure, so it costs nothing when a book is found.
    `quick` drops the one request that is a request of its own — Open Library's
@@ -22471,8 +22578,8 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      else the title is what you searched BY, so nothing ever read it back. Asked
      by number there is nothing on screen to name the book with. */
   const out={title:"",author:"",summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
-    blurbs:[],genres:[],gCovers:[]};
-  let gErr=false,oErr=false;
+    blurbs:[],genres:[],gCovers:[],hcCover:"",series:null,per:[]};
+  let gErr=false,oErr=false,hErr=false;
   /* Both sites are asked at the same moment, and neither is given as long to
      answer. They used to be asked one after the other, each with three
      attempts at a nine-second wait — so a Google that simply hung meant half a
@@ -22495,9 +22602,13 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   const oP=fetchJson("https://openlibrary.org/search.json?limit=3&fields=key,title,subject,isbn,cover_i,number_of_pages_median,first_publish_year,author_name&"
     +(isbn?"q="+encodeURIComponent(isbn)
     :"title="+encodeURIComponent(title)+(author?"&author="+encodeURIComponent(author):"")),2,6000);
-  /* both are awaited below; this only stops a rejection being called unhandled
-     while the other one is still being waited on */
-  gP.catch(()=>{});oP.catch(()=>{});
+  /* the third voice — asked at the same moment as the other two, through the
+     owner's own Supabase, and only where one is configured at all */
+  const hOn=hardcoverOn();
+  const hP=hOn?fetchHardcover(title,author,isbn):null;
+  /* all are awaited below; this only stops a rejection being called unhandled
+     while another one is still being waited on */
+  gP.catch(()=>{});oP.catch(()=>{});if(hP)hP.catch(()=>{});
   /* Each site's own settling moment, stamped as it happens — measuring at the
      `await` below would charge the second one waited on for the first one's
      time. This is the readout that turned "auto-fill took twenty seconds and
@@ -22506,6 +22617,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   const stamp={};
   gP.then(()=>stamp.g=performance.now()-t0,()=>stamp.g=performance.now()-t0);
   oP.then(()=>stamp.o=performance.now()-t0,()=>stamp.o=performance.now()-t0);
+  if(hP)hP.then(()=>stamp.h=performance.now()-t0,()=>stamp.h=performance.now()-t0);
   /* `say` was taken — it feeds probe.asked further down. This one feeds the
      timings. */
   const tell=(what,ms,ok,note)=>{if(probe)(probe.times=probe.times||[]).push({what,ms:Math.round(ms||0),ok:!!ok,note:note||""});};
@@ -22553,6 +22665,19 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
       if(u)out.gCovers.push(u);
       (v.categories||[]).forEach(c=>String(c).split("/").forEach(p=>{const t=p.trim();if(t)out.genres.push(t);}));
     });
+    /* what Google alone put on the table, counted while the pile is still
+       only Google's — this is the line that lets the three sources be judged
+       against each other on the same book */
+    if(items.length){
+      const bits=[];
+      if(out.blurbs.length)bits.push(out.blurbs.length>1?out.blurbs.length+" blurbs":"a blurb");
+      if(out.genres.length)bits.push(out.genres.length+" genres");
+      if(out.pages)bits.push("pages");
+      if(out.year)bits.push("year");
+      if(out.isbn)bits.push("ISBN");
+      if(out.gCovers.length)bits.push(out.gCovers.length>1?out.gCovers.length+" covers":"a cover");
+      out.per.push({src:"Google Books",bits});
+    }
     /* answering is not the same as knowing: an empty answer for an ISBN reads
        as "answered in 1.0s" and then a panel with nothing of Google's in it,
        which looks like a contradiction unless it says this */
@@ -22560,6 +22685,50 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   }catch(e){gErr=true;noteGoogleDry(e);
     tell("Google Books",stamp.g,false,
       /not asked again yet/.test(String(e&&e.message||""))?"being rested after a refusal — skipped, not slow":"");}
+  /* Hardcover's answer, awaited second so its blurb can spare a bulk run Open
+     Library's extra request. It fills whatever Google left empty and adds the
+     things neither of the others has at all: moods, top tags, content
+     warnings, and the series with the book's number in it. */
+  if(hP)try{
+    const h=await hP;
+    if(!h.ok)tell("Hardcover",stamp.h,true,h.why);
+    else{
+      const bits=[];
+      if(h.blurb&&h.blurb.length>40){out.blurbs.push({text:h.blurb,from:"Hardcover"});bits.push("a blurb");}
+      if(!out.summary&&h.blurb)out.summary=h.blurb;
+      if(h.genres.length){out.genres.push(...h.genres);bits.push(h.genres.length+" genres");}
+      if(h.moods.length){out.tags.push(...h.moods);bits.push(h.moods.length+" moods");}
+      if(h.tags.length){out.tags.push(...h.tags);bits.push(h.tags.length+" tags");}
+      /* warnings ride along as tags, but marked — so applying one also files
+         it under the Warnings family AO3's import built, colour and all */
+      if(h.warnings.length){
+        out.tags.push(...h.warnings);
+        out.warnTags=new Set(h.warnings.map(w=>w.toLowerCase()));
+        bits.push(h.warnings.length+(h.warnings.length>1?" warnings":" warning"));
+      }
+      if(!out.author&&h.author)out.author=h.author;
+      if(!out.title&&h.title)out.title=h.title;
+      if(!out.pages&&h.pages)out.pages=h.pages;
+      if(h.pages)bits.push("pages");
+      if(!out.year&&h.year)out.year=h.year;
+      if(h.year)bits.push("year");
+      if(!out.isbn&&h.isbn)out.isbn=h.isbn;
+      if(h.isbn)bits.push("ISBN");
+      if(h.cover){out.hcCover=h.cover;bits.push("a cover");}
+      if(h.series){out.series={name:h.series,pos:h.seriesPos};bits.push("series"+(h.seriesPos?" #"+h.seriesPos:""));}
+      if(h.slug)out.links.push({name:"Hardcover",url:"https://hardcover.app/books/"+h.slug});
+      out.source.push("Hardcover");
+      out.per.push({src:"Hardcover",bits});
+      tell("Hardcover",stamp.h,true);
+    }
+  }catch(e){hErr=true;
+    /* a function that was never deployed dies as a bare "Failed to fetch" —
+       the browser's name for a door with nobody behind it. Said like that it
+       reads as a broken network; said properly it names the one-time setup. */
+    const hm=String(e&&e.message||"");
+    tell("Hardcover",stamp.h,false,/failed to fetch/i.test(hm)
+      ?"nothing answered at your Supabase — if the one-time setup in hardcover-function.ts hasn't been done yet, this is just that"
+      :hm.slice(0,90));}
   try{
     /* subjects only come back when asked for explicitly via `fields` — the
        asking already started, alongside Google's, up at the top */
@@ -22618,6 +22787,15 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
         }catch(e){out.blurbMissed=true;
           tell("its blurb request",performance.now()-tB,false);}
       }
+      /* Open Library's own column in the per-source line */
+      {const bits=[];
+      const nsub=(d.subject||[]).length;if(nsub)bits.push(nsub+" tags");
+      if(out.blurbs.some(b2=>b2.from==="Open Library"))bits.push("a blurb");
+      if(d.number_of_pages_median)bits.push("pages");
+      if(d.first_publish_year)bits.push("year");
+      if((d.isbn||[]).length)bits.push("ISBN");
+      if(out.olCovers.length)bits.push(out.olCovers.length>1?out.olCovers.length+" covers":"a cover");
+      out.per.push({src:"Open Library",bits});}
     }
   }catch(e){oErr=true;tell("Open Library",stamp.o,false);}
   out.tags=dedupeWords(out.tags.flatMap(tidySubject)).filter(t=>t.length<=30).slice(0,15);
@@ -22646,9 +22824,13 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
     out.links.push({name:"StoryGraph — search",url:"https://app.thestorygraph.com/browse?search_term="+encodeURIComponent(title||term)});
   }
   const isbnForCover=isbnLink;
+  /* Hardcover's cover sits between the two: its host is untested for
+     downloads, so Open Library's — which are known to allow them — go first,
+     and Google's known refusers stay last */
   out.covers=[out.olCover,
     isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
     ...(out.olCovers||[]),
+    out.hcCover||"",
     ...out.gCovers].filter((u,i,a)=>u&&a.indexOf(u)===i).slice(0,6);
   /* the title and the author count as something found. Asked by ISBN, a thin
      record with nothing but those two was being thrown away as "not found". */
@@ -22657,7 +22839,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      thinner — no Google means no Google blurb, no tidy categories — and nothing
      anywhere said so, which is indistinguishable from the books simply being
      thin. Now the run can count it and tell you. */
-  out.gErr=gErr;out.oErr=oErr;
+  out.gErr=gErr;out.oErr=oErr;out.hErr=hErr;
   if(out.summary||out.tags.length||out.pages||out.covers.length||out.title||out.author){
     /* A title-only ask has nothing corroborating it, so it has to earn the
        answer. Searching "Beware of the Ghost" without an author returned
@@ -22677,6 +22859,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   const say=s=>{if(probe)(probe.asked=probe.asked||[]).push(s);};
   say(`Google Books · ${qs}${gErr?" · no answer at all (out of quota, or offline)":" · nothing matched"}`);
   say(`Open Library · ${isbn?"isbn "+isbn:`title “${title}”${author?`, author “${author}”`:""}`}${oErr?" · no answer at all":" · nothing matched"}`);
+  if(hOn)say(`Hardcover · ${isbn?"isbn "+isbn:`“${title}”${author?" "+author:""}`}${hErr?" · no answer at all":" · nothing matched"}`);
   /* And ask again without the author. The author is a hard constraint at both
      sites — Google's inauthor:"…" and Open Library's author= each demand a
      match — so a collection whose author is a series name, a publisher, or
@@ -22684,7 +22867,9 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      title into nothing at all. One extra request, only ever after a failure,
      and it cannot loop: the second ask carries no author to drop. */
   if(!isbn&&author&&!loose)return fetchBookInfo(title,"",isbn,probe,true,quick);
-  if(gErr&&oErr)throw new Error("unreachable");
+  /* "unreachable" only when everything that was asked failed — a Hardcover
+     that answered and simply knew nothing means the network is fine */
+  if(gErr&&oErr&&(!hOn||hErr))throw new Error("unreachable");
   return null;
 }
 /* ---- a sharper copy of a cover you already have ----------------------
