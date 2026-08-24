@@ -2641,6 +2641,41 @@ function flashSpot(el,label){
   el.scrollIntoView({behavior:"smooth",block:"center"});
   setTimeout(()=>ring.remove(),2600);
 }
+/* ---- the scrapbook drift watchdog ----
+   "My pictures shift when I go in and out of Arrange." Everything measurable
+   here said no stored number changes across that toggle — the jump that WAS
+   measurable was the strip arriving above the page while the scroll stayed
+   put (compensated beside #vArr now). But their screen outranks this rig, so
+   the toggle checks itself: every loose item's place against the page is
+   taken before and after, and one that really moved is rung where it stands,
+   with the distance, and remembered for the diagnostics copy. Silent when
+   nothing moved, which is every time it has been measured here. */
+let scrapDriftLog=[];
+function scrapPlaces(){
+  const page=q("#edPage");if(!page)return null;
+  const pr=page.getBoundingClientRect();
+  const w=page.offsetWidth||pr.width||1,k=(pr.width||w)/w,z=(k>0.05&&k<20)?k:1;
+  const out={};
+  qa("#imgLayer .scrap,#padLayer .pad",page).forEach(el=>{
+    const r=el.getBoundingClientRect();
+    out[el.dataset.im||el.dataset.pad]={x:(r.left-pr.left)/z,y:(r.top-pr.top)/z};
+  });
+  return out;
+}
+function scrapDriftCheck(before){
+  const now=scrapPlaces();if(!before||!now)return;
+  let rung=false;
+  Object.keys(before).forEach(id=>{
+    const a=before[id],b=now[id];if(!b)return;
+    const dx=Math.round(b.x-a.x),dy=Math.round(b.y-a.y);
+    if(Math.abs(dx)<2&&Math.abs(dy)<2)return;
+    scrapDriftLog.push(`${id}: ${dx}px across, ${dy}px down`);
+    if(rung)return;
+    rung=true;
+    const el=q(`#edPage [data-im="${id}"]`)||q(`#edPage [data-pad="${id}"]`);
+    if(el)flashSpot(el,`This moved ${dx}px across, ${dy}px down — tell me`);
+  });
+}
 function wireAddIn(el,commit){
   if(!el)return;
   el.setAttribute("enterkeyhint","done");
@@ -5493,6 +5528,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.30",lines:[
+    "Pictures stop “shifting” when you go in and out of Arrange on a PC. They never actually moved — the scrapbook bar arrives above the page and pushed everything down about two centimetres while your scroll stayed put, so the picture under your eye jumped. The scroll now rides along: whatever you were looking at stays exactly where you were looking, opening, closing, and when the draw bar grows the strip.",
+    "And in case something really does move on your machine that mine cannot reproduce: the toggle now watches every picture and note across itself, and one that truly changes place gets the amber ring on the spot with the distance — plus a line in Settings → If something looks wrong that Copy will carry to me."
+  ]},
   {v:"2026-08-24.29",lines:[
     "The book page's facts stand in one filing card now — your pick from the mock. Length, when you read it, how many times, maturity, ISBN: gathered into a single card under the title, washed and inked with the book's leading genre so the card and the chip below it visibly belong together. The three date lines became one: “Read · 3–19 Aug 2026 · 2 times”.",
     "And the story rows you edit inside a collection stop cutting the author off — your other pick. On a phone, Status, Author and ISBN each take a whole line with the writing given all of it, and the little buttons pair up two to a line underneath. On a PC the rows keep sharing lines as before."
@@ -10215,6 +10254,10 @@ function tuneDiagnostics(){
     })(),
     ti?("Text over the background, last tuned: hardest patch "+ti.worst+", quiet greys turned "
       +ti.mut+" / "+ti.faint+" (contrast "+ti.contrast+":1)."):"",
+    /* the scrapbook drift watchdog's memory — empty means every toggle it has
+       watched left every picture and note exactly where it stood */
+    scrapDriftLog.length?("A picture or note MOVED crossing the Scrapbook toggle: "
+      +scrapDriftLog.slice(-6).join(" · ")+(scrapDriftLog.length>6?" · …":"")):"",
     covOne(prev,"The screen before"),
     covOne(cs,"This screen")
   ].filter(Boolean);
@@ -15618,8 +15661,20 @@ function renderBookView(){
   /* offsetHeight, NOT the rect: --sbh is read by a rule inside the zoomed page,
      so it has to be in the page's own pixels. The rect would hand it screen ones
      and put the bar a third too low at 130% — the same two-rulers mistake. */
-  const setSbh=()=>document.documentElement.style.setProperty("--sbh",
-    (strip&&document.body.contains(strip)?strip.offsetHeight:0)+"px");
+  /* prevStripH: the draw bar opening (or the row wrapping) also grows the
+     strip in place, which shoves the page down under a scroll that stays put
+     — the same 2cm jump the open/close toggle had. The scroll rides the
+     change here too. Rect height, not offsetHeight: scrollBy speaks screen
+     pixels, and the strip lives inside the zoomed page. */
+  let prevStripH=null;
+  const setSbh=()=>{
+    const there=strip&&document.body.contains(strip);
+    document.documentElement.style.setProperty("--sbh",(there?strip.offsetHeight:0)+"px");
+    const h=there?strip.getBoundingClientRect().height:0;
+    if(prevStripH!=null&&window.scrollY>0&&Math.abs(h-prevStripH)>1)
+      window.scrollBy(0,h-prevStripH);
+    prevStripH=h;
+  };
   setSbh();
   if(strip&&window.ResizeObserver){window.__sbRO=new ResizeObserver(setSbh);window.__sbRO.observe(strip);}
   const vs=q("#vStray");
@@ -15706,6 +15761,13 @@ function renderBookView(){
      catch(e){alert(txt.slice(0,1400));}
    };}
   q("#vArr").onclick=()=>{
+    const fitWas=fitScreen;
+    /* where everything stood, before anything changes — for the watchdog */
+    const before=fitWas?null:scrapPlaces();
+    /* the strip's height has to be taken NOW when closing — after the render
+       it no longer exists to be measured */
+    const closingStripH=(()=>{const s=q("#scrapStrip");
+      return (s&&viewArrange)?s.getBoundingClientRect().height:0;})();
     viewArrange=!viewArrange;
     /* opening it puts you straight into arranging, which is what you came for;
        closing it puts the pen down so a stray tap on the page can't draw */
@@ -15717,7 +15779,22 @@ function renderBookView(){
        whatever the setting (or the phone default) says. */
     if(viewArrange&&fitScreen)fitScreen=false;
     if(!viewArrange)fitScreen=(settings.fit==null)?window.innerWidth<700:!!settings.fit;
+    const s0=window.scrollY;
     renderBookView();
+    /* The strip stands ABOVE the page, so opening it used to move every pixel
+       of the page down by the strip's height while the scroll stayed put — on
+       a PC at 135% that is ~110 screen pixels, and it read as "my pictures
+       shift when I go in and out of Arrange". No stored place ever changed;
+       the ground moved under the eye. The scroll now rides the ground, so
+       whatever you were looking at stays where you were looking, both ways.
+       At the very top of the page there is nothing to anchor — the strip
+       arriving is simply visible there, as it should be. */
+    if(s0>0){
+      const sNew=q("#scrapStrip");
+      if(viewArrange&&sNew)window.scrollBy(0,sNew.getBoundingClientRect().height);
+      else if(!viewArrange&&closingStripH)window.scrollBy(0,-closingStripH);
+    }
+    if(!fitWas&&!fitScreen)scrapDriftCheck(before);
   };
   applyBg();closeFabMenu();updateFab();
 }
