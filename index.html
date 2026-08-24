@@ -5590,6 +5590,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.41",lines:[
+    "The import reads AO3 now — by way of a CSV, since AO3 itself can never be fetched. Make one with a tool like AO3Scraper and choose it like any export: fics arrive as fanfics with their fandom, relationships, characters, tags, maturity (AO3's own words, never near the 0–10 score) and a link to the work. On fics already on your shelf — the ones ReadEra brought — Fill in adds whatever of that is missing, without touching anything you wrote.",
+    "Two honest omissions: a work list can't know whether YOU have read a fic, so everything stages as Want to read; and AO3 counts words while the shelf counts pages, so length is left blank rather than filed under the wrong name."
+  ]},
   {v:"2026-08-24.40",lines:[
     "A ReadEra backup's Fill in can now hand over where you are in a book you're still reading. Only onto a book the file says is being read, never one you've finished, and never over a page you set yourself. And because ReadEra counts pages its own way, a book that already knows its printed page count gets the FRACTION you've read applied to its own count, rather than a page number from a different ruler."
   ]},
@@ -10766,13 +10770,14 @@ async function renderHub(){
       </div>
     </div>
     <div class="sec">
-      <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph</h2><span class="n" id="impN"></span></div>
+      <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph / AO3</h2><span class="n" id="impN"></span></div>
       <div class="hcard">
         <div class="hrow2"><button class="btn pri" id="csvBtn">⭱ Choose an export file</button>
           <button class="btn" id="impClear" hidden>Clear the list</button></div>
         <div class="hint" style="margin:9px 0 0">
           <b>Goodreads:</b> My Books → Import and Export → Export Library → download the .csv.<br>
           <b>StoryGraph:</b> Manage Account → Manage Your Data → Export StoryGraph Library.<br>
+          <b>AO3:</b> the app can never read AO3 itself — a tool like AO3Scraper makes a .csv of your works, and this reads that. Fics arrive as fanfics with their fandom, relationships, characters, tags, maturity and a link to the work — and on fics already on your shelf, Fill in adds what's missing.<br>
           Nothing is added until you pick it. Titles already on your shelf are marked and skipped.
         </div>
         <div id="impList"></div>
@@ -12063,7 +12068,7 @@ q("#csvFile").addEventListener("change",async e=>{
     refreshImport();
     const pend=importQueue.filter(it=>!it.dupe).length;
     const dup=importQueue.filter(it=>it.dupe).length;
-    alert(`Found ${n} book${n===1?"":"s"} in your ${src==="goodreads"?"Goodreads":"StoryGraph"} export.`
+    alert(`Found ${n} ${src==="ao3"?"fic":"book"}${n===1?"":"s"} in your ${src==="goodreads"?"Goodreads":src==="ao3"?"AO3":"StoryGraph"} export.`
       +(updated?`\n\n${updated} were already waiting in the list and have been read again from the file, so anything it knows that they were missing is there now.`:"")
       +`\n\n${pend} are new to your shelf — pick the ones you want below, or add a whole section at once.`
       +(dup?`\n${dup} you already have: tick “Show only the ${dup} already on your shelf” to see what the file can still add to them.`:""));
@@ -21424,7 +21429,10 @@ function csvObjects(text){
   return {head,items:rows.slice(1).map(r=>{const o={};head.forEach((h,i)=>o[h]=(r[i]==null?"":String(r[i]).trim()));return o;})};
 }
 const csvSource=head=>head.includes("Exclusive Shelf")?"goodreads"
-  :(head.includes("Read Status")||head.includes("Star Rating"))?"storygraph":null;
+  :(head.includes("Read Status")||head.includes("Star Rating"))?"storygraph"
+  /* AO3Scraper's shape; work_id alone is the signature, the pair is the
+     fallback for a tool that renames it */
+  :(head.some(h=>/^work[_ ]?id$/i.test(h))||(head.some(h=>/^fandoms?$/i.test(h))&&head.some(h=>/^kudos$/i.test(h))))?"ao3":null;
 const cleanDate=s=>{const m=String(s||"").match(/(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
   return m?`${m[1]}-${String(m[2]).padStart(2,"0")}-${String(m[3]).padStart(2,"0")}`:"";};
 const splitTags=s=>String(s||"").split(",").map(x=>x.trim()).filter(Boolean);
@@ -21527,6 +21535,33 @@ function fromStorygraph(o){
     rereads:Math.max(0,(parseInt(o["Read Count"]||"1")||1)-1),
     summary:o["Review"]||"",notes:o["Content Warning Description"]||"",
     tags:[...splitTags(o["Tags"]),...splitTags(o["Moods"])]};
+}
+/* An AO3Scraper row. The app can never fetch AO3 itself (measured long ago) —
+   this reads the CSV such a tool writes. Two choices worth naming: the
+   scraper's "rating" column is AO3's maturity word (General Audiences, Teen…)
+   and goes into the maturity field AS WRITTEN, never near the 0–10 score; and
+   the reader's own stage is unknowable from a work list, so everything stages
+   as Want to read rather than pretending. Its "status" column is the WORK's
+   (complete/in-progress), not the reader's, and its word count is not pages —
+   both are left out rather than filed under the wrong name. */
+function fromAO3(o){
+  const wid=String(pickCol(o,"work_id","workid","id")||"").trim();
+  const split=s=>String(s||"").split(/\s*,\s*/).map(x=>x.trim()).filter(Boolean);
+  return {id:uid(),
+    title:String(pickCol(o,"title")||"").trim(),
+    author:split(pickCol(o,"authors","author","creators")).join(", "),
+    isbn:"",
+    status:"want",dnf:false,rating:null,
+    pages:"",progress:"",dateFinished:"",readings:[],rereads:0,
+    summary:String(pickCol(o,"summary")||"").trim(),notes:"",
+    tags:[...split(pickCol(o,"additional tags","additional_tags","freeform_tags","tags")),
+          ...split(pickCol(o,"category"))],
+    kind:"fanfic",
+    link:wid?("https://archiveofourown.org/works/"+wid):String(pickCol(o,"url","link")||"").trim(),
+    maturity:String(pickCol(o,"rating")||"").trim(),
+    fandoms:split(pickCol(o,"fandom","fandoms")),
+    characters:split(pickCol(o,"character","characters")),
+    ships:split(pickCol(o,"relationship","relationships"))};
 }
 
 let importQueue=[];
@@ -22129,6 +22164,21 @@ function importFills(it,b,en){
     const add=((it.tags)||[]).filter(t=>t&&!have.has(String(t).toLowerCase()));
     if(add.length)f.push({k:"tags",label:add.length===1?"a tag":`${add.length} tags`,v:add});
   }
+  /* what a fic is — only an AO3 row carries these, and only a book of its own
+     can receive them: fandoms, ships and the rest are book-level, and a story
+     inside a collection has nowhere of its own to keep them */
+  if(!en){
+    if(!filled(b.maturity)&&it.maturity)f.push({k:"maturity",label:"its maturity"});
+    if(!filled(b.link)&&it.link)f.push({k:"link",label:"a link to where it lives"});
+    const addList=(key,label)=>{
+      const have=new Set((b[key]||[]).map(x=>String(x).toLowerCase()));
+      const add=((it[key])||[]).filter(x=>x&&!have.has(String(x).toLowerCase()));
+      if(add.length)f.push({k:key,label:`${add.length} ${label}`,v:add});
+    };
+    addList("fandoms","fandom(s)");
+    addList("ships",`relationship${((it.ships)||[]).length===1?"":"s"}`);
+    addList("characters",`character${((it.characters)||[]).length===1?"":"s"}`);
+  }
   return f;
 }
 function applyImportFills(it,b,en,fills){
@@ -22142,6 +22192,9 @@ function applyImportFills(it,b,en,fills){
     else if(f.k==="notes"){if(en)en.notes=esc(it.notes);else b.canvasText=esc(it.notes);}
     else if(f.k==="author")T.author=String(it.author||"").trim();
     else if(f.k==="progress")T.progress=String(f.v);
+    else if(f.k==="maturity")b.maturity=it.maturity;
+    else if(f.k==="link")b.link=it.link;
+    else if(f.k==="fandoms"||f.k==="ships"||f.k==="characters")b[f.k]=[...(b[f.k]||[]),...f.v];
     else if(f.k==="tags")T.keywords=[...((T.keywords)||[]),...f.v].slice(0,IMPORT_TAG_CAP);
   }
   return b;
@@ -22170,8 +22223,8 @@ async function loadCsvFile(file){
     alert("Some letters in this file didn't survive — it was probably re-saved by another program on the way here. It still loads, but accented names may look wrong. For a clean copy, download the export again and use that file as it is.");
   const {head,items}=csvObjects(text);
   const src=csvSource(head);
-  if(!src)throw new Error("That doesn't look like a Goodreads or StoryGraph export.");
-  const map=src==="goodreads"?fromGoodreads:fromStorygraph;
+  if(!src)throw new Error("That doesn't look like a Goodreads, StoryGraph or AO3 export.");
+  const map=src==="goodreads"?fromGoodreads:src==="ao3"?fromAO3:fromStorygraph;
   const staged=items.map(map).filter(it=>it.title);
   /* the same book listed twice in one file stages once */
   const inFile=new Set();
@@ -22215,9 +22268,27 @@ async function importOne(it,extra){
     pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
     ...(it.series?{series:it.series}:{}),...(it.seriesNum?{seriesNum:it.seriesNum}:{}),
     ...(it.progress?{progress:it.progress}:{}),
+    /* a fic row carries what a fic is — the book rows never set these */
+    ...(it.kind?{kind:it.kind}:{}),
+    ...(it.link?{link:it.link}:{}),
+    ...(it.maturity?{maturity:it.maturity}:{}),
+    ...((it.fandoms||[]).length?{fandoms:it.fandoms.slice()}:{}),
+    ...((it.characters||[]).length?{characters:it.characters.slice()}:{}),
+    ...((it.ships||[]).length?{ships:it.ships.slice()}:{}),
     readings:readingsFromRow(it),
     summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
     keywords:(it.tags||[]).slice(0,IMPORT_TAG_CAP),imported:Date.now(),modified:Date.now()},extra||{});
+  /* the fandom vocabulary learns what arrived, through its one door — the
+     characters filed under the first fandom, the same way the editor does */
+  if((b.fandoms||[]).length){
+    let vocab=false;
+    b.fandoms.forEach(f=>{if(addFandom(f))vocab=true;});
+    const f0=b.fandoms[0];
+    (b.characters||[]).forEach(c=>{
+      if(f0&&fandoms[f0]&&!fandoms[f0].includes(c)){fandoms[f0].push(c);vocab=true;}
+    });
+    if(vocab)saveFandoms();
+  }
   syncReads(b);   /* dateFinished and rereads follow the list the export gave */
   await dbPut("books",b);
   books.unshift(b);
