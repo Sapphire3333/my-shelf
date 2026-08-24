@@ -5413,6 +5413,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.18",lines:[
+    "A ReadEra backup has two shelves of its own now: Everything, and On no shelf. ReadEra's shelves only cover what you filed there — your 3,887 books have a few hundred between them, and everything you never put on one was in the file, counted on the card, and reachable from nowhere. Both open, tick, add and fill in exactly like ReadEra's own.",
+    "The find box is inside whichever shelf you open, including those two — so it can reach any book in the file, on a shelf or not. A long shelf draws its first 200 and says how many more are there; the search reaches them, and Tick all, Add and Fill in always mean the whole shelf rather than the part you can see.",
+    "A backup you pick from a file is kept for an hour, exactly as one shared to the app already was. Picking one and then reloading used to throw it away and send you back to the file manager."
+  ]},
   {v:"2026-08-24.17",lines:[
     "The find box in a ReadEra backup is on the shelf lists, where you asked for it and where it is any use — press God or Fanfics and there is a box above the books. It appears once a shelf has more than eight in it. It narrows only what is drawn: ticking a row still ticks the right book, and Tick all still means all of them rather than all of the ones a search is showing. I had put it on the wrong list — the one of books with marked lines, which on your file has one book in it.",
     "The cover size slider stops fighting you. It was resizing every cover on every step of the drag, while sitting on the page it was resizing — so the track moved out from under your finger and the number went swinging. This is the same fault the text size had and was fixed for months ago; it never got carried across. The number follows your hand now and the covers change when you let go.",
@@ -11131,8 +11136,16 @@ function renderReadEra(){
          a filtered row ticks the right book — and Tick all still means all of
          them, not all of the ones a search is showing. */
       const shelfQ=String(reFind||"").trim().toLowerCase();
-      const shownRows=rows.map((r,i)=>({r,i})).filter(({r})=>!shelfQ
+      const foundRows=rows.map((r,i)=>({r,i})).filter(({r})=>!shelfQ
         ||((r.it.title||"")+" "+(r.it.author||"")).toLowerCase().includes(shelfQ));
+      /* Everything can be four thousand rows and drawing four thousand of
+         anything is the second-long stall the scale work went to trouble to
+         remove. The cap limits DRAWING only — the ticks, the counts and the
+         two Add/Fill buttons all work on the whole shelf — and it says so out
+         loud rather than quietly showing you a third of your library. */
+      const DRAW_CAP=200;
+      const shownRows=foundRows.slice(0,DRAW_CAP);
+      const hiddenRows=foundRows.length-shownRows.length;
       const addable=ticked.filter(r=>!r.have);
       const fillable=ticked.filter(r=>r.have&&r.fill.length);
       const canFill=rows.filter(r=>r.have&&r.fill.length);
@@ -11159,8 +11172,8 @@ function renderReadEra(){
           <button class="btn" id="reFill" ${fillable.length?"":"disabled"}>
             ✎ Fill in ${fillable.length} you already have</button></div>
         ${rows.length>8?`<span class="findwrap" style="display:block;margin:0 0 8px">
-          <input class="addin" id="reShelfFind" placeholder="Find in these ${rows.length}…" value="${esc(reFind||"")}">
-          ${shownRows.length!==rows.length?`<span class="rr" style="margin-left:6px">${shownRows.length} of ${rows.length}</span>`:""}</span>`:""}
+          <input class="addin" id="reShelfFind" placeholder="Find among these ${rows.length}…" value="${esc(reFind||"")}">
+          ${shelfQ?`<span class="rr" style="margin-left:6px">${foundRows.length} of ${rows.length}</span>`:""}</span>`:""}
         <div class="relist">${shownRows.map(({r,i})=>`<label class="snap resnap" style="padding:5px 9px;align-items:flex-start">
           <input type="checkbox" data-rebk="${i}" ${r.on?"checked":""} style="margin:3px 8px 0 0">
           <span style="min-width:0;flex:1">
@@ -11171,6 +11184,8 @@ function renderReadEra(){
               ${(r.it.tags||[]).length?" · "+(r.it.tags||[]).slice(0,3).map(esc).join(", "):""}</span>
             ${r.have?`<span class="meta" style="color:#b45309">already on your shelf${r.near?" — a near match":""}${r.fill.length?" · could fill in "+r.fill.map(x=>x[1]).join(", "):" · nothing here it does not have"}</span>`:""}
           </span></label>`).join("")}</div>
+        ${hiddenRows>0?`<div class="hint" style="margin:7px 0 0">Showing the first ${shownRows.length}${shelfQ?" of "+foundRows.length+" found":""} — ${hiddenRows} more ${hiddenRows===1?"is":"are"} here but not drawn. Type in the box above to reach ${hiddenRows===1?"it":"them"}. Tick all, Add and Fill in still work on the whole ${esc(reOpen.title)} shelf.</div>`:""}
+        ${!foundRows.length?`<div class="none" style="padding:8px 2px">Nothing here matches “${esc(reFind)}”.</div>`:""}
       </div>`;})():""}
     ${!withQ.length?`<div class="hint" style="margin:0 0 9px;padding:9px 11px;border-left:3px solid var(--amber);background:var(--card);border-radius:8px">
       No marked lines in this backup — so there is nothing here to bring across as quotes.
@@ -11419,6 +11434,23 @@ async function loadReadEraBlob(f,quiet){
         have:mine.length,
         items:mine.map(d=>fromReadEra(d,fixer.fix,true)).filter(it=>it.title)};
     }).filter(c=>c.title&&c.have);
+    /* ReadEra's own shelves cover only what you filed. Their library is 3,887
+       books and the shelves between them hold a few hundred, so everything
+       never put on one was in the file, counted on the card, and reachable
+       from nowhere. Two shelves of our own: everything in the file, and the
+       ones on none of ReadEra's. Built from the same staged rows the real
+       shelves use, so they open, tick, add and fill exactly the same way. */
+    {
+      const live=docs.filter(alive);
+      const fixAll=reAuthorFixer(live.map(d=>(d.data||{}).doc_authors),live.map(reNameHint));
+      const onAShelf=new Set();
+      (Array.isArray(data.colls)?data.colls:[]).forEach(c=>(c.docs||[]).forEach(u=>onAShelf.add(u)));
+      const mk=(title,list)=>({title,n:list.length,have:list.length,
+        items:list.map(d=>fromReadEra(d,fixAll.fix,true)).filter(it=>it.title)});
+      const loose=live.filter(d=>!onAShelf.has(d.uri));
+      if(loose.length&&colls.length)colls.push(mk("On no shelf",loose));
+      if(live.length)colls.push(mk("Everything",live));
+    }
     const shape=reShape(docs);
     reOpen=null;
     reFound={rows,shape,counts,total:docs.length,colls};
@@ -11434,6 +11466,12 @@ async function loadReadEraBlob(f,quiet){
 }
 q("#reFile").addEventListener("change",e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
+  /* A file SHARED to the app has been kept for an hour since the share target
+     was built, so a reload does not lose it. A file you PICK was only ever held
+     in memory, so every reload threw it away and you went and found it again —
+     which on a phone means the file manager, twice. There is no reason for the
+     two to behave differently: both are the same backup and the same hour. */
+  keepSharedBackup(f.name||"backup.bak",f);
   loadReadEraBlob(f);
 });
 /* ---- a backup shared to the app ----
