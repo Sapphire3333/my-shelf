@@ -4297,6 +4297,9 @@ let vEntStatus=null;                          /* ...and which story's status lis
 let vEntReads=null;                           /* ...and which story's readings are unfolded */
 let vEntLook=null;                            /* ...and which story has its look-it-up links out */
 let onlyRaw=false;                            /* show only imports you haven't worked on */
+/* the repeats-a-genre panel's ticks, kept across a trip to a book and back —
+   opening one to check it used to throw every choice away */
+let kwDupTicks={};
 /* came from a Goodreads/StoryGraph import and hasn't been opened and edited since */
 const isRaw=b=>!!b.imported&&!b.touched;
 let fandoms={};                                /* fandom -> [characters], shared across books */
@@ -5587,6 +5590,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.37",lines:[
+    "Books open the way the switch says, every time. A freshly imported book used to force the editor open whatever you had chosen — sensible for one stray import, maddening after seventy-four of them. Only a brand-new, empty book still opens in the form.",
+    "The keywords-that-repeat-a-genre panel learned three things you asked for: ✋ It stays a tag rules a word out and folds it into a kept list (with a way back); ＋ Genre too — the tag stays gives the genre to the books missing it while the word stays put; and your ticks now survive opening a book to check it — coming back finds them exactly as you left them.",
+    "And the series-asking message got firmer after a chat answered it badly: it now says never to repeat a book you listed, to look the series up first, and to answer “none” when nothing is missing — an answer the paste window now understands rather than filing as a book called none."
+  ]},
   {v:"2026-08-24.36",lines:[
     "A collection can take the rest of its series in one paste. In its editor, 📋 The rest of the series… opens a window: ask Claude which books you're missing (there's a button that writes that message for you, naming what you already have), paste the answer as #4 The Title one per line, and every missing book lands as a story marked ★ Want to read. Chatter around the list is ignored, stories already inside are skipped, and one paste is one undo step."
   ]},
@@ -12281,17 +12289,22 @@ function refreshKwDupes(){
   const box=q("#kwDupBox");if(!box)return;
   const gs=Object.keys(genres);
   const kws=[...new Set(books.flatMap(allKeywordsOf))];
-  const hits=[];
+  const all=[];
   kws.forEach(k=>{
     const kl=k.toLowerCase();
     const exact=gs.find(g=>g.toLowerCase()===kl);
-    if(exact){hits.push({k,g:exact,exact:true});return;}
+    if(exact){all.push({k,g:exact,exact:true});return;}
     /* three letters is enough — "God" ought to catch "God/Jesus". Near matches are
        only ever offered, never ticked for you, so a stray one costs nothing. */
     const near=gs.find(g=>g.length>=3&&kl.includes(g.toLowerCase()));
-    if(near)hits.push({k,g:near,exact:false});
+    if(near)all.push({k,g:near,exact:false});
   });
-  if(!hits.length){box.innerHTML="";return;}
+  /* the ones you have RULED on — "it stays a tag" — fold away and stop being
+     offered, but never silently: they are listed shut, each with a way back */
+  const keepSet=new Set((settings.kwKeep||[]).map(s=>String(s).toLowerCase()));
+  const kept=all.filter(h=>keepSet.has(h.k.toLowerCase()));
+  const hits=all.filter(h=>!keepSet.has(h.k.toLowerCase()));
+  if(!hits.length&&!kept.length){box.innerHTML="";return;}
   hits.forEach(h=>{
     h.holders=kwHolders(h.k,h.g);
     /* Books on one side, stories inside collections on the other, because only
@@ -12305,7 +12318,7 @@ function refreshKwDupes(){
   const shown=[...act,...only];
   const plu=(n,w)=>`${n} ${w}${n===1?"":"s"}`;
   const line=(h,i,tick)=>`<div class="snap" style="padding:6px 10px;align-items:flex-start">
-      ${tick?`<input type="checkbox" data-kdup="${i}" ${h.exact?"checked":""} id="kdup${i}" style="margin-top:2px">`
+      ${tick?`<input type="checkbox" data-kdup="${i}" ${(kwDupTicks[h.k]===undefined?h.exact:kwDupTicks[h.k])?"checked":""} id="kdup${i}" style="margin-top:2px">`
             :`<span style="width:16px;flex:none"></span>`}
       <div style="flex:1;min-width:0">
         ${tick?`<label for="kdup${i}" class="when" style="font-size:13px;cursor:pointer">${esc(h.k)}</label>`
@@ -12319,6 +12332,10 @@ function refreshKwDupes(){
         ${tick&&h.sts.length?`<div class="meta">${plu(h.sts.length,"story")} inside ${h.sts.length===1?"a collection has":"collections have"} this word too — left alone.</div>`:""}
         <button class="kwwhy" data-kwwhich="${i}" title="See them, and open any of them">▸ which ${
           (tick?h.bks.length:h.sts.length)===1?(tick?"book":"story"):plu(tick?h.holders.length:h.sts.length,tick?"book":"story")}?</button>
+        ${tick?`<div class="hrow2" style="gap:6px;margin-top:5px">
+          ${h.miss?`<button class="btn smallbtn" data-kboth="${i}" title="Give “${esc(h.g)}” to the ${plu(h.miss,"book")} missing it. The word stays everywhere, and stops being offered here.">＋ Genre too — the tag stays</button>`:""}
+          <button class="btn smallbtn" data-kkeep="${i}" title="This word earns its keep as a tag. Nothing changes on any book; it moves to the kept list below and stops being offered.">✋ It stays a tag</button>
+        </div>`:""}
         <div class="kwwho" data-kwwho="${i}" hidden></div>
       </div>
     </div>`;
@@ -12327,12 +12344,22 @@ function refreshKwDupes(){
     ${act.length?`<div class="hint" style="margin:0 0 8px">Tick the ones the genre already covers. Any book that hasn't got the genre is given it first, so the word can go without taking anything with it.</div>
       ${act.map((h,i)=>line(h,i,true)).join("")}
       <button class="btn pri" id="kdupGo" style="margin-top:8px">Tidy the ticked ones</button>`
-    :`<span class="none">Nothing to tidy — every one of these lives on a story inside a collection.</span>`}
+    :`<span class="none">Nothing waiting${only.length?" — what's left lives on stories inside collections":""}${kept.length?`${only.length?", and":" —"} what you ruled on is folded below`:""}.</span>`}
     ${only.length?`<div class="kwaside">
       <button class="kwfold" id="kwFold" aria-expanded="false">▸ ${plu(only.length,"word")} on stories inside collections</button>
       <div id="kwAside" hidden>
         <div class="hint" style="margin:6px 0 8px">These are left alone on purpose, and there is no button for them. A story's genres <b>replace</b> its collection's rather than adding to them, so giving one story a genre would break it out of the collection's filing — it would end up carrying its own copy of every genre the collection has, plus the new one. And the word isn't really repeating anything: a series that isn't science fiction can still hold one story that is, and saying so is exactly what a tag is for. Open one to change it by hand.</div>
         ${only.map((h,i)=>line(h,act.length+i,false)).join("")}
+      </div></div>`:""}
+    ${kept.length?`<div class="kwaside">
+      <button class="kwfold" id="kwKeptFold" aria-expanded="false">▸ ${plu(kept.length,"word")} you said stay tags</button>
+      <div id="kwKeptList" hidden>
+        <div class="hint" style="margin:6px 0 8px">Ruled on, so no longer offered. This choice lives on this device.</div>
+        ${kept.map(h=>`<div class="snap" style="padding:6px 10px">
+          <div style="flex:1;min-width:0"><span class="when" style="font-size:13px">${esc(h.k)}</span>
+            <span class="meta" style="display:inline"> · beside your genre “${esc(h.g)}”</span></div>
+          <button class="btn smallbtn" data-kunkeep="${esc(h.k)}">↩ Offer it again</button>
+        </div>`).join("")}
       </div></div>`:""}`;
   const fold=q("#kwFold",box);
   if(fold)fold.onclick=()=>{
@@ -12341,6 +12368,56 @@ function refreshKwDupes(){
     fold.setAttribute("aria-expanded",String(!a.hidden));
     fold.textContent=(a.hidden?"▸ ":"▾ ")+plu(only.length,"word")+" on stories inside collections";
   };
+  {const kf=q("#kwKeptFold",box);
+   if(kf)kf.onclick=()=>{
+     const a=q("#kwKeptList",box);
+     a.hidden=!a.hidden;
+     kf.setAttribute("aria-expanded",String(!a.hidden));
+     kf.textContent=(a.hidden?"▸ ":"▾ ")+plu(kept.length,"word")+" you said stay tags";
+   };}
+  /* a tick survives the trip to a book and back — checking which book holds a
+     word used to cost every choice made so far */
+  qa("[data-kdup]",box).forEach(c=>c.onchange=()=>{kwDupTicks[act[+c.dataset.kdup].k]=c.checked;});
+  qa("[data-kunkeep]",box).forEach(b=>b.onclick=()=>{
+    const w=b.dataset.kunkeep;
+    settings.kwKeep=(settings.kwKeep||[]).filter(x=>String(x).toLowerCase()!==w.toLowerCase());
+    saveSettings();refreshKwDupes();
+  });
+  /* "it stays a tag" — a ruling, not an edit: no book changes */
+  qa("[data-kkeep]",box).forEach(b=>b.onclick=()=>{
+    const h=act[+b.dataset.kkeep];if(!h)return;
+    settings.kwKeep=[...(settings.kwKeep||[]),h.k];
+    delete kwDupTicks[h.k];
+    saveSettings();refreshKwDupes();
+  });
+  /* "genre too — the tag stays": the first half of Tidy without the second.
+     The books missing the genre are given it, the word is left everywhere it
+     stands, and the word is ruled kept — else it would be offered again on
+     the very next visit, since it still repeats the genre. One undo step. */
+  qa("[data-kboth]",box).forEach(b=>b.onclick=async()=>{
+    const h=act[+b.dataset.kboth];if(!h||!h.miss)return;
+    const where=window.scrollY;
+    const items=[],was=new Map();
+    for(const x of h.bks){
+      if(x.has)continue;
+      const bk=books.find(y=>y.id===x.id);if(!bk)continue;
+      if(!was.has(bk.id))was.set(bk.id,JSON.parse(JSON.stringify(bk)));
+      bk.genres=bk.genres||[];
+      if(!bk.genres.includes(h.g))bk.genres.push(h.g);
+      bk.modified=Math.max(Date.now(),(bk.modified||0)+1,seenFloor(bk.id)+1);
+      bk.touched=true;
+      try{await dbPut("books",bk);}
+      catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
+      if(SYNC.on)enqueue({kind:"book",id:bk.id});
+      items.push({id:bk.id,before:was.get(bk.id),after:JSON.parse(JSON.stringify(bk))});
+    }
+    if(items.length)pushOp({t:"bulk",items});
+    settings.kwKeep=[...(settings.kwKeep||[]),h.k];
+    delete kwDupTicks[h.k];
+    saveSettings();
+    if(SYNC.on)flushQueue();
+    await Promise.resolve(render());keepPlaceAfterRedraw(where);
+  });
   /* filled in the first time it is opened, and toggled after that — redrawing the
      whole box here would throw away whatever you had just ticked */
   qa("[data-kwwhich]",box).forEach(btn=>btn.onclick=()=>{
@@ -14477,7 +14554,13 @@ async function openBook(id,fresh,keepPlace,goToStory){
      so it keeps what it had */
   if(!keepPlace)bImpReset();
   isNew=!found;
-  bookMode=keepPlace?heldFace:((!found||isRaw(found))?"edit":(settings.bookEdit?"edit":"view"));
+  /* The face is the SETTING'S call. A raw import used to force the form open
+     ("it's waiting to be filled in") — defensible for one stray book, but
+     after a 74-book import it meant every book opened in Edit whatever the
+     switch said, which read as the switch being broken. Only a book that
+     does not exist yet still opens in the form, because there is nothing to
+     read on it. Raw-ness keeps its other job: the Library's ⭱ pill. */
+  bookMode=keepPlace?heldFace:(!found?"edit":(settings.bookEdit?"edit":"view"));
   /* a held ticket means you left THIS book from its editor, mid-panel — the
      return goes back to that face whatever the usual opening face is */
   if(panelReturn&&panelReturn.id===id)bookMode="edit";
@@ -19028,7 +19111,10 @@ function renderEditor(){
     if(panelOpen("serPaste"))return;
     const sName=(seriesShown(cur)||cur.series||cur.title||"this series").trim();
     const have=(cur.entries||[]).map(en=>String(en.title||"").trim()).filter(Boolean);
-    const ask=`Which books are in the “${sName}” series that I don't have yet? I already have: ${have.join("; ")||"none yet"}. Reply with ONLY the missing books, one per line, in series order, each line exactly like:\n#4 The Title\nNo other text.`;
+    /* Round two of this message, after their chat came back listing book #1 —
+       which they had named as owned. Spelled out harder: not the ones I
+       listed, search first, and what to say when nothing is missing. */
+    const ask=`I have these books of the “${sName}” series: ${have.join("; ")||"none yet"}.\nWhich books of that series am I missing? Look the series up first so the list is complete.\nReply with ONLY the missing books — never one I listed above — one per line, in series order, each line exactly:\n#4 The Title\nIf I am missing none, reply with exactly one word: none. No other text.`;
     const wrap=document.createElement("div");
     wrap.id="serPaste";wrap.className="ratepanel";
     wrap.innerHTML=`
@@ -19043,7 +19129,10 @@ function renderEditor(){
     const close=dismissable(wrap);wrap.__close=close;
     const ta=q("#spText",wrap),say=q("#spSay",wrap),go=q("#spGo",wrap);
     const parse=()=>{
-      const lines=String(ta.value).replace(/\r\n?/g,"\n").split("\n").map(s=>s.trim()).filter(Boolean);
+      const lines=String(ta.value).replace(/\r\n?/g,"\n").split("\n").map(s=>s.trim()).filter(Boolean)
+        /* the reply the ask-message requests when nothing is missing — without
+           this, a bare list of "none" would have become a book called none */
+        .filter(s=>!/^(none|nothing|n\/a)[.!]*$/i.test(s));
       const rows=[],plain=[];
       lines.forEach(s=>{
         const m=s.match(/^(?:#|№|book\s+|vol(?:ume)?\.?\s*)?(\d+(?:\.\d+)?)\s*[.):—–-]?\s+(.{1,200})$/i);
