@@ -1312,6 +1312,14 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .gname{min-width:0;overflow:hidden}
   .gname .chip{max-width:100%;overflow:hidden;text-overflow:ellipsis;display:inline-block;
     white-space:nowrap;vertical-align:middle}
+  /* a genre on your books that is not one of your genres — see the gfix button */
+  .grow.gorph{grid-template-columns:minmax(0,1fr);gap:4px;padding:7px 8px;margin-bottom:8px;
+    background:#fffbeb;border:1px solid #fcd34d;border-radius:10px}
+  [data-theme="dark"] .grow.gorph{background:#2b2318;border-color:#854d0e}
+  .grow.gorph .prog,.grow.gorph .gnum{grid-column:1/2}
+  .gfix{display:block;margin-top:5px;font:inherit;font-size:12.5px;text-align:left;
+    background:none;border:none;padding:2px 0;color:#b45309;cursor:pointer;text-decoration:underline}
+  [data-theme="dark"] .gfix{color:#fbbf24}
   .gnum{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
   html[data-phone="1"] .grow{grid-template-columns:minmax(0,1fr) auto;gap:5px 8px}
   html[data-phone="1"] .grow .prog{grid-column:1/2;grid-row:2}
@@ -5396,6 +5404,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.15",lines:[
+    "The grey ones in Genres, honestly rated now say what they are and offer to finish. A word can be a genre on your books without being one of your genres: moving it to tags takes it out of your list, and any book the move skipped keeps it — with no colour, because there is no longer a colour to give it. Each of those now wears “not one of your genres — finish moving it to tags”, and one press does exactly that, on every book still holding it. Undo puts it all back.",
+    "And the move that skipped them is fixed. It matched the word on your books by name AND capitalisation, while everything else about it matched on lowercase — so a move begun from “science fiction” walked straight past every book carrying “Science Fiction”. Imports are where the different capitalisations come from; they are not fussy about it. The word's entry in your list was deleted either way, which is what left the leftovers grey.",
+    "Moving a word from the Insights page used to be impossible for a duller reason: the code assumed a book was open, because until now the only way to move a word was from a book's own page."
+  ]},
   {v:"2026-08-24.13",lines:[
     "The numbers on Insights lead with one. Pages read stands big, with your reading year by year drawn under it and your biggest year named — a figure nobody can picture becomes a shape you can — and the other eight go two across underneath instead of nine identical cards in a column. Your pick of the four mocked.",
     "The genre bars all start in the same place now. They began wherever the genre's name happened to end, so a bar after “Comics & Graphic Novels” started far to the right of one after “God” and the two could not be compared at a glance — which is exactly what you said. The name has a column of its own, so every bar begins on the same line and their lengths mean something. Measured: five genres, five bars, all starting at the same pixel."
@@ -13753,13 +13766,27 @@ function renderInsights(){
            compared with the one above — "so uneven because of the name length
            differences that they become meaningless". A grid, so the name has a
            column of its own and every bar starts on the same line. */
-        return `<div class="grow">
-          <span class="gname"><span class="chip" style="${chipStyle(genres[g])}">${esc(g)}</span></span>
+        /* A word can be a genre on your books and not be one of YOUR genres:
+           moving it to tags deletes it from your list, and anything the move
+           skipped is left behind with no colour and no home. That is what the
+           grey ones are, and until now the page gave them no name and no way
+           out — so here they are named, counted, and finishable in one press. */
+        const orphan=!(g in genres);
+        return `<div class="grow${orphan?" gorph":""}">
+          <span class="gname"><span class="chip" style="${chipStyle(genres[g])}">${esc(g)}</span>${
+            orphan?`<button class="gfix" data-gfix="${esc(g)}" title="“${esc(g)}” is on ${x[1]} book${x[1]===1?"":"s"} as a genre but is not one of your genres — most likely a move to tags that did not finish. This finishes it.">⚠ not one of your genres — finish moving it to tags</button>`:""}</span>
           <span class="prog"><i style="width:${a!=null?a*10:0}%"></i></span>
           <span class="rr gnum">${a!=null?"★ "+a.toFixed(1)+" avg":"unrated"} · ${x[1]} title${x[1]===1?"":"s"}</span></div>`;}).join(""):'<span class="none">No genres yet.</span>'}
       </div>
     </div>
     `;
+  qa("[data-gfix]",m).forEach(b=>b.onclick=async()=>{
+    const g=b.dataset.gfix;
+    const n=books.filter(bk=>(bk.genres||[]).some(w=>w.toLowerCase()===g.toLowerCase())).length;
+    if(!confirm(`Finish moving “${g}” to tags?\n\nIt is on ${n} book${n===1?"":"s"} as a genre but is not one of your genres — most likely a move that skipped them. On ${n===1?"it":"them"} it becomes a tag.\n\nOne press of undo puts it all back.`))return;
+    await moveWordEverywhere(g,false);
+    renderInsights();
+  });
   qa("[data-gord]",m).forEach(p=>p.onclick=()=>{gOrder=p.dataset.gord;renderInsights();});
   qa("[data-wrapy]",m).forEach(b=>b.onclick=()=>openWrapped(b.dataset.wrapy));
   const gpt=q("#gapTog",m);
@@ -14203,18 +14230,25 @@ async function moveWordEverywhere(name,toGenre){
       if(isColl(bk))for(const en of (bk.entries||[]))
         if((en.keywords||[]).some(w=>w.toLowerCase()===low))storiesLeft++;
     }else{
-      if((bk.genres||[]).includes(name)){
+      /* Matched by name and CASE until now, while every other comparison in
+         this function matched on lowercase — so a book holding "Science
+         Fiction" was skipped by a move started from "Science fiction", and it
+         kept the word as a genre. The word's entry in your list is deleted
+         either way, at the bottom of this function, which is why the leftovers
+         turned grey: still a genre on the book, no longer a genre you own.
+         Imports are where the case drift comes from; they are not fussy. */
+      if((bk.genres||[]).some(g=>g.toLowerCase()===low)){
         take(bk);
-        bk.genres=bk.genres.filter(g=>g!==name);
-        bk.genreBreaks=(bk.genreBreaks||[]).filter(g=>g!==name);
+        bk.genres=bk.genres.filter(g=>g.toLowerCase()!==low);
+        bk.genreBreaks=(bk.genreBreaks||[]).filter(g=>g.toLowerCase()!==low);
         bk.keywords=bk.keywords||[];
         if(!bk.keywords.some(w=>w.toLowerCase()===low))bk.keywords.push(name);
       }
       /* a story that had it as a genre of its own keeps it, as a tag of its own */
       if(isColl(bk))for(const en of (bk.entries||[])){
-        if(!(en.genres||[]).includes(name))continue;
+        if(!(en.genres||[]).some(g=>g.toLowerCase()===low))continue;
         take(bk);
-        en.genres=en.genres.filter(g=>g!==name);
+        en.genres=en.genres.filter(g=>g.toLowerCase()!==low);
         en.keywords=en.keywords||[];
         if(!en.keywords.some(w=>w.toLowerCase()===low))en.keywords.push(name);
       }
@@ -14249,9 +14283,14 @@ async function moveWordEverywhere(name,toGenre){
   }
   if(items.length)pushOp(label?{t:"bulk",items,label}:{t:"bulk",items});
   if(SYNC.on)flushQueue();
-  /* the open page is drawn from its own copy, which the loop above went around */
-  const me=books.find(x=>x.id===cur.id);
-  if(me)cur=JSON.parse(JSON.stringify(me));
+  /* The open page is drawn from its own copy, which the loop above went around.
+     Every caller until now was a word menu on a book, so there was always a
+     book open; Insights calls this with nothing open at all, and reading cur.id
+     threw. */
+  if(cur){
+    const me=books.find(x=>x.id===cur.id);
+    if(me)cur=JSON.parse(JSON.stringify(me));
+  }
   return {n:items.length,storiesLeft};
 }
 /* The shell every word menu shares — the reading page's and the editor's. One
