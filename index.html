@@ -5623,6 +5623,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-25.6",lines:[
+    "The covers had a second copy of the same trap: the pictures a book page shows are loaded once, when the page opens — so covers fetched by a fill while the page stood open drew as blank placeholders until the next full reload, which read as \"no covers come in\" even though every picture was safely stored. The handover the last build introduced now carries the pictures too, and the same care covers the ↻ Try again buttons under \"covers wouldn't come\" and picking a collection cover from the strip."
+  ]},
   {v:"2026-08-25.5",lines:[
     "\"Filled in 15 books\" and nothing ever appeared — found, reproduced, fixed. The collection's Fill-in door opens the bulk sheet over the book's editor, which works on a private copy taken when the page opened: the fill landed on the real book underneath (which is why the new check line honestly passed), the editor kept showing its old empty copy, and the editor's next save wrote that old copy back over the fill, silently erasing it. Now the sheet hands the open editor the freshly written book and redraws it — the pages, blurbs and ISBNs appear on screen the moment the run finishes, and saving keeps them. The same care now covers picking a collection cover from the strip."
   ]},
@@ -8444,6 +8447,30 @@ function looksBlank(v){
   const s=stripHtml(String(v==null?"":v)).replace(/\s+/g," ").trim();
   return !s||/^(unknown|unknown author|no author|n\/?a|none|null|undefined|0|[-–—?.]+)$/i.test(s);
 }
+/* After anything OUTSIDE the editor writes to a book that is open behind it,
+   the editor must be handed the result. `cur` is a copy taken at page-open,
+   and its next save writes that copy back over the shelf — that erased three
+   whole bulk fills before it was caught. The pictures then turned out to be
+   a second copy of the same trap: `curEnt` and `curCover` are loaded at
+   page-open too, so a cover stored while the page stands showed a placeholder
+   until the next full reload, which read as "no covers come in". One
+   handover, used by every outside writer: fresh copy, fresh pictures,
+   redraw. */
+async function rebaseOpenBook(id){
+  if(typeof cur==="undefined"||!cur||view!=="book"||cur.id!==id)return;
+  const fresh=books.find(x=>x.id===id);
+  if(!fresh)return;
+  cur=JSON.parse(JSON.stringify(fresh));
+  for(const en of (cur.entries||[]).filter(e=>e.cover)){
+    if(!curEnt[en.id]){
+      const d=coverCache.get(id+"|"+en.id)||await loadImgData(id+"|"+en.id);
+      if(d)curEnt[en.id]=d;
+    }
+  }
+  const cd=coverCache.get(id)||((await dbGet("covers",id))||{}).data;
+  if(cd)curCover=cd;
+  renderBook();
+}
 async function openBulkFill(ids){
   if(q("#bulkSheet"))return;
   const picked=(ids||[]).map(id=>books.find(b=>b.id===id)).filter(Boolean);
@@ -8895,13 +8922,10 @@ async function openBulkFill(ids){
        the clash detector cannot see it because shelf and store agree).
        Reproduced and measured: the store went 202 pages → blank on one
        scheduleSave. So the open editor is handed the freshly written copy
-       and redrawn. Nothing typed can be lost by this: the sheet covers the
-       screen for the whole run, and the door flushes any unsaved edit
-       before opening. */
-    if(typeof cur!=="undefined"&&cur&&view==="book"&&items.some(it=>it.id===cur.id)){
-      const fresh=books.find(x=>x.id===cur.id);
-      if(fresh){cur=JSON.parse(JSON.stringify(fresh));renderBook();}
-    }
+       and redrawn — pictures included, see rebaseOpenBook. Nothing typed can
+       be lost by this: the sheet covers the screen for the whole run, and
+       the door flushes any unsaved edit before opening. */
+    for(const it of items)await rebaseOpenBook(it.id);
     /* Trust, then check. The owner filled a collection's fifteen stories, was
        told "Filled in 15 books", and found every one still empty — and the
        same run here writes and stores everything, so the fault could not be
@@ -8966,9 +8990,7 @@ async function openBulkFill(ids){
     /* same species as the fill itself: picked with the editor open behind the
        sheet, the cover's stamp went onto the real book while the editor held
        its old copy — hand it the new one so its next save carries this too */
-    if(typeof cur!=="undefined"&&cur&&view==="book"&&cur.id===b.id){
-      cur=JSON.parse(JSON.stringify(b));renderBook();
-    }
+    await rebaseOpenBook(b.id);
     bumpCovers();
   }
 
@@ -9189,6 +9211,10 @@ async function openBulkFill(ids){
           await dbPut("books",b);
           if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
           bumpCovers();
+          /* a retried cover is an outside write like any other — without the
+             handover, the flag it set was erased by the open editor's next
+             save and the picture never showed until a reload */
+          await rebaseOpenBook(b.id);
           if(msg)msg.textContent="Got it — that's the cover now ✓";
           return true;
         }catch(e){
