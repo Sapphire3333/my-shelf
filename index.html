@@ -5620,6 +5620,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-25.4",lines:[
+    "The bulk fill checks its own work. A collection's stories were filled in, the sheet said so, and they were found empty afterwards — and the same run works when repeated elsewhere, so instead of a guessed fix, Done now reads every written field back from the shelf's store and says either \"everything written above is really in it\" or names exactly which writes did not land. Whichever line you see is the answer to where the fault lives."
+  ]},
   {v:"2026-08-25.3",lines:[
     "The bulk fill now ends with the same side-by-side the single lookup got: one line saying how many of the asked books each source actually brought something for — on the review screen and on Done. It is the readout for deciding whether Hardcover has earned a bigger say, from the runs you actually do."
   ]},
@@ -8878,6 +8881,34 @@ async function openBulkFill(ids){
     if(items.length)pushOp({t:"bulk",items});
     if(coversAdded)bumpCovers();
     if(SYNC.on)flushQueue();
+    /* Trust, then check. The owner filled a collection's fifteen stories, was
+       told "Filled in 15 books", and found every one still empty — and the
+       same run here writes and stores everything, so the fault could not be
+       found by reproducing it. So the sheet now checks its own work: each
+       field it claims to have written is read back FRESH from the store, and
+       Done says either that everything is really there, or names exactly
+       which writes did not land. If the check passes and the fields are gone
+       when you look, they were taken afterwards — by a pull from another
+       device, say — and that is a different hunt, now tellable apart. */
+    S.verify={checked:0,missing:[]};
+    for(const g of groups){
+      let fresh=null;
+      try{fresh=await dbGet("books",g.b.id);}catch(e){}
+      if(!fresh){if(items.some(it=>it.id===g.b.id))S.verify.missing.push((g.b.title||"Untitled")+" — the whole book is not in the store");continue;}
+      for(const j of g.jobs){
+        const r=j.row;if(!r||!r.on||!r.info)continue;
+        if(!r.want.pages&&!r.want.isbn&&!r.want.blurb)continue;
+        const name=titleOf(j)||"Untitled";
+        const t=j.en?((fresh.entries||[]).find(e=>e.id===j.en.id)||null):fresh;
+        if(j.en&&!t){S.verify.missing.push(name+" — its story row is missing from the stored copy");continue;}
+        const miss=[];
+        if(r.want.pages!==undefined&&r.want.pages!==""&&String(t.pages||"")!==String(r.want.pages))miss.push("pages");
+        if(r.want.isbn&&String(t.isbn||"").trim()!==r.want.isbn)miss.push("ISBN");
+        if(r.want.blurb&&!String(t.summary||"").trim())miss.push("blurb");
+        S.verify.checked++;
+        if(miss.length)S.verify.missing.push(name+" — "+miss.join(", "));
+      }
+    }
     await buildStrips();
     S.stage="done";draw();
     }finally{busy=false;}
@@ -9082,6 +9113,9 @@ async function openBulkFill(ids){
         ${S.storageFull?`<div class="bs-w" style="margin:7px 0 0"><b>Storage ran out part of the way through.</b> What you see above was written and can be undone; the rest is untouched. Export a backup from the Overview tab, then clear out old backups or pictures and run this again.</div>`:""}
         ${S.vanished?`<div class="hint" style="margin:6px 0 0">${plural(S.vanished,"thing")} went missing while the run was going — deleted on another device, or on another tab — so ${S.vanished===1?"it was":"they were"} left alone rather than written back onto the shelf.</div>`:""}
         <div class="hint" style="margin:6px 0 0">Undo puts every one of them back as it was. The covers stay where they are — take one off from its own page if you don't want it.</div>
+        ${S.verify&&(S.verify.checked||S.verify.missing.length)?(S.verify.missing.length
+          ?`<div class="bs-w" style="margin:7px 0 0"><b>Checked back against the shelf's store, and ${plural(S.verify.missing.length,"write")} did not land:</b> ${S.verify.missing.slice(0,6).map(esc).join(" · ")}${S.verify.missing.length>6?" · …":""} — copy this into a message.</div>`
+          :`<div class="hint" style="margin:6px 0 0">Checked back against the shelf's store: everything written above is really in it.</div>`):""}
         ${S.gDown?`<div class="hint" style="margin:6px 0 0">Google Books didn't answer for ${S.gDown} of ${S.asked} — that is where the blurbs come from, so running these again another day is worth doing. Only blanks are filled, so nothing is undone by trying twice.</div>`:""}
         ${srcLine()}
         ${loose?`<div class="hint" style="margin:6px 0 0">${plural(loose,"book")} came back under a different title, or only once the author was dropped from the search, so ${loose===1?"it was":"they were"} left alone — an unconfirmed match is not something to write for you. Run it again without “just fill them in” to look at ${loose===1?"it":"them"}.</div>`:""}
