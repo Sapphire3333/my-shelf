@@ -2945,18 +2945,27 @@ function wireEntCap(scope){
      readout now says what the cover ACTUALLY measures beside what was asked
      for — so the next time it misbehaves, the two numbers say which half is
      wrong: the setting, or the drawing. */
-  const show=()=>{applyEntZoom();const v=q("#entZoomV",scope);
-    if(!v)return;
-    v.textContent=s.value+"%";
+  /* The covers were resized on every step of the drag, and this slider sits on
+     the page it is resizing — so each step moved the track out from under the
+     finger and the number went swinging. It is the identical fault the text
+     size had, fixed there the same way and not carried across to here; the
+     measurement I added on top of it made a forced layout read per step as
+     well, which will not have helped.
+     So: the drag moves the number only. The covers change when you let go. */
+  const label=()=>{const v=q("#entZoomV",scope);if(v)v.textContent=s.value+"%";};
+  const apply=()=>{
+    applyEntZoom();label();
+    /* the measured width, once, after the page has settled — the instrument for
+       "it keeps resetting", which three measurements could not reproduce */
     setTimeout(()=>{
-      const c=q(".entcov");if(!c||!q("#entZoomV"))return;
+      const c=q(".entcov"),v=q("#entZoomV");if(!c||!v)return;
       const w=Math.round(c.getBoundingClientRect().width);
-      if(w)q("#entZoomV").textContent=s.value+"% · "+w+"px";
-    },40);
+      if(w)v.textContent=s.value+"% · "+w+"px";
+    },60);
   };
-  s.oninput=()=>{settings.entZoom=+s.value;show();};
-  s.onchange=()=>{settings.entZoom=+s.value;show();saveSettings();};
-  show();   /* the measurement is worth having before you touch anything */
+  s.oninput=label;
+  s.onchange=()=>{settings.entZoom=+s.value;apply();saveSettings();};
+  apply();   /* the measurement is worth having before you touch anything */
   /* the reading page listens for a finger on itself to place and draw — this
      one is the slider's own */
   s.onclick=e=>e.stopPropagation();
@@ -5404,6 +5413,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.17",lines:[
+    "The find box in a ReadEra backup is on the shelf lists, where you asked for it and where it is any use — press God or Fanfics and there is a box above the books. It appears once a shelf has more than eight in it. It narrows only what is drawn: ticking a row still ticks the right book, and Tick all still means all of them rather than all of the ones a search is showing. I had put it on the wrong list — the one of books with marked lines, which on your file has one book in it.",
+    "The cover size slider stops fighting you. It was resizing every cover on every step of the drag, while sitting on the page it was resizing — so the track moved out from under your finger and the number went swinging. This is the same fault the text size had and was fixed for months ago; it never got carried across. The number follows your hand now and the covers change when you let go.",
+    "Settings → If something looks wrong now says which background is on, and whether the book you are looking at has one of its own."
+  ]},
   {v:"2026-08-24.16",lines:[
     "Picking a genre in Search no longer throws you to the top of the page. It was deliberate once — the results appear above where you are standing, so the page jumped to show them — but it took you away from the combine boxes you were in the middle of using and made you scroll back down to tick a second one. The boxes go to the top of the screen instead, with the results underneath them, so both are in front of you and your hand stays where it was.",
     "The ReadEra card stops showing you what it has nothing to ask about. Books whose marked lines are all already on the shelf fold away behind their own count, shut, and only the ones with something new stay in front of you.",
@@ -10023,6 +10037,12 @@ function tuneDiagnostics(){
       +(document.documentElement.getAttribute("data-vw")||"?"),
     SYNC.on?("Syncing on"+(SYNC.user?", signed in as "+(SYNC.user.email||"?"):", not signed in"))
       :"Syncing off — this device only",
+    /* what is painted behind the page, and whether the book you are on has one
+       of its own — added because a collection came up entirely purple and
+       neither of us could say what had put it there */
+    (()=>{const g=settings.bg||{};
+      const own=(cur&&cur.bg)?(" · this book has its own: "+(cur.bg.id||"?")+" at "+(cur.bg.opacity==null?"100":cur.bg.opacity)+"%"):"";
+      return "Background: "+(g.id||"none")+" at "+(g.opacity==null?"100":g.opacity)+"%"+own;})(),
     ti?("Text over the background, last tuned: hardest patch "+ti.worst+", quiet greys turned "
       +ti.mut+" / "+ti.faint+" (contrast "+ti.contrast+":1)."):"",
     covOne(prev,"The screen before"),
@@ -11105,6 +11125,14 @@ function renderReadEra(){
         `<button class="pill ${reOpen&&reOpen.i===i?"on":""}" data-recoll="${i}">${esc(c.title)} <b>${c.have}</b></button>`).join("")}</div>`:""}
     ${reOpen?(()=>{
       const rows=reOpen.rows,ticked=rows.filter(r=>r.on);
+      /* This is where the find box belongs and where it was asked for: a shelf
+         of 156 fics is what you are picking a dozen out of, not the list of
+         books that had marked lines. It keeps each row's REAL index, so ticking
+         a filtered row ticks the right book — and Tick all still means all of
+         them, not all of the ones a search is showing. */
+      const shelfQ=String(reFind||"").trim().toLowerCase();
+      const shownRows=rows.map((r,i)=>({r,i})).filter(({r})=>!shelfQ
+        ||((r.it.title||"")+" "+(r.it.author||"")).toLowerCase().includes(shelfQ));
       const addable=ticked.filter(r=>!r.have);
       const fillable=ticked.filter(r=>r.have&&r.fill.length);
       const canFill=rows.filter(r=>r.have&&r.fill.length);
@@ -11130,7 +11158,10 @@ function renderReadEra(){
             ＋ Add ${addable.length} new book${addable.length===1?"":"s"}</button>
           <button class="btn" id="reFill" ${fillable.length?"":"disabled"}>
             ✎ Fill in ${fillable.length} you already have</button></div>
-        <div class="relist">${rows.map((r,i)=>`<label class="snap resnap" style="padding:5px 9px;align-items:flex-start">
+        ${rows.length>8?`<span class="findwrap" style="display:block;margin:0 0 8px">
+          <input class="addin" id="reShelfFind" placeholder="Find in these ${rows.length}…" value="${esc(reFind||"")}">
+          ${shownRows.length!==rows.length?`<span class="rr" style="margin-left:6px">${shownRows.length} of ${rows.length}</span>`:""}</span>`:""}
+        <div class="relist">${shownRows.map(({r,i})=>`<label class="snap resnap" style="padding:5px 9px;align-items:flex-start">
           <input type="checkbox" data-rebk="${i}" ${r.on?"checked":""} style="margin:3px 8px 0 0">
           <span style="min-width:0;flex:1">
             <span class="when" style="font-size:13px">${esc(r.it.title)||"Untitled"}</span>
@@ -11197,6 +11228,9 @@ function renderReadEra(){
       openReColl(i);reOpen.rows.forEach((r,k)=>{if(on[k]!=null)r.on=on[k];});renderReadEra();}
   };
   qa("[data-recoll]",box).forEach(btn=>btn.onclick=()=>{openReColl(+btn.dataset.recoll);});
+  {const sf=q("#reShelfFind",box);
+   if(sf)sf.oninput=()=>{reFind=sf.value;renderReadEra();
+     const g=q("#reShelfFind");if(g){g.focus();g.setSelectionRange(g.value.length,g.value.length);}};}
   const tickAll=q("#reTickAll",box);
   if(tickAll)tickAll.onclick=()=>{
     const rr=reOpen.rows,on=rr.filter(r=>r.on).length!==rr.length;
