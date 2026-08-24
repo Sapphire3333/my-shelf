@@ -1634,6 +1634,16 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .gavname{font-size:11.5px;font-weight:600;line-height:1.25;text-align:center;color:var(--ink);
     max-width:88px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   .gavname b{color:var(--faint);font-weight:600}
+  /* item 23 — choosing which part of a picture the circles show. The stage is
+     the whole picture; the amber ring is the crop, and its giant shadow dims
+     everything the circle will not show. */
+  .gfstage{position:relative;line-height:0;user-select:none;touch-action:none;
+    overflow:hidden;border-radius:8px;cursor:crosshair}
+  #gfImg{width:100%;height:auto;display:block}
+  .gflens{position:absolute;border-radius:50%;border:3px solid #f59e0b;box-sizing:border-box;
+    box-shadow:0 0 0 1200px rgba(28,25,23,.45);pointer-events:none}
+  .gfprev{width:64px;height:64px;border-radius:50%;object-fit:cover;flex:none;
+    border:2px solid var(--line);box-shadow:0 2px 7px rgba(0,0,0,.2)}
   /* The row on a phone is now laid out under html[data-phone="1"], further down
      with the rest of what a small screen changes. What stood here made the
      cover 64 pixels wide and let the right-hand column run across the whole
@@ -5571,6 +5581,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.34",lines:[
+    "The round pictures at the head of the Library's groups can now show the part YOU choose. The circle always cropped to the middle, and the middle of a tall picture is rarely the face you wanted. Press a group's 🖼 and take ⌖ Choose what the circle shows: drag the ring over the picture, watch the round preview, keep it. The choice is saved on the picture itself, so it syncs and survives backups; picking a different picture starts fresh in the middle."
+  ]},
   {v:"2026-08-24.33",lines:[
     "A collection's page can now fill in its own stories. 🔎 Fill in the blanks sits on the What's-inside line, on both faces — it looks every story up online for a cover, a blurb, a page count and an ISBN, touches only what is blank, and shows you what it wants before anything is fetched. This is the same careful fill-in the import sheet and Select books already had; what was missing was a door to it from the collection you were actually looking at."
   ]},
@@ -6069,6 +6082,66 @@ async function clearGroupArt(key){
   if(a.img){await dbDel("images",gartKey(a.img));gartCache.delete(a.img);
     if(SYNC.on)enqueue({kind:"imgDel",key:gartKey(a.img)});}
   delete groupArt[key];markMetaDel("gart:"+key);saveGroupArt();
+}
+/* ---- item 23: which part of the picture the circles show ----
+   The round headings crop with object-fit:cover, which always took the middle
+   — and the middle of a tall cover is rarely the face you wanted. The focus
+   lives ON the picture's record (fx, fy as fractions of the leftover width
+   and height), so it travels with sync and backups exactly as the picture
+   does, and choosing a NEW picture starts fresh in the middle because
+   setGroupArt writes the record whole. Ratios throughout, so the panel's own
+   zoom cancels out of every measurement. */
+async function openGartFocus(key){
+  const art=groupArt[key];if(!art)return;
+  let d=gartCache.get(art.img);
+  if(d===undefined){d=await loadImgData(gartKey(art.img));gartCache.set(art.img,d);}
+  if(!d){alert("This picture's file hasn't reached this device yet — it comes with sync from where it was added.");return;}
+  if(q("#gartFocus"))return;
+  let fx=art.fx==null?0.5:art.fx,fy=art.fy==null?0.5:art.fy;
+  const wrap=document.createElement("div");
+  wrap.id="gartFocus";wrap.className="ratepanel";
+  wrap.innerHTML=`
+    <div class="hrow2" style="margin-bottom:6px"><b style="font-size:13px">What the circle shows</b>
+      <button class="btn" id="gfX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+    <div class="hint" style="margin:0 0 8px">Drag on the picture to put what matters inside the ring. The round preview below is what every circle will show.</div>
+    <div class="gfstage"><img id="gfImg" src="${d}" alt=""><div class="gflens" id="gfLens"></div></div>
+    <div class="hrow2" style="margin-top:10px;align-items:center;gap:10px">
+      <img class="gfprev" id="gfPrev" src="${d}" alt="">
+      <button class="btn pri" id="gfSave" style="margin-left:auto">✓ Keep this</button>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close=dismissable(wrap);
+  const stage=q(".gfstage",wrap),img=q("#gfImg",wrap),lens=q("#gfLens",wrap),prev=q("#gfPrev",wrap);
+  const paint=()=>{
+    const w=img.clientWidth,h=img.clientHeight;
+    if(!w||!h)return;
+    const s=Math.min(w,h);
+    lens.style.width=s+"px";lens.style.height=s+"px";
+    lens.style.left=((w-s)*fx)+"px";lens.style.top=((h-s)*fy)+"px";
+    prev.style.objectPosition=(fx*100)+"% "+(fy*100)+"%";
+  };
+  /* screen pixels over screen pixels — a ratio, so the panel's zoom is moot */
+  const at=e=>{
+    const r=img.getBoundingClientRect();
+    const s=Math.min(r.width,r.height);
+    if(r.width>s+1)fx=Math.max(0,Math.min(1,((e.clientX-r.left)-s/2)/(r.width-s)));
+    if(r.height>s+1)fy=Math.max(0,Math.min(1,((e.clientY-r.top)-s/2)/(r.height-s)));
+    paint();
+  };
+  stage.addEventListener("pointerdown",e=>{
+    e.preventDefault();
+    try{stage.setPointerCapture(e.pointerId);}catch(_){}
+    at(e);
+    const mv=ev=>at(ev);
+    const up=()=>{stage.removeEventListener("pointermove",mv);stage.removeEventListener("pointerup",up);};
+    stage.addEventListener("pointermove",mv);stage.addEventListener("pointerup",up);
+  });
+  if(img.complete)paint();else img.onload=paint;
+  q("#gfX",wrap).onclick=()=>close();
+  q("#gfSave",wrap).onclick=()=>{
+    groupArt[key]=Object.assign({},groupArt[key],{fx:+fx.toFixed(3),fy:+fy.toFixed(3)});
+    saveGroupArt();close();renderLibrary();
+  };
 }
 /* ---- custom notepad looks ---- */
 const padKey=id=>"__pad|"+id;
@@ -9229,7 +9302,7 @@ function renderLibrary(){
           const col=g.color||"#78716c";
           const init=esc((g.label||"?").trim().charAt(0).toUpperCase());
           return `<button class="gavatar${gavPick===g.label?" on":""}" data-jump="${i}" data-glabel="${esc(g.label)}" title="${picking?"Show only":"Skip to"} ${esc(g.label)}">
-            ${art?`<img data-gartimg="${esc(art.img)}" data-gavcol="${col}" data-gavinit="${init}" alt="">`
+            ${art?`<img data-gartimg="${esc(art.img)}"${art.fx!=null?` style="object-position:${Math.round(art.fx*100)}% ${Math.round((art.fy==null?0.5:art.fy)*100)}%"`:""} data-gavcol="${col}" data-gavinit="${init}" alt="">`
                  :`<img data-gavbook="${coverPicks(g.items)}" data-gavcol="${col}" data-gavinit="${init}" alt="">`}
             <span class="gavname">${esc(g.label)} <b>${g.items.length}</b></span></button>`;}).join("")}</div>`
       :`<div class="pills" style="margin-bottom:10px">${gsAll.map((g,i)=>
@@ -9404,8 +9477,21 @@ function renderLibrary(){
   if(gc)gc.onclick=()=>{gavPick=null;renderLibrary();};
   qa("[data-gart]",m).forEach(b=>b.onclick=e=>{
     e.stopPropagation();
-    pendingGart=b.dataset.gart;
-    q("#gartFile").click();
+    const key=b.dataset.gart;
+    /* no picture yet: straight to the file, as always. With one: a small
+       menu, because the button now has three things to offer — their item
+       23 added "which part of it the circles show". */
+    if(!groupArt[key]){pendingGart=key;q("#gartFile").click();return;}
+    openWordMenu(key.split("|").slice(1).join("|"),
+      "This group's picture.",
+      [["⌖ Choose what the circle shows","focus"],
+       ["🖼 Choose a different picture","pick"],
+       ["✕ Remove it","off"]],
+      async a=>{
+        if(a==="focus")openGartFocus(key);
+        else if(a==="pick"){pendingGart=key;q("#gartFile").click();}
+        else if(a==="off"&&confirm("Remove this group's picture?")){await clearGroupArt(key);renderLibrary();}
+      });
   });
   qa("[data-gartx]",m).forEach(b=>b.onclick=async e=>{
     e.stopPropagation();
