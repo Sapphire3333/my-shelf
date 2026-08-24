@@ -922,6 +922,20 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   #picViewCap{color:#e8e6e3;font-size:calc(13px*var(--uiz,1));text-align:center;
     font-variant-numeric:tabular-nums}
   .canzoom{cursor:zoom-in}
+  /* the "Move to…" list: the ☰ jump list's places, offered on a picture or
+     note itself. Body-level and sized against --uiz, like the sheets — it is
+     opened from a page whose zoom it must not inherit. */
+  #moveSheet{position:fixed;inset:0;z-index:430;background:rgba(28,25,23,.5);
+    display:flex;align-items:flex-end;justify-content:center;padding:12px}
+  .movesheet{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    width:min(420px,100%);max-height:76vh;overflow:auto;
+    padding:calc(10px*var(--uiz,1));box-shadow:0 18px 50px rgba(0,0,0,.4)}
+  .movesheet .lbl{display:block;margin:2px 4px 8px;font-size:calc(12.5px*var(--uiz,1))}
+  .movesheet button{display:block;width:100%;text-align:left;border-radius:8px;
+    padding:calc(9px*var(--uiz,1)) calc(11px*var(--uiz,1));
+    font-size:calc(13.5px*var(--uiz,1));white-space:pre-wrap}
+  .movesheet button:hover{background:#f0fdfa}
+  [data-theme="dark"] .movesheet button:hover{background:#134e4a}
   #kwSheet{position:fixed;inset:0;z-index:420;background:rgba(28,25,23,.5);
     display:flex;align-items:flex-end;justify-content:center;padding:12px}
   .kwsheet{background:var(--card);border:1px solid var(--line);border-radius:16px;
@@ -5438,6 +5452,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-24.26",lines:[
+    "Dragging a picture or note further than the screen shows works now, both ways you asked for. Hold it near the top or bottom edge and the page slides underneath while the item stays under your finger — dragging had to switch the touch off for scrolling, which is why the page would never move for you before.",
+    "And for the long moves there is ⇱ Move to… on the item's ⋯ menu: the same places the ☰ jump list knows — the summary, the quotes, each story of a collection, the very bottom — pick one and the item is set down there, with the amber ring showing where it landed."
+  ]},
   {v:"2026-08-24.20",lines:[
     "Untick all now appears whenever anything is ticked. On a shelf of 3,887 one book was already on your shelf and started unticked, so the label never flipped to Untick and there was no way to clear 3,886 ticks except by hand.",
     "The diagnostics count the scrapbook on the book you last had open — loose pictures, notes, and drawing marks. A drawing sits INSIDE the page and stops at its edges; a background covers the whole window, margins and all. Whichever of those two is flooding a collection, that line now says so."
@@ -9992,6 +10010,38 @@ function openPicView(src,label){
 }
 document.addEventListener("keydown",e=>{const v=q("#picView");
   if(e.key==="Escape"&&v&&!v.hidden){e.stopPropagation();v.hidden=true;}});
+/* ---- "Move to…" — the long move without the long drag ----
+   Dragging works across the screen you can see; carrying a picture from the
+   top of a long page down to the quotes means holding it against the edge
+   while the page crawls past. So the places the ☰ jump list names are offered
+   on the item itself: pick one, the item is set down there, and the finder's
+   ring shows where it went. Same labels as the jump list on purpose — they
+   are the same places, and two lists naming them differently would read as
+   two different maps of one page. */
+function moveToSpots(){
+  const page=q("#edPage");if(!page)return [];
+  const pr=page.getBoundingClientRect();
+  const w=page.offsetWidth||pr.width||1;
+  const k=(pr.width||w)/w,z=(k>0.05&&k<20)?k:1;
+  /* rect differences are screen pixels, a stored y is the page's own — the
+     text zoom sits between them, exactly as in flashSpot */
+  const spots=fabSections().map(s=>({label:s.label,
+    y:Math.max(0,Math.round((s.el.getBoundingClientRect().top-pr.top)/z))}));
+  spots.push({label:"⬇ The very bottom",y:Math.max(0,page.offsetHeight-40)});
+  return spots;
+}
+function closeMoveSheet(){const s=q("#moveSheet");if(s)s.remove();}
+function openMoveTo(what,go){
+  closeMoveSheet();
+  const spots=moveToSpots();if(!spots.length)return;
+  const v=document.createElement("div");v.id="moveSheet";
+  v.innerHTML=`<div class="movesheet"><span class="lbl">Move this ${what} to…</span>
+    ${spots.map((s,i)=>`<button data-mvi="${i}">${esc(s.label)}</button>`).join("")}</div>`;
+  document.body.appendChild(v);
+  v.addEventListener("pointerdown",e=>{if(e.target===v)closeMoveSheet();});
+  qa("[data-mvi]",v).forEach(b=>b.onclick=()=>{
+    const s=spots[+b.dataset.mvi];closeMoveSheet();go(s.y);});
+}
 const kwSheetOpen=()=>{const s=q("#kwSheet");return !!(s&&!s.hidden);};
 function closeKwSheet(){const s=q("#kwSheet");if(s)s.hidden=true;}
 function renderKwSheetTop(getCur,redrawEditor,save){
@@ -10039,6 +10089,7 @@ function openKwSheet(renderList,addKw,getCur,redrawEditor,save){
 }
 document.addEventListener("keydown",e=>{
   if(e.key!=="Escape")return;
+  if(q("#moveSheet")){e.stopPropagation();closeMoveSheet();return;}
   if(kwSheetOpen()){e.stopPropagation();closeKwSheet();return;}
   /* the ☰ jump list closed on a press outside and on nothing else */
   const fm=q("#fabMenu");
@@ -15779,6 +15830,39 @@ function wireScrapbook(page,host){
     if(!hs.length){page.style.minHeight="";return;}
     page.style.minHeight=Math.max(...hs)+"px";
   }
+  /* ---- the page scrolls itself under a drag ----
+     Dragging turns the touch off for scrolling (touch-action:none is what
+     makes the drag possible at all), so on a phone an item could only travel
+     as far as one screen showed — moving a note down a long page meant drop,
+     scroll, pick it up, again. Now holding it near the top or bottom edge
+     slides the page underneath; the drag's own `place` measures every move
+     against how far the page has scrolled as well as how far the finger went,
+     so the item stays under the finger while the ground moves. The edges are
+     the VISIBLE ones — visualViewport, because a pinched-out phone shows a
+     different slice of the page than the layout box claims. */
+  function edgeScroller(place){
+    let px=0,py=0,raf=0;
+    const tick=()=>{
+      const vv=window.visualViewport;
+      const top=vv?vv.offsetTop:0,h=vv?vv.height:window.innerHeight;
+      const m=Math.max(28,Math.min(70,h*0.15));
+      let v=0;
+      if(py<top+m)v=-Math.ceil(Math.min(1,(top+m-py)/m)*16);
+      else if(py>top+h-m)v=Math.ceil(Math.min(1,(py-(top+h-m))/m)*16);
+      if(v){
+        /* grow before scrolling down: the page cannot scroll past its own
+           end, and its end is wherever the dragged item was a moment ago */
+        if(v>0)pageMin();
+        window.scrollBy(0,v);
+        place(px,py);
+      }
+      raf=requestAnimationFrame(tick);
+    };
+    return{
+      at(x,y){px=x;py=y;if(!raf)raf=requestAnimationFrame(tick);},
+      stop(){if(raf)cancelAnimationFrame(raf);raf=0;}
+    };
+  }
 
   /* ---- drawing ----
      A stroke belongs to whatever it was started on: a picture, a note, or the page.
@@ -16232,6 +16316,7 @@ function wireScrapbook(page,host){
           <button class="pflv">⇅ Flip upside down</button>
           <button class="pfront">⬆ Bring to front</button>
           <button class="pback">⬇ Send to back</button>
+          <button class="pmove">⇱ Move to…</button>
         </div>
         <div class="rot" title="Drag to tilt · double-click to straighten"></div>
         <div class="prs"></div>
@@ -16276,6 +16361,10 @@ function wireScrapbook(page,host){
       q(".pflv",el).onclick=e=>{e.stopPropagation();p.flipV=!p.flipV;el.style.transform=xform(p);pmenu.hidden=true;scheduleSave();};
       q(".pfront",el).onclick=e=>{e.stopPropagation();toFront(p);};
       q(".pback",el).onclick=e=>{e.stopPropagation();toBack(p);};
+      q(".pmove",el).onclick=e=>{e.stopPropagation();pmenu.hidden=true;
+        openMoveTo("note",ny=>{p.y=ny;renderPads();scheduleSave();
+          const el2=q(`#edPage .pad[data-pad="${p.id}"]`);
+          if(el2)flashSpot(el2,"Moved here");});};
       q(".pskin",el).onclick=e=>{e.stopPropagation();
         const bp=q("#bgPanel");if(bp){bp.hidden=true;bp.innerHTML="";}
         const bgb=q("#edBg");if(bgb)bgb.classList.remove("on");
@@ -16292,15 +16381,20 @@ function wireScrapbook(page,host){
         const sx=e.clientX,sy=e.clientY,x=cx(p.x,p.w),y=p.y,w=p.w,h=p.h;
         const [loX,hiX]=xRange(p.w);
         /* how far the pointer has travelled, in the page's own pixels rather than
-           the screen's — otherwise at 130% a note runs a third ahead of the hand */
+           the screen's — otherwise at 130% a note runs a third ahead of the hand.
+           The scroll delta rides along too: when the page auto-scrolls under a
+           still finger, that is movement the finger never made. */
         const z=zoomNow();
-        const mv=ev=>{
-          const mx=(ev.clientX-sx)/z,my=(ev.clientY-sy)/z;
+        const s0=window.scrollY;
+        const place=(cxp,cyp)=>{
+          const mx=(cxp-sx)/z,my=(cyp-sy+(window.scrollY-s0))/z;
           if(how==="drag"){p.x=Math.min(hiX,Math.max(loX,x+mx));p.y=Math.max(0,y+my);}
           else{p.w=Math.max(90,Math.min(1200,w+mx));p.h=Math.max(70,Math.min(1400,h+my));}
           el.style.left=p.x+"px";el.style.top=p.y+"px";el.style.width=p.w+"px";el.style.height=p.h+"px";};
-        const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();syncDraw();scheduleSave();};
-        window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);};
+        const auto=edgeScroller(place);
+        const mv=ev=>{auto.at(ev.clientX,ev.clientY);place(ev.clientX,ev.clientY);};
+        const up=()=>{auto.stop();window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up);pageMin();syncDraw();scheduleSave();};
+        window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);window.addEventListener("pointercancel",up);};
       el.addEventListener("pointerdown",e=>{
         if(e.target.closest(".prs"))startDrag(e,"resize");else startDrag(e,"drag");});
     });
@@ -16335,6 +16429,7 @@ function wireScrapbook(page,host){
           <button class="sflv">⇅ Flip upside down</button>
           <button class="sfront">⬆ Bring to front</button>
           <button class="sback">⬇ Send to back</button>
+          <button class="smove">⇱ Move to…</button>
           <button class="scrop">⬚ Crop — keep part of it</button>
           <button class="scut">✂ Cut out background</button>
         </div>
@@ -16350,6 +16445,10 @@ function wireScrapbook(page,host){
       q(".sflv",el).onclick=e=>{e.stopPropagation();im.flipV=!im.flipV;el.style.transform=xform(im);smenu.hidden=true;scheduleSave();};
       q(".sfront",el).onclick=e=>{e.stopPropagation();toFront(im);};
       q(".sback",el).onclick=e=>{e.stopPropagation();toBack(im);};
+      q(".smove",el).onclick=e=>{e.stopPropagation();smenu.hidden=true;
+        openMoveTo("picture",ny=>{im.y=ny;renderImages();scheduleSave();
+          const el2=q(`#edPage .scrap[data-im="${im.id}"]`);
+          if(el2)flashSpot(el2,"Moved here");});};
       q(".scrop",el).onclick=e=>{e.stopPropagation();smenu.hidden=true;openCrop(im);};
       q(".scut",el).onclick=e=>{e.stopPropagation();smenu.hidden=true;openCut(im);};
       startRot(q(".rot",el),el,im);
@@ -16365,15 +16464,19 @@ function wireScrapbook(page,host){
         e.preventDefault();
         const sx=e.clientX,sy=e.clientY,x=cx(im.x,im.w),y=im.y,w=im.w;
         const [loX,hiX]=xRange(im.w);
-        /* the page's own pixels, not the screen's — see zoomNow */
+        /* the page's own pixels, not the screen's — see zoomNow. The scroll
+           delta rides along for the same reason as on a note above. */
         const z=zoomNow();
-        const mv=ev=>{
-          const mx=(ev.clientX-sx)/z,my=(ev.clientY-sy)/z;
+        const s0=window.scrollY;
+        const place=(cxp,cyp)=>{
+          const mx=(cxp-sx)/z,my=(cyp-sy+(window.scrollY-s0))/z;
           if(how==="drag"){im.x=Math.min(hiX,Math.max(loX,x+mx));im.y=Math.max(0,y+my);}
           else im.w=Math.max(60,Math.min(1400,w+mx));
           el.style.left=im.x+"px";el.style.top=im.y+"px";el.style.width=im.w+"px";};
-        const up=()=>{window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);pageMin();syncDraw();scheduleSave();};
-        window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);};
+        const auto=edgeScroller(place);
+        const mv=ev=>{auto.at(ev.clientX,ev.clientY);place(ev.clientX,ev.clientY);};
+        const up=()=>{auto.stop();window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up);pageMin();syncDraw();scheduleSave();};
+        window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);window.addEventListener("pointercancel",up);};
       el.addEventListener("pointerdown",e=>{
         if(e.target.closest(".rs"))startDrag(e,"resize");else startDrag(e,"drag");});
       const im2=q("img",el);if(im2)im2.addEventListener("load",syncDraw);
