@@ -3117,7 +3117,10 @@ function wireEntCap(scope){
   /* the fill-in door rides the same caption on both faces — before the
      slider's early return, which fires when a collection has no entries */
   const f=q("#entFillAll",scope);
-  if(f)f.onclick=()=>openBulkFill([cur.id]);
+  /* through finishSaveThen, so a half-typed edit lands on the shelf before
+     the sheet copies the book — and cannot be lost when the sheet hands the
+     editor the freshly filled copy at the end */
+  if(f)f.onclick=()=>finishSaveThen(()=>openBulkFill([cur.id]));
   const s=q("#entZoom",scope);if(!s)return;
   /* the number follows your hand and the covers change as you drag; the saving
      waits until you let go — the same bargain the text-size slider makes */
@@ -5620,6 +5623,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-25.5",lines:[
+    "\"Filled in 15 books\" and nothing ever appeared — found, reproduced, fixed. The collection's Fill-in door opens the bulk sheet over the book's editor, which works on a private copy taken when the page opened: the fill landed on the real book underneath (which is why the new check line honestly passed), the editor kept showing its old empty copy, and the editor's next save wrote that old copy back over the fill, silently erasing it. Now the sheet hands the open editor the freshly written book and redraws it — the pages, blurbs and ISBNs appear on screen the moment the run finishes, and saving keeps them. The same care now covers picking a collection cover from the strip."
+  ]},
   {v:"2026-08-25.4",lines:[
     "The bulk fill checks its own work. A collection's stories were filled in, the sheet said so, and they were found empty afterwards — and the same run works when repeated elsewhere, so instead of a guessed fix, Done now reads every written field back from the shelf's store and says either \"everything written above is really in it\" or names exactly which writes did not land. Whichever line you see is the answer to where the fault lives."
   ]},
@@ -8881,6 +8887,21 @@ async function openBulkFill(ids){
     if(items.length)pushOp({t:"bulk",items});
     if(coversAdded)bumpCovers();
     if(SYNC.on)flushQueue();
+    /* THE "FILLED IN 15 AND NOTHING EVER APPEARED" BUG. The collection's own
+       Fill-in door opens this sheet over the book's editor — which works on a
+       COPY taken when the page opened. Everything written here was invisible
+       there, and the editor's next save then wrote its stale copy back over
+       the filled one, silently ("ours wins" is its rule for typed edits, and
+       the clash detector cannot see it because shelf and store agree).
+       Reproduced and measured: the store went 202 pages → blank on one
+       scheduleSave. So the open editor is handed the freshly written copy
+       and redrawn. Nothing typed can be lost by this: the sheet covers the
+       screen for the whole run, and the door flushes any unsaved edit
+       before opening. */
+    if(typeof cur!=="undefined"&&cur&&view==="book"&&items.some(it=>it.id===cur.id)){
+      const fresh=books.find(x=>x.id===cur.id);
+      if(fresh){cur=JSON.parse(JSON.stringify(fresh));renderBook();}
+    }
     /* Trust, then check. The owner filled a collection's fifteen stories, was
        told "Filled in 15 books", and found every one still empty — and the
        same run here writes and stores everything, so the fault could not be
@@ -8942,6 +8963,12 @@ async function openBulkFill(ids){
     await dbPut("books",b);
     if(SYNC.on){enqueue({kind:"cover",id:b.id});enqueue({kind:"book",id:b.id});flushQueue();}
     pushOp({t:"bulk",items:[{id:b.id,before,after:JSON.parse(JSON.stringify(b))}]});
+    /* same species as the fill itself: picked with the editor open behind the
+       sheet, the cover's stamp went onto the real book while the editor held
+       its old copy — hand it the new one so its next save carries this too */
+    if(typeof cur!=="undefined"&&cur&&view==="book"&&cur.id===b.id){
+      cur=JSON.parse(JSON.stringify(b));renderBook();
+    }
     bumpCovers();
   }
 
