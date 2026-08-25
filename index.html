@@ -5127,6 +5127,12 @@ async function initSync(){
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
   const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
+  /* the change log and the usage counter, both this device's own */
+  try{const hl=await dbGet("meta","histLog");if(hl&&Array.isArray(hl.v))histLog=hl.v.slice(0,HISTLOG_MAX);}catch(e){}
+  try{const us=await dbGet("meta","usage");
+    usage=(us&&us.v&&us.v.byView)?us.v:{since:Date.now(),byView:{},days:{}};
+  }catch(e){usage={since:Date.now(),byView:{},days:{}};}
+  useView=null;useT0=Date.now();
   /* the Library's Show: ticks, saved by flipKind — junk filtered so a bad
      value can never empty the Library with no way back */
   if(Array.isArray(settings.kinds)){
@@ -5686,6 +5692,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-25.11",lines:[
+    "History's Recently edited now starts with receipts: the last fifty changes made on this device, each naming the book, what changed (pages · blurb · cover…), where it came from (you, the bulk fill, pictures from your files) and when — press one to open the book. The every-book list stays below it, since changes arriving from your other device only show there.",
+    "And Insights ends with How you use the app: time and visits per screen, counted on each device from today — plus which screens you've never opened. A screen left standing counts at most half an hour a stretch, so an overnight tab can't claim the night. Both live on this device only and cost nothing to keep."
+  ]},
   {v:"2026-08-25.10",lines:[
     "A 📙 Hardcover icon joins the Google, Goodreads and StoryGraph ones beside a book's title — and it can do what the others can't: any lookup that matched the book quietly remembers the book's own Hardcover address, the way the ISBN is already remembered, so the icon opens the book's actual page there rather than a search. Books never looked up since this build fall back to a Hardcover search, and earn their address on their next Fill in."
   ]},
@@ -6859,7 +6869,94 @@ function drawColorPicker(box,start,onChange,allowPlain){
 
 /* =============== undo / redo =============== */
 const HIST={undo:[],redo:[]};
-function pushOp(op){HIST.undo.push(op);if(HIST.undo.length>50)HIST.undo.shift();HIST.redo=[];refreshHistBtns();}
+/* ---- the change log (group 11, item 23) ----
+   What changed, on what, from where — kept as fifty small receipts (field
+   names, never book copies; a restore was priced and declined). It rides
+   pushOp, because every writer in the app already arrives there holding a
+   before and an after. Per device on purpose, like the import queue: it is
+   a record of what THIS device did, and sync's own writes don't pass here. */
+let histLog=[];
+let histSrc="";   /* set around bulk flows; empty means "you, editing" */
+const HISTLOG_MAX=50;
+const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blurb",canvasText:"notes",
+  genres:"genres",keywords:"tags",quotes:"quotes",quotesFrom:"quote sources",images:"pictures",
+  pads:"page notes",coverV:"cover",rating:"rating",ratingOwn:"",status:"stage",dateFinished:"finish date",
+  reads:"readings",progress:"progress",rereads:"re-reads",series:"series",seriesNum:"series number",
+  seriesTotal:"series total",isbn:"ISBN",hcSlug:"",favorite:"favourite",dnf:"given up",dnfReasons:"why given up",
+  hold:"on hold",holdReasons:"why on hold",entries:"stories",maturity:"maturity",aspects:"what stood out",
+  pros:"likes",cons:"dislikes",meh:"so-sos",fandoms:"fandoms",characters:"characters",ships:"relationships",
+  link:"link",kind:"kind",audience:"audience",draw:"drawing",bg:"background",type:"shape",
+  chapters:"chapters",warnings:"warnings",entOrdered:"",canvasV:"",modified:"",touched:"",created:"",id:"",
+  prosW:"",consW:"",mehW:"",quotesW:""};
+/* nothing, in all its shapes: a field the editor lazily created as [] on a
+   book that never had one is not a change anybody made */
+const histEmptyish=v=>v==null||v===""||v===false||(Array.isArray(v)&&!v.length)
+  ||(typeof v==="object"&&!Array.isArray(v)&&!Object.keys(v).length);
+function diffWords(before,after){
+  const out=new Set();
+  new Set([...Object.keys(before||{}),...Object.keys(after||{})]).forEach(k=>{
+    const av=(before||{})[k],bv=(after||{})[k];
+    if(histEmptyish(av)&&histEmptyish(bv))return;
+    if(JSON.stringify(av===undefined?null:av)===JSON.stringify(bv===undefined?null:bv))return;
+    if(k in HIST_FIELD_NAMES){if(HIST_FIELD_NAMES[k])out.add(HIST_FIELD_NAMES[k]);}
+    else out.add(k);
+  });
+  return [...out];
+}
+let histLogTimer=0;
+function saveHistLog(){
+  clearTimeout(histLogTimer);
+  histLogTimer=setTimeout(()=>{dbPut("meta",{k:"histLog",v:histLog}).catch(()=>{});},400);
+}
+function histNote(id,before,after,forced){
+  const what=forced||diffWords(before,after);
+  if(!what.length)return;
+  const src=after||before||{};
+  histLog.unshift({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,8),src:histSrc||"you"});
+  if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;
+  saveHistLog();
+}
+/* ---- how the app is used (group 11, item 46) ----
+   Per screen: time in front of it and times opened, counted from the day
+   this build first ran, per device, saved quietly. One stretch is capped at
+   half an hour, so a tab left standing overnight cannot claim the night. */
+let usage=null,useView=null,useT0=0,usageTimer=0;
+function useTick(newView){
+  if(!usage)return;
+  const now=Date.now();
+  if(useView&&useT0&&document.visibilityState!=="hidden"){
+    const s=Math.min(1800,Math.round((now-useT0)/1000));
+    if(s>0){
+      const v=usage.byView[useView]=usage.byView[useView]||{s:0,n:0};
+      v.s+=s;
+      const day=new Date().toISOString().slice(0,10);
+      usage.days[day]=(usage.days[day]||0)+s;
+    }
+  }
+  if(newView!==undefined&&newView!==useView){
+    if(newView){const v=usage.byView[newView]=usage.byView[newView]||{s:0,n:0};v.n++;}
+    useView=newView;
+  }
+  useT0=now;
+  clearTimeout(usageTimer);
+  usageTimer=setTimeout(()=>{dbPut("meta",{k:"usage",v:usage}).catch(()=>{});},2000);
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="hidden")useTick(null);
+  else useTick(typeof view==="string"?view:null);
+});
+function pushOp(op){
+  HIST.undo.push(op);if(HIST.undo.length>50)HIST.undo.shift();HIST.redo=[];refreshHistBtns();
+  /* the change log rides the same funnel — see above */
+  try{
+    if(op.t==="book")histNote(op.id,op.before,op.after);
+    else if(op.t==="bulk")(op.items||[]).forEach(it=>histNote(it.id,it.before,it.after));
+    else if(op.t==="del"&&op.body){
+      const bb=op.body.b||op.body;
+      histNote(bb&&bb.id,bb,bb,["deleted — it waits in the bin"]);
+    }
+  }catch(e){/* a receipt must never sink the write it describes */}
+}
 function refreshHistBtns(){
   const u=q("#uBtn"),r=q("#rBtn");
   if(u)u.disabled=!HIST.undo.length;
@@ -7326,6 +7423,7 @@ function restoreFromHistory(){
 }
 function render(){
   if(!bootRestored){bootRestored=true;if(restoreFromHistory())return;}
+  useTick(view);
   resetCoverStats();   /* a fresh tally per screen, however many passes it takes */
   if(view==="book"){renderBook();return;}
   q("#app").innerHTML=`
@@ -8855,6 +8953,7 @@ async function openBulkFill(ids){
        redrawing makes a second run harmless. */
     if(busy)return;
     busy=true;
+    histSrc="the bulk fill";
     try{
     S.done=0;S.filled=0;S.failedCovers=[];stop=false;S.stopped=false;
     S.vanished=0;S.storageFull=false;
@@ -9038,7 +9137,7 @@ async function openBulkFill(ids){
     }
     await buildStrips();
     S.stage="done";draw();
-    }finally{busy=false;}
+    }finally{busy=false;histSrc="";}
   }
   /* A cover for the collection out of its own books — every story cover it has,
      the ones that were already there as well as the ones just fetched. The
@@ -10413,7 +10512,16 @@ function renderHistory(){
        rows nobody scrolls to. Timed: 4,335 rows 1,245ms, 400 rows 100ms. The
        rest are a press away and the press says how many. */
     const show=list.slice(0,histShown);
-    body='<div class="hint" style="margin-bottom:10px">Most recently edited first — only real changes count, not just opening a book.</div>'
+    /* the receipts first: what changed, on what, from where — this device's
+       own last fifty. The every-book list below still covers what arrived
+       from other devices, which never passes this device's log. */
+    const logRows=histLog.map((e2,i)=>`<div class="snap" data-hlog="${esc(e2.id)}" style="padding:6px 10px;cursor:pointer" title="Open the book">
+        <div style="min-width:0;flex:1"><div class="when" style="font-size:13.5px">${esc(e2.title)}</div>
+          <div class="meta">${esc((e2.what||[]).join(" · "))} — ${esc(e2.src||"you")} · ${esc(fmtEdited(e2.t))}</div></div></div>`).join("");
+    body=(histLog.length?`<div class="lbl" style="display:block;margin:0 0 6px">What changed on this device — the last ${histLog.length}</div>`
+        +logRows
+        +`<div class="lbl" style="display:block;margin:16px 0 6px">Every book, by last edit</div>`:"")
+      +'<div class="hint" style="margin-bottom:10px">Most recently edited first — only real changes count, not just opening a book.</div>'
       +show.map(b=>rowHtml(b,false,"edited "+fmtEdited(b.modified||b.created||Date.now()))).join("")
       +(list.length>show.length?`<div class="hrow2" style="margin-top:10px;justify-content:center">
         <button class="btn" id="histMore">Show ${Math.min(HIST_PAGE,list.length-show.length)} more — ${list.length-show.length} older still</button></div>`:"");
@@ -10447,6 +10555,11 @@ function renderHistory(){
     }
   }
   m.innerHTML=pills+body;
+  qa("[data-hlog]",m).forEach(r=>r.onclick=()=>{
+    const id=r.dataset.hlog;
+    if(books.some(x=>x.id===id))openBook(id);
+    else alert("That book isn't on the shelf any more — the bin may still have it.");
+  });
   qa("[data-hv]",m).forEach(b=>b.onclick=()=>{
     /* a fresh list starts at the top in both senses */
     histShown=HIST_PAGE;
@@ -14690,7 +14803,32 @@ function renderInsights(){
     };
     q("#anaHide").onclick=()=>{out.innerHTML="";};
   };
+  m.insertAdjacentHTML("beforeend",usageCardHtml());
   addPageToc(m);
+}
+/* the usage card (item 46): time and visits per screen, counted on this
+   device from the day the counter first ran. The current stretch is flushed
+   before drawing, so the numbers include the minute you are in. */
+function usageCardHtml(){
+  if(!usage)return "";
+  useTick(view);
+  const names={overview:"🗂 Overview",library:"📚 Library",search:"🔍 Search",insights:"✨ Insights",
+    quotes:"❝ Quotes",pick:"🎲 Pick",history:"🕘 History",settings:"⚙ Settings",book:"📖 Book pages"};
+  const rows=Object.keys(names).map(k=>({k,name:names[k],s:(usage.byView[k]||{}).s||0,n:(usage.byView[k]||{}).n||0}));
+  const tot=rows.reduce((a,r)=>a+r.s,0);
+  const max=Math.max(1,...rows.map(r=>r.s));
+  const fmt=s=>s>=3600?Math.floor(s/3600)+"h "+Math.round(s%3600/60)+"m":s>=60?Math.round(s/60)+"m":s+"s";
+  const days=Object.keys(usage.days||{}).length;
+  const untouched=rows.filter(r=>!r.n&&!r.s&&r.k!=="insights").map(r=>r.name);
+  return `<div class="sec"><div class="heading"><h2 class="serif">How you use the app</h2></div>
+    <div class="hcard">
+      <div class="hint" style="margin:0 0 9px">Counted on this device since ${esc(fmtEdited(usage.since))} — ${fmt(tot)} across ${days} day${days===1?"":"s"}. The phone keeps its own count, and a screen left open counts at most half an hour a stretch.</div>
+      ${rows.sort((a,b)=>b.s-a.s).map(r=>`<div class="hrow2" style="gap:9px;margin:3px 0;flex-wrap:nowrap">
+        <span style="flex:0 0 108px;font-size:13px;white-space:nowrap">${r.name}</span>
+        <span class="prog" style="flex:1 1 60px;min-width:40px;max-width:260px"><i style="width:${Math.round(r.s/max*100)}%"></i></span>
+        <span class="hint" style="flex:0 0 auto">${r.s?fmt(r.s):"—"}${r.n?` · ${r.n}×`:""}</span></div>`).join("")}
+      ${untouched.length?`<div class="hint" style="margin:9px 0 0">Not opened since counting began: ${esc(untouched.join(", "))}.</div>`:""}
+    </div></div>`;
 }
 
 /* =============== editor =============== */
@@ -14710,7 +14848,7 @@ document.addEventListener("selectionchange",saveSel);
 /* "view" shows only what's filled in; "edit" is the form. A book you've never
    touched opens in the form, since it's waiting to be filled in. */
 let bookMode="view";
-function renderBook(){bookMode==="edit"?renderEditor():renderBookView();syncHistory();}
+function renderBook(){useTick(view);bookMode==="edit"?renderEditor():renderBookView();syncHistory();}
 /* Putting the book down and picking it up the other way round puts the pen down
    too. `mode` — arranging, drawing, tagging — is a tool you have in your hand,
    and it used to be carried between the two faces: leaving the form while
@@ -21386,7 +21524,9 @@ async function scanTake(key,asCover){
   try{await dbPut("books",b);}catch(e){}
   if(SYNC.on){enqueue({kind:"book",id:b.id});if(asCover)enqueue({kind:"cover",id:b.id});flushQueue();}
   if(asCover)bumpCovers();
+  histSrc="pictures from your files";
   pushOp({t:"bulk",items:[{id:b.id,before,after:JSON.parse(JSON.stringify(b))}]});
+  histSrc="";
   /* the editor-copy trap: a book open behind Overview must be handed this */
   await rebaseOpenBook(b.id);
   en.taken.add(ii);
