@@ -2328,6 +2328,12 @@ html[data-journal="on"] .tab[data-v="ach"]{border-bottom-color:#b5852c}
 .qcard.qprompt .btn,.qcard.qdare .btn{background:transparent}
 .qpickrow{display:flex;gap:7px;align-items:center;font-size:13px;margin:4px 0;flex-wrap:wrap}
 .qpickrow .st{margin-left:auto;font-size:12px;color:var(--mut);white-space:nowrap}
+/* two challenge cards a row where the window allows — their point about the
+   stacked cards leaving half a computer screen empty */
+.qgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:2px 18px;
+  align-items:start;max-width:1200px}
+.qcell{min-width:0}
+.qcell .qcard{max-width:none}
 .qtwelve button.achstreak{font:inherit;cursor:pointer;color:inherit}
 .qtask{display:flex;gap:8px;align-items:center;font-size:13px;margin:5px 0}
 .qtask .qbx{width:17px;height:17px;border:2px solid var(--teal);border-radius:5px;flex:none;
@@ -5796,6 +5802,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-25.20",lines:[
+    "The pick got back the part that earned its keep: three little boxes — a genre, a tag, a word — and 🎲 Pick for me draws from your Want-to-read within them. The more you narrow it, the less it pays, your scale: one thing named 75 XP, two 50, all three 30, and a bare draw counts as one. The card always says what the current draw pays, each kept pick remembers its own price, and asking for something nothing matches says so instead of shrugging. And on a computer the challenge cards stand two to a row now, instead of a single column leaving half the screen empty."
+  ]},
   {v:"2026-08-25.19",lines:[
     "Your 2C, 4 and 6, off the mock. Undo, Redo, the text size and the ? live in the page's own corner now, above ＋ Add book, and the Library's top is two pills: what's showing, and ☰ Filters holding the stages, the kinds, Fandoms and the Series overview — the fold remembers whether you left it open, and an active stage always reads on the closed pill with one press back to All. The challenge cards look like what they are: the daily three on a spiral notepad in handwriting, the dare as a tilted playing card, the prompt on parchment with a quill.",
     "And the Pick tab retired into the cabinet as The pick, your design: draw with your eyes open, re-draw freely, ＋ Keep it collects the tempting ones onto a list that stays and folds, and a kept pick pays half the dare when it's finished — +50 read, or +50 hated honestly with the OH-NO paperwork. The blind dare keeps its full 100, because being chosen for is braver than choosing."
@@ -10882,10 +10891,19 @@ function renderAch(){
    const pk=q("#qpKeep",m);if(pk)pk.onclick=()=>{
      quests.picks=quests.picks||[];
      if(quests.pickCur&&!quests.picks.some(p=>p.id===quests.pickCur.id))
-       quests.picks.unshift({id:quests.pickCur.id,title:quests.pickCur.title,at:Date.now()});
+       quests.picks.unshift({id:quests.pickCur.id,title:quests.pickCur.title,at:Date.now(),xp:quests.pickCur.xp||pickXp()});
      if(quests.picks.length>40)quests.picks.length=40;
      quests.pickCur=null;pickOpen=true;questSave();renderAch();
    };
+   /* the three narrowing boxes — remembered so a re-draw asks the same question */
+   [["qpG","g"],["qpT","t"],["qpW","w"]].forEach(([id,k])=>{
+     const inp=q("#"+id,m);
+     if(inp)inp.onchange=()=>{
+       quests.pickFilt=quests.pickFilt||{};
+       quests.pickFilt[k]=inp.value;
+       quests.pickMiss=false;questSave();renderAch();
+     };
+   });
    const pa=q("#qpAway",m);if(pa)pa.onclick=()=>{quests.pickCur=null;questSave();renderAch();};
    const pf=q("#qpFold",m);if(pf)pf.onclick=()=>{pickOpen=!pickOpen;renderAch();};
    qa("[data-qpdrop]",m).forEach(b=>b.onclick=()=>{quests.picks.splice(+b.dataset.qpdrop,1);questSave();renderAch();});
@@ -11045,13 +11063,29 @@ function questDrawBook(){
    eyes open, re-draw freely, keep the tempting ones on a list that stays.
    Half the dare's pay, because choosing is easier than being chosen for. */
 let pickOpen=false;
+/* the price of specificity — their scale: naming one of genre/tag/word
+   pays 75, two 50, three 30; a bare re-roll counts as barely choosing and
+   sits with one. The blind dare keeps its 100 above all of this. */
+function pickXp(){
+  const f=(quests&&quests.pickFilt)||{};
+  const n=["g","t","w"].filter(k=>String(f[k]||"").trim()).length;
+  return n>=3?30:n===2?50:75;
+}
 function questDrawPick(){
+  const f=quests.pickFilt||{};
+  const g=String(f.g||"").trim().toLowerCase(),
+        t=String(f.t||"").trim().toLowerCase(),
+        w=String(f.w||"").trim().toLowerCase();
   const taken=new Set([...(quests.picks||[]).map(p=>p.id),
     quests.bookCh&&quests.bookCh.id,quests.pickCur&&quests.pickCur.id].filter(Boolean));
-  const pool=books.filter(b=>kindOf(b)==="book"&&statusOf(b)==="want"&&!b.dnf&&!b.hold&&!taken.has(b.id));
-  if(!pool.length){quests.pickCur=null;questSave();return null;}
+  const pool=books.filter(b=>kindOf(b)==="book"&&statusOf(b)==="want"&&!b.dnf&&!b.hold&&!taken.has(b.id)
+    &&(!g||(b.genres||[]).some(x=>String(x).toLowerCase().includes(g)))
+    &&(!t||(typeof allKeywordsOf==="function"?allKeywordsOf(b):(b.keywords||[])).some(x=>String(x).toLowerCase().includes(t)))
+    &&(!w||[b.title,b.author,b.series].some(x=>String(x||"").toLowerCase().includes(w))));
+  if(!pool.length){quests.pickCur=null;quests.pickMiss=true;questSave();return null;}
+  quests.pickMiss=false;
   const b=pool[Math.floor(Math.random()*pool.length)];
-  quests.pickCur={id:b.id,title:b.title||"Untitled",author:b.author||"",at:Date.now()};
+  quests.pickCur={id:b.id,title:b.title||"Untitled",author:b.author||"",at:Date.now(),xp:pickXp()};
   questSave();return b;
 }
 const P_HERO=["reluctant librarian","retired villain","apprentice mapmaker","ship's cook","runaway heir","small-town ghost","overworked witch","stray fox with opinions"];
@@ -11099,14 +11133,14 @@ function questCheck(){
       if(!b)return;
       if(statusOf(b)==="finished"&&!b.dnf){
         p.done=Date.now();p.how="read";
-        questAward(50,"A kept pick, read: “"+p.title+"”");
+        questAward(p.xp||50,"A kept pick, read: “"+p.title+"”");
       }else if(b.dnf){
         const filled=[stripHtml(b.canvasText||"").trim(),(b.cons||[]).length,
           b.aspects&&Object.keys(b.aspects).some(k=>(b.aspects[k]||[]).length),(b.quotes||[]).length]
           .filter(Boolean).length;
         if(filled>=2){
           p.done=Date.now();p.how="oh";
-          questAward(50,"A kept pick, hated honestly: “"+p.title+"”");
+          questAward(p.xp||50,"A kept pick, hated honestly: “"+p.title+"”");
         }
       }
     });
@@ -11149,7 +11183,8 @@ function questHtml(){
   const tasks=todaysTasks();
   const lvl=questLevel();
   const dareB=quests.bookCh?books.find(b=>b.id===quests.bookCh.id):null;
-  return `
+  return `<div class="qgrid">
+  <div class="qcell">
   <div class="lbl" style="display:block;margin:4px 0 2px">Today's three</div>
   <div class="qcard qtasks">
     ${tasks.map(t=>{const done=quests.daily.got.indexOf(t[0])>=0||taskDoneToday(t);
@@ -11161,6 +11196,8 @@ function questHtml(){
       <b>Level ${lvl}</b> · ${(quests.xp||0)-(lvl-1)*XP_PER_LEVEL} of ${XP_PER_LEVEL} XP toward level ${lvl+1} · ${(quests.xp||0)} in all.<br>
       Tasks tick themselves when the change happens; nothing asks you to report.</div>
   </div>
+  </div>
+  <div class="qcell">
   <div class="lbl" style="display:block;margin:14px 0 2px">The dare</div>
   <div class="qcard qdare">
     ${dareB?`<div style="font-size:13.5px"><b>${esc(dareB.title||"Untitled")}</b>${dareB.author?` — ${esc(dareB.author)}`:""}</div>
@@ -11170,26 +11207,36 @@ function questHtml(){
     :`<div class="hint" style="margin:0 0 7px">One random book from your Want-to-read, drawn blind.</div>
       <button class="btn pri" id="qDraw">🎲 Draw a dare</button>`}
   </div>
+  </div>
+  <div class="qcell">
   <div class="lbl" style="display:block;margin:14px 0 2px">The pick</div>
   <div class="qcard">
-    ${quests.pickCur?`<div style="font-size:13.5px"><b>${esc(quests.pickCur.title)}</b>${quests.pickCur.author?` — ${esc(quests.pickCur.author)}`:""}</div>
+    <div class="hrow2" style="gap:6px;flex-wrap:wrap;margin:0 0 8px">
+      <input class="field" id="qpG" placeholder="a genre…" value="${esc((quests.pickFilt||{}).g||"")}" style="width:105px;font-size:12.5px;padding:3px 9px">
+      <input class="field" id="qpT" placeholder="a tag…" value="${esc((quests.pickFilt||{}).t||"")}" style="width:95px;font-size:12.5px;padding:3px 9px">
+      <input class="field" id="qpW" placeholder="a word…" value="${esc((quests.pickFilt||{}).w||"")}" style="width:95px;font-size:12.5px;padding:3px 9px">
+      <span class="hint" style="white-space:nowrap">pays <b>+${pickXp()}</b></span>
+    </div>
+    ${quests.pickMiss?`<div class="hint" style="margin:0 0 7px;color:var(--warn-ink,#b45309)">Nothing on Want-to-read matches all of that — loosen one.</div>`:""}
+    ${quests.pickCur?`<div style="font-size:13.5px"><b>${esc(quests.pickCur.title)}</b>${quests.pickCur.author?` — ${esc(quests.pickCur.author)}`:""} <span class="hint">· +${quests.pickCur.xp||50} if seen through</span></div>
       <div class="hrow2" style="margin:7px 0 0;flex-wrap:wrap">
         <button class="btn" data-qgo="${esc(quests.pickCur.id)}">Open the book</button>
         <button class="btn" id="qpKeep">＋ Keep it</button>
         <button class="btn" id="qpDraw">↻ Another</button>
         <button class="btn" id="qpAway" title="No penalty">Put it away</button></div>`
-    :`<div class="hint" style="margin:0 0 7px">Like the dare, but with your eyes open — draw, look, re-draw, keep the ones that tempt you.</div>
-      <button class="btn pri" id="qpDraw">🎲 Draw with open eyes</button>`}
+    :`<button class="btn pri" id="qpDraw">🎲 Pick for me</button>`}
     ${(quests.picks&&quests.picks.length)?`<div style="margin-top:9px">
       <button class="btn smallbtn" id="qpFold">${pickOpen?"▾":"▸"} Picked for later — ${quests.picks.length}</button>
       ${pickOpen?quests.picks.map((p,i)=>`<div class="qpickrow">
         <button class="btn smallbtn" data-qgo="${esc(p.id)}" style="padding:2px 9px">Open</button>
         <span style="min-width:0;overflow-wrap:anywhere">${esc(p.title)}</span>
-        <span class="st">${p.done?(p.how==="oh"?"🙈 hated honestly · +50":"✓ read · +50"):"waiting"}</span>
+        <span class="st">${p.done?(p.how==="oh"?"🙈 hated honestly":"✓ read")+" · +"+(p.xp||50):"waiting · +"+(p.xp||50)}</span>
         ${p.done?"":`<button class="btn smallbtn" data-qpdrop="${i}" title="Off the list — nothing lost">✕</button>`}
       </div>`).join(""):""}</div>`:""}
-    <div class="hint" style="margin-top:8px">A kept pick pays half the dare when it's finished — +50 XP, or +50 the OH-NO way, hated with the paperwork filled. The blind dare stays the full 100.</div>
+    <div class="hint" style="margin-top:8px">Name a genre, a tag or a word — or none — and draw. The more you narrow it, the less it pays: one thing named 75, two 50, all three 30. The blind dare stays the full 100.</div>
   </div>
+  </div>
+  <div class="qcell">
   <div class="lbl" style="display:block;margin:14px 0 2px">The prompt</div>
   <div class="qcard qprompt">
     ${quests.aiPrompt?`<div class="qptxt" style="font-size:13.5px">“${esc(quests.aiPrompt.text)}”</div>
@@ -11198,6 +11245,8 @@ function questHtml(){
         <button class="btn" id="qGen">↻ Another one</button></div>`
     :`<div class="hint" style="margin:0 0 7px">A story seed, drawn at random — for growing an AI story from.</div>
       <button class="btn pri" id="qGen">🪄 Draw a prompt</button>`}
+  </div>
+  </div>
   </div>
   <div class="lbl" style="display:block;margin:14px 0 2px">The year's twelve — ${quests.year}</div>
   <div class="qcard">
