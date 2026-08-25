@@ -2277,7 +2277,10 @@ html[data-journal="on"] .tab[data-v="ach"]{border-bottom-color:#b5852c}
 .achstreaks{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
 .achstreak{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;
   padding:4px 12px;font-size:13px;background:var(--card)}
+.lvlchip{font:inherit;font-size:12px;font-weight:600;padding:2px 10px;border-radius:999px;
+  border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;vertical-align:1px}
 .qcard{border:1px solid var(--line);border-radius:11px;padding:11px 14px;background:var(--card);max-width:560px}
+.qtwelve button.achstreak{font:inherit;cursor:pointer;color:inherit}
 .qtask{display:flex;gap:8px;align-items:center;font-size:13px;margin:5px 0}
 .qtask .qbx{width:17px;height:17px;border:2px solid var(--teal);border-radius:5px;flex:none;
   display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff}
@@ -5739,6 +5742,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-25.16",lines:[
+    "The challenges, tuned by your first five verdicts. Every daily task now explains itself in a line underneath — what exactly has to happen for it to count. Moving a bookmark INSIDE a collection counts now: a story's page change was being filed under \"stories\" where neither the task nor the 📖 streak could see it. Your level lives beside the shelf's name as a small ⚡ chip on every screen, and pressing it opens the cabinet. Wishes Granted says its rule precisely — started a day or more after the book was added. And the year's twelve: press a ✓ to open the book that completed it, press an open genre to see those books in Search, and when all twelve are done, a fresh twelve is drawn from whatever genres the shelf has by then, +100 XP for the sweep."
+  ]},
   {v:"2026-08-25.15",lines:[
     "The challenges now actually appear. On a device meeting them for the first time, the guard that waited for their saved state meant nothing ever created that state — so Today's three, the level, the dare, the prompt and the year's twelve silently never drew, which is exactly what you saw and asked about. First meeting creates the state now, and the whole top of the 🏅 tab is there."
   ]},
@@ -6959,6 +6965,29 @@ function diffWords(before,after){
     const av=(before||{})[k],bv=(after||{})[k];
     if(histEmptyish(av)&&histEmptyish(bv))return;
     if(JSON.stringify(av===undefined?null:av)===JSON.stringify(bv===undefined?null:bv))return;
+    /* stories are drilled into, not lumped: a page turned INSIDE a collection
+       is progress, and calling it "stories" was why moving a story's bookmark
+       ticked no task and lit no reading streak — the owner caught it on day
+       one. The same drilling makes every daily task count on a story too. */
+    if(k==="entries"){
+      const map={progress:"progress",reads:"readings",status:"stage",pages:"pages",summary:"blurb",
+        isbn:"ISBN",rating:"rating",keywords:"tags",genres:"genres",notes:"notes",cover:"cover",
+        favorite:"favourite",dnf:"given up",title:"title",aspects:"what stood out"};
+      const ea=Array.isArray(av)?av:[],eb=Array.isArray(bv)?bv:[];
+      const byId={};ea.forEach(e=>{if(e&&e.id)byId[e.id]=e;});
+      let named=false;
+      eb.forEach(e=>{
+        const o=e&&byId[e.id];
+        if(!o)return;
+        Object.keys(map).forEach(f=>{
+          const a2=o[f],b2=e[f];
+          if(histEmptyish(a2)&&histEmptyish(b2))return;
+          if(JSON.stringify(a2===undefined?null:a2)!==JSON.stringify(b2===undefined?null:b2)){out.add(map[f]);named=true;}
+        });
+      });
+      if(!named)out.add("stories");
+      return;
+    }
     if(k in HIST_FIELD_NAMES){if(HIST_FIELD_NAMES[k])out.add(HIST_FIELD_NAMES[k]);}
     else out.add(k);
   });
@@ -7505,7 +7534,7 @@ function render(){
       <div class="hrow">
         <div>
           <h1 class="serif">My Shelf</h1>
-          <div class="sub">${shelfSubHtml()}</div>
+          <div class="sub">${shelfSubHtml()} ${lvlChipHtml()}</div>
         </div>
         <div class="addwrap">
           <button class="addbtn" id="addBook" aria-haspopup="menu" aria-expanded="false">＋ Add book ▾</button>
@@ -7548,6 +7577,7 @@ function render(){
      written there" came about. There is one way in now and it offers the three,
      at a size that says what they are. Typing it in yourself is one of them
      rather than the unlabelled default. */
+  {const lc=q("#lvlChip");if(lc)lc.onclick=()=>{view="ach";render();window.scrollTo(0,0);};}
   {
     const ab=q("#addBook"),am=q("#addMenu");
     ab.onclick=e=>{e.stopPropagation();
@@ -10574,7 +10604,7 @@ const ACHS=[
     c=>c.byKind("book").length],
   ["genres","🧭","Genre Wanderer","genres with at least one finished book","book",[3,6,10,14,18,22,26,30,35],
     c=>new Set(c.finB.flatMap(u=>u.en?entGenresOf(u.book,u.en):(u.book.genres||[]))).size],
-  ["wish","⭐","Wishes Granted","finished after waiting on the shelf a while first","book",[3,10,25,50,100,175,275,400,600],
+  ["wish","⭐","Wishes Granted","finished books you started a day or more after adding them — a wish that sat on the shelf before coming true","book",[3,10,25,50,100,175,275,400,600],
     c=>c.byKind("book").filter(b=>{
       if(statusOf(b)!=="finished"||b.dnf)return false;
       const fr=firstRead(b);
@@ -10740,7 +10770,15 @@ function renderAch(){
        ta.remove();}
      setTimeout(()=>{const el=q("#qCopy");if(el)el.textContent="⧉ Copy the prompt";},1600);
    };
-   qa("[data-qgo]",m).forEach(b=>b.onclick=()=>openBook(b.dataset.qgo));}
+   qa("[data-qgo]",m).forEach(b=>b.onclick=()=>openBook(b.dataset.qgo));
+   qa("[data-q12]",m).forEach(b=>b.onclick=()=>{
+     const g=quests.genres[+b.dataset.q12];
+     if(!g)return;
+     if(g.got){if(g.by&&books.some(x=>x.id===g.by.id))openBook(g.by.id);return;}
+     /* the same door every genre chip uses: Search, filtered to it */
+     S.q="";S.kmulti=[];S.filter=null;S.multi=[g.g];
+     keepMyPlace();view="search";render();window.scrollTo(0,0);
+   });}
   addPageToc(m);
 }
 let achOpen=null;
@@ -10775,15 +10813,25 @@ function questInit(){
   if(quests.year!==questYear()){quests.year=questYear();quests.genres=drawTwelve();questSave();}
   if(!quests.daily||quests.daily.day!==questToday()){quests.daily={day:questToday(),got:[]};questSave();}
 }
+/* each task carries its own plain explanation of what EXACTLY counts —
+   shown under the task, always, because a phone has no hover */
 const QTASKS=[
-  ["blurb","Fill in a blurb on any book",w=>w.includes("blurb")],
-  ["stood","Give a book its stood-out words",w=>w.includes("what stood out")],
-  ["prog","Move a bookmark forward",w=>w.includes("progress")||w.includes("readings")],
-  ["deco","Decorate any page",w=>w.includes("pictures")||w.includes("page notes")||w.includes("drawing")||w.includes("background")],
-  ["rate","Put a rating on something",w=>w.includes("rating")],
-  ["tag","Tag or genre any book",w=>w.includes("tags")||w.includes("genres")],
-  ["quote","Keep a quote",w=>w.includes("quotes")],
-  ["likes","Say what you liked or didn't",w=>w.includes("likes")||w.includes("dislikes")||w.includes("so-sos")],
+  ["blurb","Fill in a blurb on any book",w=>w.includes("blurb"),
+    "The Summary field on any book or story getting words — typed, or applied from a lookup."],
+  ["stood","Give a book its stood-out words",w=>w.includes("what stood out"),
+    "Tick at least one aspect word — Characters, Plot, Readability or Art — on any book."],
+  ["prog","Move a bookmark forward",w=>w.includes("progress")||w.includes("readings"),
+    "Change the page you're on — the page box or the progress bar — on any book or story, or add to its readings."],
+  ["deco","Decorate any page",w=>w.includes("pictures")||w.includes("page notes")||w.includes("drawing")||w.includes("background"),
+    "Add a picture, a note, some drawing, or give a book's page its own background."],
+  ["rate","Put a rating on something",w=>w.includes("rating"),
+    "Set or change a star rating on any book or story."],
+  ["tag","Tag or genre any book",w=>w.includes("tags")||w.includes("genres"),
+    "Add a genre or a tag to any book or story."],
+  ["quote","Keep a quote",w=>w.includes("quotes"),
+    "Add a quote to any book's quotes."],
+  ["likes","Say what you liked or didn't",w=>w.includes("likes")||w.includes("dislikes")||w.includes("so-sos"),
+    "Add a line under Liked, Not so much, or So-so on any book."],
 ];
 function todaysTasks(){
   const day=questToday();
@@ -10805,9 +10853,26 @@ function taskDoneToday(t){
 }
 const XP_PER_LEVEL=150;
 const questLevel=()=>Math.floor(((quests&&quests.xp)||0)/XP_PER_LEVEL)+1;
+let questDirty=false;
 function questAward(n,label){
-  quests.xp=(quests.xp||0)+n;questSave();
+  quests.xp=(quests.xp||0)+n;questSave();questDirty=true;
   achToast({icon:"⚡",name:"+"+n+" XP",plain:label,tiers:[]},0);
+  const lc=document.getElementById("lvlChip");
+  if(lc)lc.textContent="⚡ Lv "+questLevel();
+}
+/* the little level chip beside the shelf's name — their point: a level is
+   only a level if it is visible somewhere always. Press = the cabinet. */
+function lvlChipHtml(){
+  return `<button class="lvlchip" id="lvlChip" title="Your level, from daily tasks and challenges — press for the 🏅 cabinet">⚡ Lv ${questLevel()}</button>`;
+}
+/* a fresh twelve, drawn at random — used when a set is completed, so genres
+   added since the year began get their chance (their rule) */
+function drawTwelveRandom(){
+  const count={};
+  books.forEach(b=>(b.genres||[]).forEach(g=>{const k=String(g).trim();if(k)count[k]=(count[k]||0)+1;}));
+  const pool=Object.keys(count).filter(g=>count[g]>=3);
+  for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));const t=pool[i];pool[i]=pool[j];pool[j]=t;}
+  return pool.slice(0,12).map(g=>({g,got:false}));
 }
 function questDrawBook(){
   const pool=books.filter(b=>kindOf(b)==="book"&&statusOf(b)==="want"&&!b.dnf&&!b.hold);
@@ -10860,19 +10925,32 @@ function questCheck(){
   }
   if(quests.genres&&quests.genres.length){
     const yr=String(quests.year);
-    const got=new Set();
+    /* which book did it — kept on the tick, so a ✓ can open its book */
+    const got=new Map();
     readUnits().forEach(u=>u.reads.forEach(r=>{
       if(!r.end||String(r.end).slice(0,4)!==yr)return;
-      (u.en?entGenresOf(u.book,u.en):(u.book.genres||[])).forEach(g=>got.add(String(g).trim().toLowerCase()));
+      const b=u.book;
+      (u.en?entGenresOf(b,u.en):(b.genres||[])).forEach(g=>{
+        const k=String(g).trim().toLowerCase();
+        if(!got.has(k))got.set(k,{id:b.id,title:(u.en?u.en.title:b.title)||b.title||"Untitled"});
+      });
     }));
     quests.genres.forEach(g=>{
-      if(!g.got&&got.has(String(g.g).toLowerCase())){
-        g.got=true;quests.twelveDone=(quests.twelveDone||0)+1;
+      const hit=got.get(String(g.g).toLowerCase());
+      if(!g.got&&hit){
+        g.got=true;g.by=hit;quests.twelveDone=(quests.twelveDone||0)+1;
         questAward(50,"One of the year's twelve: "+g.g);
-      }
+      }else if(g.got&&!g.by&&hit)g.by=hit;   /* backfill for ticks made before this existed */
     });
+    /* the owner's rule: a completed twelve draws a FRESH twelve, at random,
+       from whatever genres the shelf has by then */
+    if(quests.genres.length&&quests.genres.every(g=>g.got)){
+      questAward(100,"The whole twelve — a fresh twelve is drawn");
+      quests.genres=drawTwelveRandom();
+    }
   }
   questSave();
+  if(questDirty&&view==="ach"){questDirty=false;renderAch();}
 }
 function questHtml(){
   questInit();   /* creates the state on first meeting — same reason as questCheck */
@@ -10883,7 +10961,9 @@ function questHtml(){
   <div class="lbl" style="display:block;margin:4px 0 2px">Today's three</div>
   <div class="qcard">
     ${tasks.map(t=>{const done=quests.daily.got.indexOf(t[0])>=0||taskDoneToday(t);
-      return `<div class="qtask${done?" done":""}"><span class="qbx">${done?"✓":""}</span>${esc(t[1])}<span class="qrw">+10 XP</span></div>`;}).join("")}
+      return `<div class="qtask${done?" done":""}"><span class="qbx">${done?"✓":""}</span>
+        <span style="min-width:0"><span>${esc(t[1])}</span><br><span class="hint" style="font-style:italic">${esc(t[3]||"")}</span></span>
+        <span class="qrw">+10 XP</span></div>`;}).join("")}
     <div class="hint" style="margin-top:7px">Level ${lvl} · ${(quests.xp||0)} XP — next level at ${lvl*XP_PER_LEVEL}. Tasks tick themselves when the change happens; nothing asks you to report.</div>
   </div>
   <div class="lbl" style="display:block;margin:14px 0 2px">The dare</div>
@@ -10906,9 +10986,13 @@ function questHtml(){
   </div>
   <div class="lbl" style="display:block;margin:14px 0 2px">The year's twelve — ${quests.year}</div>
   <div class="qcard">
-    ${(quests.genres&&quests.genres.length)?`<div class="qtwelve">${quests.genres.map(g=>
-        `<span class="achstreak${g.got?"":" qtodo"}">${g.got?"✓ ":""}${esc(g.g)}</span>`).join("")}</div>
-      <div class="hint" style="margin-top:7px">Twelve genres drawn for the year — finish any book wearing one and it ticks itself (+50 XP each). Same draw on every device, by arithmetic rather than by sync.</div>`
+    ${(quests.genres&&quests.genres.length)?`<div class="qtwelve">${quests.genres.map((g,i)=>
+        `<button class="achstreak${g.got?"":" qtodo"}" data-q12="${i}" title="${g.got
+          ?(g.by?`Completed by “${esc(g.by.title)}” — press to open it`:"Completed")
+          :`Press to see your ${esc(g.g)} books in Search`}">${g.got?"✓ ":""}${esc(g.g)}</button>`).join("")}</div>
+      <div class="hint" style="margin-top:7px">Twelve genres drawn for the year — finish any book wearing one and it ticks itself (+50 XP each).
+      Press a ✓ to open the book that did it; press an open one to see those books in Search.
+      When all twelve are done, a fresh twelve is drawn from whatever genres the shelf has by then (+100 XP for the sweep).</div>`
     :`<div class="hint">Not enough genres on the shelf to draw twelve from yet.</div>`}
   </div>`;
 }
