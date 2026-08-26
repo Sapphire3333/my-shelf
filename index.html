@@ -4888,6 +4888,8 @@ async function pullAll(){
         const mtRow=metaRows.find(r=>r.key==="metaTimes");
         const rTimes=(mtRow&&mtRow.value)||{};
         const cloudNewer=k=>(rTimes[k]||0)>(metaTimes[k]||0);
+        /* did the game or the tidying-up rulings actually move? */
+        let gameChanged=false;
         /* keep anything only this device knows about, and honour deletions */
         const takeWhole=(remote,local,delPrefix)=>{
           const out=Object.assign({},remote||{});
@@ -4946,6 +4948,13 @@ async function pullAll(){
           else if(row.key==="catColors"){
             if(cloudNewer("catColors"))catColors=takeWhole(row.value,catColors,"cat:");
             else{const rv=row.value||{};for(const c in rv)if(!catColors[c])catColors[c]=rv[c];}}
+          /* the game and the two Tidying-up rulings. Each has its own joining
+             rule and each says whether it actually changed anything, so a pull
+             that brought nothing new still leaves the screen alone. */
+          else if(row.key==="quests"){if(mergeQuests(row.value))gameChanged=true;}
+          else if(row.key==="achSeen"){if(mergeAchSeen(row.value))gameChanged=true;}
+          else if(row.key==="streaks"){if(mergeStreaks(row.value))gameChanged=true;}
+          else if(row.key==="tidyKeep"){if(mergeTidy(row.value))gameChanged=true;}
         }
         /* anything deleted here must go from the merged copies too */
         for(const k in metaDel){
@@ -4970,6 +4979,9 @@ async function pullAll(){
           else if(kind==="libart")libArt=libArt.filter(x=>x.id!==nm);
           else if(kind==="dnf")dnfCustom=dnfCustom.filter(x=>x!==nm);
           else if(kind==="aud")audCustom=audCustom.filter(x=>x!==nm);
+          /* the two Tidying-up rulings, taken back on one device or the other */
+          else if(kind==="kwkeep")settings.kwKeep=(settings.kwKeep||[]).filter(x=>x!==nm);
+          else if(kind==="tagleave")settings.tagLeave=(settings.tagLeave||[]).filter(x=>x!==nm);
           /* a keyword family, which is only ever as real as the keywords pointing
              at it — so the mark's job is to take its colour away with it */
           else if(kind==="cat")delete catColors[nm];
@@ -4985,6 +4997,20 @@ async function pullAll(){
         for(const k in rTimes)metaTimes[k]=Math.max(metaTimes[k]||0,rTimes[k]);
         dbPut("meta",{k:"metaTimes",v:metaTimes});
         dbPut("meta",{k:"metaDel",v:metaDel});dbPut("meta",{k:"kwColors",v:kwColors});dbPut("meta",{k:"trashCloud",v:trashCloud});
+        /* Our side of the four newcomers goes up whenever it says something
+           the cloud's copy doesn't — including the very first time, when there
+           is no cloud copy at all. Written to disk BEFORE it is queued: the
+           upload reads the stored record, and a key that had never been stored
+           would have gone up as an empty one and wiped the other device's. */
+        {const sent=k=>{const r=metaRows.find(x=>x.key===k);return r?JSON.stringify(r.value):null;};
+         const mine={quests,achSeen,streaks,tidyKeep:tidyRulings()};
+         for(const k in mine){
+           if(!mine[k])continue;
+           if(JSON.stringify(mine[k])===sent(k))continue;
+           await dbPut("meta",{k,v:mine[k]});
+           enqueue({kind:"meta",key:k});
+         }}
+        if(gameChanged)touched=true;
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
         dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});dbPut("meta",{k:"groupArt",v:groupArt});dbPut("meta",{k:"kwColors",v:kwColors});
       }
@@ -5291,6 +5317,17 @@ async function initSync(){
   const mt=await dbGet("meta","metaTimes");metaTimes=mt&&mt.v?mt.v:{};
   const tc=await dbGet("meta","trashCloud");trashCloud=tc&&tc.v?tc.v:{};
   const la=await dbGet("meta","libArt");libArt=la&&Array.isArray(la.v)?la.v:[];
+  /* the two Tidying-up rulings, which used to live only in this device's
+     settings. The record is the shared one; the settings copy is still read so
+     that what you had already ruled before this build is not lost, and the two
+     are joined here with anything taken back since honoured. */
+  {const tk=await dbGet("meta","tidyKeep");
+   const rv=(tk&&tk.v)||{};
+   for(const which in TIDY_LISTS){
+     const p=TIDY_LISTS[which];
+     settings[which]=[...new Set([...(rv[which]||[]),...(settings[which]||[])])]
+       .filter(x=>!metaDel[p+x]);
+   }}
   const kct=await dbGet("meta","kwCats");kwCats=kct&&kct.v?kct.v:{};
   const cc=await dbGet("meta","catColors");catColors=cc&&cc.v?cc.v:{};
   const iq=await dbGet("meta","importQueue");importQueue=iq&&Array.isArray(iq.v)?iq.v:[];
@@ -5815,6 +5852,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-26.3",lines:[
+    "The game and your tidying-up rulings cross between the phone and the computer now. Today's three tick off in both places at once, the dare, the pick and the drawn prompt are one draw rather than one each, and your XP, your level and the year's twelve are the same number wherever you look. Because every one of them is earned from the shelf itself, joining two devices takes the HIGHER count and never the two added together — the same deed can't pay twice. The three drawn things are single, so the newest draw is the one that stands and the one it replaces goes back in the pool.",
+    "The medals' first-earned dates travel too, keeping the earlier of the two, so The story so far reads the same on both. The two streaks now remember the DAYS, not just the count, which is the only way two of them can be joined honestly — a device used yesterday and another used this morning make one chain of two days, not two chains of one. Days are kept from this build on, and nothing you had already reached is ever shortened by the two shelves meeting.",
+    "And in Tidying up, ✋ It stays a tag and the pairs you told me to leave were living in this device's own settings, so the same questions came back on the other screen. They are shared now — and taking one back travels as well, instead of the other device politely handing it straight back."
+  ]},
   {v:"2026-08-25.23",lines:[
     "The pick can draw from the whole shelf now — two little pills on its card, Want to read or All books, remembered like the rest of its boxes. A book you've already finished can be drawn from All, but it never pays for free: it completes only on a reading finished after you kept it, a re-read. The dare stays what it was — blind, and only from the waiting pile."
   ]},
@@ -10807,7 +10849,31 @@ function achRows(){
    first time records everything already earned in silence — thirty toasts
    for years-old deeds would be noise pretending to be news. */
 let achSeen=null,achTimer=0;
-function achSave(){dbPut("meta",{k:"achSeen",v:achSeen}).catch(()=>{});}
+function achSave(){dbPut("meta",{k:"achSeen",v:achSeen}).then(()=>enqueue({kind:"meta",key:"achSeen"})).catch(()=>{});}
+/* The medals themselves are worked out from the shelf every time, so both
+   devices agree about which are earned without being told anything. What did
+   NOT survive the crossing is WHEN each was first earned — the date a medal's
+   story shows, and the whole of "The story so far" — so the stamps travel too,
+   and the EARLIER of the two is the true one. A device that finds a medal
+   already stamped from elsewhere stays quiet about it, which is right: it was
+   earned once, not twice. */
+function mergeAchSeen(rv){
+  if(!rv||typeof rv!=="object"||!achSeen)return false;
+  const mine=achSeen.__v||1,theirs=rv.__v||1;
+  /* __v is which ladder the stamps were made against. Stamps from the retired
+     ladder say nothing here; a newer one retires ours exactly as a reload did. */
+  if(theirs<mine)return false;
+  const before=JSON.stringify(achSeen);
+  if(theirs>mine)achSeen={__v:theirs};
+  for(const k in rv){
+    if(k==="__v")continue;
+    const t=rv[k]||0;
+    if(t&&(!achSeen[k]||t<achSeen[k]))achSeen[k]=t;
+  }
+  const changed=JSON.stringify(achSeen)!==before;
+  if(changed)dbPut("meta",{k:"achSeen",v:achSeen}).catch(()=>{});
+  return changed;
+}
 function achCheck(silent){
   if(!achSeen)return;
   let changed=false;
@@ -10841,16 +10907,77 @@ function weekKeyOf(day){
   const wk=Math.ceil(((th-new Date(y,0,1))/86400000+1)/7);
   return y+"-W"+wk;
 }
+const dayBack=(day,n)=>{const d=new Date(day+"T12:00");d.setDate(d.getDate()-n);return d.toISOString().slice(0,10);};
+/* The days themselves, kept beside the running count. A count on its own
+   cannot be joined with another device's — nine days here and three there is
+   neither twelve nor nine — where two sets of days join exactly and the chain
+   can simply be worked out again. They are only kept from this build onwards,
+   so what each device had already reached is held as a floor: the two shelves
+   meeting must never shorten a streak. From here on the days are the truth. */
+const STREAK_DAYS=400;
+function pruneDays(s){
+  const ks=Object.keys(s.days||{});
+  if(ks.length<=STREAK_DAYS)return;
+  ks.sort();ks.slice(0,ks.length-STREAK_DAYS).forEach(k=>delete s.days[k]);
+}
+function streakFromDays(s){
+  const days=Object.keys(s.days||{}).sort();
+  let cur=0,best=0,prev=null,grace=null;
+  days.forEach(day=>{
+    if(prev===day)return;
+    if(prev===dayBack(day,1))cur++;
+    else if(prev===dayBack(day,2)&&grace!==weekKeyOf(day)){grace=weekKeyOf(day);cur++;}
+    else cur=1;
+    prev=day;
+    if(cur>best)best=cur;
+  });
+  return {cur,best,last:prev||""};
+}
+function saveStreaks(){
+  clearTimeout(streaksTimer);
+  streaksTimer=setTimeout(()=>{
+    dbPut("meta",{k:"streaks",v:streaks}).then(()=>enqueue({kind:"meta",key:"streaks"})).catch(()=>{});
+  },800);
+}
 function bumpStreak(s,day){
-  if(!s||s.last===day)return;
-  const back=n=>{const d=new Date(day+"T12:00");d.setDate(d.getDate()-n);return d.toISOString().slice(0,10);};
-  if(s.last===back(1))s.cur=(s.cur||0)+1;
-  else if(s.last===back(2)&&s.grace!==weekKeyOf(day)){s.grace=weekKeyOf(day);s.cur=(s.cur||0)+1;}
+  if(!s)return;
+  s.days=s.days||{};
+  const isNew=!s.days[day];
+  if(isNew){s.days[day]=1;pruneDays(s);}
+  if(s.last===day){if(isNew)saveStreaks();return;}
+  if(s.last===dayBack(day,1))s.cur=(s.cur||0)+1;
+  else if(s.last===dayBack(day,2)&&s.grace!==weekKeyOf(day)){s.grace=weekKeyOf(day);s.cur=(s.cur||0)+1;}
   else s.cur=1;
   s.last=day;
   if(s.cur>(s.best||0))s.best=s.cur;
-  clearTimeout(streaksTimer);
-  streaksTimer=setTimeout(()=>dbPut("meta",{k:"streaks",v:streaks}).catch(()=>{}),800);
+  saveStreaks();
+}
+function mergeStreaks(rv){
+  if(!rv||!rv.touch||!streaks)return false;
+  const before=JSON.stringify(streaks);
+  ["touch","read"].forEach(k=>{
+    const l=streaks[k]=streaks[k]||{},r=rv[k]||{};
+    l.days=Object.assign({},r.days||{},l.days||{});
+    pruneDays(l);
+    const calc=streakFromDays(l);
+    const last=[l.last,r.last,calc.last].filter(Boolean).sort().pop()||"";
+    /* a count only speaks for the chain it is standing on: a device last used
+       a month ago holds a nine-day streak of its own and has nothing to say
+       about today's. One day behind is the ordinary case — the computer
+       yesterday, the phone this morning — and is worth exactly one more day. */
+    let cur=calc.cur;
+    [l,r].forEach(x=>{
+      if(!x||!x.last)return;
+      if(x.last===last)cur=Math.max(cur,x.cur||0);
+      else if(x.last===dayBack(last,1))cur=Math.max(cur,(x.cur||0)+1);
+    });
+    l.cur=cur;l.last=last;
+    l.best=Math.max(l.best||0,r.best||0,calc.best,cur);
+    if(r.grace&&(!l.grace||r.grace>l.grace))l.grace=r.grace;
+  });
+  const changed=JSON.stringify(streaks)!==before;
+  if(changed)dbPut("meta",{k:"streaks",v:streaks}).catch(()=>{});
+  return changed;
 }
 function renderAch(){
   const m=q("#main");
@@ -10973,7 +11100,70 @@ let achOpen=null,achLogOpen=false;
    generator seeded on the year, which makes the same draw fall on every
    device without the devices ever speaking. */
 let quests=null,questsTimer=0;
-function questSave(){clearTimeout(questsTimer);questsTimer=setTimeout(()=>dbPut("meta",{k:"quests",v:quests}).catch(()=>{}),600);}
+/* Stamped on the way out, because three of the things in here are single —
+   the dare, the pick on offer, the drawn prompt — and when two devices each
+   hold one, the newer draw is the one that stands. */
+function questSave(){
+  if(quests)quests.at=Date.now();
+  clearTimeout(questsTimer);
+  questsTimer=setTimeout(()=>{
+    dbPut("meta",{k:"quests",v:quests}).then(()=>enqueue({kind:"meta",key:"quests"})).catch(()=>{});
+  },600);
+}
+/* ---- two devices, one game ----
+   All of this used to stay where it was earned: the day's three ticked off on
+   the phone were untouched on the computer, and so were the dare, the pick and
+   the prompt. The tasks and the twelve genres are drawn from the date and the
+   year, so both devices already show the SAME ones — it was only ever what you
+   had done about them that stayed behind. (What made it invisible: a task ticks
+   itself off the change log, and the change log is each device's own.)
+   Every number here is earned from the shelf itself — a task off a receipt, a
+   dare when its book is finished, a pick when you read it — so both devices
+   work the same total out for themselves and the HIGHER of the two is the true
+   one. Adding them would count the same deed twice, which is the owner's
+   ruling and also the arithmetic. */
+function mergeQuests(rv){
+  if(!rv||typeof rv!=="object")return false;
+  if(!quests)quests={xp:0,chDone:0,ohDone:0,aiDone:0,twelveDone:0};
+  const l=quests,before=JSON.stringify(l);
+  ["xp","chDone","ohDone","aiDone","twelveDone"].forEach(k=>{l[k]=Math.max(l[k]||0,rv[k]||0);});
+  /* today's three: the same three on both screens, and doing one in either
+     place is doing it */
+  if(rv.daily){
+    if(!l.daily||rv.daily.day>l.daily.day)l.daily={day:rv.daily.day,got:[...(rv.daily.got||[])]};
+    else if(rv.daily.day===l.daily.day)
+      l.daily.got=[...new Set([...(l.daily.got||[]),...(rv.daily.got||[])])];
+  }
+  /* the three drawn things are single: the newest draw wins, and the one it
+     replaces goes quietly back into the pool it came from */
+  ["bookCh","pickCur","aiPrompt"].forEach(k=>{
+    if(((rv[k]&&rv[k].at)||0)>((l[k]&&l[k].at)||0))l[k]=rv[k];
+  });
+  /* the keep-list: one entry per book, the newer of the two, newest first */
+  {const by={};
+   [...(rv.picks||[]),...(l.picks||[])].forEach(p=>{
+     if(!p||!p.id)return;
+     if(!by[p.id]||(p.at||0)>(by[p.id].at||0))by[p.id]=p;
+   });
+   l.picks=Object.values(by).sort((a,b)=>(b.at||0)-(a.at||0)).slice(0,40);}
+  /* the year's twelve are drawn from the year, so both devices hold the same
+     twelve and it is the ticks that have to meet */
+  if(Array.isArray(rv.genres)&&rv.year===l.year&&Array.isArray(l.genres)){
+    l.genres.forEach(g=>{
+      const r=rv.genres.find(x=>x&&x.g===g.g);
+      if(r&&r.got&&!g.got){g.got=true;g.by=r.by;}
+    });
+  }else if(Array.isArray(rv.genres)&&(rv.year||0)>(l.year||0)){l.year=rv.year;l.genres=rv.genres;}
+  /* the pick's own boxes — a preference, so whichever device spoke last */
+  if((rv.at||0)>(l.at||0)){
+    if("pickAll" in rv)l.pickAll=rv.pickAll;
+    if(rv.pickFilt)l.pickFilt=rv.pickFilt;
+  }
+  l.at=Math.max(l.at||0,rv.at||0);
+  const changed=JSON.stringify(l)!==before;
+  if(changed)dbPut("meta",{k:"quests",v:l}).catch(()=>{});
+  return changed;
+}
 const questYear=()=>new Date().getFullYear();
 const questToday=()=>new Date().toISOString().slice(0,10);
 function drawTwelve(){
@@ -13402,6 +13592,58 @@ function kwHolders(k,g){
   }
   return out;
 }
+/* ---- the rulings you make in Tidying up, and why they travel now ----
+   Two of the four boxes on that card remember what you said: "✋ It stays a
+   tag" and "leave this pair alone". Both lived in the settings, which are
+   deliberately this device's own — the text size, the journal look — and that
+   was wrong for these two. A word repeating a genre repeats it on the phone
+   as well, so a ruling made on one screen only meant being asked the same
+   question twice. They are their own record now, pushed and merged like the
+   genres are.
+   Taking a ruling BACK has to be marked, not merely deleted: the merge below
+   keeps whatever only one device knows about, so a bare removal would be
+   handed straight back on the next pull — the same trap the genres, the
+   keyword families and the audiences all fell into first. metaDel carries it,
+   with its own prefix per list. */
+const TIDY_LISTS={kwKeep:"kwkeep:",tagLeave:"tagleave:"};
+function tidyRulings(){return {kwKeep:settings.kwKeep||[],tagLeave:settings.tagLeave||[]};}
+function saveTidy(){
+  /* the settings copy stays written too, so nothing is lost if this shelf is
+     opened by an older build that still reads them from there */
+  saveSettings();
+  dbPut("meta",{k:"tidyKeep",v:tidyRulings()}).then(()=>enqueue({kind:"meta",key:"tidyKeep"})).catch(()=>{});
+}
+function tidyAdd(which,val){
+  settings[which]=[...new Set([...(settings[which]||[]),val])];
+  unmarkMetaDel(TIDY_LISTS[which]+val);
+  saveTidy();
+}
+/* `ci` for the kept words, which are matched without regard to case wherever
+   they are read — the mark has to name the spelling actually stored, or the
+   entry it is meant to bury goes on living */
+function tidyDrop(which,val,ci){
+  const same=x=>ci?String(x).toLowerCase()===String(val).toLowerCase():x===val;
+  const hit=(settings[which]||[]).filter(same);
+  settings[which]=(settings[which]||[]).filter(x=>!same(x));
+  hit.forEach(x=>markMetaDel(TIDY_LISTS[which]+x));
+  saveTidy();
+}
+/* what the other device sent, joined with what this one holds, minus anything
+   either of them has since taken back */
+function mergeTidy(rv){
+  if(!rv||typeof rv!=="object")return false;
+  let changed=false;
+  for(const which in TIDY_LISTS){
+    const p=TIDY_LISTS[which];
+    const was=(settings[which]||[]).join(" ");
+    const merged=[...new Set([...(rv[which]||[]),...(settings[which]||[])])]
+      .filter(x=>!metaDel[p+x]);
+    if(merged.join(" ")!==was){settings[which]=merged;changed=true;}
+  }
+  if(changed){saveSettings();dbPut("meta",{k:"tidyKeep",v:tidyRulings()});}
+  return changed;
+}
+
 /* ---- the near-duplicate tags, offered on the Tidying up card ----
    Shown a pair at a time with what each one is on, because merging is a real
    change to the shelf and "school (7) / school stories (3)" tells you at a
@@ -13419,21 +13661,16 @@ function kwHolders(k,g){
    under the pairs with a way to put any of them back in the queue.
    Stored by the two names exactly as they are spelled, which makes the list
    self-cleaning: rename or merge either word and the entry stops matching
-   anything and quietly drops out. Kept on this device, like the text size —
-   say the word if it should travel between them.
+   anything and quietly drops out. They used to be kept on this device, like
+   the text size, with a note here saying to say the word if they should
+   travel. The word was said — see the rulings record below.
    The key is sorted so a pair is one entry however it was found. */
 /* open only while you are looking at it; forgotten when the tab closes */
 let tagLeftOpen=false;
 const leaveKey=(a,b)=>[a,b].sort((x,y)=>x.localeCompare(y)).join(" | ");
 const tagLeft=()=>new Set(settings.tagLeave||[]);
-function leaveTagPair(a,b){
-  const s=tagLeft();s.add(leaveKey(a,b));
-  settings.tagLeave=[...s];saveSettings();
-}
-function unleaveTagPair(key){
-  const s=tagLeft();s.delete(key);
-  settings.tagLeave=[...s];saveSettings();
-}
+function leaveTagPair(a,b){tidyAdd("tagLeave",leaveKey(a,b));}
+function unleaveTagPair(key){tidyDrop("tagLeave",key);}
 function refreshTagDupes(){
   const box=q("#tagDupBox");if(!box)return;
   const left=tagLeft();
@@ -13640,15 +13877,14 @@ function refreshKwDupes(){
   qa("[data-kdup]",box).forEach(c=>c.onchange=()=>{kwDupTicks[act[+c.dataset.kdup].k]=c.checked;});
   qa("[data-kunkeep]",box).forEach(b=>b.onclick=()=>{
     const w=b.dataset.kunkeep;
-    settings.kwKeep=(settings.kwKeep||[]).filter(x=>String(x).toLowerCase()!==w.toLowerCase());
-    saveSettings();refreshKwDupes();
+    tidyDrop("kwKeep",w,true);refreshKwDupes();
   });
   /* "it stays a tag" — a ruling, not an edit: no book changes */
   qa("[data-kkeep]",box).forEach(b=>b.onclick=()=>{
     const h=act[+b.dataset.kkeep];if(!h)return;
-    settings.kwKeep=[...(settings.kwKeep||[]),h.k];
+    tidyAdd("kwKeep",h.k);
     delete kwDupTicks[h.k];
-    saveSettings();refreshKwDupes();
+    refreshKwDupes();
   });
   /* "genre too — the tag stays": the first half of Tidy without the second.
      The books missing the genre are given it, the word is left everywhere it
@@ -13672,9 +13908,8 @@ function refreshKwDupes(){
       items.push({id:bk.id,before:was.get(bk.id),after:JSON.parse(JSON.stringify(bk))});
     }
     if(items.length)pushOp({t:"bulk",items});
-    settings.kwKeep=[...(settings.kwKeep||[]),h.k];
+    tidyAdd("kwKeep",h.k);
     delete kwDupTicks[h.k];
-    saveSettings();
     if(SYNC.on)flushQueue();
     await Promise.resolve(render());keepPlaceAfterRedraw(where);
   });
