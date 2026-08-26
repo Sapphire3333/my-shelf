@@ -5900,6 +5900,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-26.11",lines:[
+    "Tidying up has a new row: <b>Tags with no capital letter</b>. Every word on the shelf that never got one is listed with what it would become, and one press gives all of them their capital, on every book and every story inside a collection at once — with the colour and the family coming across with the word, and the capitalised spelling simply absorbing the lowercase one where you already had both. Tap any word first to leave that one exactly as it is; a lowercase word is sometimes the right word. One press of ↶ Undo puts the whole sweep back."
+  ]},
   {v:"2026-08-26.10",lines:[
     "Tags, round two, to your five answers. The long press now gives up the moment the page moves — a hold is only a hold if nothing scrolled — so a finger that lands on a chip on its way past can go on scrolling. Watching the finger alone wasn't enough: a scroll can start before it has travelled far enough to count, so the page itself is watched, including a scroll inside the tag pool, which doesn't announce itself the ordinary way.",
     "And one size could never serve both, so there are two: 1.15× on the computer, 1.25× on the phone — 33 and 37 pixels tall, against the 50 they had. A tag or genre you knock off by mistake now leaves a dashed <b>↶ ghost of itself standing in its own place</b> for six seconds; press it and the word goes back exactly where it was, in the order it was in. (↶ Undo always could too — it is an ordinary edit — but that undoes the whole last save rather than the one word.) And tags arriving from a lookup take a capital on the first letter and nothing else, so “punishing those who mistreat you” arrives as “Punishing those who mistreat you” rather than as a headline. Genres keep their Title Case; they are filing words. Tags already on your books are untouched — hold one and rename it if it bothers you."
@@ -12405,7 +12408,8 @@ async function renderHub(){
       <div class="hcard"><div id="dupBox"><span class="none">Checking for duplicates…</span></div>
         <div id="nameDupBox"></div>
         <div id="kwDupBox"></div>
-        <div id="tagDupBox"></div></div>
+        <div id="tagDupBox"></div>
+        <div id="capBox"></div></div>
     </div>
     <div class="sec">
       <div class="heading"><h2 class="serif">Read a ReadEra backup</h2></div>
@@ -12522,7 +12526,7 @@ async function renderHub(){
     const body=q("#fold-"+k);if(body)body.hidden=!settings[k+"Open"];
     btn.textContent=settings[k+"Open"]?"▾ Hide":"▸ Show";
   });
-  refreshDupes();refreshNameDupes();refreshKwDupes();refreshTagDupes();
+  refreshDupes();refreshNameDupes();refreshKwDupes();refreshTagDupes();refreshCapTags();
   q("#csvBtn").onclick=()=>q("#csvFile").click();
   {const rb=q("#reBtn");if(rb)rb.onclick=()=>q("#reFile").click();renderShareHint();renderReadEra();}
   {const sb=q("#scanBtn");if(sb)sb.onclick=()=>q("#scanFiles").click();
@@ -14413,6 +14417,103 @@ async function mergeTag(from,to){
   saveKwColors();saveKwCats();
   if(SYNC.on)flushQueue();
   return items.length;
+}
+/* ---- the tags that never got their capital letter ----
+   Words arriving from a lookup take a capital on the first letter from this
+   build on, but the ones already on the shelf were left exactly as they were:
+   rewriting every book's words on a guess about what was meant is not something
+   to do to somebody's library unasked. This is the asking. It is one press for
+   the lot, one step of Undo for the lot, and any word you would rather keep as
+   it is can be tapped out of the batch first — a lowercase word is sometimes
+   the right word.
+   Renaming rather than adding: the colour and the family come across with the
+   word, and if the capitalised spelling already exists the two simply become
+   one, which is the same thing merging two near-duplicate tags does. */
+function lowercaseTags(){
+  const all=[...new Set(books.flatMap(allKeywordsOf))];
+  return all.filter(w=>{
+    const s=String(w||"");
+    return /^[a-z]/.test(s)&&sentenceCase(s)!==s;
+  }).sort((a,b)=>a.localeCompare(b));
+}
+async function capitaliseTags(pairs){
+  const map=new Map(pairs);
+  if(!map.size)return 0;
+  const items=[],was=new Map(),touched=new Map();
+  const take=b=>{if(!was.has(b.id))was.set(b.id,JSON.parse(JSON.stringify(b)));touched.set(b.id,b);};
+  const swap=list=>[...new Set((list||[]).map(x=>map.has(x)?map.get(x):x))].filter(Boolean);
+  const hits=list=>(list||[]).some(x=>map.has(x));
+  for(const b of books){
+    const mine=hits(b.keywords)||hits(b.kwBreaks);
+    const inStories=isColl(b)&&(b.entries||[]).some(en=>hits(en.keywords));
+    if(!mine&&!inStories)continue;
+    take(b);
+    b.keywords=swap(b.keywords);b.kwBreaks=swap(b.kwBreaks);
+    if(isColl(b))(b.entries||[]).forEach(en=>{if(hits(en.keywords))en.keywords=swap(en.keywords);});
+  }
+  for(const b of touched.values()){
+    b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+    try{await dbPut("books",b);}
+    catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before:was.get(b.id),after:JSON.parse(JSON.stringify(b))});
+  }
+  /* the colour and the filing follow the word, and both marks go on: without
+     the first the old spelling comes back from the other device at the next
+     pull, and without the second a word once deleted for good walks into its
+     own leftover mark and is stripped again */
+  map.forEach((to,from)=>{
+    if(!kwColors[to]&&kwColors[from])kwColors[to]=kwColors[from];
+    if(!kwCats[to]&&kwCats[from])fileUnder(to,kwCats[from]);
+    delete kwColors[from];delete kwCats[from];
+    markMetaDel("kw:"+from);unmarkMetaDel("kw:"+to);
+  });
+  /* ONE undo step for the whole sweep — a label of its own, or a press of ↶
+     would put back one word out of forty */
+  if(items.length)pushOp({t:"bulk",items,
+    label:`Gave ${map.size} tag${map.size===1?"":"s"} a capital letter`});
+  saveKwColors();saveKwCats();
+  if(SYNC.on)flushQueue();
+  return items.length;
+}
+/* the words tapped out of the batch, for this visit only — a permanent list of
+   exceptions nobody can see is the bargain that was already refused once */
+let capSkip=new Set();
+function refreshCapTags(){
+  const box=q("#capBox");if(!box)return;
+  const words=lowercaseTags();
+  if(!words.length){box.innerHTML="";capSkip=new Set();return;}
+  const taking=words.filter(w=>!capSkip.has(w));
+  const CAP=60;
+  box.innerHTML=`<div class="heading" style="margin:16px 0 4px">
+      <span class="lbl" style="margin:0">Tags with no capital letter</span><span class="n">${words.length}</span></div>
+    <div class="hint" style="margin:0 0 7px">These came in before words were given a capital on the way in — mostly from a lookup. One press gives every one of them its capital letter, on every book at once, and one press of ↶ Undo puts it all back. Tap a word to leave that one exactly as it is.</div>
+    <div class="kwpick" style="max-height:200px">${words.map(w=>
+      `<span class="kw" data-capw="${esc(w)}" style="cursor:pointer;${capSkip.has(w)?"opacity:.45;text-decoration:line-through;":""}${kwStyle(w)}" title="${capSkip.has(w)?"Left as it is — tap to include it":"Tap to leave this one as it is"}">${esc(w)} → ${esc(sentenceCase(w))}</span>`).join("")}</div>
+    ${words.length>CAP?`<div class="hint" style="margin:5px 0 0">All ${words.length} are included; the list above shows them all.</div>`:""}
+    <div class="hrow2" style="margin-top:8px">
+      <button class="btn pri" id="capGo" ${taking.length?"":"disabled"}>Give ${taking.length} ${taking.length===1?"tag":"tags"} a capital letter</button>
+      ${capSkip.size?`<span class="none" style="font-size:12px">${capSkip.size} left as ${capSkip.size===1?"it is":"they are"}</span>`:""}</div>`;
+  qa("[data-capw]",box).forEach(b=>b.onclick=()=>{
+    const w=b.dataset.capw;
+    capSkip.has(w)?capSkip.delete(w):capSkip.add(w);
+    refreshCapTags();
+  });
+  const go=q("#capGo",box);
+  if(go)go.onclick=async()=>{
+    const list=lowercaseTags().filter(w=>!capSkip.has(w));
+    if(!list.length)return;
+    if(!confirm(`Give ${list.length} tag${list.length===1?"":"s"} a capital letter, on every book that carries ${list.length===1?"it":"them"}?\n\n`
+      +list.slice(0,6).map(w=>`“${w}” → “${sentenceCase(w)}”`).join("\n")
+      +(list.length>6?`\n…and ${list.length-6} more`:"")
+      +`\n\nOne press of Undo puts all of it back.`))return;
+    go.disabled=true;go.textContent="Tidying…";
+    const where=window.scrollY;
+    await capitaliseTags(list.map(w=>[w,sentenceCase(w)]));
+    capSkip=new Set();
+    await Promise.resolve(render());
+    keepPlaceAfterRedraw(where);
+  };
 }
 /* How many are in the bin, so the History tab can say so on its own button
    without reading the whole bin every time that tab is drawn. */
