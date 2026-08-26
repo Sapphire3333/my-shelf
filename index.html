@@ -2349,12 +2349,17 @@ html[data-journal="on"] .tab[data-v="ach"]{border-bottom-color:#b5852c}
 .qtwelve button.achstreak{-webkit-tap-highlight-color:transparent}
 .qtwelve button.achstreak:active{transform:scale(.95);border-color:var(--teal)}
 #achToastHost{position:fixed;right:12px;bottom:12px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none}
-.achtoast{display:flex;gap:9px;align-items:center;background:var(--card);border:1px solid var(--line);color:var(--ink);
-  border-radius:11px;padding:9px 13px;box-shadow:0 4px 18px rgba(0,0,0,.22);max-width:290px;
+/* --tz is the size you chose in ⚙ Settings; everything about the note is
+   written in terms of it, so one number moves the medal, the words, the
+   padding and how wide it is allowed to be, all together */
+.achtoast{--tz:1.4;display:flex;gap:calc(9px * var(--tz));align-items:center;
+  background:var(--card);border:1px solid var(--line);color:var(--ink);
+  border-radius:calc(11px * var(--tz));padding:calc(9px * var(--tz)) calc(13px * var(--tz));
+  box-shadow:0 4px 18px rgba(0,0,0,.22);max-width:min(calc(290px * var(--tz)),calc(100vw - 24px));
   opacity:0;transform:translateY(12px);transition:all .35s}
 .achtoast.show{opacity:1;transform:none}
-.achtoast .tico{font-size:22px}
-.achtoast b{font-size:13px}.achtoast .hint{font-size:11.5px}
+.achtoast .tico{font-size:calc(22px * var(--tz));line-height:1;flex:none}
+.achtoast b{font-size:calc(13px * var(--tz))}.achtoast .hint{font-size:calc(11.5px * var(--tz))}
 @media (prefers-reduced-motion: reduce){.achtoast{transition:opacity .2s}}
 /* ---- pictures from your files ---- */
 .scanfile{margin-top:14px}
@@ -5885,6 +5890,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-26.8",lines:[
+    "The corner note, to your three answers: 1.4× the old size, a two-note chime at 45%, and seven seconds before it goes. The ⚡ XP ones — which land far more often, every daily task pays one — are smaller and quicker as you asked: three-quarter size, half the time, and never a sound.",
+    "You said <b>options</b>, so they are options: ⚙ Settings → The corner note has all three, plus six sounds to press and hear and a switch for the XP ones — same as the medals, smaller and quicker, or not at all. Every change shows you a real note in the corner as you let go, so the number is judged by the thing itself. The sounds are made by the app out of nothing: no file, no download, and they work offline. Two things it can't help, both said on the panel: a browser won't make a sound until you've touched the page once, so a medal landing the second the app opens is silent, and on the phone the ringer switch decides. At your phone's width the note is 326 pixels wide — it can never grow past the screen however big you set it."
+  ]},
   {v:"2026-08-26.7",lines:[
     "✎ Edit names & colours is gone, and the tags are yours to thumb. While editing, a tap on a chip does the plain thing — takes the word off the book, or adds it from the list below — and everything else lives on a <b>press and hold</b>, or a right-click on the computer: make it a genre, start a new row, move it left or right, rename or recolour it, and now <b>🗑 Delete completely</b>, which used to be reachable only through the mode. The little ✕ is gone from every one of these chips, because the whole chip is the button now. They are 1.8× the size they were, your own number: 50 pixels tall against 28, and at phone width the longest tag you have wraps inside its own chip rather than pushing the page sideways.",
     "The chips in Your tags got the same treatment, and its family headings keep their ✎ open all the time rather than only inside the mode — as do 🎨 Recolour many at once and the mood set, which had nowhere else to live. Dragging a chip into place still works with a mouse; a finger's drag is left to scroll the page, which is why left and right are in the menu. The reading page is untouched: a tap there still opens the menu, since there is nothing on that face for a tap to add or take off."
@@ -10933,16 +10942,75 @@ function achCheck(silent){
   });
   if(changed){achSave();if(view==="ach")renderAch();}
 }
-function achToast(r,t){
+/* ---- the corner note, to the owner's own three answers ----
+   Size, sound and how long it stays, found on a mock with the real note in the
+   corner rather than decided here: 1.4×, a two-note chime at 45%, seven
+   seconds. The ⚡ XP note does the same job far more often — a daily task pays
+   one every time — so it has its own setting, and theirs is "smaller and
+   quicker": three-quarter size, half the time, never a sound.
+   The sounds are made on the spot out of two oscillators; there is no file to
+   download, nothing to keep offline, and no weight added to the one page this
+   whole app is. Two things it cannot do anything about, both said out loud in
+   the settings: a browser will not make a sound until the page has been touched
+   once, so a medal landing the moment the app opens is silent; and on a phone
+   the ringer switch decides. */
+const ACH_DEF={size:1.4,sound:"chime",vol:45,secs:7,xp:"quiet"};
+const achOpt=k=>(settings.achNote&&settings.achNote[k]!==undefined)?settings.achNote[k]:ACH_DEF[k];
+let achAudio=null;
+function achCtxAudio(){
+  try{
+    if(!achAudio)achAudio=new (window.AudioContext||window.webkitAudioContext)();
+    if(achAudio.state==="suspended")achAudio.resume();
+    return achAudio;
+  }catch(e){return null;}
+}
+function achTone(f,t0,len,type,gain){
+  const c=achCtxAudio();if(!c)return;
+  const o=c.createOscillator(),g=c.createGain(),v=Math.max(0.0002,gain*(achOpt("vol")/100));
+  o.type=type||"sine";o.frequency.setValueAtTime(f,c.currentTime+t0);
+  g.gain.setValueAtTime(0.0001,c.currentTime+t0);
+  g.gain.exponentialRampToValueAtTime(v,c.currentTime+t0+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001,c.currentTime+t0+len);
+  o.connect(g);g.connect(c.destination);
+  o.start(c.currentTime+t0);o.stop(c.currentTime+t0+len+0.05);
+}
+function achNoise(t0,len,cut,gain){
+  const c=achCtxAudio();if(!c)return;
+  const n=Math.floor(c.sampleRate*len),buf=c.createBuffer(1,n,c.sampleRate),d=buf.getChannelData(0);
+  for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*(1-i/n);
+  const s=c.createBufferSource();s.buffer=buf;
+  const f=c.createBiquadFilter();f.type="bandpass";f.frequency.value=cut;f.Q.value=0.7;
+  const g=c.createGain();g.gain.value=gain*(achOpt("vol")/100);
+  s.connect(f);f.connect(g);g.connect(c.destination);
+  s.start(c.currentTime+t0);
+}
+const ACH_SOUNDS=[
+  ["none","No sound",()=>{}],
+  ["tick","A soft tick",()=>achTone(1200,0,0.06,"triangle",0.25)],
+  ["chime","Two-note chime",()=>{achTone(880,0,0.35,"sine",0.3);achTone(1318.5,0.11,0.5,"sine",0.26);}],
+  ["coin","A coin",()=>{achTone(988,0,0.07,"square",0.16);achTone(1319,0.07,0.28,"square",0.14);}],
+  ["page","A page turning",()=>{achNoise(0,0.16,1700,0.5);achNoise(0.09,0.13,900,0.35);}],
+  ["bell","A little bell",()=>{achTone(1568,0,0.9,"sine",0.22);achTone(2349,0,0.55,"sine",0.09);}]
+];
+function achPlay(name){
+  const s=ACH_SOUNDS.find(x=>x[0]===name);
+  if(s)try{s[2]();}catch(e){}
+}
+function achToast(r,t,isXp){
+  if(isXp&&achOpt("xp")==="off")return;
   let host=document.getElementById("achToastHost");
   if(!host){host=document.createElement("div");host.id="achToastHost";document.body.appendChild(host);}
+  let size=achOpt("size"),secs=achOpt("secs"),snd=achOpt("sound");
+  if(isXp&&achOpt("xp")==="quiet"){size=size*0.75;secs=Math.max(1.2,secs/2);snd="none";}
   const el=document.createElement("div");
   el.className="achtoast";
+  el.style.setProperty("--tz",size.toFixed(2));
   const st2=achStanding(t);
   el.innerHTML=`<span class="tico">${r.icon}</span><span><b>${esc(r.name)}${st2?" · "+esc(st2.label):""}</b><br><span class="hint">${esc(r.plain)}</span></span>`;
   host.appendChild(el);
   requestAnimationFrame(()=>el.classList.add("show"));
-  setTimeout(()=>{el.classList.remove("show");setTimeout(()=>el.remove(),400);},4200);
+  achPlay(snd);
+  setTimeout(()=>{el.classList.remove("show");setTimeout(()=>el.remove(),400);},Math.round(secs*1000));
 }
 /* ---- the two streaks: any touch, and reading progress. Forgiveness is one
    missed day a week — their answer — spent automatically and remembered by
@@ -11274,7 +11342,7 @@ const questLevel=()=>Math.floor(((quests&&quests.xp)||0)/XP_PER_LEVEL)+1;
 let questDirty=false;
 function questAward(n,label){
   quests.xp=(quests.xp||0)+n;questSave();questDirty=true;
-  achToast({icon:"⚡",name:"+"+n+" XP",plain:label,tiers:[]},0);
+  achToast({icon:"⚡",name:"+"+n+" XP",plain:label,tiers:[]},0,true);
   const lc=document.getElementById("lvlChip");
   if(lc)lc.textContent="⚡ Lv "+questLevel();
 }
@@ -11918,6 +11986,28 @@ function renderSettings(){
             <input type="range" id="jrnStr" min="4" max="60" step="2" value="${parseInt(settings.journalStr)||38}">
             <b id="jrnStrV" style="width:46px;text-align:right">${parseInt(settings.journalStr)||38}%</b></div>
         </div>
+        <!-- the corner note: their three questions, as three answers you can
+             change your mind about -->
+        <div class="hrow2" style="margin-top:12px;flex-wrap:wrap;align-items:flex-start;flex-direction:column;gap:4px">
+          <span class="lbl" style="margin:0">🏅 The corner note</span>
+          <span class="none" style="font-size:12px">the little note that slides in when you earn a medal or some XP. Press a sound to hear it — they are made by the app itself, so they cost nothing and work offline.</span>
+          <div class="opac" style="margin-top:4px">How big
+            <input type="range" id="achSize" min="0.7" max="2.4" step="0.05" value="${achOpt("size")}">
+            <b id="achSizeV" style="width:52px;text-align:right">${(+achOpt("size")).toFixed(2)}×</b></div>
+          <div class="opac">How long it stays
+            <input type="range" id="achSecs" min="1.5" max="15" step="0.5" value="${achOpt("secs")}">
+            <b id="achSecsV" style="width:52px;text-align:right">${(+achOpt("secs")).toFixed(1)}s</b></div>
+          <div class="hrow2" style="flex-wrap:wrap;margin-top:4px">${ACH_SOUNDS.map(([k,label])=>
+            `<button class="pill ${achOpt("sound")===k?"on":""}" data-achsnd="${k}">${esc(label)}</button>`).join("")}</div>
+          <div class="opac">How loud
+            <input type="range" id="achVol" min="0" max="100" step="5" value="${achOpt("vol")}">
+            <b id="achVolV" style="width:52px;text-align:right">${achOpt("vol")}%</b></div>
+          <div class="hrow2" style="flex-wrap:wrap;margin-top:4px"><span class="lbl">The ⚡ XP ones:</span>
+            ${[["same","Same as the medals"],["quiet","Smaller and quicker"],["off","Not at all"]].map(([k,l])=>
+              `<button class="pill ${achOpt("xp")===k?"on":""}" data-achxp="${k}">${l}</button>`).join("")}</div>
+          <div class="hrow2" style="margin-top:6px"><button class="btn" id="achTry">Show me one</button>
+            <span class="none" style="font-size:12px">A browser won't make a sound until you've touched the page once, so a medal landing the moment the app opens is silent — and on the phone the ringer switch decides. Remembered per device, like the text size.</span></div>
+        </div>
         <div class="opac" style="margin-top:9px">Text size
           <input type="range" id="fontScale" min="60" max="220" step="5" value="${settings.fontScale||100}">
           <b id="fontScaleV" style="width:46px;text-align:right">${settings.fontScale||100}%</b></div>
@@ -12025,6 +12115,37 @@ function wireSettings(m){
      js.oninput=()=>{const v=q("#jrnStrV",m);if(v)v.textContent=js.value+"%";};
      js.onchange=()=>{settings.journalStr=+js.value;saveSettings();};
    }}
+  /* the corner note's three answers. Each one shows a real note as you let go,
+     so the number is judged by the thing itself rather than by the number. */
+  {const put=(k,v)=>{settings.achNote=Object.assign({},settings.achNote||{},{[k]:v});saveSettings();};
+   const demo=()=>achToast({icon:"🏅",name:"Series Slayer · Silver II",
+     plain:"series and collections finished whole (two books or more)",tiers:[]},0);
+   const sz=q("#achSize",m);
+   if(sz){
+     sz.oninput=()=>{const v=q("#achSizeV",m);if(v)v.textContent=(+sz.value).toFixed(2)+"×";};
+     sz.onchange=()=>{put("size",+sz.value);demo();};
+   }
+   const se=q("#achSecs",m);
+   if(se){
+     se.oninput=()=>{const v=q("#achSecsV",m);if(v)v.textContent=(+se.value).toFixed(1)+"s";};
+     se.onchange=()=>{put("secs",+se.value);demo();};
+   }
+   const vo=q("#achVol",m);
+   if(vo){
+     vo.oninput=()=>{const v=q("#achVolV",m);if(v)v.textContent=vo.value+"%";};
+     vo.onchange=()=>{put("vol",+vo.value);achPlay(achOpt("sound"));};
+   }
+   qa("[data-achsnd]",m).forEach(b=>b.onclick=()=>{
+     put("sound",b.dataset.achsnd);
+     qa("[data-achsnd]",m).forEach(x=>x.classList.toggle("on",x===b));
+     achPlay(b.dataset.achsnd);
+   });
+   qa("[data-achxp]",m).forEach(b=>b.onclick=()=>{
+     put("xp",b.dataset.achxp);
+     qa("[data-achxp]",m).forEach(x=>x.classList.toggle("on",x===b));
+     achToast({icon:"⚡",name:"+10 XP",plain:"Wrote something down about a book",tiers:[]},0,true);
+   });
+   const at=q("#achTry",m);if(at)at.onclick=demo;}
   /* The size is applied when you LET GO, not while you drag. Applying it as you
      move seems friendlier and is what made this unusable on a mouse: the slider
      sits inside the very thing being resized, so each step moved it out from
