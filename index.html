@@ -5852,6 +5852,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-26.4",lines:[
+    "Hardcover has been refusing every book you looked up by its number, and it was my doing. The guard that keeps a stray id out of the mood list — anything that is all digits — was being applied to the list of ISBNs as well, and an ISBN is all digits: every number was thrown away before the comparison, so Hardcover found the right book and was then told it was somebody else's. Matilda's answer carried your 9780141301068 among two hundred numbers and not one of them survived. Now it lands: on that same book Hardcover brings a blurb, a genre, nine moods, nine tags, a content warning, the pages, the year, a cover and the series.",
+    "And the Spanish Matilda. It was the right book — Open Library keeps one description per book and the one it holds for Matilda is written in Spanish, three times longer than the English ones, so it led under Replace my summary. A blurb in another language is still offered and still applies if you want it, and now says which language it is in, but it doesn't go first while an English one is there — and it is never the one a bulk run writes in silence. The genre offers are cleaner too: Open Library files every translation's headings under the same book, so Écoles, Muchachas and Cuentos humorísticos were being offered as genres. They stay in the tag list, which is the rough pile, and the librarian's own notes — “Spanish language”, “Translations from English” — are gone from both."
+  ]},
   {v:"2026-08-26.3",lines:[
     "The game and your tidying-up rulings cross between the phone and the computer now. Today's three tick off in both places at once, the dare, the pick and the drawn prompt are one draw rather than one each, and your XP, your level and the year's twelve are the same number wherever you look. Because every one of them is earned from the shelf itself, joining two devices takes the HIGHER count and never the two added together — the same deed can't pay twice. The three drawn things are single, so the newest draw is the one that stands and the one it replaces goes back in the pool.",
     "The medals' first-earned dates travel too, keeping the earlier of the two, so The story so far reads the same on both. The two streaks now remember the DAYS, not just the count, which is the only way two of them can be joined honestly — a device used yesterday and another used this morning make one chain of two days, not two chains of one. Days are kept from this build on, and nothing you had already reached is ever shortened by the two shelves meeting.",
@@ -19008,11 +19012,26 @@ function renderEditor(){
     const newTags=info.tags.filter(t=>!havingTags.some(k=>k.toLowerCase()===t.toLowerCase()));
     const covers=info.covers||[];
     const blurbs=(info.blurbs||[]).length?info.blurbs:(info.summary?[{text:info.summary,from:info.source.join(" & ")}]:[]);
-    /* The longest blurb leads. They arrive in whatever order the two sites
-       answered in, and the first was as often a one-line catalogue stub as a
-       real description — so the one with the most in it is the one shown first,
-       and the others are a press away. */
-    let covI=0,blurbI=blurbs.reduce((best,b2,i)=>b2.text.length>blurbs[best].text.length?i:best,0),blurbAll=false;
+    /* The longest blurb leads. They arrive in whatever order the sites answered
+       in, and the first was as often a one-line catalogue stub as a real
+       description — so the one with the most in it is the one shown first, and
+       the others are a press away.
+       Unless it is written in another language. Open Library keeps one
+       description per book and Matilda's is in Spanish; at three times the
+       length of the English ones it led every time, under Replace my summary.
+       A blurb in another language is still offered and still applies if you
+       want it — it says which language it is in — but it does not go first
+       while an English one is standing there. */
+    blurbs.forEach(b2=>{b2.lang=guessLang(b2.text);});
+    let covI=0,blurbAll=false;
+    let blurbI=0;
+    if(blurbs.length){
+      const pool=blurbs.filter(b2=>!b2.lang);
+      const from=pool.length?pool:blurbs;
+      const win=from.reduce((best,b2)=>b2.text.length>best.text.length?b2:best,from[0]);
+      blurbI=blurbs.indexOf(win);
+    }
+    const blurbFrom=b2=>b2.from+(b2.lang?" · in "+b2.lang:"");
     const genSel=new Set();
     /* the fate the ask gave each ticked name: "genre" or "tag" */
     const genAs={};
@@ -19129,7 +19148,7 @@ function renderEditor(){
       if(blurbAll){
         el.style.maxHeight="340px";
         el.innerHTML=blurbs.map((b2,i)=>`<div class="blurbone${i===blurbI?" on":""}" data-blurb="${i}">
-          <div class="blurbfrom">${esc(b2.from)} · ${b2.text.length} characters${i===blurbI?" · chosen":""}</div>
+          <div class="blurbfrom">${esc(blurbFrom(b2))} · ${b2.text.length} characters${i===blurbI?" · chosen":""}</div>
           <div>${esc(b2.text)}</div></div>`).join("");
         qa("[data-blurb]",el).forEach(d=>d.onclick=()=>{blurbI=+d.dataset.blurb;showBlurb();});
       }else{
@@ -19137,7 +19156,7 @@ function renderEditor(){
         el.textContent=blurbs[blurbI].text;
       }
       const n=q("#fpBlurbN",box);if(n)n.textContent=blurbAll?`all ${blurbs.length}`:`${blurbI+1} of ${blurbs.length}`;
-      const f=q("#fpBlurbFrom",box);if(f)f.textContent=blurbAll?"press one to choose it":blurbs[blurbI].from;
+      const f=q("#fpBlurbFrom",box);if(f)f.textContent=blurbAll?"press one to choose it":blurbFrom(blurbs[blurbI]);
       const a=q("#fpBlurbAll",box);if(a)a.textContent=blurbAll?"Show one":`Show all ${blurbs.length}`;
       const s2=q("#fpSum",box);if(s2){s2.disabled=false;s2.textContent=hadSummary?"Replace my summary":"Use as summary";}
     };
@@ -24251,22 +24270,30 @@ async function fetchHardcover(title,author,isbn){
   if(typeof res==="string"){try{res=JSON.parse(res);}catch(e){res=null;}}
   const hits=((res&&res.hits)||[]).map(h=>h&&(h.document||h)).filter(Boolean);
   if(!hits.length)return {ok:false,why:"but it doesn't know this one"};
+  /* the plain list of strings, whatever shape the field arrives in */
+  const strs=v=>(Array.isArray(v)?v:[]).map(x=>typeof x==="string"?x:String((x&&(x.tag||x.name))||"")).map(s=>s.trim()).filter(Boolean);
   /* an all-digits "word" is a stray id, not a mood — seen live: a timestamp
-     sitting in The Fifth Season's moods list, ready to be offered as a tag */
-  const words=v=>(Array.isArray(v)?v:[]).map(x=>typeof x==="string"?x:String((x&&(x.tag||x.name))||"")).map(s=>s.trim()).filter(s=>s&&!/^\d+$/.test(s));
+     sitting in The Fifth Season's moods list, ready to be offered as a tag.
+     That guard belongs to the WORD lists alone. It was being applied to the
+     ISBNs too, and an ISBN is all digits: every number was thrown away before
+     the comparison, leaving only the few that end in an X — so looking a book
+     up by its number found the right book at Hardcover and then refused it as
+     somebody else's. Measured on Matilda: the answer carried 9780141301068
+     among two hundred numbers, and not one of them survived the filter. */
+  const words=v=>strs(v).filter(s=>!/^\d+$/.test(s));
   const wanted=cleanIsbn(isbn);
   /* the hit has to BE the book asked about — by number that means carrying
      the number, by title that means answering to the title. Moods and
      warnings from somebody else's book are worse than none. */
   const doc=wanted
-    ?hits.find(d=>words(d.isbns).some(x=>cleanIsbn(x)===wanted))
+    ?hits.find(d=>strs(d.isbns).some(x=>cleanIsbn(x)===wanted))
     :hits.find(d=>titleSame(title,String(d.title||"")));
   if(!doc)return {ok:false,why:"only offered “"+String((hits[0]||{}).title||"").slice(0,60)+"” — a different book, refused"};
   const fs=doc.featured_series||{};
   const sName=String(fs.series_name||(fs.series&&fs.series.name)||fs.name
     ||(Array.isArray(doc.series_names)?doc.series_names[0]:"")||"").trim();
   const sPos=doc.featured_series_position||fs.position||"";
-  const ns=words(doc.isbns).map(cleanIsbn).filter(Boolean);
+  const ns=strs(doc.isbns).map(cleanIsbn).filter(Boolean);
   const img=doc.image;
   return {ok:true,
     title:String(doc.title||"").trim()+(doc.subtitle?": "+String(doc.subtitle).trim():""),
@@ -24274,7 +24301,10 @@ async function fetchHardcover(title,author,isbn){
     blurb:stripHtml(String(doc.description||"")).trim(),
     genres:words(doc.genres),moods:words(doc.moods),tags:words(doc.tags),warnings:words(doc.content_warnings),
     pages:parseInt(doc.pages)||"",year:doc.release_year?String(doc.release_year).slice(0,4):"",
-    isbn:ns.find(x=>x.length===13)||ns.find(x=>x.length===10)||"",
+    /* the number that was asked for, when it was one of them: the book carries
+       two hundred editions' ISBNs and handing back the first of them would
+       quietly re-number the edition actually on the shelf */
+    isbn:(wanted&&ns.includes(wanted)?wanted:"")||ns.find(x=>x.length===13)||ns.find(x=>x.length===10)||"",
     cover:String((img&&typeof img==="object"?img.url:img)||"").trim(),
     slug:String(doc.slug||"").trim(),
     series:sName,seriesPos:sPos?String(sPos):""};
@@ -24517,7 +24547,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   }catch(e){oErr=true;tell("Open Library",stamp.o,false);}
   out.tags=dedupeWords(out.tags.flatMap(tidySubject)).filter(t=>t.length<=30).slice(0,15);
   /* the shelf's own genres are a shorter, tidier list than the subject tags */
-  out.genres=dedupeWords(out.genres.flatMap(tidySubject)).filter(t=>t.length<=28).slice(0,10);
+  out.genres=dedupeWords(out.genres.flatMap(tidySubject)).filter(t=>t.length<=28&&!subjForeign(t)).slice(0,10);
   /* Google is the one with tidy categories; when it's out of quota, offer the
      first subjects instead so there's still something to pick from */
   if(!out.genres.length)out.genres=out.tags.slice(0,8);
@@ -24528,6 +24558,13 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
     if(seenB.has(k))return false;seenB.add(k);return true;
   }).slice(0,6);
   if(!out.summary&&out.blurbs.length)out.summary=out.blurbs[0].text;
+  /* The same rule for the blurb the BULK fill applies without asking: an
+     English one standing beside it wins. The panel lets you read the paragraph
+     before pressing anything; a run of two hundred books does not, so the one
+     it writes in silence must not be one you cannot read. */
+  {const eng=out.blurbs.filter(b=>!guessLang(b.text));
+   if(guessLang(out.summary)&&eng.length)
+     out.summary=eng.reduce((a,b)=>b.text.length>a.text.length?b:a,eng[0]).text;}
   /* cover candidates, most-downloadable first — Open Library serves them with the
      header browsers need; Google's host doesn't, so it's only a last resort */
   /* where to read more. An ISBN gets you the book's own Goodreads page; without
@@ -24687,6 +24724,52 @@ async function fetchCoverData(urls,maxDim){
    nothing already on your shelf is touched. */
 const FICTION_JUNK=/^(fiction|non-?fiction|general|juvenile fiction|juvenile non-?fiction|young adult fiction|fiction in english|english fiction|literature)$/i;
 const KEEP_FICTION=/^(science|historical|literary|speculative|crime|detective|gothic|realistic|interactive|flash|weird|pulp|romantic|christian|climate)\s+fiction$/i;
+/* ---- which language a piece of writing is in ----
+   Asked one question only — is this English, or is it something else — and
+   only ever of a whole paragraph, where counting the commonest little words is
+   plenty to be sure. Open Library keeps ONE description per book, and the one
+   it holds for Matilda is in Spanish; being much the longest of the three, it
+   was the blurb the panel led with, under a button that says Replace my
+   summary. */
+const LANG_WORDS={
+  English:"the and of to in that it is was for with as not but his her you this",
+  Spanish:"que de la el en y los se del las por un una con no para su como pero",
+  French:"que de la le et les des en un une du dans qui est pour au ne pas sur",
+  German:"der die und den von zu das mit sich des auf für ist nicht ein eine im",
+  Italian:"che di la il un per non una in sono con del gli alla come ma nel dei",
+  Portuguese:"que de os as um uma para com não por dos como mas sua seu isso"
+};
+function guessLang(t){
+  const ws=String(t||"").toLowerCase().replace(/[^a-zà-öø-ÿ]+/g," ").split(" ").filter(Boolean);
+  if(ws.length<15)return "";                     /* too short to be sure, so say nothing */
+  const score={};
+  for(const L in LANG_WORDS){
+    const set=new Set(LANG_WORDS[L].split(" "));
+    score[L]=ws.filter(w=>set.has(w)).length;
+  }
+  let best="",bn=0;
+  for(const L in score)if(score[L]>bn){bn=score[L];best=L;}
+  /* it has to WIN, not edge it: these languages share little words with each
+     other and with English, and half a dozen coincidences must not decide it */
+  if(!best||best==="English"||bn<3||bn<score.English*1.6)return "";
+  return best;
+}
+/* ---- subjects that are about the catalogue rather than the book ----
+   Open Library's subjects belong to the WORK, so every translation's headings
+   sit in the pile with the English ones. Matilda's fifty-five held Écoles,
+   Muchachas, Cuentos humorísticos and "Spanish language materials" beside
+   Schools, Girls and Humorous stories, and they were offered as genres to tick.
+   The librarian's own language notes go for good — nobody wants "Translations
+   from English" as a tag. The foreign headings are only kept out of the GENRES,
+   which is the shelf's tidy vocabulary; the tag list is the rough pile and can
+   hold them. */
+const SUBJ_CATALOGUE=/^(?:[a-z]+ language(?: materials| readers)?|translations? (?:from|into) [a-z]+)$/i;
+/* a letter English does not use is the plain half of the test; the short list
+   is for the ones with no accent in them. Whole headings only — "Romans" is a
+   real English subject about Rome, and guessing at single words is not
+   something to be clever about when an unticked offer costs nothing anyway. */
+const SUBJ_FOREIGN=/^(?:escuelas|muchachas|novela juvenil|literatura infantil|tong hua|nouvelles|filles|kinderbuch|jugendbuch|romans, nouvelles.*)$/i;
+const subjForeign=s=>/[^\x00-\x7f]/.test(s)||SUBJ_FOREIGN.test(String(s||"").trim());
 function tidySubject(t){
   const parts=String(t||"").replace(/\s+/g," ").trim().split(",").map(s=>s.trim());
   /* A comma is only a list when one of its parts is a filing word. Splitting
@@ -24700,7 +24783,7 @@ function tidySubject(t){
       if(!KEEP_FICTION.test(s))s=s.replace(/\s+fiction$/i,"").trim();          /* "Fantasy fiction" */
       return s===s.toLowerCase()?s.charAt(0).toUpperCase()+s.slice(1):s;
     })
-    .filter(s=>s&&!FICTION_JUNK.test(s));
+    .filter(s=>s&&!FICTION_JUNK.test(s)&&!SUBJ_CATALOGUE.test(s));
 }
 /* one of each word, and where two spellings differ only in their capitals the
    one that looks like a name wins — "Fantasy" and "fantasy" were two tags */
