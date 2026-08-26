@@ -2940,6 +2940,145 @@ function scrapDriftCheck(before){
     }
   });
 }
+/* ---- 📐 What moved — the instrument, not the fix ----
+   Their report: moving a picture up or down makes the top bar gain a second
+   row, and coming out of the editor the picture reads as having shifted. It
+   cannot be reproduced here — at every width tried the bar stayed on one row —
+   and four rounds were once burned shipping plausible fixes for a bug that
+   could only be seen on their screen. So this measures instead of guessing.
+   It records ITSELF, with nothing to switch on first: every time the bar's
+   height changes, the page's size changes, the mode changes or a face is
+   flipped, a line goes into a ring buffer saying what the numbers were. What
+   we are hunting is which of them moves FIRST — the bar wrapping because the
+   window lost fifteen pixels to a scrollbar, or the page growing because a
+   picture went past its edge, or something adding a control to the bar. The
+   answer is in the order of the lines. */
+const MW={log:[],barRO:null,pageRO:null,lastBar:0,lastPage:"",wired:null};
+const MW_MAX=80;
+/* how many visual rows a bar is on, and what is standing in each of them —
+   an extra row from a control APPEARING looks quite different here from an
+   extra row from the same controls wrapping */
+function mwRows(bar){
+  /* grouped by the MIDDLE of each control, not its top: a label and a button
+     sitting side by side have different tops and the same line, and counting
+     tops called that two rows — which is exactly the thing being counted here,
+     so it had to read the way an eye reads it */
+  const found=[];
+  const walk=el=>{
+    [...el.children].forEach(c=>{
+      const r=c.getBoundingClientRect();
+      if(!r.height)return;
+      if(c.children.length&&getComputedStyle(c).display.includes("flex")){walk(c);return;}
+      found.push({mid:r.top+r.height/2,
+        txt:(c.id||(c.textContent||"").trim().slice(0,14)||c.className||"·")});
+    });
+  };
+  walk(bar);
+  found.sort((a,b)=>a.mid-b.mid);
+  const rows=[];
+  found.forEach(f=>{
+    const row=rows.find(r=>Math.abs(r.mid-f.mid)<12);
+    if(row){row.items.push(f.txt);row.mid=(row.mid*(row.items.length-1)+f.mid)/row.items.length;}
+    else rows.push({mid:f.mid,items:[f.txt]});
+  });
+  return rows.map(r=>r.items);
+}
+function mwSnap(what){
+  const bar=q("#edPage .edbar"),page=q("#edPage");
+  if(!bar||!page)return;
+  const br=bar.getBoundingClientRect(),pr=page.getBoundingClientRect();
+  const rows=mwRows(bar);
+  const de=document.documentElement;
+  const items=[];
+  qa("#imgLayer .scrap,#padLayer .pad",page).forEach(el=>{
+    const id=el.dataset.im||el.dataset.pad;
+    const st=(cur&&[...(cur.images||[]),...(cur.pads||[])].find(o=>o.id===id))||{};
+    const r=el.getBoundingClientRect();
+    items.push(`${id}: kept ${Math.round(+st.x||0)},${Math.round(+st.y||0)} · drawn ${Math.round(r.left-pr.left)},${Math.round(r.top-pr.top)}`);
+  });
+  const line={
+    at:new Date().toLocaleTimeString(),
+    what,
+    barH:Math.round(br.height),rows:rows.length,
+    rowText:rows.map((r,i)=>`row ${i+1}: ${r.join(" ")}`),
+    win:window.innerWidth,doc:de.clientWidth,bars:window.innerWidth-de.clientWidth,
+    pageW:Math.round(pr.width),pageH:Math.round(page.offsetHeight),
+    pageTop:Math.round(pr.top+window.scrollY),scroll:Math.round(window.scrollY),
+    docH:Math.round(de.scrollHeight),
+    mode:page.classList.contains("arr")?"arrange":page.classList.contains("draw")?"draw":page.classList.contains("tagmode")?"tag":"write",
+    face:q("#edPage .edform")||page.classList.contains("edform")?"editor":(q("#toView")?"editor":"reading"),
+    fit:page.classList.contains("fit")?"fit on":"fit off",
+    items
+  };
+  const prev=MW.log[0];
+  /* only when something we care about actually changed, or it was asked for by
+     name — a drag fires a hundred of these a second otherwise */
+  if(prev&&!/·/.test(what)&&prev.barH===line.barH&&prev.pageH===line.pageH
+     &&prev.win===line.win&&prev.mode===line.mode&&prev.face===line.face)return;
+  MW.log.unshift(line);
+  if(MW.log.length>MW_MAX)MW.log.length=MW_MAX;
+}
+/* the watchers, re-hung whenever a face is drawn (the elements are new) */
+function mwWatch(){
+  const bar=q("#edPage .edbar"),page=q("#edPage");
+  if(!bar||!page)return;
+  if(MW.wired===bar)return;
+  MW.wired=bar;
+  try{
+    if(MW.barRO)MW.barRO.disconnect();
+    if(MW.pageRO)MW.pageRO.disconnect();
+    MW.barRO=new ResizeObserver(()=>{
+      const h=Math.round(bar.getBoundingClientRect().height);
+      if(h===MW.lastBar)return;
+      const was=MW.lastBar;MW.lastBar=h;
+      mwSnap(was?`the top bar changed height, ${was} → ${h}`:"the top bar was measured");
+    });
+    MW.barRO.observe(bar);
+    MW.pageRO=new ResizeObserver(()=>{
+      const k=page.offsetWidth+"x"+page.offsetHeight;
+      if(k===MW.lastPage)return;
+      const was=MW.lastPage;MW.lastPage=k;
+      mwSnap(was?`the page changed size, ${was} → ${k}`:"the page was measured");
+    });
+    MW.pageRO.observe(page);
+  }catch(e){}
+  mwSnap("this face was drawn");
+}
+function mwPanel(){
+  const old=q("#mwPanel");if(old){old.remove();return;}
+  const wrap=document.createElement("div");
+  wrap.id="mwPanel";wrap.className="ratepanel";
+  const body=MW.log.length?MW.log.map(l=>
+    `<div style="margin:0 0 9px;padding-bottom:8px;border-bottom:1px solid var(--line)">
+      <b style="font-size:12.5px">${esc(l.at)} — ${esc(l.what)}</b>
+      <div class="hint" style="margin:2px 0 0">top bar <b>${l.barH}px on ${l.rows} row${l.rows===1?"":"s"}</b> · window ${l.win}, page area ${l.doc}${l.bars?` (a ${l.bars}px scrollbar)`:" (no scrollbar)"}</div>
+      <div class="hint" style="margin:1px 0 0">page ${l.pageW}×${l.pageH}, its top at ${l.pageTop} · scrolled ${l.scroll} · whole page ${l.docH} tall</div>
+      <div class="hint" style="margin:1px 0 0">${esc(l.mode)} · ${esc(l.face)} · ${esc(l.fit)}</div>
+      <div class="hint" style="margin:1px 0 0;font-family:ui-monospace,monospace;font-size:11px">${l.rowText.map(esc).join("<br>")}</div>
+      ${l.items.length?`<div class="hint" style="margin:1px 0 0;font-family:ui-monospace,monospace;font-size:11px">${l.items.map(esc).join("<br>")}</div>`:""}
+    </div>`).join("")
+    :'<span class="none">Nothing recorded yet. Move a picture, or go in and out of the editor, and come back.</span>';
+  wrap.innerHTML=`<div class="hrow2" style="margin-bottom:4px">
+      <b style="font-size:13px">📐 What moved — the last ${MW.log.length}</b>
+      <button class="btn" id="mwCopy" style="margin-left:auto;padding:4px 10px">⧉ Copy</button>
+      <button class="btn" id="mwX" style="padding:4px 10px">Close</button></div>
+    <div class="hint" style="margin:0 0 8px">Newest first. Every line is a moment when the bar, the page or the face changed — the one that moves FIRST is the cause, and the rest follow it.</div>
+    <div style="max-height:60vh;overflow:auto">${body}</div>`;
+  document.body.appendChild(wrap);
+  q("#mwX",wrap).onclick=()=>wrap.remove();
+  q("#mwCopy",wrap).onclick=async()=>{
+    const txt=MW.log.map(l=>
+      `${l.at} — ${l.what}\n  bar ${l.barH}px / ${l.rows} row(s) · window ${l.win} · page area ${l.doc} · scrollbar ${l.bars}\n`
+      +`  page ${l.pageW}x${l.pageH} top ${l.pageTop} scrolled ${l.scroll} docH ${l.docH}\n`
+      +`  ${l.mode} · ${l.face} · ${l.fit}\n  ${l.rowText.join("\n  ")}\n`
+      +(l.items.length?"  "+l.items.join("\n  ")+"\n":"")).join("\n");
+    const b=q("#mwCopy",wrap);
+    try{await navigator.clipboard.writeText(txt);b.textContent="Copied ✓";}
+    catch(e){const ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);
+      ta.select();try{document.execCommand("copy");b.textContent="Copied ✓";}catch(e2){b.textContent="Couldn't copy";}
+      ta.remove();}
+  };
+}
 function wireAddIn(el,commit){
   if(!el)return;
   el.setAttribute("enterkeyhint","done");
@@ -5770,12 +5909,16 @@ const sizeCtrlHtml=(withCover)=>`<button class="btn tinybtn" id="fsDown" title="
        should. A warning that fires on a working page is noise. The number
        still appears on the card a share leaves, where it is a reading rather
        than a complaint. -->
-  <button class="btn tinybtn" id="helpBtn" title="What everything here does">?</button>`;
+  <button class="btn tinybtn" id="helpBtn" title="What everything here does">?</button>
+  ${withCover?`<button class="btn tinybtn" id="mwBtn" title="What moved — the top bar's height, the page's size and every picture's kept and drawn place, each time any of them changed. For working out why a picture reads as having shifted.">📐</button>`:""}`;
 function wireSizeCtrl(){
   const d=q("#fsDown");if(d)d.onclick=()=>setFontScale((settings.fontScale||100)-10);
   const u=q("#fsUp");if(u)u.onclick=()=>setFontScale((settings.fontScale||100)+10);
   wireCovZoom(document);   /* the cover slider now rides in this cluster */
   const h=q("#helpBtn");if(h)h.onclick=showHelpSheet;
+  const m=q("#mwBtn");if(m)m.onclick=mwPanel;
+  /* the watchers go on whichever face has just been drawn */
+  mwWatch();
 }
 /* Hover explains every button — on a screen with a mouse. On a phone nothing
    does, so the explanations also live in one place you can actually open.
@@ -5900,6 +6043,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-26.12",lines:[
+    "A 📐 button joins the ? on a book's page, both faces: <b>What moved</b>. It writes itself a line every time the top bar changes height, the page changes size, the mode changes or you flip between reading and editing — each one saying how tall the bar is and how many rows it is on, which controls are standing in each row, how wide the window is against how much of it the page actually gets (so a scrollbar shows up as a number), how big the page is and where its top sits, and every picture's kept place beside its drawn one. A drop records twice, before and after the page is re-measured, because that is the one thing letting go of a picture does to the page's own size.",
+    "It is there because your pictures shifting cannot be made to happen here — at every width I tried, the bar stayed on one row — and shipping a plausible fix for something only your screen can see has cost us four rounds before. Move a picture, then press 📐 and ⧉ Copy: the line that changes FIRST is the cause, and the rest are following it."
+  ]},
   {v:"2026-08-26.11",lines:[
     "Tidying up has a new row: <b>Tags with no capital letter</b>. Every word on the shelf that never got one is listed with what it would become, and one press gives all of them their capital, on every book and every story inside a collection at once — with the colour and the family coming across with the word, and the capitalised spelling simply absorbing the lowercase one where you already had both. Tap any word first to leave that one exactly as it is; a lowercase word is sometimes the right word. One press of ↶ Undo puts the whole sweep back."
   ]},
@@ -18235,6 +18382,7 @@ function wireScrapbook(page,host){
     const db=q("#dbar");if(db)db.hidden=mode!=="draw";
     renderModeBar();
     setDrawUI();          /* the shared colour strip follows the mode */
+    mwSnap("the mode became "+mode+" ·");
   }
   function setMode(m){
     mode=(mode===m)?"write":m;                 /* tapping the active mode leaves it */
@@ -18906,7 +19054,14 @@ function wireScrapbook(page,host){
           el.style.left=p.x+"px";el.style.top=p.y+"px";el.style.width=p.w+"px";el.style.height=p.h+"px";};
         const auto=edgeScroller(place);
         const mv=ev=>{auto.at(ev.clientX,ev.clientY);place(ev.clientX,ev.clientY);};
-        const up=()=>{auto.stop();window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up);pageMin();syncDraw();scheduleSave();};
+        const up=()=>{auto.stop();window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up);
+          /* before AND after pageMin, because re-measuring the page is the one
+             thing a drop does to the page's own size — if the bar wraps between
+             these two lines, that is the answer */
+          mwSnap("let go, before the page is re-measured ·");
+          pageMin();
+          mwSnap("the page has been re-measured ·");
+          syncDraw();scheduleSave();};
         window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);window.addEventListener("pointercancel",up);};
       el.addEventListener("pointerdown",e=>{
         if(e.target.closest(".prs"))startDrag(e,"resize");else startDrag(e,"drag");});
@@ -18975,6 +19130,7 @@ function wireScrapbook(page,host){
         if(layer.classList.contains("strip"))return;   /* placed on the reading page instead */
         if(e.target.closest(".sbar"))return;
         e.preventDefault();
+        mwSnap("a picture was grabbed ("+how+") ·");
         const sx=e.clientX,sy=e.clientY,x=cx(im.x,im.w),y=im.y,w=im.w;
         const [loX,hiX]=xRange(im.w);
         /* the page's own pixels, not the screen's — see zoomNow. The scroll
@@ -18988,7 +19144,14 @@ function wireScrapbook(page,host){
           el.style.left=im.x+"px";el.style.top=im.y+"px";el.style.width=im.w+"px";};
         const auto=edgeScroller(place);
         const mv=ev=>{auto.at(ev.clientX,ev.clientY);place(ev.clientX,ev.clientY);};
-        const up=()=>{auto.stop();window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up);pageMin();syncDraw();scheduleSave();};
+        const up=()=>{auto.stop();window.removeEventListener("pointermove",mv);window.removeEventListener("pointerup",up);window.removeEventListener("pointercancel",up);
+          /* before AND after pageMin, because re-measuring the page is the one
+             thing a drop does to the page's own size — if the bar wraps between
+             these two lines, that is the answer */
+          mwSnap("let go, before the page is re-measured ·");
+          pageMin();
+          mwSnap("the page has been re-measured ·");
+          syncDraw();scheduleSave();};
         window.addEventListener("pointermove",mv);window.addEventListener("pointerup",up);window.addEventListener("pointercancel",up);};
       el.addEventListener("pointerdown",e=>{
         if(e.target.closest(".rs"))startDrag(e,"resize");else startDrag(e,"drag");});
