@@ -2954,6 +2954,8 @@ function scrapDriftCheck(before){
    picture went past its edge, or something adding a control to the bar. The
    answer is in the order of the lines. */
 const MW={log:[],barRO:null,pageRO:null,lastBar:0,lastPage:"",wired:null};
+/* the scrapbook strip's last known height, by book — see setSbh */
+let sbhPrev={id:null,h:null};
 const MW_MAX=80;
 /* how many visual rows a bar is on, and what is standing in each of them —
    an extra row from a control APPEARING looks quite different here from an
@@ -6043,6 +6045,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-26.13",lines:[
+    "Your pictures were never moving. Your trace proved it: every one of them had the same kept place and the same drawn place against the page in every single line — while the page's own top went 0 → 109 → 0 as ✥ Arrange went on and off. The page was moving under them, and the whole page moving reads exactly like the picture moving.",
+    "The strip that carries the Arrange banner sits above the page, so it pushes the page down when it appears. There was already machinery to ride that out by scrolling — it had simply never fired, for two reasons. It refused to do anything unless you were already scrolled, and you were at the top of the page; and it kept the strip's last height in a place that was wiped every time the page redrew, which pressing ✥ Arrange does. Both fixed: it now rides the change from wherever you are standing, remembers across redraws, and the mode switch calls it by name instead of hoping a watcher notices. On a book too short to scroll there is nothing to scroll into, so the strip pulls itself up over the page's very top instead of shoving it. Measured across arrange on, Done, arrange again, Done, and closing the scrapbook: the title stayed within one pixel of where it started, where it had been jumping fifty."
+  ]},
   {v:"2026-08-26.12",lines:[
     "A 📐 button joins the ? on a book's page, both faces: <b>What moved</b>. It writes itself a line every time the top bar changes height, the page changes size, the mode changes or you flip between reading and editing — each one saying how tall the bar is and how many rows it is on, which controls are standing in each row, how wide the window is against how much of it the page actually gets (so a scrollbar shows up as a number), how big the page is and where its top sits, and every picture's kept place beside its drawn one. A drop records twice, before and after the page is re-measured, because that is the one thing letting go of a picture does to the page's own size.",
     "It is there because your pictures shifting cannot be made to happen here — at every width I tried, the bar stayed on one row — and shipping a plausible fix for something only your screen can see has cost us four rounds before. Move a picture, then press 📐 and ⧉ Copy: the line that changes FIRST is the cause, and the rest are following it."
@@ -18172,16 +18178,66 @@ function renderBookView(){
      — the same 2cm jump the open/close toggle had. The scroll rides the
      change here too. Rect height, not offsetHeight: scrollBy speaks screen
      pixels, and the strip lives inside the zoomed page. */
-  let prevStripH=null;
+  /* Remembered ACROSS renders, and per book. Pressing ✥ Arrange redraws the
+     whole reading page, so a height kept in this function's own scope started
+     at nothing every time and had nothing to compare the new strip against —
+     which is why the compensation had never once fired for the thing people
+     actually notice. It fires between renders of the SAME book, and stays quiet
+     when a different book opens, where there is nothing to keep still. */
   const setSbh=()=>{
+    const prevStripH=(sbhPrev.id===cur.id)?sbhPrev.h:null;
     const there=strip&&document.body.contains(strip);
     document.documentElement.style.setProperty("--sbh",(there?strip.offsetHeight:0)+"px");
     const h=there?strip.getBoundingClientRect().height:0;
-    if(prevStripH!=null&&window.scrollY>0&&Math.abs(h-prevStripH)>1)
-      window.scrollBy(0,h-prevStripH);
-    prevStripH=h;
+    /* The scroll rides the change WHEREVER you are standing, including the very
+       top of the page — and the top is where this was going wrong.
+       It used to compensate only when already scrolled, on the reasoning that
+       there is nothing above the top to give. But the two directions are not
+       alike: when the strip GROWS it pushes the page down, and scrolling down
+       by the same amount keeps it still — which works perfectly well from zero.
+       Skipping it there meant pressing ✥ Arrange shoved the whole page, and
+       every picture on it, down by the height of the banner that had just
+       appeared, and leaving Arrange threw it all back up again. Nothing had
+       moved: their trace showed every picture's kept place and its drawn place
+       against the page identical in all of it, while the page's own top went
+       0 → 109 → 0. Compensating the growth also leaves us scrolled by exactly
+       the amount the shrink will need to give back, so the way out is now as
+       still as the way in. */
+    /* start from honest geometry, so the make-up below is worked out fresh */
+    if(strip)strip.style.marginBottom="";
+    let eff=h;
+    if(prevStripH!=null&&Math.abs(h-prevStripH)>1){
+      const need=h-prevStripH,y0=window.scrollY;
+      window.scrollBy(0,need);
+      /* What the scroll could not give. On a short book there is nothing below
+         to scroll into, so the page would be shoved down anyway — the strip
+         swallows the remainder itself instead, overlapping the very top of the
+         page rather than moving it. Growth only: a shrink's make-up is simply
+         the margin above being cleared. */
+      const short=need-(window.scrollY-y0);
+      /* in the STRIP's own pixels, not the screen's. The strip lives inside the
+         zoomed page, so a margin written in screen pixels is multiplied by the
+         zoom on the way in — the same two-rulers mistake --sbh already carries a
+         note about, and it over-corrected by exactly that much when measured. */
+      if(short>1&&strip){
+        const z=strip.offsetHeight?(h/strip.offsetHeight):1;
+        strip.style.marginBottom=(-short/(z>0.05&&z<20?z:1))+"px";
+        eff=h-short;
+      }
+    }
+    /* What is REMEMBERED is how much the strip actually displaces the page —
+       its height less whatever it has just pulled back — not its raw height.
+       Compared against a raw height, the next change measures against a number
+       that was never true on screen, and pressing Done in the banner threw the
+       page 43 pixels the other way. Measured: it did. */
+    sbhPrev={id:cur.id,h:eff};
   };
   setSbh();
+  /* the mode banner appearing and going is the biggest change this strip ever
+     makes, and it happens without a redraw — so the mode switch calls this by
+     name rather than trusting the watcher below to notice. Measured: it did not
+     notice, and pressing Done in the banner threw the page 49 pixels. */
+  window.__sbSync=setSbh;
   if(strip&&window.ResizeObserver){window.__sbRO=new ResizeObserver(setSbh);window.__sbRO.observe(strip);}
   const vs=q("#vStray");
   if(vs)vs.onclick=async()=>{
@@ -18382,6 +18438,9 @@ function wireScrapbook(page,host){
     const db=q("#dbar");if(db)db.hidden=mode!=="draw";
     renderModeBar();
     setDrawUI();          /* the shared colour strip follows the mode */
+    /* the banner has just come or gone, so the page's own top has just moved —
+       keep it still before anyone can see it */
+    if(window.__sbSync)window.__sbSync();
     mwSnap("the mode became "+mode+" ·");
   }
   function setMode(m){
