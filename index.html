@@ -4554,9 +4554,13 @@ const seenFloor=id=>Math.max(SYNC.seen[id]||0,SYNC.held[id]||0);
    and the change quietly un-happens at the next pull */
 const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,(b?seenFloor(b.id):0)+1);
 
+/* the two values being filled in — the address and the public key. Separate
+   from syncConfigured because plenty can be done with just these two: an
+   address and a key are all it takes to POST to a function, and only the
+   syncing itself needs the library on top. */
+const hcSettings=()=>!!(CFG.url&&CFG.anonKey&&!/YOUR_/.test(String(CFG.url)+String(CFG.anonKey)));
 function syncConfigured(){
-  return !!(CFG.url&&CFG.anonKey&&!/YOUR_/.test(String(CFG.url)+String(CFG.anonKey))
-    &&window.supabase&&typeof window.supabase.createClient==="function");
+  return !!(hcSettings()&&window.supabase&&typeof window.supabase.createClient==="function");
 }
 function setSync(s){SYNC.status=s;updateSyncUI();}
 function updateSyncUI(){
@@ -5226,6 +5230,18 @@ async function checkAccount(user){
 }
 
 async function initSync(){
+  /* The syncing library comes from a CDN, and a CDN that is blocked, slow or
+     simply down used to end matters right here in silence: no sync, nothing on
+     screen to say so, and both shelves quietly drifting apart. It gets its
+     second home now, the same courtesy the text reader and the barcode reader
+     already had, and when neither host answers the ⚙ Settings screen says
+     which addresses failed instead of showing a blank where the account was. */
+  if(hcSettings()&&!window.supabase){
+    try{
+      await loadScriptFrom(["https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2",
+        "https://unpkg.com/@supabase/supabase-js@2"]);
+    }catch(e){SYNC.libErr=e.message||"couldn't be fetched";}
+  }
   if(!syncConfigured()){SYNC.on=false;render();return;}
   try{SYNC.supa=window.supabase.createClient(CFG.url,CFG.anonKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});}
   catch(e){console.warn("[shelf] supabase init failed",e);SYNC.on=false;render();return;}
@@ -5852,6 +5868,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-26.5",lines:[
+    "Hardcover vanishing and the lookup falling back to Google: it was being switched off by something that has nothing to do with it. Asking Hardcover is a plain request to your own Supabase address — it needs the address and the key, and nothing else — but the app was checking whether the SYNCING library had loaded before it would ask. That library comes from a CDN, so on a session where the CDN was slow, blocked or down, Hardcover went quiet along with the syncing, and the panel — which only names the sources it actually asked — said nothing at all about it. Hardcover now asks whenever the address and key are filled in, and if it is ever not asked, the line of timings says so and why.",
+    "The bigger half of that: the syncing library failing used to end sync in silence — no account, no sign-in, both shelves quietly drifting apart, and nothing on any screen saying why. It gets a second address to try now, like the text reader and the barcode reader already had, and ⚙ Settings → what this device is says which addresses failed if neither answers. If you ever see “Syncing off — this device only” there with a note after it, that is what happened, and it explains the missing Hardcover in the same breath."
+  ]},
   {v:"2026-08-26.4",lines:[
     "Hardcover has been refusing every book you looked up by its number, and it was my doing. The guard that keeps a stray id out of the mood list — anything that is all digits — was being applied to the list of ISBNs as well, and an ISBN is all digits: every number was thrown away before the comparison, so Hardcover found the right book and was then told it was somebody else's. Matilda's answer carried your 9780141301068 among two hundred numbers and not one of them survived. Now it lands: on that same book Hardcover brings a blurb, a genre, nine moods, nine tags, a content warning, the pages, the year, a cover and the series.",
     "And the Spanish Matilda. It was the right book — Open Library keeps one description per book and the one it holds for Matilda is written in Spanish, three times longer than the English ones, so it led under Replace my summary. A blurb in another language is still offered and still applies if you want it, and now says which language it is in, but it doesn't go first while an English one is there — and it is never the one a bulk run writes in silence. The genre offers are cleaner too: Open Library files every translation's headings under the same book, so Écoles, Muchachas and Cuentos humorísticos were being offered as genres. They stay in the tag list, which is the rough pile, and the librarian's own notes — “Spanish language”, “Translations from English” — are gone from both."
@@ -11759,7 +11779,9 @@ function tuneDiagnostics(){
       +Math.round(realWidth()/((settings.fontScale||100)/100))+", bucket "
       +(document.documentElement.getAttribute("data-vw")||"?"),
     SYNC.on?("Syncing on"+(SYNC.user?", signed in as "+(SYNC.user.email||"?"):", not signed in"))
-      :"Syncing off — this device only",
+      :"Syncing off — this device only"
+        /* the one reason for it that is nobody's choice, and used to be silent */
+        +(SYNC.libErr?" · the syncing library "+SYNC.libErr:(hcSettings()?"":" · no Supabase address and key in config.js")),
     /* what is painted behind the page, and whether the book you are on has one
        of its own — added because a collection came up entirely purple and
        neither of us could say what had put it there */
@@ -18965,6 +18987,11 @@ function renderEditor(){
   /* ---- auto-fill from Google Books / Open Library ---- */
   const closeFetch=()=>{const p=q("#fetchPanel");if(p){p.hidden=true;p.innerHTML="";}};
   /* `en` given: look up ONE story inside a collection; absent: the whole book */
+  /* one line per source, in the same voice whether it answered, refused, or was
+     never asked at all */
+  const timeLine=t=>t.skip
+    ?`${t.what} — ${t.note}`
+    :`${t.what} ${t.ok?"answered":"didn't answer"} in ${(t.ms/1000).toFixed(1)}s${t.note?" — "+t.note:""}`;
   async function openFetchPanel(en){
     const box=q("#fetchPanel");
     const head=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">🔎 Auto-fill${en?" — "+esc(en.title||"this story"):""}</b>
@@ -18990,7 +19017,7 @@ function renderEditor(){
         ? "Couldn't reach the book sites just now — they're free and sometimes busy. Your connection may also be down."
         : "Nothing found under that title. Try a shorter title, or check the spelling."}</div>
         ${(probe.asked||[]).length?`<div class="hint" style="margin:7px 0 0">This is what was asked:<br>${probe.asked.map(a=>esc(a)).join("<br>")}</div>`:""}
-        ${(probe.times||[]).length?`<div class="hint" style="margin:7px 0 0">${probe.times.map(t=>esc(`${t.what} ${t.ok?"answered":"didn't answer"} in ${(t.ms/1000).toFixed(1)}s${t.note?" — "+t.note:""}`)).join(" · ")}</div>`:""}
+        ${(probe.times||[]).length?`<div class="hint" style="margin:7px 0 0">${probe.times.map(t=>esc(timeLine(t))).join(" · ")}</div>`:""}
         <button class="btn pri" id="fpRetry" style="margin-top:9px">Try again</button>`;
       wireClose();
       q("#fpRetry",box).onclick=()=>openFetchPanel(en);
@@ -19111,7 +19138,7 @@ function renderEditor(){
       <div class="hint" style="margin:11px 0 0">Found via ${info.source.join(" & ")}${info.year?` · first published ${esc(info.year)}`:""}. Nothing is applied until you press a button.${
         /* the wait, with names on it — twenty silent seconds turned out to be
            one site's timeouts, and nothing on screen said whose */
-        (probe.times||[]).length?`<br>${probe.times.map(t=>esc(`${t.what} ${t.ok?"answered":"didn't answer"} in ${(t.ms/1000).toFixed(1)}s${t.note?" — "+t.note:""}`)).join(" · ")}`:""}${
+        (probe.times||[]).length?`<br>${probe.times.map(t=>esc(timeLine(t))).join(" · ")}`:""}${
         /* the side-by-side: what each source actually contributed to THIS
            book. This line is how the asking order gets decided — with more
            than one source answering there is a comparison worth reading. */
@@ -24241,7 +24268,14 @@ function noteGoogleDry(e){
    passes one book search through per ask. No Supabase, or no function
    deployed yet — the other two sources simply carry on alone, and the
    lookup panel says why Hardcover didn't answer. */
-const hardcoverOn=()=>syncConfigured();
+/* The lookup is a plain POST to a function's address: the Supabase JS library
+   plays no part in it, and the address and the public key are the whole of what
+   it needs. This used to ask syncConfigured(), which ALSO demands that the
+   library be loaded — so a session where the CDN was slow or blocked took
+   Hardcover down along with the syncing, and the panel, which only names the
+   sources it actually asked, said nothing at all about it. That is exactly what
+   "it found the Hardcover info and now just reverts to Google" looks like. */
+const hardcoverOn=()=>hcSettings();
 /* Hardcover refills at one request a second, with a burst of ten. The bulk
    sheet asks faster than that, so every ask passes through this gate: spaced
    out, they all land; fired at the sheet's own pace, everything past the
@@ -24368,6 +24402,11 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   /* `say` was taken — it feeds probe.asked further down. This one feeds the
      timings. */
   const tell=(what,ms,ok,note)=>{if(probe)(probe.times=probe.times||[]).push({what,ms:Math.round(ms||0),ok:!!ok,note:note||""});};
+  /* A source that was never asked used to leave no trace at all, so the line of
+     timings simply had one fewer name on it and nothing said why. Silence reads
+     as "it stopped working"; this says which one and what would fix it. */
+  if(!hOn)(probe?(probe.times=probe.times||[]):[]).push({what:"Hardcover",skip:true,
+    note:"not asked: no Supabase address and key in config.js"});
   try{
     const j=await gP;
     const items=(j.items||[]).map(x=>x.volumeInfo||{});
