@@ -6233,6 +6233,13 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-27.14",lines:[
+    "Undoing a bulk fill is one press again. Every genre a run brought onto your shelf for the first time was being written down with a step of ↶ Undo of its own, so filling in a batch that turned up three new genres took <b>four</b> presses to put back — and after the first press, with the books already back as they were, those three new names were still standing in your genre list. Measured before and after: one press now takes the books, the pages, the blurbs and the new genres back together, and one press of ↷ Redo brings the lot forward again.",
+    "That is the third time the same fault has turned up — a bulk change that also touches your vocabulary, quietly costing more steps of Undo than presses of the button. So the rule now lives in the code at the door it happens at rather than in a note somewhere, and the machinery it points to can carry a whole handful of words instead of one."
+  ]},
+  {v:"2026-08-27.13",lines:[
+    "The “On this page:” row at the top of a busy tab was quietly wearing another component's clothes. It shares a name with a story's line in a collection's Contents list, and that one is written later in the stylesheet, so it was winning: the row was spaced wider than it should be, sitting on the wrong line, carrying padding and a rounded corner it never asked for, and showing a pointing hand across its whole width — including the label and the gaps, which do nothing. Both are named properly now; the Contents rows are untouched to the pixel."
+  ]},
   {v:"2026-08-27.11",lines:[
     "Merging two genres or two tags now moves <b>every spelling</b> of the word, not only the one the button happened to name. Found by reading the code rather than by anything going wrong on your screen, and it was worse than it sounds: the count beside the button has always been blind to capitals, so a shelf holding “Humorous”, “humorous” and “HUMOROUS” was offered as three — and the merge moved one, leaving two books carrying a genre that had just been taken off your list altogether. Renaming a genre, a tag or a fandom, and taking one off the shelf for good, had the same fault.",
     "The same split was doing the opposite harm one screen over: “make this a genre everywhere” counted the odd spellings out and then moved them anyway, so it under-promised and over-delivered. Both sides now use one rule — a word is the same word whatever its capitals — written down where the comparison happens rather than in a note. Undo still puts every original spelling back exactly as it was, story by story."
@@ -7780,12 +7787,23 @@ async function applyOp(op,inv,quiet){
         }
       }
     }
-    const lb=op.label;
-    if(lb){
+    /* `label` may be ONE vocabulary entry or a list of them. A merge retires a
+       single word, but a bulk fill can bring in half a dozen new genres at
+       once, and each of those used to be persisted with saveMeta — which
+       pushes an undo step of its own, so one press of Fill in became four
+       presses of ↶ Undo, with the new names still sitting in your genre list
+       after the first. They ride here instead, and go back together. */
+    for(const lb of (Array.isArray(op.label)?op.label:(op.label?[op.label]:[]))){
       const key=(lb.kind==="genre"?"genre:":lb.kind==="fandom"?"fandom:":"kw:")+lb.name;
+      /* Which way round this entry goes. A merge's label names a word the op
+         DELETED, so undoing puts it back. A bulk fill's names one the op
+         CREATED — `add:true` — so undoing takes it away again. Getting this
+         backwards would have had Undo cheerfully inventing the genre it was
+         supposed to be removing. */
+      const shouldHave=lb.add?!inv:inv;
       /* the vocabulary is persisted by hand here, never through saveMeta —
          saveMeta would push a fresh op from inside an undo */
-      if(inv){
+      if(shouldHave){
         unmarkMetaDel(key);
         if(lb.kind==="genre")genres[lb.name]=lb.color||"#78716c";
         /* a fandom's cast comes back with it, or the name returns empty and
@@ -9759,6 +9777,20 @@ async function openBulkFill(ids){
     S.total=groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.on&&j.row.info).length,0);
     draw();
     const items=[];let coversAdded=0;
+    /* Genres this run brings onto the shelf for the first time. They used to be
+       persisted with saveMeta, which pushes an undo step per genre — measured:
+       three new genres made one press of Fill in take four presses of ↶ Undo,
+       and after the first the new names were still standing in your genre list.
+       They ride the one bulk op instead, marked `add` so undoing takes them
+       away rather than putting them back. See the guard above saveMeta. */
+    const madeGenres=[];
+    const ensureGenreQuiet=name=>{
+      unmarkMetaDel("genre:"+name);   /* even if already here — see ensureGenre */
+      if(genres[name])return;
+      genres[name]=genreColor(name);
+      madeGenres.push({kind:"genre",name,color:genres[name],add:true});
+      saveGenresQuiet();
+    };
     for(const g of groups){
       if(stop){S.stopped=true;break;}
       /* A run can take twenty minutes, and the books were taken hold of when the
@@ -9793,8 +9825,7 @@ async function openBulkFill(ids){
         if(!en&&r.want.author){b.author=r.want.author;did=true;}
         r.chips.filter(c=>c.on).forEach(c=>{
           if(c.kind==="genre"){
-            unmarkMetaDel("genre:"+c.name);   /* even if already here — see ensureGenre */
-            if(!genres[c.name]){genres[c.name]=genreColor(c.name);saveMeta();}
+            ensureGenreQuiet(c.name);
             b.genres=b.genres||[];
             if(!b.genres.includes(c.name)){b.genres.push(c.name);did=true;}
           }else{
@@ -9835,8 +9866,7 @@ async function openBulkFill(ids){
       /* the pile, onto the collection it was gathered for */
       g.pile.filter(v=>v.on).forEach(v=>{
         if(v.kind==="genre"){
-          unmarkMetaDel("genre:"+v.name);   /* even if already here — see ensureGenre */
-          if(!genres[v.name]){genres[v.name]=genreColor(v.name);saveMeta();}
+          ensureGenreQuiet(v.name);
           b.genres=b.genres||[];
           if(!b.genres.includes(v.name)){b.genres.push(v.name);changed=true;}
         }else{
@@ -9859,8 +9889,9 @@ async function openBulkFill(ids){
       if(SYNC.on)enqueue({kind:"book",id:b.id});
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
     }
-    /* one undo step for the whole run, the same as every other bulk action */
-    if(items.length)pushOp({t:"bulk",items});
+    /* one undo step for the whole run, the same as every other bulk action —
+       the genres it invented along the way included */
+    if(items.length)pushOp(madeGenres.length?{t:"bulk",items,label:madeGenres}:{t:"bulk",items});
     if(coversAdded)bumpCovers();
     if(SYNC.on)flushQueue();
     /* THE "FILLED IN 15 AND NOTHING EVER APPEARED" BUG. The collection's own
