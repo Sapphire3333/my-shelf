@@ -4756,10 +4756,61 @@ function touchMeta(){
    │ moment of writing. Now it does.                                           │
    └───────────────────────────────────────────────────────────────────────────┘ */
 function saveMetaDel(){saveSharedMap("metaDel",metaDel);enqueue({kind:"meta",key:"metaDel"});}
-function markMetaDel(k){metaDel[k]=Date.now();saveMetaDel();}
+function markMetaDel(k){
+  metaDel[k]=Date.now();saveMetaDel();
+  /* A retired tag has to leave the list you own as well, and there are five
+     places that retire one — a merge, a capitalise sweep, the duplicate panel,
+     turning a tag into a genre, and a family rename. Doing it here rather than
+     at each of the five is the only version nobody can forget. Only the
+     removal side: rememberKw clears the mark itself, so wiring the other way
+     round would call itself for ever. */
+  if(typeof forgetKw==="function"&&String(k||"").slice(0,3)==="kw:")forgetKw(String(k).slice(3));
+}
 function unmarkMetaDel(k){if(metaDel[k]){delete metaDel[k];mapGone.metaDel.add(k);saveMetaDel();}}
 let kwCats={};                 /* keyword -> which family it belongs to */
 let catColors={};              /* family -> its colour, which its keywords inherit */
+/* ---- your tags, as a list you own ----
+   Genres have always lived in a list of their own, so taking a genre off its
+   last book leaves it standing there for the next one. Tags had no such list:
+   what "Your tags" showed was worked out on the spot from the words the books
+   happened to carry, plus anything holding a colour or a family. So a plain tag
+   on exactly one book stopped existing the moment it left that book — the owner
+   lost "Journalism" that way and asked for this.
+   word -> when it was first seen. Shared and merged like every other record
+   here, and it answers to the same "kw:" tombstone the colour and the family
+   do, so deleting a word for good still takes all three away together and the
+   other device is told once. */
+let kwList={};
+function saveKwList(){dbPut("meta",{k:"kwList",v:kwList});enqueue({kind:"meta",key:"kwList"});touchMeta("kwList");}
+let kwListTimer=0;
+function saveKwListSoon(){clearTimeout(kwListTimer);kwListTimer=setTimeout(saveKwList,700);}
+/* the one door in. Case-insensitive on the way, so a word already known under
+   different capitals does not become a second entry — the spelling already on
+   the list wins, which is the same rule the merges keep. */
+function rememberKw(name,quiet){
+  const w=String(name||"").trim();
+  if(!w)return false;
+  unmarkMetaDel("kw:"+w);
+  if(Object.keys(kwList).some(k=>sameWord(k,w)))return false;
+  kwList[w]=Date.now();
+  if(quiet)saveKwListSoon();else saveKwList();
+  return true;
+}
+/* and the one door out — used wherever a word is retired or merged away */
+function forgetKw(name){
+  const hit=Object.keys(kwList).filter(k=>sameWord(k,name));
+  if(!hit.length)return;
+  hit.forEach(k=>delete kwList[k]);
+  saveKwList();
+}
+/* every word standing on a book is a word you have used, so it belongs on the
+   list. Called from pushOp — the funnel every edit passes — and once at boot,
+   which is what carries the tags that existed before this list did. */
+function learnKwFrom(b){
+  if(!b)return;
+  ((b.keywords)||[]).forEach(k=>rememberKw(k,true));
+  ((b.entries)||[]).forEach(en=>((en.keywords)||[]).forEach(k=>rememberKw(k,true)));
+}
 /* a keyword's own colour wins; failing that it takes its family's; failing that it
    stays plain, which is what most of them should be */
 const kwColor=k=>kwColors[k]||catColors[kwCats[k]]||"";
@@ -5306,6 +5357,11 @@ async function pullAll(){
           else if(row.key==="kwCats"){
             if(cloudNewer("kwCats"))kwCats=takeWhole(row.value,kwCats,"kw:");
             else{const rv=row.value||{};for(const k in rv)if(!kwCats[k]&&!gone("kw:"+k))kwCats[k]=rv[k];}}
+          /* the tag list joins by keeping whatever either device knows, minus
+             anything retired — a word invented on the phone is a word here too,
+             and a word deleted for good here does not come back from there */
+          else if(row.key==="kwList"){const rv=row.value||{};
+            for(const k in rv)if(!kwList[k]&&!gone("kw:"+k))kwList[k]=rv[k];}
           else if(row.key==="catColors"){
             if(cloudNewer("catColors"))catColors=takeWhole(row.value,catColors,"cat:");
             else{const rv=row.value||{};for(const c in rv)if(!catColors[c])catColors[c]=rv[c];}}
@@ -5323,7 +5379,7 @@ async function pullAll(){
           if(kind==="genre")delete genres[nm];
           /* one prefix covers both maps — the second kw branch this used to have
              could never be reached, so category assignments outlived the keyword */
-          else if(kind==="kw"){delete kwColors[nm];delete kwCats[nm];}
+          else if(kind==="kw"){delete kwColors[nm];delete kwCats[nm];delete kwList[nm];}
           /* the word itself stays — only its filing was undone. Without this
              mark, taking a word out of its family (or disbanding one) held only
              until the next pull, when takeWhole's keep-what-only-you-know rule
@@ -5703,6 +5759,21 @@ async function initSync(){
        .filter(x=>!metaDel[p+x]);
    }}
   const kct=await dbGet("meta","kwCats");kwCats=kct&&kct.v?kct.v:{};
+  /* the tag list, and its one-time seeding. A shelf that predates this record
+     has hundreds of words known only because a book happens to carry one; they
+     are the owner's words and must survive the day one of them leaves its last
+     book, so the first run writes every one of them down. Marked-as-deleted
+     words are skipped, or a word retired long ago would walk back in here. */
+  {const kl=await dbGet("meta","kwList");
+   kwList=kl&&kl.v?kl.v:{};
+   if(!kl){
+     const seen=new Set(Object.keys(kwList).map(k=>k.toLowerCase()));
+     [...books.flatMap(allKeywordsOf),...Object.keys(kwColors),...Object.keys(kwCats)]
+       .forEach(k=>{const w=String(k||"").trim();
+         if(!w||metaDel["kw:"+w]||seen.has(w.toLowerCase()))return;
+         seen.add(w.toLowerCase());kwList[w]=Date.now();});
+     if(Object.keys(kwList).length)saveKwList();
+   }}
   const cc=await dbGet("meta","catColors");catColors=cc&&cc.v?cc.v:{};
   const iq=await dbGet("meta","importQueue");importQueue=iq&&Array.isArray(iq.v)?iq.v:[];
   /* device-local on purpose — an export made on the PC says nothing about
@@ -6261,6 +6332,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-27.22",lines:[
+    "<b>Your tags are a list you own now, the way your genres always have been.</b> A tag used to exist only because a book was carrying it — so a word on exactly one book, with no colour and no family of its own, stopped existing the moment you took it off that book. That is how Journalism disappeared. It does not happen any more: a tag stays on your list until you delete it on purpose, ready for the next book, exactly like a genre.",
+    "Every word already on your shelf was written into the new list the first time this build ran, so nothing was lost in the changing over — and the list travels between your devices like the colours and the families do, joining by keeping whatever either of them knows. A word invented on the phone is a word here.",
+    "The trade, said plainly: your list will no longer tidy itself. A tag that drifts in from an import and ends up on nothing will now sit there until you take it off — and taking one off for good is where it always was, behind a hold on the chip, where it asks first and one press of ↶ Undo brings it back with its colour and its family. The warning added yesterday about a word leaving your tags is gone, because there is nothing left for it to warn about."
+  ]},
   {v:"2026-08-27.19",lines:[
     "<b>⌛ Don't have it yet is on a story's list too now</b> — you looked for it and it wasn't there. It should have been from the start, because the case it exists for is most often a story: a series kept as one collection, three of them read and the fourth not published yet. The collection is yours; one book inside it is not. It is the story's own mark and does not pass down from the collection the way giving up and setting aside do, and saying you are reading it clears it, exactly as on a book.",
     "Finding that turned up something older and worse, which had been quietly swallowing <b>⏸ On hold</b> as well. A story only steps out of its collection onto the shelf when the shelf is ASKING about stages — and it only asks once you have pressed a pill. So the count on the ⏸ pill was worked out before anything was being asked, came back 0, and <b>a pill that says 0 is not drawn at all</b>: a story you had set aside inside a collection could never be found, because the one press that would have found it was never on the screen. The counts come from every story carrying a stage or a mark of its own now, so the number on a pill really is the number of rows it opens — and both pills turn up whenever they have something to show."
@@ -7734,6 +7810,14 @@ document.addEventListener("visibilitychange",()=>{
    └───────────────────────────────────────────────────────────────────────────┘ */
 function pushOp(op){
   HIST.undo.push(op);if(HIST.undo.length>50)HIST.undo.shift();HIST.redo=[];refreshHistBtns();
+  /* the tag list rides it too: a word standing on a book is a word you have
+     used, and this is the one place every edit passes. Undo does not come
+     through here, so undoing the moment a word was invented leaves it on your
+     list — which is the safe way round, and the tag's own menu can retire it. */
+  try{
+    if(op.t==="book")learnKwFrom(op.after);
+    else if(op.t==="bulk")(op.items||[]).forEach(it=>learnKwFrom(it.after));
+  }catch(e){}
   /* the change log rides the same funnel — see above */
   try{
     if(op.t==="book")histNote(op.id,op.before,op.after);
@@ -7877,7 +7961,11 @@ async function applyOp(op,inv,quiet){
         /* the colour and filing marks too — an older "made it plain" or "took
            it out of its family" mark would strip what this restores at the
            next pull */
-        else{if(lb.color){kwColors[lb.name]=lb.color;unmarkMetaDel("kwcolor:"+lb.name);}
+        /* and back onto the list you own. Undo does not pass through pushOp, so
+           it is the one restore that has to say so itself — without this,
+           undoing a merge gave the word back to the books and not to the list. */
+        else{rememberKw(lb.name);
+             if(lb.color){kwColors[lb.name]=lb.color;unmarkMetaDel("kwcolor:"+lb.name);}
              if(lb.cat){kwCats[lb.name]=lb.cat;unmarkMetaDel("kwcat:"+lb.name);}}
       }else{
         markMetaDel(key);
@@ -12629,7 +12717,7 @@ function renderKwSheetTop(getCur,redrawEditor,save){
   const again=()=>renderKwSheetTop(getCur,redrawEditor,save);
   top.innerHTML=`<div class="lbl" style="display:block;margin:0 0 4px">On this book (${list.length}) — tap to take one off · hold one for its menu</div>`
     +(list.length||ghostOf("kw")?(()=>{
-        const out=list.map((k,i)=>`<span class="kw" data-kmine="${i}" data-kmw="${esc(k)}" title="Tap to take it off this book. The word stays on your list as long as another book carries it, or you have given it a colour or a family — otherwise it leaves with the last book, and it will say so. Hold, or right-click, for everything else." style="cursor:pointer;${kwStyle(k)}">${esc(k)}</span>`);
+        const out=list.map((k,i)=>`<span class="kw" data-kmine="${i}" data-kmw="${esc(k)}" title="Tap to take it off this book — the word itself stays on your list, ready for the next one. Hold, or right-click, for everything else, including taking it off your list for good." style="cursor:pointer;${kwStyle(k)}">${esc(k)}</span>`);
         const g=ghostOf("kw");
         if(g)out.splice(Math.min(g.idx,out.length),0,ghostHtml("kw","kw"));
         return out.join("");})()
@@ -22573,7 +22661,10 @@ function renderEditor(){
     /* kwCats keys too: a word filed in a family but standing on no book is
        still vocabulary — without this it existed in the family and appeared
        nowhere, which is how the mood set below could have vanished */
-    return [...new Set([...books.flatMap(allKeywordsOf),...Object.keys(kwColors),...Object.keys(kwCats)])]
+    /* kwList first: it is the list you own, and the only one of the four that
+       keeps a word alive after its last book lets go of it */
+    return [...new Set([...Object.keys(kwList),...books.flatMap(allKeywordsOf),
+      ...Object.keys(kwColors),...Object.keys(kwCats)])]
       .filter(Boolean).sort((a,b)=>a.localeCompare(b));
   }
   /* StoryGraph's mood vocabulary, offered as a ready-made family — the owner's
@@ -22744,40 +22835,12 @@ function renderEditor(){
       <span class="none" style="font-size:12px;margin-left:auto;font-weight:400">tap to take off this book · hold for its menu</span></div>
       <div class="chiprow">${(()=>{const kbr=new Set(cur.kwBreaks||[]);
         const out=cur.keywords.map((k,i)=>
-          `<span class="kw" data-kedit="${esc(k)}" title="Tap to take it off this book. The word stays on your list as long as another book carries it, or you have given it a colour or a family — otherwise it leaves with the last book, and it will say so. Hold, or right-click, for everything else." style="${kwStyle(k)}">`
+          `<span class="kw" data-kedit="${esc(k)}" title="Tap to take it off this book — the word itself stays on your list, ready for the next one. Hold, or right-click, for everything else, including taking it off your list for good." style="${kwStyle(k)}">`
           +esc(k)+`</span>`
           +(kbr.has(k)?'<span class="rowbreak"></span>':""));
         const g=ghostOf("kw");
         if(g)out.splice(Math.min(g.idx,out.length),0,ghostHtml("kw","kw"));
         return out.join("");})()}</div>
-      ${(()=>{
-        /* ---- the word that just left your list altogether ----
-           Their report: a tag was taken off a book and was then "not ANYWHERE
-           in Your tags". True, and it is the difference between the two kinds
-           of word. A GENRE lives in a list of its own, so taking it off its
-           last book leaves it standing there. A TAG has no such list —
-           knownKeywords is worked out from the books that carry one, plus any
-           word holding a colour or a family — so a plain tag on exactly one
-           book stops existing the moment it leaves that book, and it does it
-           silently. Until there is a real list to keep it in, the least this
-           can do is SAY so while the ghost is still there to press. */
-        const g=ghostOf("kw");
-        if(!g)return "";
-        /* knownKeywords reads the STORED books, and this book's copy is still
-           being held for the autosave — so asking it here always answered
-           "still there" and the note never once appeared. The open book has to
-           answer for itself out of `cur`, the same trap rebaseOpenBook exists
-           for, seen from the other side. */
-        const low=String(g.name).toLowerCase(),same=x=>String(x).toLowerCase()===low;
-        const stillKnown=Object.keys(kwColors).some(same)||Object.keys(kwCats).some(same)
-          ||books.some(b=>{
-            const mine=b.id===(cur&&cur.id),src=mine?cur:b;
-            return ((src.keywords)||[]).some(same)
-              ||(isColl(src)&&((src.entries)||[]).some(en=>((en.keywords)||[]).some(same)));
-          });
-        if(stillKnown)return "";
-        return `<div class="hint" style="margin-top:6px;color:#b45309">That was the only book with <b>${esc(g.name)}</b> on it, so the word has left your tags altogether — a tag lives on the books that carry it, unlike a genre. Press the ↶ above to put it back, or ↶ Undo.</div>`;
-      })()}
       <div class="hrow2" style="margin-top:6px"><button class="btn" id="kwOpen" title="Your whole vocabulary, in a window of its own">🏷 Your tags <b>${knownKeywords().length}</b>…</button>
         <span class="none" style="font-size:12px">search it, add from it, rename and recolour</span></div>
       ${sug.length?`<div class="hint" style="margin-top:6px">Turning up in this book's own writing: ${sug.map(k=>`<span class="kw" data-ks2="${esc(k)}" style="cursor:pointer;font-size:11px;padding:1px 6px;border-style:dashed">＋ ${esc(k)}</span>`).join("")}</div>`:""}
@@ -23385,7 +23448,7 @@ function renderEditor(){
     q("#genChips").className="chiprow";
     q("#genChips").innerHTML=(()=>{
       const out=cur.genres.map(g=>
-        `<span class="chip big" data-gedit="${esc(g)}" title="Tap to take it off this book. The word stays on your list as long as another book carries it, or you have given it a colour or a family — otherwise it leaves with the last book, and it will say so. Hold, or right-click, for everything else." style="${chipStyle(genres[g])}">`
+        `<span class="chip big" data-gedit="${esc(g)}" title="Tap to take it off this book — the word itself stays on your list, ready for the next one. Hold, or right-click, for everything else, including taking it off your list for good." style="${chipStyle(genres[g])}">`
         +esc(g)+`</span>`
         +(gbr.has(g)?'<span class="rowbreak"></span>':""));
       const gh=ghostOf("gen");
