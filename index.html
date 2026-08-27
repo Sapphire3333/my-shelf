@@ -4363,7 +4363,11 @@ function openFamiliesPanel(){
   const wrap=document.createElement("div");
   wrap.id="famPanel";wrap.className="ratepanel";
   let close=()=>{};
-  const words=[...new Set(books.flatMap(allKeywordsOf))].filter(Boolean);
+  const words=vocabKeywords();
+  /* the way back from a filing paste, kept at the panel's level so a redraw
+     does not lose it — the list above has to be rebuilt to show the new
+     grouping, and rebuilding it would otherwise take the offer away with it */
+  let filingBack=null;
   const draw=()=>{
     const fams=allCats();
     const byFam={};fams.forEach(f=>byFam[f]=[]);
@@ -4374,6 +4378,9 @@ function openFamiliesPanel(){
     wrap.innerHTML=`<div class="hrow2" style="margin-bottom:9px">
         <b style="font-size:13px">🎨 Tag families &amp; colours</b>
         <button class="btn" id="fmClose" style="margin-left:auto;padding:4px 10px">Done</button></div>
+      ${filingBack?`<div class="hrow2" style="margin:0 0 9px;gap:8px">
+        <span class="rr">Filed ${filingBack.n} tag${filingBack.n===1?"":"s"} from what you pasted.</span>
+        <button class="btn" id="fmUndoFile">↶ Put the old filing back</button></div>`:""}
       ${fams.length?`<div class="hint" style="margin:0 0 9px">Every family you have, its colour, and the words filed under it. A word with no colour of its own wears its family's.</div>
       ${fams.map(f=>`<div class="famrow">
         <input type="color" class="famdot" data-famc="${esc(f)}" value="${esc(catColors[f]||"#78716c")}" title="Change this family's colour">
@@ -4386,8 +4393,10 @@ function openFamiliesPanel(){
       :`<div class="hint" style="margin:0 0 9px">No families yet. In a book's editor, <b>press and hold</b> a tag — or right-click it — and choose ✎ Rename it, to give it one. Words filed together take the family's colour.</div>`}
       <div class="hrow2" style="margin-top:10px">
         <button class="btn" id="fmPal">🎨 Paste a whole palette…</button>
+        <button class="btn" id="fmList" title="Every tag you have, grouped under its family — copy the lot, sort them somewhere else, paste them back">📋 All your tags, grouped…</button>
         <span class="rr">${loose} word${loose===1?"":"s"} in no family</span></div>
       <div id="fmPalBox"></div>
+      <div id="fmListBox"></div>
       <div class="lbl" style="display:block;margin:16px 0 4px">What the colours mean</div>
       <div class="hint" style="margin:0 0 8px">Your genres, sorted by the colour they actually wear — so this key can never drift from the shelf. The meanings are yours to reword; these are the ones the scheme was built with.</div>
       ${(()=>{
@@ -4408,6 +4417,15 @@ function openFamiliesPanel(){
         <button class="btn" id="fmScheme" title="Give your genres the colours of the Shelf sections scheme — only the ones you have">🎨 Wear the Shelf sections scheme</button></div>
       <div class="hint" style="margin:9px 0 0">Renaming a family, moving a word into one, or disbanding one is done where the word is: a book's editor, in <b>🏷 Your tags</b> — tap a family's heading for the family, press and hold a word for the word.</div>`;
     q("#fmClose",wrap).onclick=()=>close();
+    {const ub=q("#fmUndoFile",wrap);
+     if(ub)ub.onclick=()=>{
+       kwCats=JSON.parse(JSON.stringify(filingBack.was));
+       catColors=JSON.parse(JSON.stringify(filingBack.wasCols));
+       Object.keys(kwCats).forEach(w=>unmarkMetaDel("kwcat:"+w));
+       filingBack=null;
+       saveKwCats();if(SYNC.on)flushQueue();
+       draw();
+     };}
     /* the meanings are notes to yourself, so they save as you type and live
        with the text size rather than with the shelf */
     qa(".bandin",wrap).forEach(inp=>{
@@ -4438,6 +4456,89 @@ function openFamiliesPanel(){
         draw();render();
       };
     });
+    /* ---- every tag, grouped, out and back again ----
+       Their ask, in two halves that turn out to be one panel: a way to copy the
+       whole list at once, and a way to paste it back sorted into families. So
+       it opens holding what you have NOW — which is both the copy and, if you
+       keep it, the way back — and reads the same shape in again.
+       The shape is a family name with a colon, then its words one to a line. It
+       was chosen over "word: family" because that is what somebody sorting them
+       elsewhere will naturally produce, and because a heading you can see is
+       the thing being asked for.
+       Filing only. Nothing here invents a tag: a word that is not already yours
+       is named and skipped, the same rule the palette next door keeps. Families
+       ARE created, because inventing a family is the whole point of sorting. */
+    q("#fmList",wrap).onclick=()=>{
+      const box=q("#fmListBox",wrap);
+      if(box.innerHTML){box.innerHTML="";return;}
+      const NOFAM="No family";
+      const current=(()=>{
+        const out=[],byF={};
+        words.forEach(w=>{const f=kwCats[w]||NOFAM;(byF[f]=byF[f]||[]).push(w);});
+        Object.keys(byF).filter(f=>f!==NOFAM).sort((a,b)=>a.localeCompare(b))
+          .forEach(f=>{out.push(f+":");byF[f].forEach(w=>out.push(w));out.push("");});
+        if(byF[NOFAM]){out.push(NOFAM+":");byF[NOFAM].forEach(w=>out.push(w));}
+        return out.join("\n").trim();
+      })();
+      box.innerHTML=`<div class="hint" style="margin:9px 0 6px">A family's name with a colon, then its words one to a line. It opens holding all <b>${words.length}</b> of your tags as they stand — copy that, sort them wherever you like, and paste the answer back. <b>A word you don't already have is skipped and named</b>; families you invent are made for you. Keep the text you copied and you can always paste it back to undo this.</div>
+        <textarea id="fmLTxt" class="field" spellcheck="false" style="height:230px;font-family:Consolas,ui-monospace,monospace;font-size:12.5px;white-space:pre">${esc(current)}</textarea>
+        <div class="hint" id="fmLRep" style="margin:6px 0 0"></div>
+        <div class="hrow2" style="margin-top:8px"><button class="btn" id="fmLCopy">⧉ Copy all ${words.length}</button>
+          <button class="btn pri" id="fmLGo">File them</button>
+          </div>`;
+      const known={};words.forEach(w=>known[w.toLowerCase()]=w);
+      const parse=()=>{
+        const hits=[],unknown=[];let fam=null;
+        String(q("#fmLTxt",wrap).value||"").split("\n").forEach(raw=>{
+          const line=raw.trim();
+          if(!line)return;
+          if(/:$/.test(line)){fam=line.slice(0,-1).trim();return;}
+          const w=known[line.toLowerCase()];
+          if(!w){unknown.push(line);return;}
+          hits.push([w,(fam&&fam.toLowerCase()!==NOFAM.toLowerCase())?fam:""]);
+        });
+        const moving=hits.filter(([w,f])=>(kwCats[w]||"")!==f).length;
+        q("#fmLRep",wrap).textContent=`${hits.length} of your tags read, ${moving} of them moving`
+          +(unknown.length?` — not tags of yours, skipped: ${unknown.slice(0,5).join(", ")}${unknown.length>5?` and ${unknown.length-5} more`:""}`:"");
+        return hits;
+      };
+      q("#fmLTxt",wrap).addEventListener("input",parse);parse();
+      /* Two ways, because the modern one asks permission and can simply be
+         refused — and a Copy button that answers "press Ctrl+C" has not copied
+         anything. Selecting the text and using the old command needs no
+         permission at all, so it is the fallback rather than the instruction. */
+      q("#fmLCopy",wrap).onclick=async e=>{
+        const btn=e.currentTarget,ta=q("#fmLTxt",wrap);
+        const say=t=>{btn.textContent=t;
+          setTimeout(()=>{const b2=q("#fmLCopy",wrap);if(b2)b2.textContent="⧉ Copy all "+words.length;},1600);};
+        try{await navigator.clipboard.writeText(ta.value);say("⧉ Copied");return;}catch(err){}
+        try{ta.focus();ta.select();ta.setSelectionRange(0,ta.value.length);
+          if(document.execCommand("copy")){say("⧉ Copied");return;}}catch(err){}
+        ta.focus();ta.select();say("Selected — press Ctrl+C");
+      };
+      q("#fmLGo",wrap).onclick=()=>{
+        const hits=parse();if(!hits.length)return;
+        /* the way back, held in memory: filing a word writes kwCats, which does
+           not push an undo step of its own, so promising ↶ Undo here would be a
+           lie. This is the honest version of the same offer. */
+        const was=JSON.parse(JSON.stringify(kwCats)),wasCols=JSON.parse(JSON.stringify(catColors));
+        let moved=0;
+        hits.forEach(([w,f])=>{
+          const now=kwCats[w]||"";
+          if(now===f)return;
+          moved++;
+          if(f)fileUnder(w,f);
+          else{delete kwCats[w];markMetaDel("kwcat:"+w);}
+        });
+        if(!moved){q("#fmLRep",wrap).textContent="Nothing to move — they are already filed that way.";return;}
+        saveKwCats();
+        if(SYNC.on)flushQueue();
+        /* redrawn, so the families above show the new grouping straight away —
+           the whole point of having pasted it */
+        filingBack={was,wasCols,n:moved};
+        draw();
+      };
+    };
     q("#fmPal",wrap).onclick=()=>{
       const box=q("#fmPalBox",wrap);
       if(box.innerHTML){box.innerHTML="";return;}
@@ -4806,6 +4907,17 @@ function forgetKw(name){
 /* every word standing on a book is a word you have used, so it belongs on the
    list. Called from pushOp — the funnel every edit passes — and once at boot,
    which is what carries the tags that existed before this list did. */
+/* ---- the whole vocabulary of tags, in one place ----
+   This union was written out by hand in three places — the editor's
+   knownKeywords, the repeated-words test, and the families panel — and the
+   families panel's copy was already the wrong one: it read only the words the
+   books carry, so from the day tags got a list of their own it would have shown
+   a smaller vocabulary than the editor does. One version now. */
+function vocabKeywords(){
+  return [...new Set([...Object.keys(kwList),...books.flatMap(allKeywordsOf),
+    ...Object.keys(kwColors),...Object.keys(kwCats)])]
+    .filter(Boolean).sort((a,b)=>a.localeCompare(b));
+}
 function learnKwFrom(b){
   if(!b)return;
   ((b.keywords)||[]).forEach(k=>rememberKw(k,true));
@@ -6332,6 +6444,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-27.23",lines:[
+    "<b>📋 All your tags, grouped…</b> — in 🎨 Tag families &amp; colours, beside the palette. It opens holding every tag you have, each one under the family it is filed in, with the unfiled ones under “No family”. One press of <b>⧉ Copy</b> takes the lot.",
+    "And the same box takes it back. Sort them wherever you like — a chat, a notebook, anywhere — keep the shape, which is a family's name with a colon and then its words one to a line, and paste the answer in. Every word moves to the family standing above it, families you invented along the way are made for you with a colour, and the panel says how many it read and how many are actually moving before you press anything. <b>A word you do not already have is named and skipped</b> rather than invented, which is the same rule the genre palette next door keeps.",
+    "The way back is a button, not a promise: filing does not write a step of ↶ Undo, so instead the panel offers <b>↶ Put the old filing back</b> straight after, and the text it opened with is itself a backup if you kept it."
+  ]},
   {v:"2026-08-27.22",lines:[
     "<b>Your tags are a list you own now, the way your genres always have been.</b> A tag used to exist only because a book was carrying it — so a word on exactly one book, with no colour and no family of its own, stopped existing the moment you took it off that book. That is how Journalism disappeared. It does not happen any more: a tag stays on your list until you delete it on purpose, ready for the next book, exactly like a genre.",
     "Every word already on your shelf was written into the new list the first time this build ran, so nothing was lost in the changing over — and the list travels between your devices like the colours and the families do, joining by keeping whatever either of them knows. A word invented on the phone is a word here.",
@@ -22661,11 +22778,7 @@ function renderEditor(){
     /* kwCats keys too: a word filed in a family but standing on no book is
        still vocabulary — without this it existed in the family and appeared
        nowhere, which is how the mood set below could have vanished */
-    /* kwList first: it is the list you own, and the only one of the four that
-       keeps a word alive after its last book lets go of it */
-    return [...new Set([...Object.keys(kwList),...books.flatMap(allKeywordsOf),
-      ...Object.keys(kwColors),...Object.keys(kwCats)])]
-      .filter(Boolean).sort((a,b)=>a.localeCompare(b));
+    return vocabKeywords();
   }
   /* StoryGraph's mood vocabulary, offered as a ready-made family — the owner's
      pick from the other-apps round. Only words the vocabulary lacks are ever
