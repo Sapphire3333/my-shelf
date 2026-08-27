@@ -3950,7 +3950,15 @@ function markEntStatus(coll,en,what){
      reading it again, so that is what it goes back to saying. */
   else if(what==="hold"){if(en.hold){en.hold=false;if(openRead(en))en.status="reading";}
     else{en.hold=true;en.dnf=false;en.status="";}}
+  /* A story's own, and it does NOT pass down from the collection the way giving
+     up and setting aside do. The case it exists for is the opposite one: a
+     series kept as a collection, three books read and the fourth not published
+     yet — the collection is owned, one story inside it is not. Returns before
+     applyReading for the same reason the book's does: whether you have a thing
+     says nothing about your readings of it. */
+  else if(what==="unowned"){en.unowned=!en.unowned;return true;}
   else{en.dnf=false;en.hold=false;en.status=what;
+    if(what==="reading"||what==="finished")en.unowned=false;
     if(what==="finished")finishProgress(en);}
   return applyReading(en,en.status,en.dnf||en.hold);
 }
@@ -4054,7 +4062,9 @@ const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
      over on its own. Without it a story you had set down came to the shelf
      saying whatever it said before — usually Finished, since setting it aside
      clears the stage — and the On hold filter never found it. */
-  status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),hold:entHoldOf(coll,en),
+  /* and the same for "haven't got it yet", or the Library's own pill for it
+     could never find a story — only the collection around it */
+  status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),hold:entHoldOf(coll,en),unowned:!!en.unowned,
   dateFinished:entDateOf(coll,en),favorite:!!en.favorite,summary:en.summary||"",
   /* its own readings travel with it, so a story read three times says so on the
      shelf rather than borrowing the collection's count */
@@ -4075,7 +4085,7 @@ const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
 const storySurfaces=en=>{
   if(entOwnGenres(en)&&groupBy==="genre")return true;
   if(String(en.author||"").trim()&&groupBy==="author")return true;
-  if(String(en.status||"").trim()||en.dnf||en.hold){
+  if(String(en.status||"").trim()||en.dnf||en.hold||en.unowned){
     /* grouped by stage, or filtered to one, is the shelf asking about stages */
     if(groupBy==="status"||statusFilter!=="all")return true;
     /* Ungrouped and unfiltered, it is asking about nothing, so a story does not
@@ -6251,6 +6261,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-27.19",lines:[
+    "<b>⌛ Don't have it yet is on a story's list too now</b> — you looked for it and it wasn't there. It should have been from the start, because the case it exists for is most often a story: a series kept as one collection, three of them read and the fourth not published yet. The collection is yours; one book inside it is not. It is the story's own mark and does not pass down from the collection the way giving up and setting aside do, and saying you are reading it clears it, exactly as on a book.",
+    "Finding that turned up something older and worse, which had been quietly swallowing <b>⏸ On hold</b> as well. A story only steps out of its collection onto the shelf when the shelf is ASKING about stages — and it only asks once you have pressed a pill. So the count on the ⏸ pill was worked out before anything was being asked, came back 0, and <b>a pill that says 0 is not drawn at all</b>: a story you had set aside inside a collection could never be found, because the one press that would have found it was never on the screen. The counts come from every story carrying a stage or a mark of its own now, so the number on a pill really is the number of rows it opens — and both pills turn up whenever they have something to show."
+  ]},
   {v:"2026-08-27.17",lines:[
     "<b>Ten new medals</b>, your pick off the list of twelve. 📖 <b>The Long Road</b> — pages read, re-reads counted, the number Insights already leads with. 🖋 <b>Well Acquainted</b> — different authors you have finished something by. ❝ <b>Magpie</b> — lines you have kept. 🔁 <b>Again, From The Top</b> — every time you have read something you had already read. And ✒️ <b>In Your Own Words</b>: the words YOU have written, blurbs and notes and likes and dislikes and quotes all added up — a number nobody else in the world has, and this is the only thing that could ever tell it to you.",
     "Then 🏷 <b>Word Hoard</b> (different tags in use), ⭐ <b>Judge and Jury</b> (things you have rated), 🕰 <b>Still Here</b> (calendar years you finished something in), 🌅 <b>In One Sitting</b> (started and finished the same day — only where a reading recorded both dates, so the undated ones cannot claim a day's work they never said they did), and 👥 <b>A Cast Of Thousands</b> (characters named across your fics).",
@@ -10325,14 +10339,29 @@ function renderLibrary(){
      of their collections. The counts on the pills must agree with what the list
      below them actually shows, so both are worked out from the same thing. */
   const shelf=[...books,...strayStories()];
-  const plainSt=k=>shelf.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
+  /* ---- what the pills count, and why it is not `shelf` ----
+     A story only steps out of its collection when the shelf is ASKING about
+     stages — which it only does once a pill has been pressed. So counting from
+     `shelf` as it stands asks the question backwards: a story set aside inside
+     a collection made the ⏸ pill read 0, and a pill reading 0 is not drawn at
+     all, so the single press that would have found it could never be made. The
+     same hole swallowed a story marked ⌛ Don't have it yet.
+     Counted instead from every story carrying a stage or a mark of ITS OWN,
+     which is exactly the set a press surfaces — so the number on a pill really
+     is the number of rows it opens. "All" keeps counting the shelf as it
+     stands, because that is the one pill that changes nothing. */
+  const countShelf=[...books,...books.flatMap(b=>isColl(b)
+    ?((b.entries)||[]).filter(en=>String(en.status||"").trim()||en.dnf||en.hold||en.unowned)
+       .map(en=>storyProxy(b,en))
+    :[])];
+  const plainSt=k=>countShelf.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
   /* "don't have it yet" is a LENS, not a stage: these books are still counted
      under Want to read, because wanting them is still true. Its own pill only
      narrows the list to them — which is the "so i can keep an eye out" half of
      what was asked for. */
   const counts={all:shelf.length,finished:plainSt("finished"),reading:plainSt("reading"),want:plainSt("want"),
-    hold:shelf.filter(b=>holdOf(b)).length,dnf:shelf.filter(b=>b.dnf).length,
-    unowned:shelf.filter(b=>unownedOf(b)&&!b.dnf).length};
+    hold:countShelf.filter(b=>holdOf(b)).length,dnf:countShelf.filter(b=>b.dnf).length,
+    unowned:countShelf.filter(b=>unownedOf(b)&&!b.dnf).length};
   const kc={};KINDS.forEach(([k])=>kc[k]=books.filter(b=>kindOf(b)===k).length);
   repairGroupArt();
   const rawN=books.filter(isRaw).length;
@@ -18485,10 +18514,13 @@ function renderBookView(){
         <div class="entmain">
           <div class="hrow2"><b class="enth">${esc(en.title)||"Untitled"}</b>
             ${lookupChip(b,en)}
-            ${(()=>{const dnf=entDnfOf(b,en),stk=entStatusOf(b,en);
-              const own=!!(en.dnf||String(en.status||"").trim());
-              const stl=dnf?"Did not finish":(STATUSES.find(([k])=>k===stk)||["","—"])[1];
-              const sym=dnf?"✕":stk==="finished"?"✓":stk==="reading"?"📖":"★";
+            ${(()=>{const dnf=entDnfOf(b,en),stk=entStatusOf(b,en),una=unownedOf(en);
+              /* the mark counts as the story having said something of its own,
+                 or a story you had marked went on claiming to be "· same" as a
+                 collection that says nothing of the sort */
+              const own=!!(en.dnf||una||String(en.status||"").trim());
+              const stl=dnf?"Did not finish":una?"Don't have it yet":(STATUSES.find(([k])=>k===stk)||["","—"])[1];
+              const sym=dnf?"✕":una?"⌛":stk==="finished"?"✓":stk==="reading"?"📖":"★";
               return `<button class="vst ${dnf?"dnf":stk}" data-enst="${en.id}" title="${own?"This story's own":"The same as the collection"} — tap to change">${sym} ${esc(stl)}${own?"":" · same"} ▾</button>`;})()}
             <button class="entfav${en.favorite?" on":""}" data-enfav="${en.id}" title="${en.favorite?"One of your favourite stories":"Mark this story as a favourite"}">${en.favorite?"♥":"♡"}</button>
             <button class="${en.rating!=null?`rate ${rateBand(Number(en.rating))}`:"vrate0"}" data-enrate="${en.id}" title="${en.rating!=null?"Change this story's rating":"Rate this story"}">${en.rating!=null?`★ ${Number(en.rating).toFixed(1)}`:"☆ Rate"}</button>
@@ -18531,6 +18563,7 @@ function renderBookView(){
             ${STATUSES.map(([k,l])=>`<button data-evst="${en.id}|${k}" class="${!en.dnf&&en.status===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${esc(l)}</button>`).join("")}
             <button data-evst="${en.id}|hold" class="${holdOf(en)?"on":""}">⏸ On hold</button>
             <button data-evst="${en.id}|dnf" class="${en.dnf?"on":""}">✕ Did not finish</button>
+            <button data-evst="${en.id}|unowned" class="${unownedOf(en)?"on":""}" title="You want it and haven't got it — the next one in a series that isn't out yet lives here">${unownedOf(en)?"✓ ":""}⌛ Don't have it yet</button>
             <button data-evst="${en.id}|" class="${!en.dnf&&!en.status?"on":""}">↩ Same as collection</button>
           </div>`:""}
           ${vEntRate===en.id?`<div class="stpick vpick ratepick" style="position:static;margin:4px 0;min-width:0;max-width:100%">
