@@ -18776,7 +18776,11 @@ function renderBookView(){
              wider the wash is not drawn and this is just the cover in its column. -->
         ${curCover?`<div class="vwash" style="background-image:url(${curCover})"></div>`:""}
         <div class="vcover" id="vCover" title="${curCover?"Copy a picture anywhere and press Ctrl+V to replace this cover":"Copy a picture anywhere and press Ctrl+V to use it as the cover"}">${curCover?`<img src="${curCover}">`:genCoverHtml(b,true)}</div>
-        <div class="covunder">${curCover?`<button class="btn covsharp" id="vSharpen" title="Look online for a bigger copy of this cover. Nothing is replaced until you have seen it.">⤓ Sharper</button>`:""}</div>
+        <!-- the Ctrl+V that replaces a cover, as a button you can see: it reads
+             the clipboard itself, so the shortcut stops being a thing you had
+             to be told about. The same button stands under the editor's cover
+             box, where a paste could never mean "cover" before. -->
+        <div class="covunder"><button class="btn covsharp" id="vCovPaste" title="Copy a picture in any tab, then press this — it becomes the cover">📋 Paste cover</button>${curCover?`<button class="btn covsharp" id="vSharpen" title="Look online for a bigger copy of this cover. Nothing is replaced until you have seen it.">⤓ Sharper</button>`:""}</div>
       </div>
       <div class="vmain">
         <h1 class="serif vtitle">${esc(b.title)||"Untitled"} ${lookupIcons(b,null)}</h1>
@@ -19147,6 +19151,7 @@ function renderBookView(){
      keystroke, so typing 143 leaves one step to undo instead of three. */
   wireCovZoom(page);
   {const sh=q("#vSharpen",page);if(sh)sh.onclick=e=>{e.stopPropagation();sharpenCover(b);};}
+  {const pc=q("#vCovPaste",page);if(pc)pc.onclick=e=>{e.stopPropagation();pasteCoverBtn();};}
   wireEntCap(page);   /* the covers-size slider on a collection's What's inside */
   const vpg=q("#vProg",page);
   if(vpg){
@@ -19711,6 +19716,15 @@ function wireScrapbook(page,host){
     const pics=[...(e.clipboardData?.items||[])].filter(it=>it.type.startsWith("image/"));
     if(!pics.length)return;
     e.preventDefault();
+    /* the paste-cover button's fallback spoke for this paste (see
+       pasteCoverBtn): it is the cover arriving, not a loose picture */
+    if(window.__covArm){
+      window.__covArm=false;
+      const f=pics[0].getAsFile();
+      if(f){(async()=>{
+        if(!curCover||confirm("Replace this book's cover with the picture you copied?"))await applyCoverBlob(f);
+      })();return;}
+    }
     pics.map(it=>it.getAsFile()).filter(Boolean).forEach(addPicture);
   };
   document.addEventListener("paste",window.__scrapPaste);
@@ -20494,11 +20508,15 @@ function renderEditor(){
     <div class="bgpanel" id="tagPanel" hidden></div>
     <div class="bgpanel" id="cropPanel" hidden></div>
     <div class="bgpanel" id="qfromPanel" hidden></div>
+    <div class="bgpanel" id="sharpPanel" hidden></div>
 
     <div class="edhead" id="secDetails">
       <div class="vcovwrap">
         <div class="coverbox" id="coverBox"></div>
-        
+        <!-- filled by renderCover, so the tools follow the cover's comings and
+             goings: paste, ⤓ Sharper, and the reading page's look-it-up links.
+             Wider than the reading page's row because this cover box is. -->
+        <div class="covunder" id="edCovUnder" style="max-width:calc(160px*var(--covz,1))"></div>
       </div>
       <div class="edfields">
         <input class="field titlein serif" id="fTitle" placeholder="Book title" value="${esc(b.title)}">
@@ -24002,6 +24020,20 @@ function renderEditor(){
   function renderCover(){
     const box=q("#coverBox");
     box.innerHTML=curCover?`<img src="${curCover}"><button class="covx" id="covDel" title="Remove this cover">✕</button>`:"🖼<br>Add cover";
+    /* The tools under the cover — because "the cover Auto-fill found is
+       blurry" is discovered right here, and the road to a better one used to
+       start on the other face: paste always, ⤓ Sharper once there is
+       something to sharpen, and the same four look-it-up links the reading
+       page keeps beside its title, so the trip to Goodreads for a nicer
+       picture begins where the disappointment happened. */
+    const u=q("#edCovUnder");
+    if(u){
+      u.innerHTML=`<button class="btn covsharp" id="edCovPaste" title="Copy a picture in any tab, then press this — it becomes the cover">📋 Paste cover</button>
+        ${curCover?`<button class="btn covsharp" id="edSharpen" title="Look online for a bigger copy of this cover. Nothing is replaced until you have seen it.">⤓ Sharper</button>`:""}
+        ${lookupIcons(cur,null)}`;
+      q("#edCovPaste").onclick=e=>{e.stopPropagation();pasteCoverBtn();};
+      const sh=q("#edSharpen");if(sh)sh.onclick=e=>{e.stopPropagation();sharpenCover(cur);};
+    }
     const d=q("#covDel");
     if(d)d.onclick=async e=>{
       e.stopPropagation();
@@ -26665,6 +26697,55 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
    is open in case you change your mind after seeing it in place. */
 function imgSize(data){return new Promise(res=>{const im=new Image();
   im.onload=()=>res({w:im.naturalWidth,h:im.naturalHeight});im.onerror=()=>res(null);im.src=data;});}
+/* ---- the paste-cover button, on both faces of a book ----
+   Setting a cover from another site used to be a convention you had to know:
+   Ctrl+V works, but only on the reading page with the scrapbook shut, because
+   everywhere else a paste already means a loose picture. A labelled button
+   can't be a convention. It asks the browser for the picture you copied — the
+   browser shows its own one-time permission ask — so grabbing a cover from
+   Goodreads is copy, come back, one press, from the editor too, which is
+   where you are standing when Auto-fill's cover disappoints. Replacing a
+   cover that exists still asks first; filling an empty box doesn't, because
+   pressing a button that says "paste cover" is the intent all by itself. */
+async function clipboardImage(){
+  if(!(navigator.clipboard&&navigator.clipboard.read))return {why:"no-access"};
+  let items;try{items=await navigator.clipboard.read();}catch(e){return {why:"no-access"};}
+  for(const it of items||[]){
+    const t=(it.types||[]).find(x=>x.startsWith("image/"));
+    if(t){try{return {blob:await it.getType(t)};}catch(e){}}
+  }
+  return {why:"empty"};
+}
+/* One tail for every road a cover arrives by from here. The editor saves
+   through `cur` exactly the way its file picker does; the reading page goes
+   through quickEdit exactly the way its Ctrl+V does — no third way of writing
+   a cover to keep in step with the other two. */
+async function applyCoverBlob(f){
+  if(!cur)return;
+  let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){alert("That picture couldn't be read.");return;}
+  try{await dbPut("covers",{id:cur.id,data});}
+  catch(e){alert("That cover couldn't be saved — storage may be full.");return;}
+  curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);bumpCovers();
+  if(SYNC.on)enqueue({kind:"cover",id:cur.id});
+  if(bookMode==="edit"){cur.coverV=Date.now();scheduleSave();renderBook();}
+  else await quickEdit(bk=>{bk.coverV=Date.now();});
+}
+async function pasteCoverBtn(){
+  if(!cur)return;
+  const had=!!curCover;
+  const r=await clipboardImage();
+  if(r.why==="no-access"){
+    /* an old browser, or permission refused: fall back to the paste everyone
+       has. In the editor a bare paste means a loose picture, so the NEXT one
+       is marked as spoken for — the scrapbook's paste checks the mark. */
+    if(bookMode==="edit"){window.__covArm=true;alert("The browser wouldn't hand the clipboard over. Press Ctrl+V now and the picture you copied becomes the cover.");}
+    else alert("The browser wouldn't hand the clipboard over. Press Ctrl+V on this page instead — that sets the cover too.");
+    return;
+  }
+  if(!r.blob){alert("No picture on the clipboard yet. Right-click a cover in any tab, choose Copy image, then press this again.");return;}
+  if(had&&!confirm("Replace this book's cover with the picture you copied?"))return;
+  await applyCoverBlob(r.blob);
+}
 async function sharpenCover(b){
   const panel=q("#sharpPanel");if(!panel)return;
   const say=h=>{panel.hidden=false;panel.innerHTML=h;
