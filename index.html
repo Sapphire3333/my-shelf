@@ -6553,6 +6553,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-28.13",lines:[
+    "<b>⤓ Sharper works per story now.</b> The stories inside a collection collect small covers — a bulk fill takes what the sites hand it — and the only cure was hunting a bigger one by hand, story by story. Each story's row in the editor now carries ⤓ beside its 📋 (once it has a cover to sharpen): it asks the internet for a bigger copy of that story's own cover, shows yours and the found one side by side with both sizes written down, and swaps nothing until you say so. The search asks about the story — its own title, author and number — not the collection's, and after a swap you stay where you were, with a ring on the new cover."
+  ]},
   {v:"2026-08-28.12",lines:[
     "Paste-cover, after your first real go on Firefox. The little <b>Paste</b> popup is Firefox's own guard — it shows once per press, clicking it IS the allow, and no app can take it away. What was mine to fix: missing that popup used to answer with a dialog you had to dismiss — now the ask is written quietly on the cover itself, and one Ctrl+V finishes the job. And pasting a story's cover no longer throws you to the bottom of the page: you stay where you were, and the story's new cover gets a ring saying there it is."
   ]},
@@ -22477,6 +22480,7 @@ function renderEditor(){
             <span class="boxbtn" style="cursor:default;padding:5px 9px">Pages <input type="number" data-ep="${en.id}" min="1" placeholder="–" value="${esc(en.pages||"")}" style="border:none;width:50px;text-align:center;font-weight:600"></span>
             <button class="cnt" data-ef="${en.id}" title="Look this story up online — blurb, pages, cover">🔎</button>
             <button class="cnt" data-ecp="${en.id}" title="Copy a picture in any tab, then press this — it becomes this story's cover">📋</button>
+            ${canLookUp(cur,en)&&en.cover?`<button class="cnt" data-esh="${en.id}" title="Look online for a bigger copy of this story's cover. Nothing is replaced until you have seen it.">⤓</button>`:""}
             <button class="cnt" data-eu="${en.id}" title="Move up" ${i===0?"disabled":""}>↑</button>
             <button class="cnt" data-ed="${en.id}" title="Move down" ${i===cur.entries.length-1?"disabled":""}>↓</button>
             <button class="lx" data-ex="${en.id}" style="opacity:1" title="Remove this one">✕</button>
@@ -22575,6 +22579,7 @@ function renderEditor(){
     qa("[data-ekw]",list).forEach(el=>el.onclick=()=>openEntKw(el.dataset.ekw));
     qa("[data-ec]",list).forEach(el=>el.onclick=()=>{pendingEnt=el.dataset.ec;q("#entCoverFile").click();});
     qa("[data-ecp]",list).forEach(el=>el.onclick=()=>pasteEntCover(el.dataset.ecp));
+    qa("[data-esh]",list).forEach(el=>el.onclick=()=>{const e2=find(el.dataset.esh);if(e2)sharpenCover(cur,e2);});
     /* The reverse of folding a book in, which never had one — the owner filed a
        book into a collection by accident and the only ways back were deleting
        the story or undoing a whole import. Everything the story VISIBLY had
@@ -26870,21 +26875,28 @@ async function pasteCoverBtn(){
   if(had&&!confirm("Replace this book's cover with the picture you copied?"))return;
   await applyCoverBlob(r.blob);
 }
-async function sharpenCover(b){
+/* `en` given: a story inside a collection — its cover lives among the images
+   under "collection|story" rather than in the covers store, and what is asked
+   about is the story's own title, author and number, the same identity every
+   other per-story lookup uses. Absent: the book itself, exactly as before. */
+async function sharpenCover(b,en){
   const panel=q("#sharpPanel");if(!panel)return;
   const say=h=>{panel.hidden=false;panel.innerHTML=h;
     const x=q("#shX",panel);if(x)x.onclick=()=>{panel.hidden=true;panel.innerHTML="";};};
-  const head=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">⤓ A sharper cover</b>
+  const head=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">⤓ A sharper cover${en?" — "+esc(en.title||"this story"):""}</b>
     <button class="btn" id="shX" style="margin-left:auto;padding:4px 10px">Close</button></div>`;
-  const mine=coverCache.get(b.id)||((await dbGet("covers",b.id))||{}).data;
-  if(!mine){say(head+`<div class="hint">There is no cover on this book yet.</div>`);return;}
+  const mine=en
+    ?(curEnt[en.id]||coverCache.get(b.id+"|"+en.id)||((await dbGet("images",b.id+"|"+en.id))||{}).data)
+    :(coverCache.get(b.id)||((await dbGet("covers",b.id))||{}).data);
+  if(!mine){say(head+`<div class="hint">There is no cover on this ${en?"story":"book"} yet.</div>`);return;}
   const was=await imgSize(mine);
   const wasTxt=was?`${was.w} × ${was.h}`:"unknown";
-  const ask=String(b.isbn||"").trim(),title=String(b.title||"").trim();
+  const who=en?lookupOf(b,en):{title:b.title,author:b.author,isbn:b.isbn};
+  const ask=String(who.isbn||"").trim(),title=String(who.title||"").trim();
   if(!ask&&!title){say(head+`<div class="hint">I need a title or an ISBN to look this up.</div>`);return;}
   say(head+`<div class="hint">Yours is ${wasTxt}. Looking…</div>`);
   let info=null;
-  try{info=await fetchBookInfo(title,String(b.author||""),ask);}catch(e){}
+  try{info=await fetchBookInfo(title,String(who.author||""),ask);}catch(e){}
   const cand=((info&&info.covers)||[]).filter(Boolean);
   if(!cand.length){say(head+`<div class="hint">Yours is ${wasTxt}. Nobody online has a cover for this one — yours stays as it is.</div>`);return;}
   /* every candidate, not the first that downloads: the point is the biggest,
@@ -26911,6 +26923,27 @@ async function sharpenCover(b){
       <button class="btn" id="shNo">Keep mine</button></div>`);
   q("#shNo",panel).onclick=()=>{panel.hidden=true;panel.innerHTML="";};
   q("#shGo",panel).onclick=async()=>{
+    if(en){
+      /* the story road: the images store, the entry's own flag and version —
+         the same write the story's file picker and 📋 make, then the same
+         courtesy the 📋 learned: keep the place, ring the new cover */
+      const key=b.id+"|"+en.id;
+      en.coverV=Date.now();
+      try{await dbPut("images",{key,data:best.data,v:en.coverV});}
+      catch(e){alert("That cover couldn't be saved — storage may be full.");return;}
+      curEnt[en.id]=best.data;en.cover=true;coverCache.set(key,best.data);bumpCovers();
+      if(SYNC.on)enqueue({kind:"img",key});
+      scheduleSave();
+      panel.hidden=true;panel.innerHTML="";
+      const place=view==="book"?bookPlace():null;
+      renderBook();
+      setTimeout(()=>{
+        if(place)restoreBookPlace(place);
+        const el2=q(`#edPage [data-ec="${en.id}"]`);
+        if(el2)flashSpot(el2,"There it is");
+      },0);
+      return;
+    }
     try{await dbPut("covers",{id:b.id,data:best.data});}
     catch(e){alert("That cover couldn't be saved — storage may be full.");return;}
     coverCache.set(b.id,best.data);SYNC.triedCover.delete(b.id);bumpCovers();
