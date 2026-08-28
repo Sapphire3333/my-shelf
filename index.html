@@ -6553,6 +6553,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-28.12",lines:[
+    "Paste-cover, after your first real go on Firefox. The little <b>Paste</b> popup is Firefox's own guard — it shows once per press, clicking it IS the allow, and no app can take it away. What was mine to fix: missing that popup used to answer with a dialog you had to dismiss — now the ask is written quietly on the cover itself, and one Ctrl+V finishes the job. And pasting a story's cover no longer throws you to the bottom of the page: you stay where you were, and the story's new cover gets a ring saying there it is."
+  ]},
   {v:"2026-08-28.11",lines:[
     "Three from your first minutes with ✥. <b>Notes have it too now</b> — their little bar (paper, layering, delete) was as unreachable in the editor as the pictures' was, and it stands under each note there again, ✥ included.",
     "<b>Pasting a picture while editing lands you on it</b>: the page scrolls to the row where it arrived and rings it, instead of leaving it to arrive a thousand pixels below where you were looking.",
@@ -26809,7 +26812,11 @@ async function applyCoverBlob(f){
   catch(e){alert("That cover couldn't be saved — storage may be full.");return;}
   curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);bumpCovers();
   if(SYNC.on)enqueue({kind:"cover",id:cur.id});
-  if(bookMode==="edit"){cur.coverV=Date.now();scheduleSave();renderBook();}
+  if(bookMode==="edit"){cur.coverV=Date.now();scheduleSave();
+    /* redraw without losing where you stood — a bare render put the scroll
+       wherever the page fell */
+    const place=bookPlace();renderBook();
+    if(place)setTimeout(()=>restoreBookPlace(place),0);}
   else await quickEdit(bk=>{bk.coverV=Date.now();});
 }
 /* The same button on a story's row inside a collection's editor. A story's
@@ -26824,13 +26831,23 @@ async function applyEntCoverBlob(en,f){
   try{await dbPut("images",{key,data,v:en.coverV});}catch(e){alert("That cover couldn't be saved.");return;}
   curEnt[en.id]=data;en.cover=true;coverCache.set(key,data);bumpCovers();
   if(SYNC.on)enqueue({kind:"img",key});
-  scheduleSave();renderBook();
+  scheduleSave();
+  /* Redraw, stay where you stood, and ring the story's new cover. The bare
+     render dropped you at the bottom of a long collection — a paste deep in
+     the entries list read as being thrown somewhere. */
+  const place=view==="book"?bookPlace():null;
+  renderBook();
+  setTimeout(()=>{
+    if(place)restoreBookPlace(place);
+    const el=q(`#edPage [data-ec="${en.id}"]`);
+    if(el)flashSpot(el,"There it is");
+  },0);
 }
 async function pasteEntCover(id){
   const en=cur&&(cur.entries||[]).find(x=>x.id===id);if(!en)return;
   const r=await clipboardImage();
-  if(r.why==="no-access"){window.__covArmEnt=id;alert("The browser wouldn't hand the clipboard over. Press Ctrl+V now and the picture you copied becomes this story's cover.");return;}
-  if(!r.blob){alert("No picture on the clipboard yet. Right-click a cover in any tab, choose Copy image, then press this again.");return;}
+  if(r.why==="no-access"){window.__covArmEnt=id;flashSpot(q(`#edPage [data-ec="${id}"]`),"Press Ctrl+V — the picture you copied becomes this story's cover");return;}
+  if(!r.blob){flashSpot(q(`#edPage [data-ec="${id}"]`),"Nothing copied yet — right-click a picture in any tab, Copy image, then press 📋 again");return;}
   if(en.cover&&!confirm("Replace this story's cover with the picture you copied?"))return;
   await applyEntCoverBlob(en,r.blob);
 }
@@ -26839,14 +26856,17 @@ async function pasteCoverBtn(){
   const had=!!curCover;
   const r=await clipboardImage();
   if(r.why==="no-access"){
-    /* an old browser, or permission refused: fall back to the paste everyone
-       has. In the editor a bare paste means a loose picture, so the NEXT one
-       is marked as spoken for — the scrapbook's paste checks the mark. */
-    if(bookMode==="edit"){window.__covArm=true;alert("The browser wouldn't hand the clipboard over. Press Ctrl+V now and the picture you copied becomes the cover.");}
-    else alert("The browser wouldn't hand the clipboard over. Press Ctrl+V on this page instead — that sets the cover too.");
+    /* An old browser, or the browser's own paste guard went unpressed —
+       Firefox shows one per read, by its rules, and no page can remove it.
+       Fall back to the paste everyone has, said quietly on the cover itself
+       rather than as a dialog to dismiss on top of the miss. In the editor a
+       bare paste means a loose picture, so the NEXT one is marked as spoken
+       for — the scrapbook's paste checks the mark. */
+    if(bookMode==="edit"){window.__covArm=true;flashSpot(q("#coverBox"),"Press Ctrl+V — the picture you copied becomes the cover");}
+    else flashSpot(q("#vCover"),"Press Ctrl+V — it becomes the cover");
     return;
   }
-  if(!r.blob){alert("No picture on the clipboard yet. Right-click a cover in any tab, choose Copy image, then press this again.");return;}
+  if(!r.blob){flashSpot(bookMode==="edit"?q("#coverBox"):q("#vCover"),"Nothing copied yet — right-click a picture in any tab, Copy image, then press again");return;}
   if(had&&!confirm("Replace this book's cover with the picture you copied?"))return;
   await applyCoverBlob(r.blob);
 }
