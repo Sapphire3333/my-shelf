@@ -3461,16 +3461,58 @@ function wireAspects(root,apply){
    `open:true` marks the one you are in the middle of, which is the only thing
    that tells an unfinished reading apart from a finished one whose dates nobody
    kept. */
-/* today where you are, not in Greenwich: an evening east of London would
-   otherwise be filed under yesterday */
-const todayStr=()=>{const d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10);};
+/* ---- THE SHELF'S OWN CLOCK ----
+   Today was whatever the device said it was, turning over at its own midnight
+   (which is already better than Greenwich: an evening east of London would
+   otherwise be filed under yesterday). There was no way to say otherwise, and
+   two people asked the same question of it — when does a new day start, and
+   can I pin it.
+   So there are two answers now, and they travel together as ONE record because
+   they are facts about a shelf rather than about a screen: the HOUR a day
+   begins at, so a book finished at one in the morning is still filed under the
+   night before; and a ZONE to pin, so a phone that has moved and a computer
+   that has not still agree what day it is. Both default to nothing, and with
+   both at nothing this behaves exactly as it always did.
+   THE RULE for anything added later: ask this clock what day it is. Never
+   `new Date().getDate()` — that is the device's answer, not the shelf's. */
+let dayLine={h:0,tz:""};
+const dayLineH=()=>Math.max(0,Math.min(8,parseInt(dayLine&&dayLine.h)||0));
+const deviceZone=()=>{try{return Intl.DateTimeFormat().resolvedOptions().timeZone||"";}catch(e){return "";}};
+/* how many minutes ahead of UTC a zone is AT A GIVEN INSTANT — asked of the
+   browser rather than worked out here, so summer time is its problem and not
+   ours, and a zone it has never heard of falls back to this device's own,
+   which is the honest answer to "I can't tell you". */
+function zoneShiftMin(zone,d){
+  try{
+    const p={};
+    new Intl.DateTimeFormat("en-US",{timeZone:zone,hour12:false,
+      year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"})
+      .formatToParts(d).forEach(x=>{if(x.type!=="literal")p[x.type]=x.value;});
+    if(!p.year)return -d.getTimezoneOffset();
+    const asUTC=Date.UTC(+p.year,+p.month-1,+p.day,(+p.hour)%24,+p.minute,+p.second);
+    return Math.round((asUTC-(d.getTime()-d.getMilliseconds()))/6e4);
+  }catch(e){return -d.getTimezoneOffset();}
+}
+const shelfShiftMs=t=>{const d=new Date(t);
+  const off=(dayLine&&dayLine.tz)?zoneShiftMin(dayLine.tz,d):-d.getTimezoneOffset();
+  return off*6e4-dayLineH()*36e5;};
+/* The moment the shelf thinks it is. Read it with the UTC accessors or through
+   todayStr: its LOCAL fields are nonsense, because the shift is already folded
+   in and the browser would then apply its own on top. */
+const shelfNow=t=>{const n=(t===undefined?Date.now():t);return new Date(n+shelfShiftMs(n));};
+const todayStr=()=>shelfNow().toISOString().slice(0,10);
+const shelfYear=()=>+todayStr().slice(0,4);
+/* the same instant said in words, for the readout in Settings — this is the
+   whole point of the setting being visible: you can see which day it is on,
+   rather than working it out from a number you typed */
+const SHELF_DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 /* ---- the things that change with the day, and asking for another ----
    Today's quote and today's picture are chosen by the date rather than at
    random: they hold still all day, need nothing stored, and every device
    greets you with the same one. Asking for another writes only a nudge — which
    day, and how many times you have asked — so a reload shows the one you
    chose instead of starting the day over, and tomorrow forgets it by itself. */
-const dayIndex=()=>Math.floor((Date.now()-new Date().getTimezoneOffset()*6e4)/864e5);
+const dayIndex=()=>Math.floor(shelfNow().getTime()/864e5);
 const dayNudge=k=>{const s=settings[k];return (s&&s.d===todayStr())?(s.n||0):0;};
 function nudgeDay(k){settings[k]={d:todayStr(),n:dayNudge(k)+1};saveSettings();}
 const dayPick=(arr,k)=>arr.length?arr[(dayIndex()+dayNudge(k))%arr.length]:null;
@@ -3783,7 +3825,7 @@ document.addEventListener("click",e=>{
       &&row.nextElementSibling.__forInput===inp;
     qa(".dqpanel").forEach(p=>p.remove());
     if(wasOpen||!row||!inp)return;
-    const nowY=new Date().getFullYear();
+    const nowY=shelfYear();
     const had=+(inp.value||"").slice(0,4)||0;
     const years=[...new Set([...(had?[had]:[]),...Array.from({length:8},(_,i)=>nowY-i)])].sort((a,b)=>b-a);
     const p=document.createElement("div");
@@ -3799,7 +3841,7 @@ document.addEventListener("click",e=>{
   const panel=(yb||mb).closest(".dqpanel"),inp=panel&&panel.__forInput;
   if(!inp)return;
   const parts=(inp.value||"").split("-");
-  const Y=yb?yb.dataset.dqy:(parts[0]||String(new Date().getFullYear()));
+  const Y=yb?yb.dataset.dqy:(parts[0]||String(shelfYear()));
   const M=mb?String(mb.dataset.dqm).padStart(2,"0"):(parts[1]||"01");
   const D=parts[2]||"01";
   inp.value=`${Y}-${M}-${D}`;
@@ -5006,6 +5048,16 @@ function saveGoal(){
   enqueue({kind:"meta",key:"goal"});
   touchMeta("goal");
 }
+/* When a day begins travels for the same reason the goal does, and more
+   plainly: it is one fact about the shelf, and two devices that disagree about
+   which day it is would file the same evening's reading under two dates. One
+   record holding both halves — see the shelf's own clock — so there is never a
+   moment where the hour has arrived and the zone has not. Newer wins. */
+function saveDayLine(){
+  dbPut("meta",{k:"dayline",v:{h:dayLineH(),tz:(dayLine&&dayLine.tz)||""}});
+  enqueue({kind:"meta",key:"dayline"});
+  touchMeta("dayline");
+}
 let bgList=[];                 /* [{id,name}] custom backgrounds, images live at "__bg|<id>" */
 let padList=[];                /* [{id,name}] custom notepad looks, images live at "__pad|<id>" */
 const bgCache=new Map(),padCache=new Map();
@@ -5482,6 +5534,17 @@ async function pullAll(){
                  then stopped any later pull from correcting it */
               dbPut("meta",{k:"goal",v:settings.goal||""});
             }}
+          /* two answers about one shelf, so there is nothing to join — the newer
+             pair wins whole, and a zone unpinned on the other device is a real
+             answer rather than a gap. Written back to the record boot reads,
+             for the same reason the goal is: without it a reload brings the old
+             one back and the metaTimes bump then blocks the correction. */
+          else if(row.key==="dayline"){
+            if(cloudNewer("dayline")){
+              const v=row.value||{};
+              dayLine={h:parseInt(v.h)||0,tz:String(v.tz||"")};
+              dbPut("meta",{k:"dayline",v:{h:dayLineH(),tz:dayLine.tz}});
+            }}
           else if(row.key==="libArt"){const have=new Set(libArt.map(a=>a.id));
             (row.value||[]).forEach(a=>{if(a&&a.id&&!have.has(a.id)&&!gone("libart:"+a.id))libArt.push(a);});}
           else if(row.key==="kwCats"){
@@ -5867,6 +5930,9 @@ async function initSync(){
   /* the goal is kept beside the settings rather than inside them, because it is
      the one of them that travels between devices — see saveGoal */
   const gl=await dbGet("meta","goal");if(gl&&gl.v!==undefined&&gl.v!=="")settings.goal=gl.v;
+  /* and beside it, for the same reason: when this shelf thinks a day begins */
+  const dl=await dbGet("meta","dayline");
+  if(dl&&dl.v&&typeof dl.v==="object")dayLine={h:parseInt(dl.v.h)||0,tz:String(dl.v.tz||"")};
   const bl=await dbGet("meta","backgrounds");bgList=bl&&Array.isArray(bl.v)?bl.v:[];
   const pl=await dbGet("meta","padskins");padList=pl&&Array.isArray(pl.v)?pl.v:[];
   const fd=await dbGet("meta","fandoms");fandoms=fd&&fd.v?fd.v:{};
@@ -6462,6 +6528,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-28.3",lines:[
+    "<b>You can say when a day begins now</b> — ⚙ Settings, at the top. Until today the answer was whatever this device's clock said, turning over at its own midnight, and there was no way to say otherwise.",
+    "<b>A new day starts at…</b> — a slider from midnight to 8 am. Set it to 4 and a book you finish at two in the morning is filed under the night before, where you actually read it. It decides today's quote, today's picture and what stands under On this day too, so the shelf agrees with itself about which day it is.",
+    "<b>And the clock it reads</b> — this device's own, or one zone you pin and every device obeys, wherever either of them happens to be. Summer time is worked out for you. Underneath, in words, is what the shelf believes right now: the time where that clock is, and the date it is filing under — so you can see the answer instead of working it out. Both halves travel between your devices, like the year's goal and unlike everything else on that page: which day it is is not a question about a screen."
+  ]},
   {v:"2026-08-28.2",lines:[
     "<b>✓ This order is right no longer moves the page under you.</b> Confirming a collection's order redrew the whole book page for the sake of one line of it — every picture thrown away and asked for again, the page briefly a different height, and your place in it lost. Only the caption changes when you press it, so only the caption is rewritten now. Everything it does is the same; it just does it where you are standing."
   ]},
@@ -12304,7 +12375,7 @@ function mergeQuests(rv){
   if(changed)dbPut("meta",{k:"quests",v:l}).catch(()=>{});
   return changed;
 }
-const questYear=()=>new Date().getFullYear();
+const questYear=()=>shelfYear();
 const questToday=()=>new Date().toISOString().slice(0,10);
 function drawTwelve(){
   const count={};
@@ -12997,6 +13068,42 @@ function tuneDiagnostics(){
   ].filter(Boolean);
   return lines;
 }
+/* ---- the "when a day begins" card ----
+   Its whole job is to be readable. A number of hours means nothing on its own,
+   so the card says the hour in words, gives the example that actually decides
+   it — a book finished at two in the morning — and prints what the shelf
+   believes today is, beside the wall clock it is reading. The readout is the
+   point: the answer is shown rather than left to be worked out. */
+const dlHourLabel=h=>h===0?"midnight":(h+" am");
+function dlEgText(h){
+  h=h===undefined?dayLineH():h;
+  return h===0
+    ?"Midnight — the ordinary answer. A book finished at half past one in the morning is filed under that morning."
+    :`A book finished after midnight but before ${dlHourLabel(h)} is filed under the night before, not the new day.`;
+}
+function dlZoneOptions(){
+  let list=[];
+  try{list=Intl.supportedValuesOf("timeZone")||[];}catch(e){list=[];}
+  const own=deviceZone();
+  /* an older browser has no list to give; these are enough to be useful, and
+     whatever is already pinned is always in it */
+  if(!list.length)list=[...new Set([own,"UTC","Europe/London","Europe/Riga","Europe/Berlin",
+    "America/New_York","America/Los_Angeles","Asia/Tokyo","Australia/Sydney"].filter(Boolean))];
+  const cur=dayLine.tz||own;
+  if(cur&&!list.includes(cur))list=[cur,...list];
+  return list.map(z=>`<option value="${esc(z)}"${z===cur?" selected":""}>${esc(z.replace(/_/g," "))}</option>`).join("");
+}
+const dlShelfDay=()=>{const s=shelfNow();
+  return SHELF_DAYS[s.getUTCDay()]+" "+s.getUTCDate()+" "+DQ_MONTHS[s.getUTCMonth()]+" "+s.getUTCFullYear();};
+function dlNowText(){
+  const z=dayLine.tz||deviceZone();
+  let wall="";
+  try{wall=new Intl.DateTimeFormat(undefined,{timeZone:z||undefined,weekday:"long",day:"numeric",
+    month:"short",hour:"2-digit",minute:"2-digit",hour12:false}).format(new Date());}
+  catch(e){wall=new Date().toLocaleString();}
+  return `Right now it is <b>${esc(wall)}</b>${z?` in ${esc(z.replace(/_/g," "))}`:""}${
+    dayLine.tz?"":" — this device's own clock"}, and the shelf is filing under <b>${esc(dlShelfDay())}</b>.`;
+}
 function renderSettings(){
   const m=q("#main");if(!m)return;
   const diag=tuneDiagnostics();
@@ -13010,6 +13117,23 @@ function renderSettings(){
           <span id="syncStat" class="syncstat"></span></div>
         <div class="hrow2" style="margin-top:10px"><button class="btn pri" id="saveNow">${SYNC.on?"Save and check other devices":"Save now"}</button><span id="hubSave" class="none"></span></div>
         <div class="hint" style="margin:9px 0 0">Everything saves by itself a moment after you stop typing${SYNC.on?", then syncs to your cloud":""}. Use this if you want to be certain before closing the tab${SYNC.on?" — it also fetches anything your other devices have done that hasn't reached here yet":""}.</div>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="heading"><h2 class="serif">When a day begins</h2></div>
+      <div class="hcard">
+        <div class="hint" style="margin:0 0 10px">The shelf writes today's date when you finish a book, and picks today's quote, today's picture and what stands under <b>On this day</b>. This is what it means by today — and unlike the rest of this page it travels between your devices, because which day it is is not a question about a screen.</div>
+        <div class="opac">A new day starts at
+          <input type="range" id="dlHour" min="0" max="8" step="1" value="${dayLineH()}">
+          <b id="dlHourV" style="width:74px;text-align:right">${dlHourLabel(dayLineH())}</b></div>
+        <div class="hint" style="margin:5px 0 0" id="dlEg">${dlEgText()}</div>
+        <div class="hrow2" style="margin-top:14px;flex-wrap:wrap">
+          <span class="lbl">The clock it reads:</span>
+          <button class="pill ${dayLine.tz?"":"on"}" data-dltz="own" title="Whatever this phone or computer is set to — it changes when the device does">This device's own</button>
+          <button class="pill ${dayLine.tz?"on":""}" data-dltz="pin" title="One zone, obeyed on every device, wherever either of them is">One I pin</button>
+          <select id="dlZone" ${dayLine.tz?"":"disabled"} style="font:inherit;font-size:13px;padding:4px 6px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:9px;max-width:100%">${dlZoneOptions()}</select>
+        </div>
+        <div class="hint" style="margin:8px 0 0" id="dlNow">${dlNowText()}</div>
       </div>
     </div>
     <div class="sec">
@@ -13204,6 +13328,28 @@ function wireSettings(m){
     fs.oninput=e=>{const v=q("#fontScaleV",m);if(v)v.textContent=e.target.value+"%";};
     fs.onchange=e=>setFontScale(+e.target.value);
   }
+  /* when a day begins. The hour follows your hand and is written when you let
+     go, like the text size; the zone is a press, so it is written at once.
+     Both go straight to the cloud rather than waiting for the next save, for
+     the same reason the goal does: the other device should be told which day
+     it is before it next writes a date. */
+  {const redraw=()=>{const y=window.scrollY;renderSettings();keepPlaceAfterRedraw(y);};
+   const hr=q("#dlHour",m);
+   if(hr){
+     const say=h=>{const v=q("#dlHourV",m);if(v)v.textContent=dlHourLabel(h);
+       const e=q("#dlEg",m);if(e)e.textContent=dlEgText(h);};
+     hr.oninput=()=>say(+hr.value);
+     hr.onchange=()=>{dayLine.h=+hr.value;saveDayLine();say(+hr.value);
+       const n=q("#dlNow",m);if(n)n.innerHTML=dlNowText();
+       if(SYNC.on)flushQueue();};
+   }
+   qa("[data-dltz]",m).forEach(b=>b.onclick=()=>{
+     if(b.dataset.dltz==="pin"){const sel=q("#dlZone",m);dayLine.tz=(sel&&sel.value)||deviceZone()||"UTC";}
+     else dayLine.tz="";
+     saveDayLine();if(SYNC.on)flushQueue();redraw();
+   });
+   const zs=q("#dlZone",m);
+   if(zs)zs.onchange=()=>{dayLine.tz=zs.value||deviceZone()||"UTC";saveDayLine();if(SYNC.on)flushQueue();redraw();};}
   {const fb=q("#famPanelBtn",m);if(fb)fb.onclick=()=>openFamiliesPanel();}
   /* render, not renderSettings: the chips take their colours from the theme, so
      everything drawn has to be drawn again — see chipInk */
@@ -13249,14 +13395,14 @@ function wireSettings(m){
 async function renderHub(){
   const m=q("#main");
   const yrs=readYears();
-  const thisYear=String(new Date().getFullYear());
+  const thisYear=String(shelfYear());
   const doneY=yrs[thisYear]||0;
   const goal=Math.max(0,parseInt(settings.goal)||0);
   const goalPct=goal?Math.min(100,Math.round(doneY/goal*100)):0;
   const left=goal-doneY;
   /* how far through the year we are, so the goal can say whether you are ahead
      of it rather than only how far along it you are */
-  const y0=new Date(+thisYear,0,1),dayOfYear=Math.floor((Date.now()-y0)/864e5)+1;
+  const dayOfYear=Math.floor((shelfNow().getTime()-Date.UTC(+thisYear,0,1))/864e5)+1;
   const expected=goal?goal*Math.min(1,dayOfYear/365):0;
   /* the shelf's check-back list: on hold because the next part didn't exist
      yet. Time is what changes that, not anything done in the app, so Overview
@@ -13303,11 +13449,13 @@ async function renderHub(){
      not be reached at all. It is a button now, and because the rows are
      already on the page their covers are fetched with the first three and
      opening them redraws nothing, so the page cannot move under you. */
-  const td=new Date();
-  const mdKey=String(td.getMonth()+1).padStart(2,"0")+"-"+String(td.getDate()).padStart(2,"0");
+  /* which day this is comes off the shelf's own clock, not the device's — so at
+     half past one in the morning, with the day set to begin at four, this is
+     still last night's anniversary and not tomorrow's */
+  const tdS=todayStr(),tdY=+tdS.slice(0,4),mdKey=tdS.slice(5);
   const onThis=readUnits().flatMap(u=>u.reads
-    .filter(r=>r.end&&String(r.end).slice(5)===mdKey&&+String(r.end).slice(0,4)<td.getFullYear())
-    .map(r=>({t:u.title,id:u.book.id,en:u.en?u.en.id:"",yrs:td.getFullYear()-+String(r.end).slice(0,4)})));
+    .filter(r=>r.end&&String(r.end).slice(5)===mdKey&&+String(r.end).slice(0,4)<tdY)
+    .map(r=>({t:u.title,id:u.book.id,en:u.en?u.en.id:"",yrs:tdY-+String(r.end).slice(0,4)})));
   m.innerHTML=`
     ${news.length?`<div class="sec">
       <div class="hcard" id="newsCard">
@@ -17067,7 +17215,7 @@ function renderInsights(){
      the whole reason the readings list exists */
   const years=readYears();
   const yl=Object.entries(years).sort((a,b)=>b[0].localeCompare(a[0]));
-  const thisYear=String(new Date().getFullYear());
+  const thisYear=String(shelfYear());
   const pace=yl.length?Math.round(yl.reduce((s,x)=>s+x[1],0)/yl.length):0;
   const finRate=(fin.length+dnf.length)?fin.length/(fin.length+dnf.length):null;
   const dnfReasons={};dnf.forEach(u=>((u.en?u.en.dnfReasons:u.book.dnfReasons)||[]).forEach(r=>dnfReasons[r]=(dnfReasons[r]||0)+1));
