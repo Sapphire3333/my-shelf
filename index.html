@@ -288,6 +288,9 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .lookwrap .lookl{font-size:13px;opacity:.9;padding:1px 5px;border:1px solid var(--line);
     border-radius:6px;background:var(--card)}
   .lookwrap .lookl:hover{border-color:var(--teal);transform:none;opacity:1}
+  /* under the editor's cover they are the row's whole content, not a garnish
+     on a chip — a size up, asked for after seeing them at 13px */
+  #edCovUnder .lookl{font-size:16px;padding:3px 8px}
   .stpick{position:absolute;left:10px;top:10px;z-index:25;background:var(--card);border:1px solid var(--line);
     border-radius:11px;padding:5px;box-shadow:0 12px 30px rgba(0,0,0,.3);display:flex;flex-direction:column;min-width:180px}
   .stpick button{text-align:left;padding:8px 11px;border-radius:8px;font-size:13px;white-space:nowrap}
@@ -19721,7 +19724,16 @@ function wireScrapbook(page,host){
     if(!pics.length)return;
     e.preventDefault();
     /* the paste-cover button's fallback spoke for this paste (see
-       pasteCoverBtn): it is the cover arriving, not a loose picture */
+       pasteCoverBtn / pasteEntCover): it is a cover arriving, not a loose
+       picture — a story's first, since arming one names the story */
+    if(window.__covArmEnt){
+      const id=window.__covArmEnt;window.__covArmEnt=null;
+      const en=cur&&(cur.entries||[]).find(x=>x.id===id);
+      const f=pics[0].getAsFile();
+      if(en&&f){(async()=>{
+        if(!en.cover||confirm("Replace this story's cover with the picture you copied?"))await applyEntCoverBlob(en,f);
+      })();return;}
+    }
     if(window.__covArm){
       window.__covArm=false;
       const f=pics[0].getAsFile();
@@ -22399,6 +22411,7 @@ function renderEditor(){
             <span class="ratebox" style="padding:3px 9px">★ <input type="number" data-er="${en.id}" min="0" max="10" step="0.1" placeholder="–" value="${en.rating??""}" style="width:50px;font-size:14px"></span>
             <span class="boxbtn" style="cursor:default;padding:5px 9px">Pages <input type="number" data-ep="${en.id}" min="1" placeholder="–" value="${esc(en.pages||"")}" style="border:none;width:50px;text-align:center;font-weight:600"></span>
             <button class="cnt" data-ef="${en.id}" title="Look this story up online — blurb, pages, cover">🔎</button>
+            <button class="cnt" data-ecp="${en.id}" title="Copy a picture in any tab, then press this — it becomes this story's cover">📋</button>
             <button class="cnt" data-eu="${en.id}" title="Move up" ${i===0?"disabled":""}>↑</button>
             <button class="cnt" data-ed="${en.id}" title="Move down" ${i===cur.entries.length-1?"disabled":""}>↓</button>
             <button class="lx" data-ex="${en.id}" style="opacity:1" title="Remove this one">✕</button>
@@ -22496,6 +22509,7 @@ function renderEditor(){
     qa("[data-egen]",list).forEach(el=>el.onclick=()=>openEntGenres(el.dataset.egen));
     qa("[data-ekw]",list).forEach(el=>el.onclick=()=>openEntKw(el.dataset.ekw));
     qa("[data-ec]",list).forEach(el=>el.onclick=()=>{pendingEnt=el.dataset.ec;q("#entCoverFile").click();});
+    qa("[data-ecp]",list).forEach(el=>el.onclick=()=>pasteEntCover(el.dataset.ecp));
     /* The reverse of folding a book in, which never had one — the owner filed a
        book into a collection by accident and the only ways back were deleting
        the story or undoing a whole import. Everything the story VISIBLY had
@@ -26735,6 +26749,28 @@ async function applyCoverBlob(f){
   if(SYNC.on)enqueue({kind:"cover",id:cur.id});
   if(bookMode==="edit"){cur.coverV=Date.now();scheduleSave();renderBook();}
   else await quickEdit(bk=>{bk.coverV=Date.now();});
+}
+/* The same button on a story's row inside a collection's editor. A story's
+   cover is not a book's cover: it lives among the images under
+   "collection|story" with a flag on the entry, so this takes the road the
+   row's own file picker takes, never the covers-store road the book takes. */
+async function applyEntCoverBlob(en,f){
+  if(!cur)return;
+  let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){alert("That picture couldn't be read.");return;}
+  const key=cur.id+"|"+en.id;
+  en.coverV=Date.now();
+  try{await dbPut("images",{key,data,v:en.coverV});}catch(e){alert("That cover couldn't be saved.");return;}
+  curEnt[en.id]=data;en.cover=true;coverCache.set(key,data);bumpCovers();
+  if(SYNC.on)enqueue({kind:"img",key});
+  scheduleSave();renderBook();
+}
+async function pasteEntCover(id){
+  const en=cur&&(cur.entries||[]).find(x=>x.id===id);if(!en)return;
+  const r=await clipboardImage();
+  if(r.why==="no-access"){window.__covArmEnt=id;alert("The browser wouldn't hand the clipboard over. Press Ctrl+V now and the picture you copied becomes this story's cover.");return;}
+  if(!r.blob){alert("No picture on the clipboard yet. Right-click a cover in any tab, choose Copy image, then press this again.");return;}
+  if(en.cover&&!confirm("Replace this story's cover with the picture you copied?"))return;
+  await applyEntCoverBlob(en,r.blob);
 }
 async function pasteCoverBtn(){
   if(!cur)return;
