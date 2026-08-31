@@ -6741,6 +6741,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-31.9",lines:[
+    "<b>A book you have already read can become a collection without losing what you wrote about it.</b> Ticking <i>a whole series / collection as one shelf item</i> used to leave everything belonging to the COLLECTION — the rating you gave one book stood for the whole series, the dates you read it were the series' dates, and the only way to put them right was to make a story by hand and retype the lot. Now the tick asks, once, and if you say yes the book becomes the first story inside itself.",
+    "What moves down into story 1: <b>the rating, every reading and its dates, the stage, the page count and your bookmark, the blurb, your notes, the ISBN and the heart</b> — and the quotes stay on the collection's own list, marked as having come <i>from</i> that story. What stays on the collection, because a story has nowhere to keep it: what you liked and didn't, the stood-out words, pictures, drawing, genres and tags, and the cover.",
+    "The rating is the point of it. Given away to story 1, the collection stops carrying one book's mark as its own and starts working it out from what is inside — so the moment you add a second story rated 4 beside the first rated 8, the collection says 6, which is the truth about a set. Nothing is copied twice: everything that moves is cleared where it was, and one press of ↶ Undo puts the whole thing back.",
+    "The same two things were quietly missing when you fold an existing book INTO a collection, and travel now: the heart, and the page you were on."]},
   {v:"2026-08-31.8",lines:[
     "<b>Where you are can be said in percent now.</b> Beside the page box, on the book's page and in its editor, there is a <b>% through</b> box you can type into. With a page count it is the page it means — type 45 against 380 and the bookmark moves to 171 — so there is never a second record of the same fact to drift out of step with the first.",
     "<b>And a book with no page count can be kept in percent alone.</b> A book read in an app that only ever says 45% had nowhere to record that, and asking for a page count first is asking you to invent a number. The percent stands by itself, the bar draws from it, and the shelf's rows say <b>45% through</b> instead of nothing. Stories inside a collection have the same box, by the same rule.",
@@ -9663,6 +9668,13 @@ function wireOpen(root,withDel){
 async function bookToEntry(b,collId,collStatus,collAuthor,collDnf,collKeywords){
   const en=blankEntry();
   en.title=b.title;en.rating=b.rating;en.pages=b.pages;
+  /* the heart and the bookmark travel too. A story can carry both and neither
+     was written down here, so a favourite book folded into a collection came
+     out the other side unmarked, and one you were halfway through came out at
+     page nothing — found while writing selfToFirstStory, which had to answer
+     the same question about the same fields. */
+  en.favorite=!!b.favorite;
+  en.progress=b.progress;en.pct=b.pct||"";en.progLog=(b.progLog||[]).slice();
   /* Its tags come with it. Folding a book in used to drop them on the floor,
      because a story had nowhere to keep one — a book with five tags went in with
      none and nothing said so. The ones the collection already carries are left
@@ -9703,6 +9715,68 @@ async function bookToEntry(b,collId,collStatus,collAuthor,collDnf,collKeywords){
       if(SYNC.on)enqueue({kind:"img",key:collId+"|"+en.id});}catch(e){en.cover=false;coverData=null;}
   }
   return {en,coverData};
+}
+/* ---- A BOOK THAT BECOMES A COLLECTION, WITHOUT LOSING ITS OWN READING ----
+   Ticking "a whole series / collection as one shelf item" on a book you have
+   already read left everything you had written about it belonging to the
+   COLLECTION: the rating you gave one book now stood for the whole series, the
+   dates you read it were the series' dates, and the only way to put them where
+   they belonged was to make a story by hand and retype the lot.
+   So the tick offers to do it. The book becomes the first story inside itself:
+   everything a story can carry moves down into it, and what moves is exactly
+   what a story HAS — which is the honest limit of this and the reason the
+   owner was asked before it was built.
+     Moves: the rating, every reading and its dates, the stage (and given-up /
+     on-hold with it), the page count and where you are in it, the blurb, your
+     notes, the ISBN, the favourite mark, and the quotes — which stay on the
+     collection's own list, marked as having come FROM this story, since that
+     is where quotes live and quotesFrom is exactly the field for saying so.
+     Stays with the collection, because a story has nowhere to keep it: what
+     you liked and didn't, the stood-out words, pictures, notes on the page,
+     drawing, genres and tags (which every story inherits anyway), the
+     audience, the maturity, the link, and the cover.
+   Nothing is copied twice. Everything moved is cleared from the book, or the
+   two would disagree the first time either was edited. */
+function ownReadingOf(b){
+  const bits=[];
+  if(b.rating!=null)bits.push("the rating");
+  if(readsOf(b).some(r=>r&&(r.start||r.end))||String(b.dateFinished||"").trim())bits.push("when you read it");
+  if(String(b.summary||"").trim())bits.push("the blurb");
+  if(stripHtml(b.canvasText||"").trim())bits.push("your notes");
+  if((b.quotes||[]).some(x=>stripHtml(x).trim()))bits.push("the quotes");
+  if(parseInt(b.pages)||parseInt(b.progress)||parseInt(b.pct))bits.push("where you got to");
+  if(String(b.isbn||"").trim())bits.push("the ISBN");
+  return bits;
+}
+function selfToFirstStory(b){
+  const en=blankEntry();
+  en.title=String(b.title||"").trim()||"Untitled";
+  en.rating=b.rating;b.rating=null;
+  /* a collection's mark is worked out from its stories once it has any, so
+     clearing this does not lose the number — it re-earns it from below */
+  b.ratingOwn=false;
+  en.pages=b.pages;en.progress=b.progress;en.pct=b.pct||"";
+  en.progLog=(b.progLog||[]).slice();
+  b.pages="";b.progress="";b.pct="";b.progLog=[];
+  en.summary=b.summary||"";b.summary="";
+  en.notes=b.canvasText||"";b.canvasText="";
+  en.isbn=String(b.isbn||"").trim();b.isbn="";
+  en.favorite=!!b.favorite;b.favorite=false;
+  en.readings=readsOf(b).map(r=>Object.assign({},r,{id:uid()}));
+  syncReads(en);
+  en.dateFinished=lastEnd(en)||String(b.dateFinished||"");
+  en.status=statusOf(b);en.dnf=!!b.dnf;en.hold=!!holdOf(b);
+  b.readings=[];b.dateFinished="";b.rereads=0;
+  /* the quotes do not move — they are already on the list this page shows.
+     What they gain is a source: pressing one now says which story it came
+     from, and only quotes that had no source are touched. */
+  const qs=(b.quotes||[]).length;
+  if(qs){
+    const from=(b.quotesFrom||[]).slice();
+    for(let i=0;i<qs;i++)if(!String(from[i]||"").trim())from[i]=en.id;
+    b.quotesFrom=from;
+  }
+  return en;
 }
 /* a folded-away book loses its own page: bin (30 days) + synced deletion */
 async function retireBook(b){
@@ -23206,6 +23280,28 @@ function renderEditor(){
     cur.type=e.target.checked?"collection":"standalone";
     if(e.target.checked){cur.seriesNum="";cur.seriesTotal="";cur.entries=cur.entries||[];}
     else cur.series="";
+    /* ---- the offer, made once, at the only moment it can be made ----
+       Only on the way IN, only where there is nothing inside yet, and only
+       where the book has something of its own to move — asking about a blank
+       book would be a dialog in the way of a tick. Saying no leaves everything
+       exactly where it is, which is what this tick used to do silently. */
+    if(e.target.checked&&!(cur.entries||[]).length){
+      const has=ownReadingOf(cur);
+      if(has.length&&confirm(
+        `Make “${cur.title||"this book"}” the first story inside itself?\n\n`+
+        `${has.join(", ")} — all of it belongs to the book you read, not to the whole collection, so it moves down into story 1 where it can stay true when you add the rest.\n\n`+
+        `What a story has nowhere to keep stays here, on the collection: what you liked and didn't, the stood-out words, pictures, drawing, genres and tags, and the cover.\n\n`+
+        `OK to move it · Cancel to leave everything on the collection`)){
+        cur.entries=[selfToFirstStory(cur),...(cur.entries||[])];
+        scheduleSave();
+        /* it has just emptied nine fields that are drawn in nine different
+           places on this form — the whole editor is redrawn rather than each
+           of them hunted down by id, which is how one gets missed and shows a
+           number that no longer exists anywhere */
+        renderEditor();
+        return;
+      }
+    }
     renderSeries();renderEntries();scheduleSave();
   };
   renderSeries();
