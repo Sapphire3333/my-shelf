@@ -6741,6 +6741,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-31.8",lines:[
+    "<b>Where you are can be said in percent now.</b> Beside the page box, on the book's page and in its editor, there is a <b>% through</b> box you can type into. With a page count it is the page it means — type 45 against 380 and the bookmark moves to 171 — so there is never a second record of the same fact to drift out of step with the first.",
+    "<b>And a book with no page count can be kept in percent alone.</b> A book read in an app that only ever says 45% had nowhere to record that, and asking for a page count first is asking you to invent a number. The percent stands by itself, the bar draws from it, and the shelf's rows say <b>45% through</b> instead of nothing. Stories inside a collection have the same box, by the same rule.",
+    "Either way it counts as reading: the 📖 run and the daily task that watches for a bookmark moving both see a percent exactly as they see a page. What it does not do is claim pages you did not turn — the pace line in Insights (\"you've turned about 900 pages\") counts pages, and a percent is not one, so it leaves them out rather than calling 45% forty-five pages."]},
   {v:"2026-08-31.7",lines:[
     "<b>The top of the Library is the search first, then one row of controls</b> — your D off the mock. The box you type in takes the full width at the top, where a shelf of two hundred books wants it, and everything you press stands on the line beneath: what's showing, <b>☰ Filters</b>, <b>⇅ Sort</b>, the grid, and ⭱ Straight from an import, which no longer needs a row of its own for one chip. Three rows became two.",
     "<b>⚙ Arrange is ⇅ Sort</b>, your word for it — and <b>▦ Grid</b> has come out of that fold to stand in the row. It was never a sort: it is how the shelf looks, and it was two presses deep behind a name that never mentioned it. Grouping under headings stays inside ⇅ Sort, which is the order they stand in too."]},
@@ -8191,7 +8195,10 @@ const HISTLOG_MAX=50;
 const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blurb",canvasText:"notes",
   genres:"genres",keywords:"tags",quotes:"quotes",quotesFrom:"quote sources",images:"pictures",
   pads:"page notes",coverV:"cover",rating:"rating",ratingOwn:"",status:"stage",dateFinished:"finish date",
-  reads:"readings",progress:"progress",progLog:"",rereads:"re-reads",series:"series",seriesNum:"series number",
+  /* `pct` is a progress, said in percent, and it must be WORDED as one: the
+     reading streak and the "move a bookmark" task both look for that word in
+     the change log, and a book kept in percent would otherwise earn neither */
+  reads:"readings",progress:"progress",pct:"progress",progLog:"",rereads:"re-reads",series:"series",seriesNum:"series number",
   seriesTotal:"series total",isbn:"ISBN",hcSlug:"",favorite:"favourite",dnf:"given up",dnfReasons:"why given up",
   hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",entries:"stories",maturity:"maturity",aspects:"what stood out",
   pros:"likes",cons:"dislikes",meh:"so-sos",fandoms:"fandoms",characters:"characters",ships:"relationships",
@@ -9105,7 +9112,16 @@ const pctOf=b=>{
     return d?Math.max(0,Math.min(100,Math.round(d/t*100))):null;
   }
   const t=parseInt(b.pages)||0,a=parseInt(b.progress)||0;
-  return t&&a?Math.max(0,Math.min(100,Math.round(a/t*100))):null;};
+  if(t&&a)return Math.max(0,Math.min(100,Math.round(a/t*100)));
+  /* ---- a percent kept on its own ----
+     A book read in an app that says 45% and nothing else has no page count to
+     work one out from, and demanding one first is asking them to invent a
+     number. So a percent may stand by itself. The page count wins wherever
+     there is one — it is the more exact of the two, and setPct converts a
+     percent typed against a total into the page it means, rather than keeping
+     a second record of the same fact for the two to disagree about later. */
+  const p=parseFloat(b&&b.pct);
+  return isFinite(p)&&p>0?Math.max(0,Math.min(100,Math.round(p))):null;};
 /* Where you are in a book, and the daily trail behind it — one entry per day,
    enough to work out a pace later without keeping a fuss of it. Shared, because
    the page can be changed in two places now and both must leave the same trail. */
@@ -9168,13 +9184,36 @@ function wireProgDrag(bar,total,commit){
 }
 function setProgress(b,v){
   b.progress=(v===""||v==null)?"":Math.max(0,parseInt(v)||0);
+  /* a page said out loud replaces a percent that was standing in for one:
+     ONE of the two is live at a time, always, or they drift */
+  if(b.pct)b.pct="";
   /* the local day, like every other date here — the UTC day filed an evening's
      pages under tomorrow anywhere east of Greenwich */
   const today=todayStr();
   b.progLog=b.progLog||[];
   const last=b.progLog[b.progLog.length-1];
-  if(last&&last.d===today)last.p=b.progress||0;
+  if(last&&last.d===today){last.p=b.progress||0;delete last.pc;}
   else b.progLog.push({d:today,p:b.progress||0});
+  if(b.progLog.length>400)b.progLog=b.progLog.slice(-400);
+}
+/* the same move, said in percent. With a page count it IS a page — converted
+   here and never stored twice. Without one it is kept as itself, and its trail
+   entries are marked `pc` so the pace card, which adds these numbers up as
+   pages turned, does not count a percent as forty pages. */
+function setPct(b,v){
+  const t=parseInt(b.pages)||0;
+  const raw=(v===""||v==null||v==="")?"":Math.max(0,Math.min(100,Math.round(parseFloat(v)||0)));
+  if(t){
+    b.pct="";
+    setProgress(b,raw===""?"":Math.max(0,Math.min(t,Math.round(raw/100*t))));
+    return;
+  }
+  b.pct=raw;
+  const today=todayStr();
+  b.progLog=b.progLog||[];
+  const last=b.progLog[b.progLog.length-1];
+  if(last&&last.d===today){last.p=raw||0;last.pc=true;}
+  else b.progLog.push({d:today,p:raw||0,pc:true});
   if(b.progLog.length>400)b.progLog=b.progLog.slice(-400);
 }
 /* A collection says how far through it you are whenever you are part-way through
@@ -9194,7 +9233,12 @@ const progHtml=b=>{
   /* a collection counts in stories, everything else in pages */
   const said=isColl(b)&&(b.entries||[]).length
     ? `${collDone(b)} of ${(b.entries||[]).length} read`
-    : `${p}% · p.${esc(String(b.progress))} of ${esc(String(b.pages))}`;
+    /* a book kept in percent has no page to name — the percent is the whole
+       of what is known about where you are, and "p. of" with two blanks in it
+       reads like something failed to load */
+    : (parseInt(b.pages)&&parseInt(b.progress)
+        ? `${p}% · p.${esc(String(b.progress))} of ${esc(String(b.pages))}`
+        : `${p}% through`);
   return `<div style="display:flex;align-items:center;gap:6px;margin-top:4px">
     <span class="prog" style="width:88px"><i style="width:${p}%"></i></span>
     <span class="rr">${said}</span></div>`;
@@ -18005,7 +18049,9 @@ function renderInsights(){
   books.forEach(b=>{
     const logs=[b.progLog||[],...(isColl(b)?(b.entries||[]).map(en=>en.progLog||[]):[])];
     for(const lg of logs){
-      const log=lg.filter(e2=>e2.d>=cut).sort((x,y)=>x.d.localeCompare(y.d));
+      /* `pc` entries are percents, not pages — counting one as 45 pages turned
+         would put a number in this sentence that nothing on the shelf says */
+      const log=lg.filter(e2=>e2.d>=cut&&!e2.pc).sort((x,y)=>x.d.localeCompare(y.d));
       for(let i=1;i<log.length;i++){
         const d=(log[i].p||0)-(log[i-1].p||0);
         if(d>0){recentPages+=d;activeDays.add(log[i].d);}
@@ -19642,15 +19688,25 @@ function renderBookView(){
           const pin=(id,val,max,tip)=>`<input type="number" inputmode="numeric" class="nospin" ${id} min="0"${max?` max="${esc(String(max))}"`:""}
             placeholder="–" value="${esc(String(val||""))}" title="${esc(tip)}"
             style="border:none;background:transparent;font:inherit;color:var(--ink);font-weight:700;width:48px;text-align:center;padding:0">`;
+          /* the percent is a box you type into, not a readout: an app that
+             tells you 45% and no page is the commonest way this shelf's owner
+             reads, and the number it gives was the one number here you could
+             not write down. With a page count it is the page, converted. */
+          const pcin=`<input type="number" inputmode="numeric" class="nospin" id="vPct" min="0" max="100"
+            placeholder="–" value="${esc(String((parseInt(b.pages)&&parseInt(b.progress))?(pct==null?"":pct):(b.pct||"")))}"
+            title="How far through you are — type a percent, and with a page count it becomes the page"
+            style="border:none;background:transparent;font:inherit;color:var(--ink);font-weight:700;width:40px;text-align:center;padding:0">`;
           if(parseInt(b.pages))return `<div class="vprog"><span class="prog" id="vProgBar" style="flex:1"><i style="width:${pct||0}%"></i></span>
-            <span class="rr">${pct!=null?pct+"% · ":""}p.${pin('id="vProg"',b.progress,parseInt(b.pages),"The page you're on — type a new one and press Enter")} of ${esc(String(b.pages))}</span></div>`;
-          /* No page count, so no bar to draw — and until now no box either, which
-             made a book you are READING the one book with nowhere on this page to
-             say where you are. The total was askable only in the editor, and
-             nothing here said that was the missing piece. Both numbers stand
-             here now; the bar arrives with the second one. */
-          return `<div class="vprog"><span class="rr">p.${pin('id="vProg"',b.progress,0,"The page you're on")} of ${pin('id="vPages"',"",0,"How many pages it has — the bar needs this")}</span>
-            <span class="lbl">give it a total and the bar appears</span></div>`;
+            <span class="rr">${pcin}% · p.${pin('id="vProg"',b.progress,parseInt(b.pages),"The page you're on — type a new one and press Enter")} of ${esc(String(b.pages))}</span></div>`;
+          /* No page count. There was no box here at all once, which made a book
+             you are READING the one book with nowhere on this page to say where
+             you are; then both numbers stood here and the bar waited on a total.
+             Now the percent alone is enough for the bar — a book with no page
+             count is not a book you cannot record. The total is still asked
+             for, quietly, because a page is the better record where it exists. */
+          return `<div class="vprog">${b.pct?`<span class="prog" style="flex:1"><i style="width:${pct||0}%"></i></span>`:""}
+            <span class="rr">${pcin}% through</span>
+            <span class="rr">p.${pin('id="vProg"',b.progress,0,"The page you're on")} of ${pin('id="vPages"',"",0,"How many pages it has — a page is a better record than a percent")}</span></div>`;
         })():""}
         ${facts.length?(()=>{
           /* their pick 14A: the facts stand in one filing card tinted by the
@@ -19789,10 +19845,17 @@ function renderBookView(){
               /* the same gap as the book's own bar, one level down: a story you
                  are reading with no length had no box at all, and its length
                  could only be typed in the editor */
-              if(!parseInt(en.pages))return `<span class="entprog"><span class="rr">p.${pgIn} of <input class="entpg nospin" type="number" inputmode="numeric" min="0" data-entot="${en.id}"
-                  value="" placeholder="–" title="How many pages this story has — the bar needs this"></span></span>`;
+              /* a story gets the percent box the book has, and by the same
+                 rule: with a length it is the page it means, without one it
+                 stands alone and draws the bar by itself */
+              const pcIn=`<input class="entpg nospin" type="number" inputmode="numeric" min="0" max="100" data-enpct="${en.id}"
+                  value="${esc(String(parseInt(en.pages)?(p==null?"":p):(en.pct||"")))}" placeholder="–"
+                  title="How far through this story you are">`;
+              if(!parseInt(en.pages))return `<span class="entprog">${en.pct?`<span class="prog" style="width:56px"><i style="width:${p||0}%"></i></span>`:""}
+                <span class="rr">${pcIn}% · p.${pgIn} of <input class="entpg nospin" type="number" inputmode="numeric" min="0" data-entot="${en.id}"
+                  value="" placeholder="–" title="How many pages this story has — a page is a better record than a percent"></span></span>`;
               return `<span class="entprog"><span class="prog" style="width:56px"><i style="width:${p||0}%"></i></span>
-                <span class="rr">p.${pgIn} of ${esc(String(en.pages))}</span></span>`;})()}
+                <span class="rr">${pcIn}% · p.${pgIn} of ${esc(String(en.pages))}</span></span>`;})()}
             ${readsOf(en).length?`<button class="rdtog" data-enrd="${en.id}" title="Every time you've read this story — correct a date, add one, or take a reading off">${vEntReads===en.id?"▾":"▸"} ${esc(readSummary(en,true))}</button>`:""}</div>
           ${(()=>{
             /* What this story says for itself, shown where you are looking at
@@ -19981,6 +20044,14 @@ function renderBookView(){
   {const sh=q("#vSharpen",page);if(sh)sh.onclick=e=>{e.stopPropagation();sharpenCover(b);};}
   {const pc=q("#vCovPaste",page);if(pc)pc.onclick=e=>{e.stopPropagation();pasteCoverBtn();};}
   wireEntCap(page);   /* the covers-size slider on a collection's What's inside */
+  /* the percent, on the page you read: the same edit as the page box, said the
+     other way, through the same funnel so it earns the same receipt */
+  {const vpc=q("#vPct",page);
+   if(vpc){
+     vpc.onclick=e=>e.stopPropagation();
+     vpc.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();vpc.blur();}};
+     vpc.onchange=()=>{const v=vpc.value;quickEdit(bk=>setPct(bk,v));};
+   }}
   const vpg=q("#vProg",page);
   if(vpg){
     vpg.onclick=e=>e.stopPropagation();
@@ -19998,6 +20069,13 @@ function renderBookView(){
     inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();inp.blur();}};
     inp.onchange=()=>{const v=inp.value,id=inp.dataset.enpg;
       quickEdit(bk=>{const en=findEn(bk,id);if(en)setProgress(en,v);});};
+  });
+  /* the same box in percent, per story */
+  qa("[data-enpct]",page).forEach(inp=>{
+    inp.onclick=e=>e.stopPropagation();
+    inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();inp.blur();}};
+    inp.onchange=()=>{const v=inp.value,id=inp.dataset.enpct;
+      quickEdit(bk=>{const en=findEn(bk,id);if(en)setPct(en,v);});};
   });
   /* a story's total, asked where its bar would be — the same rule the editor's
      own box uses, so a length typed here and one typed there agree */
@@ -23827,15 +23905,31 @@ function renderEditor(){
     const w=q("#progWrap");
     if(statusOf(cur)!=="reading"){w.innerHTML="";return;}
     const total=parseInt(cur.pages)||0;
+    const shownPct=total?(pctOf(cur)==null?"":pctOf(cur)):(cur.pct||"");
     w.innerHTML=`<div class="inrow">
       <span class="boxbtn" style="cursor:default">On page
         <input type="number" inputmode="numeric" class="nospin" id="fProg" min="0" ${total?`max="${total}"`:""} placeholder="–" value="${esc(String(cur.progress||""))}" style="border:none;width:60px;text-align:center;font-weight:600">
-        <span class="lbl" id="progOf">${total?`of ${total}`:"— add a page count below"}</span>
+        <span class="lbl" id="progOf">${total?`of ${total}`:"— or say it in percent"}</span>
       </span>
-      ${total?`<span class="prog" id="fProgBar" style="flex:1;min-width:110px"><i id="progBar" style="width:0%"></i></span><b id="progPct" style="font-size:12px;color:var(--mut);width:34px"></b>`:""}
+      <!-- the percent as a box, on both faces: with a page count it is the page
+           it means, and without one it stands by itself -->
+      <span class="boxbtn" style="cursor:default">
+        <input type="number" inputmode="numeric" class="nospin" id="fPct" min="0" max="100" placeholder="–" value="${esc(String(shownPct))}"
+          title="How far through you are — with a page count this becomes the page it means" style="border:none;width:46px;text-align:center;font-weight:600">
+        <span class="lbl">% through</span>
+      </span>
+      ${total||cur.pct?`<span class="prog" id="fProgBar" style="flex:1;min-width:110px"><i id="progBar" style="width:0%"></i></span><b id="progPct" style="font-size:12px;color:var(--mut);width:34px"></b>`:""}
     </div>`;
+    q("#fPct",w).addEventListener("change",e=>{
+      setPct(cur,e.target.value);
+      /* the page box is the other half of the same fact and has to be redrawn
+         with it — a percent typed against a total has just rewritten it */
+      renderProgress();scheduleSave();
+    });
     q("#fProg",w).addEventListener("input",e=>{
       setProgress(cur,e.target.value);
+      const pc=q("#fPct",w);
+      if(pc)pc.value=total?(pctOf(cur)==null?"":pctOf(cur)):(cur.pct||"");
       progBarUI();scheduleSave();
     });
     /* the bar is the other way of saying the same number */
