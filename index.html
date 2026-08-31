@@ -1550,6 +1550,9 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
     background:var(--awash,#e7e5e4);
     overflow:hidden;display:block;border:1px solid rgba(0,0,0,.08)}
   .tocmini img{width:100%;height:100%;object-fit:cover;display:block}
+  /* a cover a story is BORROWING from the volume it came out of: the same
+     picture, dimmed — "same book, further in", the owner's pick off the mock */
+  img.borrowed{opacity:.45}
   html[data-phone="1"] .tocmini{width:30px;height:44px}
   html[data-phone="1"] .toclist .tocrow{padding:7px 8px}
   /* SCOPED TO .toclist ON PURPOSE. These were plain `.tocrow` and `.tocn`, and
@@ -6741,6 +6744,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-31.10",lines:[
+    "<b>A volume that is really three stories can be split into three.</b> An anthology's book sits in a collection as one entry, with one rating for three tales, one set of tags between them and a blurb that is three blurbs run together. <b>✂ Split…</b> on that entry, while editing, makes a story per tale — each with its own rating, tags, blurb and place in the order — and the collection's own mark then becomes a real average of them instead of one number standing in for three.",
+    "<b>It reads the tales out of the blurb where the blurb lists them.</b> Yours are written the way the books print them — <i>Story #1 THE GRAVECHANGERS: …</i> — so it offers the titles it found, tidied out of shouting capitals, each already carrying the paragraph that was about it. You untick anything that isn't a story and correct a title where it needs it. Where a blurb doesn't list them, it asks you for the titles instead.",
+    "The first tale is the volume itself, kept and renamed, so its rating, length, dates, tags and cover stay where they were; the rest start empty. Each keeps <b>Fright Time #1 · </b> in front of its name, and shows the volume's cover behind it, dimmed — the same picture, stored once, not copied per tale. One press of ↶ Undo puts the volume back as it was."]},
   {v:"2026-08-31.9",lines:[
     "<b>A book you have already read can become a collection without losing what you wrote about it.</b> Ticking <i>a whole series / collection as one shelf item</i> used to leave everything belonging to the COLLECTION — the rating you gave one book stood for the whole series, the dates you read it were the series' dates, and the only way to put them right was to make a story by hand and retype the lot. Now the tick asks, once, and if you say yes the book becomes the first story inside itself.",
     "What moves down into story 1: <b>the rating, every reading and its dates, the stage, the page count and your bookmark, the blurb, your notes, the ISBN and the heart</b> — and the quotes stay on the collection's own list, marked as having come <i>from</i> that story. What stays on the collection, because a story has nowhere to keep it: what you liked and didn't, the stood-out words, pictures, drawing, genres and tags, and the cover.",
@@ -9716,6 +9723,64 @@ async function bookToEntry(b,collId,collStatus,collAuthor,collDnf,collKeywords){
   }
   return {en,coverData};
 }
+/* ---- READING A VOLUME'S TALES OUT OF ITS OWN BLURB ----
+   An anthology's summary is three summaries in one field, and the owner's are
+   written the way the books print them:
+     Story #1 THE GRAVECHANGERS: Tombstones can be interesting, Jonathan…
+     \Story#2 HAUNTING AT HOWLING OAK: When Zach has his friend Billy over…
+   Sometimes a newline between them, sometimes a stray backslash where an import
+   lost one, sometimes the number glued to the word. So the header is matched
+   loosely, and everything between one header and the next is that tale's own
+   summary — which is why this is worth doing at all: the summaries are already
+   written, and typing the titles by hand would throw them away.
+   Fewer than two headers means the blurb is not a list of stories; the caller
+   then asks for the titles instead rather than guessing at one. */
+const TALE_HEAD=/(?:^|[\s\\|/·•]+)(?:story|tale|part)\s*#?\s*(\d+)\s*[:.\-–—]?\s*([^:\n]{2,90}?)\s*:/gi;
+/* an anthology's contents page SHOUTS; the shelf does not */
+const tidyTaleTitle=t=>{
+  const s=String(t||"").trim().replace(/\s+/g," ");
+  return titleCase(/[a-z]/.test(s)?s:s.toLowerCase());
+};
+/* the other way anthologies print it, one to a line and the colon BEFORE the
+   title rather than after it: "Story 1: The First". Tried only when the first
+   pattern found nothing, since a blurb written the first way would match this
+   one badly. */
+const TALE_LINE=/^[\s\\|]*(?:story|tale|part)\s*#?\s*\d+\s*[:.\-–—)]\s*(.+?)\s*$/i;
+function splitBlurb(text){
+  const s=String(text||"");
+  const heads=[];
+  let m;TALE_HEAD.lastIndex=0;
+  while((m=TALE_HEAD.exec(s))&&heads.length<60)
+    heads.push({at:m.index,end:TALE_HEAD.lastIndex,title:m[2]});
+  if(heads.length>1)return heads.map((h,i)=>({
+    title:tidyTaleTitle(h.title),
+    text:s.slice(h.end,i+1<heads.length?heads[i+1].at:s.length).replace(/^[\s\\]+|[\s\\]+$/g,"")
+  }));
+  const lines=s.split(/\r?\n/),out=[];
+  lines.forEach(ln=>{
+    const h=ln.match(TALE_LINE);
+    if(h)out.push({title:tidyTaleTitle(h[1]),text:""});
+    else if(out.length&&ln.trim())
+      out[out.length-1].text=(out[out.length-1].text?out[out.length-1].text+" ":"")+ln.trim();
+  });
+  return out.length>1?out:[];
+}
+/* ---- one picture, borrowed by the tales that came out of the same book ----
+   Their pick off the mock: the volume's cover full strength on the first tale
+   and dimmed on the rest — "same book, further in". Storing a copy per tale
+   would be the same JPEG two or three times over on a shelf that already
+   worries about room, so a tale keeps only a POINTER to the story that has the
+   picture, and every place that draws a story's cover asks this instead of
+   reading curEnt directly. */
+const entCovSrc=en=>{
+  if(!en)return null;
+  if(curEnt[en.id])return {src:curEnt[en.id],dim:false};
+  const from=String(en.covFrom||"").trim();
+  if(from&&curEnt[from])return {src:curEnt[from],dim:true};
+  return null;
+};
+const entCovImg=en=>{const c=entCovSrc(en);
+  return c?`<img src="${c.src}"${c.dim?' class="borrowed"':""}>`:"";};
 /* ---- A BOOK THAT BECOMES A COLLECTION, WITHOUT LOSING ITS OWN READING ----
    Ticking "a whole series / collection as one shelf item" on a book you have
    already read left everything you had written about it belonging to the
@@ -19874,7 +19939,7 @@ function renderBookView(){
         <div class="hint tocsum">${bits.join(" · ")}</div>
         <div class="toclist tinted" style="${gcol?`--tocbg:${gcol.bg};--tocrail:${gcol.fg}`:""}">${ens.map((en,i)=>{const mk=mark(en);
           return `<button class="tocrow" data-toc="${esc(en.id)}">
-          <span class="tocmini">${curEnt[en.id]?`<img src="${curEnt[en.id]}" alt="">`
+          <span class="tocmini">${entCovSrc(en)?entCovImg(en)
             :genCoverHtml({title:en.title||"Untitled",genres:b.genres},false)}</span>
           <span class="tocn">${i+1}</span>
           <span class="toct">${esc(en.title)||"Untitled"}</span>
@@ -19885,7 +19950,7 @@ function renderBookView(){
       <div class="entbox">${(b.entries||[]).map((en,i)=>`<div class="ent" data-entrow="${esc(en.id)}">
         ${settings.journal&&String(en.status||"")==="reading"&&!en.dnf?`<div class="jribbon mini" title="You're reading this story"><i></i></div>`:""}
         <span class="entnum">${i+1}</span>
-        <div class="entcov" style="cursor:default">${curEnt[en.id]?`<img src="${curEnt[en.id]}">`
+        <div class="entcov" style="cursor:default">${entCovSrc(en)?entCovImg(en)
           :genCoverHtml({title:en.title||"Untitled",genres:b.genres},false)}</div>
         <div class="entmain">
           <div class="hrow2"><b class="enth">${esc(en.title)||"Untitled"}</b>
@@ -23346,6 +23411,108 @@ function renderEditor(){
      you like. Nothing ticked means the story keeps the collection's genres;
      ticking any replaces them for that story alone, which is what lets it show
      up under a heading the collection does not belong to. */
+  /* ---- ✂ SPLIT ONE STORY INTO SEVERAL ----
+     A volume of an anthology is one story on this list and three tales in the
+     book, sharing one rating, one set of tags and one blurb that is really
+     three blurbs — so there is nowhere to say the middle one was the weak one.
+     This makes a story per tale, all their choices off the mock: the volume's
+     name stays in front, each tale keeps the paragraph of the blurb that was
+     already about it, and the picture is the volume's, borrowed rather than
+     copied (see entCovSrc).
+     The FIRST tale is the original story, kept and renamed — so the rating, the
+     length, the cover, the readings and the tags stay where they were rather
+     than being thrown away by a tool that was asked to divide, not to delete.
+     The one thing this cannot do is keep the volume as a thing that contains
+     the three: the shelf has one level, a collection holds stories, and a story
+     holds nothing. The volume survives as the name in front and the cover
+     behind — which is what was agreed before it was built. */
+  function applySplit(en,list,opts){
+    const at=cur.entries.indexOf(en);
+    if(at<0||list.length<2)return 0;
+    const pre=opts.prefix?String(en.title||"").trim():"";
+    const made=[];
+    list.forEach((tale,i)=>{
+      const title=(pre?pre+" · ":"")+tale.title;
+      if(i===0){
+        en.title=title;
+        if(opts.summaries&&tale.text)en.summary=tale.text;
+        return;
+      }
+      const x=blankEntry();
+      x.title=title;
+      if(opts.summaries&&tale.text)x.summary=tale.text;
+      /* only where there is a picture to borrow — a pointer at nothing would
+         draw the generated cover twice over */
+      if(en.cover)x.covFrom=en.id;
+      made.push(x);
+    });
+    cur.entries.splice(at+1,0,...made);
+    return made.length;
+  }
+  function openEntSplit(id){
+    const en=(cur.entries||[]).find(x=>x.id===id);if(!en)return;
+    if(panelOpen("entSplitPanel"))return;
+    const found=splitBlurb(en.summary||"");
+    /* what it found, editable — its guesses need checking, which is the whole
+       reason they are boxes and not a sentence saying "3 stories found" */
+    let rows=found.length?found.map(t=>({on:true,title:t.title,text:t.text}))
+      :[{on:true,title:"",text:""},{on:true,title:"",text:""}];
+    let opts={prefix:true,summaries:found.length>0};
+    const wrap=document.createElement("div");
+    wrap.id="entSplitPanel";wrap.className="ratepanel";
+    /* Esc and a press on the dark close it, like every other floating panel —
+       dismissable also parks __close on the wrap, which is what lets a second
+       press of ✂ take it away again through panelOpen */
+    let close=()=>wrap.remove();
+    const draw=()=>{
+      const live=rows.filter(r=>r.on&&String(r.title||"").trim()).length;
+      wrap.innerHTML=`<div class="hrow2" style="margin-bottom:9px">
+          <b style="font-size:13px">✂ Split “${esc(en.title)||"this story"}”</b>
+          <button class="btn" id="esX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
+        <div class="hint" style="margin:0 0 9px">${found.length
+          ? `Its blurb reads like ${found.length} stories. Untick anything that isn't one, and correct a title where it needs it.`
+          : `Its blurb doesn't list stories, so nothing could be read off it — type the titles, one to a box.`}</div>
+        <div id="esRows">${rows.map((r,i)=>`<div class="hrow2" style="margin-bottom:6px;align-items:flex-start">
+          <button class="mg${r.on?" on":""}" data-eson="${i}" style="flex:none;margin-top:2px"><span class="bx">${r.on?"✓":""}</span></button>
+          <span style="flex:1;min-width:0">
+            <input class="field" data-est="${i}" value="${esc(r.title)}" placeholder="Title of story ${i+1}" style="font-size:13px;padding:6px 9px">
+            ${r.text?`<span class="hint" style="display:block;margin:3px 0 0;max-height:44px;overflow:hidden">${esc(r.text)}</span>`:""}
+          </span>
+          <button class="lx" data-esdel="${i}" title="Take this one off the list" style="opacity:1;margin-top:2px">✕</button>
+        </div>`).join("")}</div>
+        <button class="btn smallbtn" id="esAdd" style="margin:2px 0 10px">＋ One more</button>
+        <label class="hrow2" style="font-size:13px;gap:7px;margin-bottom:5px"><input type="checkbox" id="esPre" ${opts.prefix?"checked":""}> Keep “${esc(String(en.title||"").trim())} · ” in front of each</label>
+        <label class="hrow2" style="font-size:13px;gap:7px"><input type="checkbox" id="esSum" ${opts.summaries?"checked":""} ${found.length?"":"disabled"}> Give each one its part of the blurb</label>
+        <div class="hint" style="margin:9px 0 0">The first keeps this story's rating, length, dates, tags and cover. The rest start empty, and show the volume's cover behind them until you give them one.</div>
+        <div class="hrow2" style="margin-top:12px">
+          <button class="btn pri" id="esGo" ${live>1?"":"disabled"}>✂ Make ${live} ${live===1?"story":"stories"}</button>
+          <span class="none" style="font-size:12px">↶ Undo puts it back as one</span>
+        </div>`;
+      qa("[data-eson]",wrap).forEach(b=>b.onclick=()=>{rows[+b.dataset.eson].on=!rows[+b.dataset.eson].on;draw();});
+      qa("[data-est]",wrap).forEach(inp=>inp.oninput=()=>{rows[+inp.dataset.est].title=inp.value;
+        const go=q("#esGo",wrap);
+        const n=rows.filter(r=>r.on&&String(r.title||"").trim()).length;
+        if(go){go.disabled=n<2;go.textContent="✂ Make "+n+" "+(n===1?"story":"stories");}});
+      qa("[data-esdel]",wrap).forEach(b=>b.onclick=()=>{rows.splice(+b.dataset.esdel,1);draw();});
+      q("#esAdd",wrap).onclick=()=>{rows.push({on:true,title:"",text:""});draw();};
+      q("#esPre",wrap).onchange=e=>{opts.prefix=e.target.checked;};
+      q("#esSum",wrap).onchange=e=>{opts.summaries=e.target.checked;};
+      /* an arrow, not the function itself: `close` is replaced by dismissable's
+         once the panel is on the page, and a bare reference would keep the
+         first one and leave the backdrop behind */
+      q("#esX",wrap).onclick=()=>close();
+      q("#esGo",wrap).onclick=()=>{
+        const list=rows.filter(r=>r.on&&String(r.title||"").trim())
+          .map(r=>({title:String(r.title).trim(),text:r.text||""}));
+        if(list.length<2)return;
+        applySplit(en,list,opts);
+        close();renderEntries();refreshRate();sumEntryPages();scheduleSave();
+      };
+    };
+    draw();
+    document.body.appendChild(wrap);
+    close=dismissable(wrap);
+  }
   function openEntGenres(id){
     const en=(cur.entries||[]).find(x=>x.id===id);if(!en)return;
     if(panelOpen("entGenPanel"))return;
@@ -23479,7 +23646,7 @@ function renderEditor(){
     list.innerHTML=cur.entries.map((en,i)=>`
       <div class="ent" data-entrow="${esc(en.id)}">
         <input class="entnum" data-en="${en.id}" type="number" min="1" max="${cur.entries.length}" value="${i+1}" title="Type a position and press Enter — it moves there">
-        <div class="entcov" data-ec="${en.id}" title="Add a cover">${curEnt[en.id]?`<img src="${curEnt[en.id]}">`:"🖼"}</div>
+        <div class="entcov" data-ec="${en.id}" title="${en.covFrom&&!curEnt[en.id]?"Showing the cover of the book this came out of — add one of its own":"Add a cover"}">${entCovSrc(en)?entCovImg(en):"🖼"}</div>
         <div class="entmain">
           <div class="inrow">
             <input class="field enttitle" data-et="${en.id}" placeholder="Title" value="${esc(en.title)}" style="flex:1;font-size:14px;padding:7px 10px">
@@ -23529,6 +23696,7 @@ function renderEditor(){
             <button class="btn entsub" data-egen="${en.id}" title="Genres for this story on its own">Genres · ${entOwnGenres(en)?en.genres.length:"same"}</button>
             <button class="btn entsub" data-ekw="${en.id}" title="Tags for this story, on top of the collection's">Tags · ${entOwnKeywords(en)?"+"+en.keywords.length:"same"}</button>
             <button class="btn entsub" data-easp="${en.id}" title="What stood out in this story, in words">Words${en.aspects&&Object.keys(en.aspects).length?" ✓":""}</button>
+            <button class="btn entsub" data-esplit="${en.id}" title="One entry, several stories inside it — an anthology's tales, each with its own rating, tags and blurb. It reads them off the blurb where the blurb lists them.">✂ Split…</button>
             <button class="btn entsub" data-eout="${en.id}" title="Make it its own book on the shelf again — its rating, tags, pages, dates, cover and writing all go with it">⤴ Own book</button>
           </div>
           ${entAspOpen.has(en.id)?`<div class="dnfbox aspbox" style="margin:4px 0">${aspectChipsHtml(en,en.id)}${sugHtml(en,en.id)}</div>`:""}
@@ -23622,6 +23790,7 @@ function renderEditor(){
        written onto the book itself, since outside there is nothing to inherit
        from. One button press is one undo step — the pending autosave is
        flushed first so the editor's own save cannot add a second. */
+    qa("[data-esplit]",list).forEach(el=>el.onclick=()=>openEntSplit(el.dataset.esplit));
     qa("[data-eout]",list).forEach(el=>el.onclick=()=>{
       const en=find(el.dataset.eout);if(!en)return;
       const left=cur.entries.length-1;
