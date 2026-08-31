@@ -6744,6 +6744,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-31.11",lines:[
+    "<b>⤴ Unfold into a series.</b> A collection you have been using AS a series — fifteen volumes as fifteen rows in one shelf item — becomes fifteen books linked under one series name, in one press, from the collection's own editor. Each keeps its rating, tags, pages, dates, cover and writing, and each is numbered in the order it stood in. The collection's own page goes to Recently deleted for its 30 days, and ↶ Undo puts every bit of it back.",
+    "This is the answer to “why can't a story hold stories”. It cannot — a collection holds stories and a story holds nothing — but the shelf has three levels all the same: a <b>series</b> of <b>collections</b> of <b>stories</b>. What was missing was the road from one shape to the other. Unfolded, each volume can be made a collection of its own and hold its tales.",
+    "The volumes come out as plain books rather than as empty collections, and that is on purpose: ✂ Split reads a volume's tales out of its blurb, and it works on a story inside a collection — an empty collection has no story to work on. Two presses get there instead, and both explain themselves: tick <i>a whole series / collection as one shelf item</i>, which offers to make the book the first story inside itself, then ✂ Split that story."]},
   {v:"2026-08-31.10",lines:[
     "<b>A volume that is really three stories can be split into three.</b> An anthology's book sits in a collection as one entry, with one rating for three tales, one set of tags between them and a blurb that is three blurbs run together. <b>✂ Split…</b> on that entry, while editing, makes a story per tale — each with its own rating, tags, blurb and place in the order — and the collection's own mark then becomes a real average of them instead of one number standing in for three.",
     "<b>It reads the tales out of the blurb where the blurb lists them.</b> Yours are written the way the books print them — <i>Story #1 THE GRAVECHANGERS: …</i> — so it offers the titles it found, tidied out of shouting capitals, each already carrying the paragraph that was about it. You untick anything that isn't a story and correct a title where it needs it. Where a blurb doesn't list them, it asks you for the titles instead.",
@@ -8434,9 +8438,20 @@ async function applyOp(op,inv,quiet){
          undoing a creation is a deletion. Every older caller passes a real
          before, so nothing that was working takes this path. */
       if(!body){
+        /* ---- and one that DID exist keeps the bin's promise ----
+           Two different absences take this branch. An item with no `before` was
+           created by this op, so undoing it is un-creating and there is nothing
+           to bin. An item with no `after` was RETIRED by it — ⤴ Unfold empties
+           a collection and sends the collection itself away — and redoing that
+           has to put it back in Recently deleted for its thirty days, exactly
+           as the single-book delete path does. Without this, a redone unfold
+           destroyed the collection outright and Undo could still have brought
+           it back but the bin could not. */
+        if(it.before&&it.after===null)await toTrash(it.before);
         await dbDel("books",it.id);
         books=books.filter(x=>x.id!==it.id);
         if(SYNC.on){deletions[it.id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id:it.id});
+          if(it.before&&it.after===null){trashCloud[it.id]={at:Date.now(),book:JSON.parse(JSON.stringify(it.before))};saveTrashCloud();}
           /* the picture went up with the book, so it comes down with it. Only the
              cloud's copy: this device keeps its own, so redoing gets it back */
           enqueue({kind:"coverDel",id:it.id});
@@ -8447,6 +8462,13 @@ async function applyOp(op,inv,quiet){
       const clone=JSON.parse(JSON.stringify(body));
       clone.modified=Math.max(Date.now(),(clone.modified||0)+1,seenFloor(it.id)+1);
       await dbPut("books",clone);
+      /* and out of Recently deleted, for the reason the single-book path gives
+         above: a bulk op can now retire a book as part of itself (⤴ Unfold
+         puts the emptied collection in the bin), and putting it back IS what
+         an undo is — the bin has no further claim on it. Harmless where
+         nothing was ever binned, which is every older caller. */
+      try{await dbDel("trash",it.id);}catch(e){}
+      if(trashCloud[it.id]){delete trashCloud[it.id];saveTrashCloud();}
       const i=books.findIndex(x=>x.id===it.id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
       if(SYNC.on){
@@ -8459,8 +8481,13 @@ async function applyOp(op,inv,quiet){
           enqueue({kind:"cover",id:it.id});
           imgKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));
         }
+        /* the same for one this op had RETIRED to the bin — its tombstone is
+           the reason it would otherwise come back and vanish again on the next
+           pull */
+        if(it.after===null&&unDelete(it.id))saveDeletions();
       }
     }
+    countTrash();   /* an item may have come out of the bin just above */
     /* `label` may be ONE vocabulary entry or a list of them. A merge retires a
        single word, but a bulk fill can bring in half a dozen new genres at
        once, and each of those used to be persisted with saveMeta — which
@@ -9842,6 +9869,95 @@ function selfToFirstStory(b){
     b.quotesFrom=from;
   }
   return en;
+}
+/* ---- A STORY, MADE INTO A BOOK OF ITS OWN ----
+   One place that knows how, because two things now do it: ⤴ Own book on a
+   single story, and ⤴ Unfold into a series, which does it to every story at
+   once. It builds the book and copies the picture; taking the story OUT of the
+   collection is the caller's job, since the two dispose of the collection
+   differently — one keeps it, the other retires it. */
+async function entryToBook(coll,en){
+  const nb=blankBook(uid());
+  nb.title=en.title||"";
+  nb.author=entAuthorOf(coll,en)||"";
+  nb.kind=coll.kind||"book";
+  nb.rating=en.rating;nb.ratingOwn=en.rating!=null;
+  nb.pages=en.pages||"";nb.isbn=String(en.isbn||"").trim();
+  /* where you had got to travels as well — it is the same defect the heart had
+     in bookToEntry, in the other direction */
+  nb.progress=en.progress||"";nb.pct=en.pct||"";nb.progLog=(en.progLog||[]).slice();
+  nb.summary=en.summary||"";nb.canvasText=en.notes||"";
+  nb.keywords=entKeywordsOf(coll,en).slice();
+  nb.genres=entGenresOf(coll,en).slice();
+  nb.favorite=!!en.favorite;
+  nb.dnf=!!en.dnf;nb.hold=!!en.hold;
+  nb.status=en.status||statusOf(coll);
+  nb.aspects=en.aspects?JSON.parse(JSON.stringify(en.aspects)):undefined;
+  nb.readings=readsOf(en).map(r=>Object.assign({},r,{id:uid()}));
+  /* derives the finish date from the readings; the entry's own loose date only
+     fills in where no dated reading answers for it */
+  syncReads(nb);
+  if(!nb.dateFinished)nb.dateFinished=String(en.dateFinished||"");
+  nb.modified=Date.now();
+  /* its picture, copied to a cover of its own — its own where it has one, and
+     the volume's where it was BORROWING one (covFrom), because a book has
+     nobody to borrow from. The story's copy stays in the images store so Undo
+     can hand the entry back whole. */
+  const key=en.cover?coll.id+"|"+en.id:(en.covFrom?coll.id+"|"+en.covFrom:"");
+  if(key){
+    try{
+      const im=await dbGet("images",key);
+      if(im&&im.data){
+        await dbPut("covers",{id:nb.id,data:im.data});
+        coverCache.set(nb.id,im.data);
+        nb.coverV=Date.now();
+      }
+    }catch(e){}
+  }
+  return nb;
+}
+/* ---- ⤴ UNFOLD A COLLECTION INTO A SERIES ----
+   Their answer to "why can't a story hold stories": it cannot, and it does not
+   need to, because the shelf already has three levels — a SERIES of
+   COLLECTIONS of stories. What it lacked was the road from one shape to the
+   other. A collection used as a series (fifteen volumes as fifteen rows) is one
+   shelf item whose rows can hold nothing; the same fifteen as their own books,
+   linked by a series name, can each hold their own tales.
+   Every story becomes a book, keeping everything entryToBook carries; each is
+   numbered in the order it stood in; and the collection itself goes to Recently
+   deleted, as a folded-away book does. ONE press, ONE step of Undo.
+   They approved a picture in which each new book was also a COLLECTION, ready
+   for its stories. It makes them plain books instead, and the reason is worth
+   writing down: ✂ Split reads a volume's tales out of ITS BLURB, and it acts on
+   a story inside a collection — an empty collection has no story to act on, so
+   that shape would have thrown away the one path that gets the tales in for
+   free. As a book it is two presses from the same place: tick "a whole series /
+   collection as one shelf item", which offers to make it the first story inside
+   itself, then ✂ Split that story. */
+async function unfoldCollection(coll){
+  const ens=(coll.entries||[]).slice();
+  if(!coll||!isColl(coll)||ens.length<2)return 0;
+  const name=(seriesShown(coll)||String(coll.title||"").trim());
+  const before=JSON.parse(JSON.stringify(coll));
+  const items=[];
+  let n=0;
+  for(const en of ens){
+    const nb=await entryToBook(coll,en);
+    nb.type="series";nb.series=name;
+    nb.seriesNum=String(++n);
+    nb.seriesTotal=String(ens.length);
+    await dbPut("books",nb);
+    books.unshift(nb);
+    items.push({id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))});
+    if(SYNC.on){enqueue({kind:"book",id:nb.id});if(nb.coverV)enqueue({kind:"cover",id:nb.id});}
+  }
+  /* the emptied collection follows a folded-away book exactly: thirty days in
+     Recently deleted, its deletion carried to the other device */
+  await retireBook(coll);
+  items.push({id:coll.id,before,after:null});
+  pushOp({t:"bulk",items});
+  if(SYNC.on)flushQueue();
+  return n;
 }
 /* a folded-away book loses its own page: bin (30 days) + synced deletion */
 async function retireBook(b){
@@ -23641,6 +23757,7 @@ function renderEditor(){
           <button class="btn" id="entPaste" title="Paste a list from a Claude chat — the missing books land as stories, marked Want to read">📋 The rest of the series…</button>
           <button class="btn" id="entOrder" ${cur.entries.length>1?"":"disabled"} title="Tap the titles in the order you want them">⇅ Reorder…</button>
           ${entNumSortable(cur.entries)?`<button class="btn" id="entNumSort" title="Put them in the order their own titles give — #1, #2, #3">🔢 By the number in the title</button>`:""}
+          ${(cur.entries||[]).length>1?`<button class="btn" id="entUnfold" title="Every one of these becomes its own book on the shelf, all linked under one series name — so each can hold its own stories">⤴ Unfold into a series…</button>`:""}
         </div></div>`;
     const list=q("#entList");
     list.innerHTML=cur.entries.map((en,i)=>`
@@ -23798,38 +23915,9 @@ function renderEditor(){
       finishSaveThen(async()=>{
         const coll=books.find(x=>x.id===cur.id);if(!coll)return;
         const before=JSON.parse(JSON.stringify(coll));
-        const nb=blankBook(uid());
-        nb.title=en.title||"";
-        nb.author=entAuthorOf(coll,en)||"";
-        nb.kind=coll.kind||"book";
-        nb.rating=en.rating;nb.ratingOwn=en.rating!=null;
-        nb.pages=en.pages||"";nb.isbn=String(en.isbn||"").trim();
-        nb.summary=en.summary||"";nb.canvasText=en.notes||"";
-        nb.keywords=entKeywordsOf(coll,en).slice();
-        nb.genres=entGenresOf(coll,en).slice();
-        nb.favorite=!!en.favorite;
-        nb.dnf=!!en.dnf;nb.hold=!!en.hold;
-        nb.status=en.status||statusOf(coll);
-        nb.aspects=en.aspects?JSON.parse(JSON.stringify(en.aspects)):undefined;
-        nb.readings=readsOf(en).map(r=>Object.assign({},r,{id:uid()}));
-        /* derives the finish date from the readings; the entry's own loose date
-           only fills in where no dated reading answers for it */
-        syncReads(nb);
-        if(!nb.dateFinished)nb.dateFinished=String(en.dateFinished||"");
-        nb.modified=Date.now();
-        /* its picture, copied to a cover of its own. The story's copy stays in
-           the images store so Undo can hand the entry back whole — the same
-           30-day patience every other removal shows a picture. */
-        if(en.cover){
-          try{
-            const im=await dbGet("images",coll.id+"|"+en.id);
-            if(im&&im.data){
-              await dbPut("covers",{id:nb.id,data:im.data});
-              coverCache.set(nb.id,im.data);
-              nb.coverV=Date.now();
-            }
-          }catch(e){}
-        }
+        /* one story out; ⤴ Unfold does the same to all of them — see
+           entryToBook, which is the only place that knows what a story keeps */
+        const nb=await entryToBook(coll,en);
         coll.entries=coll.entries.filter(x=>x.id!==en.id);
         coll.modified=Math.max(Date.now(),(coll.modified||0)+1);
         await dbPut("books",coll);
@@ -23905,6 +23993,32 @@ function renderEditor(){
       cur.entOrdered=true;
       renderEntries();scheduleSave();
     };
+    /* ⤴ Unfold: the whole collection becomes a series of books. It ends with
+       this page gone, so it says so plainly first and lands them in Search on
+       the series it just made — the fifteen it created, all in one place,
+       which is the only honest way to show that a press did what it said. */
+    {const uf=q("#entUnfold");
+     if(uf)uf.onclick=()=>{
+       const n=(cur.entries||[]).length;
+       const name=(seriesShown(cur)||String(cur.title||"").trim())||"this series";
+       if(!confirm(`Unfold “${cur.title||"this collection"}” into a series?\n\n`
+         +`Its ${n} stories each become their own book on the shelf, and all ${n} are linked under the series name “${name}”. Each keeps its rating, tags, pages, dates, cover and writing.\n\n`
+         +`This collection's own page goes to Recently deleted, where it waits ${TRASH_DAYS} days.\n\n`
+         +`To divide one of them into its own stories afterwards: tick “a whole series / collection as one shelf item” on it — it offers to make itself the first story — then press ✂ Split.\n\n`
+         +`↶ Undo puts all of it back.`))return;
+       finishSaveThen(async()=>{
+         const coll=books.find(x=>x.id===cur.id);if(!coll)return;
+         let made=0;
+         try{made=await unfoldCollection(coll);}
+         catch(e){alert("They couldn't all be unfolded — storage may be full. Anything already made is safe, and ↶ Undo takes it back.");}
+         cur=null;
+         if(made){
+           S.q="";S.multi=[];S.kmulti=[];S.filter={type:"series",value:name,label:name};
+           view="search";
+         }else view="library";
+         render();window.scrollTo(0,0);
+       });
+     };}
     sumEntryPages();
     syncCollRating(cur);
     const fr=q("#fRate");if(fr&&!cur.ratingOwn&&cur.rating!=null)fr.value=cur.rating;
