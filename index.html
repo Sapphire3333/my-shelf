@@ -6638,6 +6638,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-08-31.3",lines:[
+    "<b>A book can be put into a series you already have.</b> There was only ever one door — ticking books on the shelf and naming a series — and it renumbered whatever you had ticked 1, 2, 3 under that name. So the fourth book of something you already had could only be joined by TYPING the name again, exactly, from memory: the box in the editor suggests names once you have typed enough of one, and offers nothing at all to an empty box, and a near-miss quietly made a second series with the same name. Now both doors show you the list. <b>🔗 Into a series…</b> on the shelf works with one book ticked (it used to need two) and offers the series you have, each with how many of it you own, with a row underneath for starting a new one. And in the editor, under the series name, <b>🔗 One you already have…</b> does the same for the book in front of you.",
+    "A book joining gets the next number after the ones already there — never #1 — and it takes the series' total only where the books already in it agree on one. A number or a total you have written yourself is never overwritten, and starting a series with a single book no longer claims it is \"book 1 of 1\"."]},
   {v:"2026-08-31.2",lines:[
     "<b>The daily tasks read your clock now, not Greenwich's.</b> <b>A new day starts at…</b> in ⚙ Settings was being obeyed by finish dates, today's quote and On this day — and quietly ignored by the three tasks, which turned over at midnight in London whatever you had set. The same was true of the 🔥 and 📖 runs, so an evening's reading and the next morning's could count as two days of a run and a late night as none. All of them ask the shelf what day it is now, which is what that slider and the pinned zone were for.",
     "<b>And which tasks are in the hat travels between your devices.</b> That list was kept per device, like the text size — but the day's three are DRAWN out of what is left in the hat, so a phone and a computer holding different hats drew different threes, and neither could see what had been done about the other's. That is why a task cleared on the computer did not count on the phone. One hat now, on both screens. Whichever list you changed last is the one that stands, and if only one device had ever paused anything, that one wins."]},
@@ -9626,7 +9629,11 @@ async function makeSeriesFrom(ids,name){
     const before=JSON.parse(JSON.stringify(b));
     b.type="series";b.series=name;
     if(!b.seriesNum)b.seriesNum=String(n);
-    if(!b.seriesTotal)b.seriesTotal=String(sel.length);
+    /* how many books a series HAS is not something the shelf can know, and
+       one ticked book says nothing at all — it would write "book 1 of 1"
+       about a series you are only starting. Two or more is at least the
+       number you can see. */
+    if(!b.seriesTotal&&sel.length>1)b.seriesTotal=String(sel.length);
     n++;
     b.modified=nextMod(b);
     await dbPut("books",b);
@@ -9636,6 +9643,90 @@ async function makeSeriesFrom(ids,name){
   if(items.length)pushOp({t:"bulk",items});
   if(SYNC.on)flushQueue();
   return sel.length;
+}
+/* ---- JOINING a series that already exists ----
+   The only door to a series was this one: name it, and every book you had
+   ticked was renumbered 1..n under that name. Which meant the fourth book of
+   something you already had could only be joined by TYPING the name again,
+   exactly, from memory — the editor's box suggests names only once you have
+   typed enough of one to narrow them, and offers nothing at all to an empty
+   box. Two spellings of the same series make two series, and nothing says so.
+   So: the series you already have are a list you pick from, in both places
+   where the question comes up — the shelf's ticked books, and the book's own
+   editor.
+   Numbering is the difference between this and makeSeriesFrom, which is why
+   it is not the same function: a book joining #1, #2 and #3 is #4, not #1.
+   A number already written is never overwritten, and the total is only
+   adopted where the books already there agree on one — the app cannot know
+   how many of a series exist in the world, and guessing is how a shelf ends
+   up saying "3 of 3" about a series with nine books in it. */
+function seriesOnShelf(){
+  const map={};
+  books.forEach(b=>{
+    /* seriesShown, not b.series: a collection whose series field holds its own
+       title is not a series you can put a book into */
+    const s=seriesShown(b);if(!s)return;
+    const e=map[s]=map[s]||{name:s,n:0,authors:[],total:0};
+    e.n++;
+    const a=String(b.author||"").trim();
+    if(a&&e.authors.indexOf(a)<0)e.authors.push(a);
+    e.total=Math.max(e.total,parseInt(b.seriesTotal)||0);
+  });
+  return Object.values(map).sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:"base"}));
+}
+async function addToSeries(ids,name){
+  const nm=String(name||"").trim();if(!nm)return 0;
+  const inIt=books.filter(b=>seriesShown(b)===nm);
+  let next=Math.max(0,...inIt.map(b=>parseFloat(b.seriesNum)||0));
+  const totals=[...new Set(inIt.map(b=>String(b.seriesTotal||"").trim()).filter(Boolean))];
+  const agreed=totals.length===1?totals[0]:"";
+  /* a collection is a named set already — renaming its series field would
+     take its own name off it, which is why makeSeriesFrom refuses them too */
+  const sel=ids.map(id=>books.find(b=>b.id===id))
+    .filter(b=>b&&!isColl(b)&&seriesShown(b)!==nm);
+  const items=[];
+  for(const b of sel){
+    const before=JSON.parse(JSON.stringify(b));
+    b.type="series";b.series=nm;
+    if(!String(b.seriesNum||"").trim())b.seriesNum=String(++next);
+    if(agreed&&!String(b.seriesTotal||"").trim())b.seriesTotal=agreed;
+    b.modified=nextMod(b);
+    await dbPut("books",b);
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+  }
+  if(items.length)pushOp({t:"bulk",items});
+  if(SYNC.on)flushQueue();
+  return items.length;
+}
+/* the pick list itself, drawn into whatever box is handed to it — the shelf's
+   Select-books panel, or the fold under the editor's series name. One list, so
+   the two doors cannot drift apart. */
+function drawSeriesPick(host,state,head,onPick,foot){
+  if(!host)return;
+  const again=()=>drawSeriesPick(host,state,head,onPick,foot);
+  const ql=(state.q||"").trim().toLowerCase();
+  const pool=seriesOnShelf().filter(s=>!ql||s.name.toLowerCase().includes(ql)
+    ||s.authors.some(a=>a.toLowerCase().includes(ql)));
+  host.innerHTML=`<div class="hcard" style="margin-top:8px;box-shadow:none">
+    <div class="lbl" style="display:block;margin-bottom:5px">${head}</div>
+    <input class="field" id="serPickQ" placeholder="Search the series you have…" value="${esc(state.q||"")}" style="font-size:13px;padding:7px 10px;margin-bottom:7px">
+    ${pool.slice(0,20).map(s=>`<div class="snap" style="padding:6px 10px">
+      <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(s.name)}</div>
+        <div class="meta">${s.n} on your shelf${s.total>s.n?` of ${s.total}`:""}${s.authors.length===1?" · "+esc(s.authors[0]):""}</div></div>
+      <button class="btn" data-serpick="${esc(s.name)}" style="padding:3px 9px">Put it in</button></div>`).join("")
+      ||`<div class="none">${seriesOnShelf().length?"No series matches that.":"No series on the shelf yet — the box above starts the first one."}</div>`}
+    ${pool.length>20?`<div class="none" style="margin-top:5px">…and ${pool.length-20} more — search to narrow it.</div>`:""}
+    ${(foot&&foot.html)||""}
+    <button class="btn" id="serPickX" style="margin-top:7px;padding:3px 10px;font-size:12px">Cancel</button></div>`;
+  const se=q("#serPickQ",host);
+  se.oninput=()=>{state.q=se.value;keepCaret(se,again,()=>q("#serPickQ",host));};
+  q("#serPickX",host).onclick=()=>{host.innerHTML="";};
+  qa("[data-serpick]",host).forEach(b=>b.onclick=()=>onPick(b.dataset.serpick));
+  /* the foot is redrawn with the list, so what was typed into it has to be
+     put back by whoever owns it — the search box above would otherwise wipe
+     a half-typed new name at every keystroke */
+  if(foot&&foot.wire)foot.wire(host);
 }
 
 let authSel=new Set(),authVarSel=new Set(),authFindQ="";
@@ -10870,7 +10961,9 @@ function refreshLibPick(){
   const n=libSel.size;
   const c=q("#selCount");if(c)c.textContent=n+" ticked";
   const able=(id,ok)=>{const b=q("#"+id);if(b)b.disabled=!ok;};
-  able("selSer",n>1);able("selColl",n>1);able("selInto",n>0);able("selNone",n>0);
+  /* one ticked book is enough for a series now: joining one you already have
+     is the commonest case, and it was the one the button refused */
+  able("selSer",n>0);able("selColl",n>1);able("selInto",n>0);able("selNone",n>0);
   able("selGen",n>0);able("selAud",n>0);able("selKw",n>0);able("selFill",n>0);
   able("selDel",n>0);
 }
@@ -11041,7 +11134,7 @@ function renderLibrary(){
         </span></div>`;
       if(libSelMode)html+=`<div class="hcard" style="margin-bottom:9px"><div class="hrow2">
       <b style="font-size:13px" id="selCount">${libSel.size} ticked</b>
-      <button class="btn" id="selSer" ${libSel.size>1?"":"disabled"}>🔗 Link as a series…</button>
+      <button class="btn" id="selSer" ${libSel.size?"":"disabled"} title="Put them in a series you already have, or start a new one">🔗 Into a series…</button>
       <button class="btn" id="selColl" ${libSel.size>1?"":"disabled"}>📚 Fold into one collection…</button>
       ${collsOnShelf().length?`<button class="btn" id="selInto" ${libSel.size?"":"disabled"} title="Put them inside a collection you already have">📥 Into a collection…</button>`:""}
       ${(()=>{const n=list.filter(b=>!b._story).length;
@@ -11488,13 +11581,43 @@ function renderLibrary(){
        it — a status pill or the find box is how you say what "all" means */
     const sAll=q("#selAll",m);
     if(sAll)sAll.onclick=()=>{list.forEach(b=>{if(!b._story)libSel.add(b.id);});paintAll();};
+    /* It used to ask for a name and nothing else — so the fourth book of a
+       series you already had could only be joined by typing its name again
+       exactly, and a near-miss quietly made a second series. The ones you
+       have are a list now; starting a new one is the row underneath. */
     const ss=q("#selSer",m);
-    if(ss)ss.onclick=async()=>{
-      const nm=prompt("Series name — every ticked book keeps its own page, linked under this name:","");
-      if(nm==null||!nm.trim())return;
-      const n=await makeSeriesFrom([...libSel],nm.trim());
-      if(n<libSel.size)alert(`Linked ${n} book${n===1?"":"s"}. Collections were left alone — each one is already a named set.`);
-      libSel.clear();render();
+    if(ss)ss.onclick=()=>{
+      const panel=q("#selApply",m);
+      const st={q:""};
+      const n=libSel.size;
+      const done=async(name,fresh)=>{
+        const ids=[...libSel];
+        const put=fresh?await makeSeriesFrom(ids,name):await addToSeries(ids,name);
+        panel.innerHTML="";libSel.clear();render();
+        if(!put)alert(`Nothing to do — ${n===1?"that book is":"those books are"} already in “${name}”, or ${n===1?"it is a collection":"they are collections"}, which are named sets of their own.`);
+        else if(put<n)alert(`${put} of ${n} put into “${name}”. The rest were collections, or already in it.`);
+      };
+      st.nm="";
+      drawSeriesPick(panel,st,`Put ${n} book${n===1?"":"s"} into a series you already have…`,
+        name=>{
+          if(!confirm(`Put ${n} book${n===1?"":"s"} into “${name}”?\n\nEach keeps its own page. A book with no number gets the next one after the ones already there.`))return;
+          done(name,false);
+        },
+        /* …or start a new one, in the same panel rather than behind a prompt */
+        {html:`<div class="hrow2" style="margin-top:8px"><span class="lbl">…or start a new one:</span>
+            <input class="field" id="serNewNm" placeholder="Series name" style="font-size:13px;padding:7px 10px;flex:1;min-width:120px">
+            <button class="btn" id="serNewGo">🔗 Link them</button></div>`,
+         wire:host=>{
+           const inp=q("#serNewNm",host);
+           inp.value=st.nm||"";
+           inp.oninput=()=>{st.nm=inp.value;};
+           const go=()=>{const v=(st.nm||"").trim();
+             if(!v)return;
+             if(n<2&&!confirm(`Start the series “${v}” with one book?\n\nAnything else you give the same name joins it.`))return;
+             done(v,true);};
+           q("#serNewGo",host).onclick=go;
+           inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();go();}};
+         }});
     };
     const sc=q("#selColl",m);
     if(sc)sc.onclick=async()=>{
@@ -22739,6 +22862,10 @@ function renderEditor(){
         ${isC?"":`<span class="lbl">book</span><input class="mini" id="fSerN" placeholder="#" value="${esc(cur.seriesNum)}">
         <span class="lbl">of</span><input class="mini" id="fSerT" placeholder="?" value="${esc(cur.seriesTotal)}">`}
       </div>
+      ${isC||!seriesOnShelf().length?"":`<div class="hrow2" style="margin-top:6px">
+        <button class="btn smallbtn" id="serPickOpen" title="The series already on your shelf — pick one and this book joins it">🔗 One you already have…</button>
+        <span class="none" style="font-size:12px">the box above suggests names once you start typing one; this shows them all</span></div>
+      <div id="serPickHost"></div>`}
       <div id="linkWrap"></div>`;
     autoComplete("#fSeries","#serSug","series",
       ()=>[...new Set(books.map(x=>(x.series||"").trim()).filter(Boolean))],renderLinked);
@@ -22746,6 +22873,30 @@ function renderEditor(){
       bind("#fSerN","seriesNum",v=>v.replace(/[^\d.]/g,""));
       bind("#fSerT","seriesTotal",v=>v.replace(/[^\d]/g,""));
     }
+    /* ---- joining from the book's own page ----
+       The name box has always suggested what you have — but only once you
+       have typed enough of a name to narrow it, and an empty box offered
+       nothing at all. So a book could be put into a series that already
+       existed only by remembering its name and spelling it the same way, and
+       a near-miss made a second series with no word said. This is the list.
+       It fills the number and the total the way the shelf's door does, so a
+       book joined here and one joined there end up saying the same thing. */
+    {const spo=q("#serPickOpen",w);
+     if(spo)spo.onclick=()=>{
+       const host=q("#serPickHost",w);if(!host)return;
+       if(host.innerHTML.trim()){host.innerHTML="";return;}
+       drawSeriesPick(host,{q:""},"Put this book in a series you already have…",name=>{
+         const inIt=books.filter(b=>b.id!==cur.id&&seriesShown(b)===name);
+         cur.type="series";cur.series=name;
+         if(!String(cur.seriesNum||"").trim()&&inIt.length)
+           cur.seriesNum=String(Math.max(0,...inIt.map(b=>parseFloat(b.seriesNum)||0))+1);
+         if(!String(cur.seriesTotal||"").trim()){
+           const totals=[...new Set(inIt.map(b=>String(b.seriesTotal||"").trim()).filter(Boolean))];
+           if(totals.length===1)cur.seriesTotal=totals[0];
+         }
+         host.innerHTML="";renderSeries();scheduleSave();
+       });
+     };}
     renderLinked();
   }
   function renderLinked(){
