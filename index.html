@@ -7233,6 +7233,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-02.22",lines:[
+    "<b>◂ ▸ on a book's page walk the list you opened it from.</b> Beside ‹ Back, on both faces: the Library as you had it filtered and sorted, a Search result, History, Today's cards — the next one opens without going back, and the page keeps the face you were on, so stepping through the editor lands on the editor. On the computer the ← and → keys do the same when you aren't typing. Resting on an arrow names the book it would open. Only what was drawn is in the walk: a Library cut off at <i>Show N more</i> ends where the screen ended, and the arrow says so. A book opened from the 🔎 jump box or a link has no list around it, so it has no arrows."]},
   {v:"2026-09-02.21",lines:[
     "<b>The find boxes forgive now.</b> The Library's, the Search tab's, the Quotes wall's and the author filter matched the exact letters typed, so <i>nightengale</i> found nothing, <i>cafe</i> missed <i>Café</i>, and <i>나혼자</i> missed <i>나 혼자만 레벨업</i> for the space in it. Accents, spaces and punctuation no longer count, and from four letters on a typo is allowed (two from eight). Rows that carry the letters as you typed them stand first, then the folded matches, then the typo ones — nothing you could find before has moved out of reach.",
     "<b>🔎 Jump to anything, from anywhere.</b> The magnifier in the corner of every screen and on a book's own bar — or <b>Ctrl+K</b> on the computer — opens one box: three letters and Enter opens the book. It also offers a story inside a collection (opening at the story), an author (their panel), a series, a genre or a tag (each landing on the Search results). ↑ ↓ choose, Esc closes. Reaching a book from Insights, Challenges or another book's page was Library, find, open; it is one box now."]},
@@ -10456,6 +10458,63 @@ async function rowProgress(key,v,thought){
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
   refreshShelfSub();renderMain();
 }
+/* ---- walking the list a book was opened from ----
+   ◂ ▸ on a book's bar step through the rows that stood around it when it was
+   opened — the filtered Library in its order, a Search result, History,
+   Today's cards — without going back. wireOpen writes the list down at the
+   moment of the click (walkFrom: every [data-open] under the same root, in
+   DOM order, and where the pressed one stands); openBook takes it as the walk
+   for the page it draws, and drops it for any opening that did not come from
+   a list, so the arrows never point into a list you are no longer looking
+   at. Redrawing the same book (keepPlace) leaves the walk alone. Stepping
+   keeps the face — editor to editor — through walkHold. Only what was drawn
+   is in the walk: a Library page cut off at "Show N more" ends where the
+   screen ended, and the ▸ says so in its tooltip. */
+let walk=null,walkPending=null,walkHold=null;
+const WALK_NAMES={library:"the shelf",search:"the results",history:"History",overview:"Today",care:"Shelf care",quotes:"the quotes wall",challenges:"Challenges",ach:"Achievements",insights:"Insights"};
+function walkFrom(root,op){
+  const rows=[...root.querySelectorAll("[data-open]")];
+  const at=rows.indexOf(op);
+  walkPending=(rows.length>1&&at>=0)
+    ?{ids:rows.map(r=>({id:r.dataset.open,en:r.dataset.openen||""})),at,from:WALK_NAMES[view]||"the list"}
+    :null;
+}
+const walkName=i=>{
+  const x=walk&&walk.ids[i];if(!x)return "";
+  const b=books.find(bb=>bb.id===x.id);if(!b)return "";
+  const en=x.en?(b.entries||[]).find(e=>e.id===x.en):null;
+  return (en?en.title:b.title)||"Untitled";
+};
+function walkBtns(){
+  if(!walk||walk.ids.length<2)return "";
+  const p=walk.at>0,n=walk.at<walk.ids.length-1;
+  return `<button class="backbtn walkbtn" data-walk="-1"${p?"":" disabled"} title="${p?esc("Previous on "+walk.from+": "+walkName(walk.at-1))+" (←)":esc("The first one on "+walk.from)}">◂</button><button class="backbtn walkbtn" data-walk="1"${n?"":" disabled"} title="${n?esc("Next on "+walk.from+": "+walkName(walk.at+1))+" (→)":esc("The last one that was on screen on "+walk.from)}">▸</button>`;
+}
+function stepWalk(dir){
+  if(!walk||view!=="book")return;
+  let to=walk.at+dir;
+  /* a book deleted since the list was drawn is stepped over, not opened */
+  while(to>=0&&to<walk.ids.length&&!books.some(b=>b.id===walk.ids[to].id))to+=dir;
+  if(to<0||to>=walk.ids.length)return;
+  walk.at=to;walkHold={face:bookMode};
+  const x=walk.ids[to];
+  /* the same leaving the ‹ Back button does: anything still saving lands first */
+  clearTimeout(saveTimer);
+  finishSaveThen(()=>openBook(x.id,false,false,x.en||""));
+}
+document.addEventListener("click",e=>{
+  if(!e.target.closest)return;
+  const b=e.target.closest("[data-walk]");
+  if(b&&!b.disabled){e.preventDefault();e.stopPropagation();stepWalk(parseInt(b.dataset.walk)||0);}
+});
+document.addEventListener("keydown",e=>{
+  if((e.key!=="ArrowLeft"&&e.key!=="ArrowRight")||e.ctrlKey||e.altKey||e.metaKey||e.shiftKey)return;
+  if(view!=="book"||!walk)return;
+  const a=document.activeElement;
+  if(a&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA"||a.tagName==="SELECT"||a.isContentEditable))return;
+  if(q("#helpSheet")||q("#jumpBox")||document.querySelector(".ratepanel")||viewArrange)return;
+  e.preventDefault();stepWalk(e.key==="ArrowRight"?1:-1);
+});
 function wireOpen(root,withDel){
   /* rows and cards are divs, so the keyboard needs telling they are buttons —
      without this a keyboard user could not open a book at all */
@@ -10478,6 +10537,7 @@ function wireOpen(root,withDel){
          whole row IS the tick for a click, and Enter opened the book instead —
          the same row answering to two different rules. */
       if(libTicking()&&!op.dataset.openen){toggleLibPick(op.dataset.open);return;}
+      walkFrom(root,op);
       openBook(op.dataset.open,false,false,op.dataset.openen||"");
     }
   };
@@ -10539,7 +10599,7 @@ function wireOpen(root,withDel){
     /* A story's row opens its collection, because that is where the story lives —
        but it used to drop you at the top of it, so finding the story you had just
        tapped meant scrolling a list of twenty. It takes you to the story now. */
-    if(op)openBook(op.dataset.open,false,false,op.dataset.openen||"");
+    if(op){walkFrom(root,op);openBook(op.dataset.open,false,false,op.dataset.openen||"");}
   };
 }
 
@@ -20822,6 +20882,11 @@ async function openBook(id,fresh,keepPlace,goToStory){
     cameFrom=view;keepMyPlace();lastOpenedId=id;lastOpenedEn=goToStory||"";
   }   /* so Back can bring you here again */
   const found=books.find(b=>b.id===id);
+  /* the walk (◂ ▸, see walkFrom): taken from the list this opening came
+     from, kept through a step along it, dropped for any other opening */
+  const hold=walkHold;walkHold=null;
+  if(!keepPlace){walk=walkPending||(hold?walk:null);}
+  walkPending=null;
   /* asked to open a book that is gone (deleted since this row was drawn):
      opening a blank page under its old id would create a ghost book */
   if(!found&&!fresh)return;
@@ -20844,6 +20909,8 @@ async function openBook(id,fresh,keepPlace,goToStory){
   /* a held ticket means you left THIS book from its editor, mid-panel — the
      return goes back to that face whatever the usual opening face is */
   if(panelReturn&&panelReturn.id===id)bookMode="edit";
+  /* stepping along the walk keeps the face you were on */
+  if(hold&&found)bookMode=hold.face;
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
   const c=await dbGet("covers",id);curCover=c?c.data:null;
   curImgs={};curEnt={};
@@ -21828,7 +21895,7 @@ function renderBookView(){
     ${jchrome(b)}
     <div class="edbar"><div class="r1wrap"><div class="r1">
       <button class="backbtn" id="edBack">${backLabel()}</button>
-      <button class="backbtn" data-jump title="Jump to a book, an author, a series, a tag — Ctrl+K">🔎</button>
+      <button class="backbtn" data-jump title="Jump to a book, an author, a series, a tag — Ctrl+K">🔎</button>${walkBtns()}
       <button class="backbtn" id="uBtn" title="Undo" disabled>↶</button>
       <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
       <span class="savemsg ok" id="saveMsg"></span>
@@ -23682,7 +23749,7 @@ function renderEditor(){
       <div class="r1wrap">
       <div class="r1">
         <button class="backbtn" id="edBack">${backLabel()}</button>
-      <button class="backbtn" data-jump title="Jump to a book, an author, a series, a tag — Ctrl+K">🔎</button>
+      <button class="backbtn" data-jump title="Jump to a book, an author, a series, a tag — Ctrl+K">🔎</button>${walkBtns()}
         <button class="backbtn" id="uBtn" title="Undo" disabled>↶</button>
         <button class="backbtn" id="rBtn" title="Redo" disabled>↷</button>
         <span class="savemsg ok" id="saveMsg">Saved</span>
