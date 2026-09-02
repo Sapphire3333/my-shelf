@@ -1852,6 +1852,7 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .rnrow .rnthumb{width:56px;aspect-ratio:2/3;height:auto;min-height:0;max-height:none;margin:0}
   .rnrow .rnthumb img{height:100%}
   .rnrow .rauth{font-size:13px;color:var(--mut)}
+  .rnrow .unk{font-weight:700;color:var(--teal);margin-right:2px}   /* a place in the Up next queue */
   /* overview hub */
   @media(min-width:900px){
     .hubcols{column-count:2;column-gap:24px}
@@ -4266,6 +4267,8 @@ function markStatus(b,what){
   else{b.status=what;b.dnf=false;b.hold=false;
     /* reading it, or having read it, answers "have you got it" by itself */
     if(what==="reading"||what==="finished")b.unowned=false;
+    /* and either one takes it out of the Up next queue — it is not next any more */
+    if((what==="reading"||what==="finished")&&inUpNext(b))delete b.upnext;
     if(what==="finished")finishProgress(b);}
   return applyReading(b,statusOf(b),b.dnf||b.hold);
 }
@@ -7233,6 +7236,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-03.2",lines:[
+    "<b>⏭ Up next — a short queue you order yourself.</b> On any shelf row's stage list, and on a book's own stage list, there is <b>⏭ Up next</b>: press it and the book joins a card on 🏠 Today, above Next in line, in the order you put them — five at most, and it says so when it is full. ↑ ↓ move one, ✕ takes it out, and <b>📖 Start it</b> on the first marks it Reading now. A book you start or finish leaves the queue by itself, and finishing any book asks whether to start the one at the head. The dare's kept list is untouched; this is the list the dice have nothing to do with. It travels between your devices like every other mark on a book."]},
   {v:"2026-09-02.22",lines:[
     "<b>◂ ▸ on a book's page walk the list you opened it from.</b> Beside ‹ Back, on both faces: the Library as you had it filtered and sorted, a Search result, History, Today's cards — the next one opens without going back, and the page keeps the face you were on, so stepping through the editor lands on the editor. On the computer the ← and → keys do the same when you aren't typing. Resting on an arrow names the book it would open. Only what was drawn is in the walk: a Library cut off at <i>Show N more</i> ends where the screen ended, and the arrow says so. A book opened from the 🔎 jump box or a link has no list around it, so it has no arrows."]},
   {v:"2026-09-02.21",lines:[
@@ -8827,7 +8832,7 @@ const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blu
      the change log, and a book kept in percent would otherwise earn neither */
   reads:"readings",progress:"progress",pct:"progress",progLog:"",rereads:"re-reads",series:"series",seriesNum:"series number",
   seriesTotal:"series total",isbn:"ISBN",hcSlug:"",favorite:"favourite",dnf:"given up",dnfReasons:"why given up",
-  hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",entries:"stories",maturity:"maturity",aspects:"what stood out",
+  hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",upnext:"up next",entries:"stories",maturity:"maturity",aspects:"what stood out",
   pros:"likes",cons:"dislikes",meh:"so-sos",fandoms:"fandoms",characters:"characters",ships:"relationships",
   link:"link",kind:"kind",audience:"audience",draw:"drawing",bg:"background",type:"shape",
   chapters:"chapters",warnings:"warnings",entOrdered:"",canvasV:"",modified:"",touched:"",created:"",id:"",
@@ -10043,11 +10048,75 @@ const pgStripSave=strip=>{
 const stSym=b=>b.dnf?"✕":holdOf(b)?"⏸":unownedOf(b)?"⌛":statusOf(b)==="finished"?"✓":statusOf(b)==="reading"?"📖":"★";
 const stName=b=>b.dnf?"Did not finish":holdOf(b)?"On hold":unownedOf(b)?"Don't have it yet":statusOf(b)==="finished"?"Finished":statusOf(b)==="reading"?"Reading now":"Want to read";
 let stPickFor=null;   /* which row has its stage chooser open */
+/* ---- Up next: a short queue you order yourself ----
+   `b.upnext` is a position number on the book — a collection counts as one
+   shelf item, a story inside one cannot be queued. Kept on the book rather
+   than in a list of its own so it syncs, backs up and undoes like any other
+   field, and older builds simply see a field they do not draw. Five at most
+   (UPNEXT_MAX). A book set to Reading now, or finished, leaves the queue by
+   itself (markStatus); one that finishes offers the head of the queue
+   (offerUpNext). Drawn on Today above Next in line; ⏭ Up next on the shelf's
+   stage list and on a book's own stage list puts one in or takes it out. */
+const UPNEXT_MAX=5;
+const inUpNext=b=>!!b&&b.upnext!=null&&b.upnext!=="";
+const upNextList=()=>books.filter(inUpNext).sort((a,b)=>(+a.upnext)-(+b.upnext));
+/* every queue change goes through pushOp — one press, one op, however many
+   books it renumbered */
+async function upNextWrite(ids,mut){
+  const items=[];
+  for(const id of ids){
+    const b=books.find(x=>x.id===id);if(!b)continue;
+    const before=JSON.parse(JSON.stringify(b));
+    mut(b);
+    b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+    items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    await dbPut("books",b);
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+  }
+  if(!items.length)return;
+  pushOp(items.length===1?{t:"book",id:items[0].id,before:items[0].before,after:items[0].after}:{t:"bulk",items});
+  if(SYNC.on)flushQueue();
+}
+/* in or out. `quiet` leaves the redraw to the caller (a book's own page
+   rebases itself instead of redrawing the shelf) */
+async function upNextToggle(id,quiet){
+  const b=books.find(x=>x.id===id);if(!b)return;
+  if(inUpNext(b))await upNextWrite([id],x=>{delete x.upnext;});
+  else{
+    const l=upNextList();
+    if(l.length>=UPNEXT_MAX){
+      alert(`Up next holds ${UPNEXT_MAX} already:\n\n${l.map((x,i)=>(i+1)+". "+(x.title||"Untitled")).join("\n")}\n\nTake one off on 🏠 Today first.`);
+      return;
+    }
+    const top=l.length?Math.max(...l.map(x=>+x.upnext||0)):0;
+    await upNextWrite([id],x=>{x.upnext=top+1;});
+  }
+  stPickFor=null;
+  if(!quiet){refreshShelfSub();renderMain();}
+}
+async function upNextMove(id,dir){
+  const l=upNextList(),i=l.findIndex(x=>x.id===id),j=i+dir;
+  if(i<0||j<0||j>=l.length)return;
+  [l[i],l[j]]=[l[j],l[i]];
+  const pos={};l.forEach((x,k)=>pos[x.id]=k+1);
+  await upNextWrite(l.map(x=>x.id),x=>{x.upnext=pos[x.id];});
+  renderMain();
+}
+/* a book has just been finished: the head of the queue is offered, once,
+   after the finish has landed. Saying no leaves the queue as it was. */
+function offerUpNext(finishedId){
+  const h=upNextList().filter(b=>b.id!==finishedId&&statusOf(b)!=="reading"&&!b.dnf)[0];
+  if(!h)return;
+  setTimeout(()=>{
+    if(confirm(`Start “${h.title||"Untitled"}” — next in your Up next queue?`))setStatus(h.id,"reading");
+  },60);
+}
 const stPickHtml=b=>`<div class="stpick">
       ${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
       <button data-setst="${b.id}|hold" class="${holdOf(b)?"on":""}">⏸ On hold</button>
       <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
       <button data-setst="${b.id}|unowned" class="${unownedOf(b)?"on":""}" title="You want it and haven't got it — not published yet, not bought yet, waiting on the library">${unownedOf(b)?"✓ ":""}⌛ Don't have it yet</button>
+      <button data-upnext="${b.id}" class="${inUpNext(b)?"on":""}" title="Your Up next queue on 🏠 Today — five at most, in the order you choose">${inUpNext(b)?"✓ ":""}⏭ Up next</button>
     </div>`;
 /* Opening this little list is a change to one row, and it was being paid for
    with a redraw of the entire shelf — measured at 985ms on a four-thousand-book
@@ -10388,12 +10457,14 @@ async function setStatus(id,what){
      same press on the book's own page has always counted. One book's copy is a
      cheap price for the shelf and the page agreeing about what a press means. */
   const before=JSON.parse(JSON.stringify(b));
+  const wasDone=statusOf(b)==="finished"&&!b.dnf;
   if(markStatus(b,what)===false){stPickFor=null;paintStPick();return;}
   b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
   stPickFor=null;refreshShelfSub();renderMain();
+  if(what==="finished"&&!wasDone&&statusOf(b)==="finished")offerUpNext(b.id);
 }
 /* The mark and the heart, set from the shelf — through pushOp, exactly as the
    stage above goes, and for the same reason it was made to: a verdict given
@@ -10553,6 +10624,8 @@ function wireOpen(root,withDel){
       if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
       e.preventDefault();
     }
+    const un=e.target.closest("[data-upnext]");
+    if(un){e.stopPropagation();upNextToggle(un.dataset.upnext);return;}
     const set=e.target.closest("[data-setst]");
     if(set){e.stopPropagation();const [id,what]=set.dataset.setst.split("|");setStatus(id,what);return;}
     const cyc=e.target.closest("[data-cyc]");
@@ -16484,6 +16557,27 @@ async function renderHub(part){
       <span class="hint" style="margin:0">the next unread in ${esc(seriesShown(b))}</span></div>`).join("")}
     ${nextLine.length>5?`<div class="hint" style="margin:0 0 4px">…and ${nextLine.length-5} more series with a next one waiting — 🔗 Series overview in the Library lists them all.</div>`:""}
   </div>`:"";
+  /* ---- Up next: the queue you ordered yourself — see upNextList ---- */
+  const upq=today?upNextList():[];
+  const upNextHtml=today?`<div class="sec" id="secUpNext">
+    <div class="heading"><h2 class="serif">Up next</h2><span class="n">(${upq.length} of ${UPNEXT_MAX})</span></div>
+    ${upq.length?`<div class="hcard" style="padding:6px 12px">${upq.map((b,i)=>`
+      <div class="rnrow" data-open="${b.id}" tabindex="0" role="button" aria-label="${esc(b.title)||"Untitled"}">
+        <div class="thumb rnthumb${b.frame?" framed":""}" data-cover="${b.id}"><a class="tgo" href="${esc(bookHash(b.id,""))}" tabindex="-1" aria-hidden="true">${coverInner(b,false)}</a></div>
+        <div style="min-width:0">
+          <div class="rtitle serif" style="font-size:15px"><span class="unk">${i+1}</span> <a class="tgo" href="${esc(bookHash(b.id,""))}">${esc(b.title)||"Untitled"}</a>${isColl(b)?` <span class="bst coll">COLLECTION · ${entWholes(b).length}</span>`:""}</div>
+          ${b.author?`<div class="rauth">${esc(authorParts(b.author)[0]||b.author)}</div>`:""}
+          <div class="hrow2" style="margin-top:5px;gap:6px;flex-wrap:wrap">
+            ${i===0?`<button class="btn smallbtn" data-setst="${b.id}|reading" title="Mark it Reading now — it leaves the queue and moves up to Reading now">📖 Start it</button>`:""}
+            <button class="btn smallbtn" data-unmv="${b.id}|-1"${i===0?" disabled":""} title="Move it up the queue">↑</button>
+            <button class="btn smallbtn" data-unmv="${b.id}|1"${i===upq.length-1?" disabled":""} title="Move it down the queue">↓</button>
+            <button class="btn smallbtn" data-unx="${b.id}" title="Take it out of the queue — the book stays where it is on the shelf">✕</button>
+          </div>
+        </div>
+      </div>`).join("")}</div>
+      <div class="hint" style="margin:6px 0 0">Finishing a book offers the first one here. Starting one takes it off the list.</div>`
+      :`<div class="hcard"><div class="hint" style="margin:0">Nothing queued. <b>⏭ Up next</b> on any row's stage list — or on a book's own stage list — puts it here, five at most, in the order you choose.</div></div>`}
+  </div>`:"";
   const todayHtml=`
     ${news.length?`<div class="sec">
       <div class="hcard" id="newsCard">
@@ -16535,6 +16629,7 @@ async function renderHub(part){
           `<button class="btn" data-recb="${r.id}"${r.en?` data-recen="${esc(r.en)}"`:""} style="padding:2px 9px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.t)||"Untitled"}</button>`).join(" ")}</div>`:""}
       </div>
     </div>
+    ${upNextHtml}
     ${nextLineHtml}
     ${nextUp.length?`<div class="sec" id="secNext">
       <div class="heading"><h2 class="serif">Waiting for the next one</h2>${nextUp.length>1?`<span class="n">(${nextUp.length})</span>`:""}</div>
@@ -16624,7 +16719,10 @@ async function renderHub(part){
   const nxSec=q("#secNext",m);
   if(nxSec&&nextUp.length){wireOpen(nxSec,false);hydrateCovers(nxSec);}
   /* Reading now and Next in line: rows that open, covers that arrive after */
-  ["#secReading","#secContinue","#secNextLine"].forEach(id=>{const s=q(id,m);if(s){wireOpen(s,false);hydrateCovers(s);}});
+  ["#secReading","#secContinue","#secNextLine","#secUpNext"].forEach(id=>{const s=q(id,m);if(s){wireOpen(s,false);hydrateCovers(s);}});
+  /* the queue's own buttons answer before the row does (see upNextMove) */
+  qa("[data-unmv]",m).forEach(b=>b.onclick=e=>{e.stopPropagation();const [id,d]=b.dataset.unmv.split("|");upNextMove(id,parseInt(d)||0);});
+  qa("[data-unx]",m).forEach(b=>b.onclick=e=>{e.stopPropagation();upNextToggle(b.dataset.unx);});
   /* the covers on "on this day" are read after the page is drawn, the same way
      every other list of books on this page reads its own */
   const otd=q("#otdCard",m);
@@ -21978,6 +22076,7 @@ function renderBookView(){
             ${STATUSES.map(([k,l])=>`<button data-vst="${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
             <button data-vst="hold" class="${holdOf(b)?"on":""}" title="Set down for now — you mean to come back to it">⏸ On hold</button>
             <button data-vst="dnf" class="${b.dnf?"on":""}" title="Given up on">✕ Did not finish</button>
+            <button data-vst="upnext" class="${inUpNext(b)?"on":""}" title="Your Up next queue on 🏠 Today — five at most, in the order you choose">${inUpNext(b)?"✓ ":""}⏭ Up next</button>
             <button data-vst="unowned" class="${unownedOf(b)?"on":""}" title="You want it and haven't got it — not published yet, not bought yet, waiting on the library">${unownedOf(b)?"✓ ":""}⌛ Don't have it yet</button>
           </div>`:""}
           ${(()=>{
@@ -22278,7 +22377,13 @@ function renderBookView(){
     e.stopPropagation();
     const what=x.dataset.vst;
     vStatusOpen=false;
-    quickEdit(bk=>markStatus(bk,what));
+    /* the queue is a shelf-side change: written to the shelf's copy, then the
+       page rebases itself onto it — cur is a COPY, see rebaseOpenBook */
+    if(what==="upnext"){upNextToggle(cur.id,true).then(()=>rebaseOpenBook(cur.id));return;}
+    const wasDone=statusOf(cur)==="finished"&&!cur.dnf;
+    quickEdit(bk=>markStatus(bk,what)).then(()=>{
+      if(what==="finished"&&!wasDone&&cur&&statusOf(cur)==="finished")offerUpNext(cur.id);
+    });
   });
   q("#vFav").onclick=e=>{e.stopPropagation();quickEdit(bk=>{bk.favorite=!bk.favorite;});};
   /* opening a chapter here only shows it — no redraw, so your place is kept */
