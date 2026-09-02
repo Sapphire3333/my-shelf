@@ -6002,6 +6002,10 @@ async function pullAll(){
           else if(row.key==="achSeen"){if(mergeAchSeen(row.value))gameChanged=true;}
           else if(row.key==="streaks"){if(mergeStreaks(row.value))gameChanged=true;}
           else if(row.key==="tidyKeep"){if(mergeTidy(row.value))gameChanged=true;}
+          /* the change log: a union by entry key, newest first, capped — so
+             What changed on this screen shows the other screen's edits too,
+             and a daily task can tick off a change made over there */
+          else if(row.key==="histLog"){if(mergeHistLog(row.value))gameChanged=true;}
         }
         /* anything deleted here must go from the merged copies too */
         for(const k in metaDel){
@@ -6967,7 +6971,7 @@ function showHelpSheet(){
     <h3 id="hs-history">🕘 History</h3>
     <dl>
       <dt>Recently edited</dt><dd>Your books and collections, the ones you last changed first — only real changes count, not just opening one. Changes made on your other device show here too.</dd>
-      <dt>What changed</dt><dd>One line per change rather than one per book, gathered by the day it happened: which fields changed, and whether it was you, a bulk fill or the picture scanner. The last 50, kept on this device only.</dd>
+      <dt>What changed</dt><dd>One line per change rather than one per book, gathered by the day it happened: which fields changed, and whether it was you, a bulk fill or the picture scanner. The last 200, from both your devices — each line says which.</dd>
       <dt>The timeline</dt><dd>Every reading with a finish date, newest first — a book read twice appears twice. “Finished” records today's date; older ones you can type in on the book's own page.</dd>
       <dt>Recently deleted</dt><dd>Deleted books wait here for 30 days — covers and pictures kept — and can be put back with one press before they go for good.</dd>
     </dl>
@@ -7013,6 +7017,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-02.9",lines:[
+    "<b>📝 What changed travels between your devices now.</b> It was each device's own last fifty; it is the last two hundred from both, joined by sync, and each line says 📱 phone or 🖥 computer. Because today's three read this list, a task done on the phone now ticks on the computer too, and the other way round."]},
   {v:"2026-09-02.8",lines:[
     "<b>⭳ Export as CSV — the shelf as a spreadsheet, beside the backup button.</b> One row per book, per collection and per story inside one, under Goodreads' own column names first (Title, Author, ISBN13, My Rating out of five, Number of Pages, Date Read, Exclusive Shelf, Bookshelves, My Review, Private Notes, Read Count), then the things Goodreads has no word for: your 0–10 mark, the stage in this app's words, genres and tags apart, the series, the collection a story belongs to, favourite, link. It opens in Excel or Sheets, imports into Goodreads or StoryGraph, and comes back into this app through the Goodreads import. It carries no covers, pictures or quotes — a listing, not a backup."]},
   {v:"2026-09-02.7",lines:[
@@ -8543,7 +8549,27 @@ const HIST={undo:[],redo:[]};
    a record of what THIS device did, and sync's own writes don't pass here. */
 let histLog=[];
 let histSrc="";   /* set around bulk flows; empty means "you, editing" */
-const HISTLOG_MAX=50;
+/* Two hundred, and no longer this device's alone. It was fifty and per
+   device, which made What changed blind to the other screen; the list now
+   rides sync as the meta key "histLog" — each device uploads its own after
+   every write, and mergeHistLog joins what comes down by entry key, newest
+   first, so both screens end up holding the same last two hundred. Each
+   entry says which device wrote it (`dev`). The cap is what keeps the row
+   small enough to upload on every edit: measured at ~180 bytes an entry. */
+const HISTLOG_MAX=200;
+const histDev=()=>document.documentElement.dataset.phone==="1"?"phone":"computer";
+const histKey=e=>String(e.t)+"|"+String(e.id||"");
+function mergeHistLog(rv){
+  if(!Array.isArray(rv))return false;
+  const have=new Set(histLog.map(histKey));
+  let added=0;
+  rv.forEach(e=>{if(e&&e.t&&!have.has(histKey(e))){histLog.push(e);have.add(histKey(e));added++;}});
+  if(!added)return false;
+  histLog.sort((a,b)=>(b.t||0)-(a.t||0));
+  if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;
+  dbPut("meta",{k:"histLog",v:histLog}).catch(()=>{});
+  return true;
+}
 const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blurb",canvasText:"notes",
   genres:"genres",keywords:"tags",quotes:"quotes",quotesFrom:"quote sources",images:"pictures",
   pads:"page notes",coverV:"cover",rating:"rating",ratingOwn:"",status:"stage",dateFinished:"finish date",
@@ -8603,13 +8629,16 @@ function diffWords(before,after){
 let histLogTimer=0;
 function saveHistLog(){
   clearTimeout(histLogTimer);
-  histLogTimer=setTimeout(()=>{dbPut("meta",{k:"histLog",v:histLog}).catch(()=>{});},400);
+  /* written to the store first and uploaded after — the uploader reads the
+     meta row back out of the store, so the order is the whole point */
+  histLogTimer=setTimeout(()=>{dbPut("meta",{k:"histLog",v:histLog})
+    .then(()=>{if(SYNC.on){enqueue({kind:"meta",key:"histLog"});flushQueue();}}).catch(()=>{});},400);
 }
 function histNote(id,before,after,forced){
   const what=forced||diffWords(before,after);
   if(!what.length)return;
   const src=after||before||{};
-  histLog.unshift({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,8),src:histSrc||"you"});
+  histLog.unshift({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,8),src:histSrc||"you",dev:histDev()});
   if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;
   saveHistLog();
   /* a real change is a day touched; moving through a book keeps its own
@@ -14286,10 +14315,10 @@ const errandOf=e=>e&&ERRANDS.find(x=>x.k===e.k)||null;
    │ the same notepad, it is read in the same glance, and an eighth cell on a  │
    │ tab that is already a long phone scroll would have bought nothing.        │
    │ WHY IT DOES NOT USE THE CHANGE LOG. The daily tasks tick themselves by    │
-   │ reading histLog — which holds the last FIFTY changes AND is this device's │
-   │ alone. Over one day that is plenty; over a week, twenty filled blanks     │
-   │ would fall off the end of it, and anything done on the other device would │
-   │ never be seen at all. So a weekly goal is counted off the SHELF, the way  │
+   │ reading histLog — which held FIFTY changes, this device's alone, at first │
+   │ (200 now, and shared). Over one day plenty; over a week twenty blanks     │
+   │ could still fall off the end of it in a busy week of filling — and it was │
+   │ one screen's, back then. So a weekly goal counts off the SHELF, the way   │
    │ the year's twelve is: a number taken on the Monday, and the same number   │
    │ asked again now.                                                          │
    │ THE BASE MOVES ONE WAY ONLY, and this is the part worth reading twice. A  │
@@ -14848,7 +14877,7 @@ function renderHistory(){
   }
   const pills=`<div class="pills" style="margin-bottom:12px">
     <button class="pill ${mode2==="edited"?"on":""}" data-hv="edited" title="Your books and collections, the ones you last changed first">🕘 Recently edited</button>
-    <button class="pill ${mode2==="changes"?"on":""}" data-hv="changes" title="Every change made on this device — what changed, on what, and where it came from">📝 What changed <b>${histLog.length||""}</b></button>
+    <button class="pill ${mode2==="changes"?"on":""}" data-hv="changes" title="Every change made on either of your devices — what changed, on what, and where it came from">📝 What changed <b>${histLog.length||""}</b></button>
     <button class="pill ${mode2==="timeline"?"on":""}" data-hv="timeline" title="What you read, by the dates you finished">📅 Reading timeline</button>
     <button class="pill ${mode2==="bin"?"on":""}" data-hv="bin" title="Books you deleted — they wait ${TRASH_DAYS} days before going for good">🗑 Recently deleted <b id="histBinN">${trashCount||""}</b></button>
   </div>`;
@@ -14882,10 +14911,10 @@ function renderHistory(){
        I do that" is the question this list is for. */
     if(!histLog.length){
       body=`<div class="none" style="text-align:center;padding:36px 0">Nothing recorded yet.<br>
-        <span class="hint">From here on, every change made on this device lands in this list — the book, which fields changed, and whether it was you, a bulk fill or the picture scanner. The last ${HISTLOG_MAX} are kept, on this device only.</span></div>`;
+        <span class="hint">From here on, every change made on either of your devices lands in this list — the book, which fields changed, which device it was on, and whether it was you, a bulk fill or the picture scanner. The last ${HISTLOG_MAX} are kept.</span></div>`;
     }else{
       let curD="";
-      body=`<div class="hint" style="margin-bottom:10px">Every change made on this device — the last ${histLog.length}, newest first. Press one to open the book. This list is this device's own; changes made on your other one land in <b>🕘 Recently edited</b> instead.</div>`
+      body=`<div class="hint" style="margin-bottom:10px">Every change made on either of your devices — the last ${histLog.length}, newest first. Press one to open the book. Each line says which device it happened on.</div>`
         +histLog.map(e2=>{
           const day=new Date(e2.t).toDateString();
           let head="";
@@ -14898,7 +14927,7 @@ function renderHistory(){
           return head+`<div class="snap" data-hlog="${esc(e2.id)}" style="padding:6px 10px;cursor:pointer" title="Open the book">
             <div style="min-width:0;flex:1"><div class="when" style="font-size:13.5px">${esc(e2.title)}</div>
               <div class="meta">${esc((e2.what||[]).join(" · "))||"changed"}</div>
-              <div class="meta">${esc(e2.src||"you")} · ${esc(at)}</div></div></div>`;
+              <div class="meta">${esc(e2.src||"you")}${e2.dev?` · ${e2.dev==="phone"?"📱 phone":"🖥 computer"}`:""} · ${esc(at)}</div></div></div>`;
         }).join("");
     }
   }else{
