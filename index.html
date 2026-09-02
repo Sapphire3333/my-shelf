@@ -7013,6 +7013,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-02.8",lines:[
+    "<b>⭳ Export as CSV — the shelf as a spreadsheet, beside the backup button.</b> One row per book, per collection and per story inside one, under Goodreads' own column names first (Title, Author, ISBN13, My Rating out of five, Number of Pages, Date Read, Exclusive Shelf, Bookshelves, My Review, Private Notes, Read Count), then the things Goodreads has no word for: your 0–10 mark, the stage in this app's words, genres and tags apart, the series, the collection a story belongs to, favourite, link. It opens in Excel or Sheets, imports into Goodreads or StoryGraph, and comes back into this app through the Goodreads import. It carries no covers, pictures or quotes — a listing, not a backup."]},
   {v:"2026-09-02.7",lines:[
     "<b>A book you're reading now says its pace.</b> Under the progress bar on its page: <i>⏱ about 38 pages a day · at this pace, done Sun 7 Sep — 5 days</i>. It is worked out from the pages you have typed in over the last two weeks; until there are two days' worth, it uses the day you started this reading instead and says so. A book kept in percent gets the same in percent. Slower than a page a day, it speaks by the week. A book with no page entered yet, or one whose number hasn't moved, says nothing."]},
   {v:"2026-09-02.6",lines:[
@@ -15361,7 +15363,9 @@ function renderSettings(){
         <div class="hrow2">
           <button class="btn pri" id="expBtn" ${books.length?"":"disabled"}>⭳ Export backup file</button>
           <button class="btn" id="impBtn">⭱ Import backup file</button>
+          <button class="btn" id="csvExpBtn" ${books.length?"":"disabled"} title="A spreadsheet of the shelf, in Goodreads' column names — not a backup">⭳ Export as CSV</button>
         </div>
+        <div class="hint" style="margin:9px 0 0"><b>CSV</b> is the way <i>out</i>: a spreadsheet with one row per book, per collection and per story, under Goodreads' own column names — it opens in Excel or Sheets and imports into Goodreads or StoryGraph. It carries no covers, pictures, drawings or quotes, so it is a listing, not a backup.</div>
         <div class="hint" style="margin:9px 0 0">Export downloads a single .json holding every book, cover and picture — your safety net, and how you move your shelf onto another device or back into the old offline file.</div>
         ${books.length?`<div class="hint" id="expAge" style="margin:7px 0 0${lastExport&&Date.now()-lastExport<30*864e5?"":";color:#b45309"}">${
           lastExport?(()=>{const d=Math.floor((Date.now()-lastExport)/864e5);
@@ -15407,6 +15411,7 @@ function wireSettings(m){
      owner's second look at it: managing the room is not the same job as
      glancing at how much of it is left, and Overview keeps the glance. */
   {const e=q("#expBtn",m);if(e)e.onclick=exportBackup;}
+  {const c=q("#csvExpBtn",m);if(c)c.onclick=exportCsv;}
   {const i=q("#impBtn",m);if(i)i.onclick=()=>q("#importFile").click();}
   {const a=q("#autoBk",m);if(a)a.onchange=e=>{settings.autoBackup=e.target.checked;saveSettings();};}
   {const k=q("#keepN",m);if(k)k.onchange=async e=>{settings.keepAuto=+e.target.value;saveSettings();await pruneSnapshots();refreshSnaps();};}
@@ -27690,6 +27695,82 @@ async function exportBackup(){
     const n=q("#expAge");if(n){n.textContent="Last exported backup: just now";n.style.color="";}
   }catch(e){alert("Export ran into a problem — try again.");}
   if(q("#busyMsg"))q("#busyMsg").textContent="";
+}
+/* ---- the shelf as a spreadsheet ----
+   A backup is JSON only this app can read. This is the way OUT: one row per
+   book, per collection and per story inside one, under Goodreads' own column
+   names first — Title, Author, ISBN13, My Rating, Number of Pages, Date Read,
+   Exclusive Shelf, Bookshelves, My Review, Private Notes, Read Count — so the
+   file opens in a spreadsheet, imports into Goodreads or StoryGraph, and comes
+   back into this app through fromGoodreads (csvSource keys on "Exclusive
+   Shelf") as duplicates of what is already here. The columns Goodreads has no
+   word for follow its own, and an importer that does not know them ignores
+   them: the 0–10 mark, the stage in this app's words, genres and tags apart,
+   the series, the collection a story belongs to, the kind, favourite, link.
+   My Rating is the mark halved to Goodreads' five stars and rounded to a whole
+   star, which is all Goodreads keeps. Dates are YYYY-MM-DD, which cleanDate
+   reads back and spreadsheets sort. Text fields are stripped of their HTML.
+   No covers, pictures, drawings or quotes: it is a listing, not a backup, and
+   the hint under the button says so. */
+const CSV_COLS=["Title","Author","ISBN13","My Rating","Number of Pages","Date Read","Date Started","Date Added",
+  "Read Count","Exclusive Shelf","Bookshelves","My Review","Private Notes",
+  "Rating (0-10)","Stage","Genres","Tags","Series","Series Number","Series Total","Collection","Kind","Favourite","Link"];
+function csvText(){
+  const cell=v=>{const s=v==null?"":String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+  /* a tag stripped out leaves a space where it stood, which put one in front
+     of the comma after every bold word — closed up again here */
+  const text=h=>stripHtml(String(h||"")).replace(/\s+/g," ").replace(/\s+([,.;:!?)])/g,"$1").trim();
+  const shelf=st=>st==="reading"?"currently-reading":st==="want"?"to-read":"read";
+  const stage=(st,dnf,hold,unowned)=>dnf?"Did not finish":hold?"On hold":unowned?"Don't have it yet"
+    :st==="reading"?"Reading now":st==="want"?"Want to read":"Finished";
+  const dates=u=>{
+    const rs=readsOf(u);
+    const ends=rs.filter(r=>r&&!r.open&&r.end).map(r=>String(r.end)).sort();
+    const op=openRead(u),first=rs.find(r=>r&&r.start);
+    return {read:ends[ends.length-1]||"",start:String((op&&op.start)||(first&&first.start)||"")};
+  };
+  const five=r=>r==null||r===""?"":String(Math.max(0,Math.min(5,Math.round(Number(r)/2))));
+  const line=f=>CSV_COLS.map(c=>cell(f[c])).join(",");
+  const out=[CSV_COLS.join(",")];
+  books.forEach(b=>{
+    const st=statusOf(b),d=dates(b),hold=holdOf(b),un=unownedOf(b);
+    const tags=(b.keywords||[]),gen=(b.genres||[]);
+    out.push(line({
+      "Title":b.title||"","Author":b.author||"","ISBN13":b.isbn||"","My Rating":five(b.rating),
+      "Number of Pages":b.pages||"","Date Read":d.read,"Date Started":d.start,
+      "Date Added":b.created?new Date(b.created).toISOString().slice(0,10):"",
+      "Read Count":timesRead(b),"Exclusive Shelf":shelf(st),
+      "Bookshelves":[...gen,...tags,b.dnf?"did-not-finish":"",hold?"on-hold":""].filter(Boolean).join(", "),
+      "My Review":text(b.summary),"Private Notes":text(b.notes),
+      "Rating (0-10)":b.rating==null||b.rating===""?"":Number(b.rating).toFixed(1),
+      "Stage":stage(st,b.dnf,hold,un),"Genres":gen.join("; "),"Tags":tags.join("; "),
+      "Series":seriesShown(b)||"","Series Number":b.seriesNum||"","Series Total":b.seriesTotal||"",
+      "Collection":"","Kind":isColl(b)?"collection":kindOf(b),"Favourite":b.favorite?"yes":"","Link":b.link||""}));
+    /* every story on its own row, answering with the collection's word where
+       it has none of its own — the same rule the shelf reads them by */
+    if(isColl(b))(b.entries||[]).forEach(en=>{
+      const es=entStatusOf(b,en),ed=entDnfOf(b,en),dd=dates(en);
+      const eg=entGenresOf(b,en),et=entKeywordsOf(b,en);
+      out.push(line({
+        "Title":en.title||"","Author":entAuthorOf(b,en),"ISBN13":en.isbn||"","My Rating":five(en.rating),
+        "Number of Pages":en.pages||"","Date Read":dd.read,"Date Started":dd.start,
+        "Date Added":b.created?new Date(b.created).toISOString().slice(0,10):"",
+        "Read Count":Math.max(doneReads(en).length,(es==="finished"&&!ed)?1:0),"Exclusive Shelf":shelf(es),
+        "Bookshelves":[...eg,...et,ed?"did-not-finish":""].filter(Boolean).join(", "),
+        "My Review":text(en.summary),"Private Notes":text(en.notes),
+        "Rating (0-10)":en.rating==null||en.rating===""?"":Number(en.rating).toFixed(1),
+        "Stage":stage(es,ed,false,false),"Genres":eg.join("; "),"Tags":et.join("; "),
+        "Series":"","Series Number":en.num||"","Series Total":"",
+        "Collection":b.title||"","Kind":"story","Favourite":en.favorite?"yes":"","Link":en.link||""}));
+    });
+  });
+  /* the byte-order mark is for Excel, which otherwise reads a UTF-8 file as
+     ANSI and turns every curly quote and accent into rubbish */
+  return "﻿"+out.join("\r\n");
+}
+function exportCsv(){
+  try{downloadJson(csvText(),`my-shelf-${new Date().toISOString().slice(0,10)}.csv`,"text/csv;charset=utf-8");}
+  catch(e){alert("The spreadsheet couldn't be made — try again.");}
 }
 /* a backup file is the one input that may come from outside this app — strip
    anything that could run (event handlers, scripts) before it reaches innerHTML */
