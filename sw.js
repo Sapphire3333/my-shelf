@@ -16,6 +16,9 @@ const SHELL = ["./", "./index.html", "./version.js", "./config.js", "./manifest.
    away on every update without losing a file that is mid-journey. */
 const SHARE = "my-shelf-share";
 const SHARED_KEY = "shared-backup";
+/* a share with no file in it — a line selected in a reader, a link to a
+   book's page — is kept here as JSON and the app is sent on with ?shared=t */
+const SHARED_TEXT_KEY = "shared-text";
 
 self.addEventListener("install", e => {
   e.waitUntil(
@@ -58,6 +61,15 @@ self.addEventListener("fetch", e => {
                        "x-shared-name": encodeURIComponent(file.name || "shared") }
           }));
           ok = 1;
+        } else {
+          const title = String(form.get("title") || ""), text = String(form.get("text") || ""), url = String(form.get("url") || "");
+          if ((title + text + url).trim()) {
+            const c = await caches.open(SHARE);
+            await c.put(SHARED_TEXT_KEY, new Response(JSON.stringify({ title, text, url, at: Date.now() }), {
+              headers: { "content-type": "application/json" }
+            }));
+            ok = "t";
+          }
         }
       } catch (err) { ok = 0; }
       return Response.redirect(new URL("./?shared=" + ok, self.registration.scope).href, 303);
