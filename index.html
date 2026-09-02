@@ -7245,6 +7245,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-03.6",lines:[
+    "<b>Your Goodreads shelves, straight into the import list — no CSV.</b> On 🧰 Shelf care, under the import card: <b>📚 Straight from Goodreads</b>, with Everything, Read, Currently reading and Want to read. Press one and that shelf is read from Goodreads through your own Supabase and staged below exactly the way an export file is — newest added first, titles you already have marked, ＋ Add and Fill in as before. A feed carries less than the export, and honestly so: no private notes and no read count.",
+    "<b>This needs a second small function in Supabase, once</b> — goodreads-function.ts in the repo says how, three steps like Hardcover's: copy the RSS link from the foot of your My Books page (it carries your private feed key, which is why it lives in a Supabase secret and never in the app), paste the file in as a function named goodreads, add the link as the secret GOODREADS_RSS. Until then the buttons say plainly that nothing answered."]},
   {v:"2026-09-03.5",lines:[
     "<b>Hardcover can hand you the rest of a series.</b> On a book's page, open the series line and press <b>📙 The missing ones, from Hardcover</b>: it fetches Hardcover's list of that series, works out which you haven't got — by title, and by number — names them, and on your yes puts them on the shelf as ⌛ Don't have it yet, numbered, in the series, with their covers where Hardcover has them. One press of ↶ Undo takes them all back; the books you already had are not touched. In a collection's editor, <b>📋 The rest of the series…</b> has grown <b>📙 Ask Hardcover instead</b>, which writes Hardcover's list into the box for the same filing the paste gets — no chat, no copying.",
     "<b>This needs the function pasted into Supabase once more</b> — hardcover-function.ts learnt a second, read-only kind of ask. Until that is done the button says <i>Hardcover didn't answer</i> and names the reason. Nothing here can ever write to your Hardcover shelf: a mutation is refused at the door."]},
@@ -16721,6 +16724,11 @@ async function renderHub(part){
       <div class="hcard">
         <div class="hrow2"><button class="btn pri" id="csvBtn">⭱ Choose an export file</button>
           <button class="btn" id="impClear" hidden>Clear the list</button></div>
+        ${hcSettings()?`<div class="hrow2" style="margin-top:9px;flex-wrap:wrap;gap:6px">
+          <span class="lbl" title="Read straight from Goodreads through your own Supabase — see goodreads-function.ts">📚 Straight from Goodreads:</span>
+          ${GR_SHELVES.map(([k,l])=>`<button class="btn smallbtn" data-grshelf="${k}">${l}</button>`).join("")}
+        </div>
+        <div class="hint" id="grSay" style="margin:5px 0 0">Your shelves at Goodreads, staged below the way a CSV is — no file to download. A feed carries no private notes and no read count; the CSV still does.</div>`:""}
         <div class="hint" style="margin:9px 0 0">
           <b>Goodreads:</b> My Books → Import and Export → Export Library → download the .csv.<br>
           <b>StoryGraph:</b> Manage Account → Manage Your Data → Export StoryGraph Library.<br>
@@ -16829,6 +16837,7 @@ async function renderHub(part){
      returns when it is not on the page, and the two buttons are guarded here */
   refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
+  qa("[data-grshelf]",m).forEach(b=>b.onclick=()=>importGoodreadsFeed(b.dataset.grshelf));
   {const rb=q("#reBtn");if(rb)rb.onclick=()=>q("#reFile").click();renderShareHint();renderReadEra();}
   {const sb=q("#scanBtn");if(sb)sb.onclick=()=>q("#scanFiles").click();
    const sd=q("#scanDirBtn");if(sd)sd.onclick=()=>q("#scanDir").click();
@@ -30164,6 +30173,12 @@ async function loadCsvFile(file){
   if(!src)throw new Error("That doesn't look like a Goodreads, StoryGraph or AO3 export.");
   const map=src==="goodreads"?fromGoodreads:src==="ao3"?fromAO3:fromStorygraph;
   const staged=items.map(map).filter(it=>it.title);
+  return Object.assign({src},stageImportRows(staged));
+}
+/* The staging every import shares — the CSV file above, and the Goodreads
+   feed (importGoodreadsFeed) — taking rows already mapped to the import's
+   shape and joining them onto the waiting list. */
+function stageImportRows(staged){
   /* the same book listed twice in one file stages once */
   const inFile=new Set();
   const once=staged.filter(it=>{
@@ -30187,7 +30202,85 @@ async function loadCsvFile(file){
   });
   importQueue=[...have.values()];
   markDupes();saveImportQueue();
-  return {src,n:staged.length,fresh,updated};
+  return {n:staged.length,fresh,updated};
+}
+/* ---- your Goodreads shelves, without the CSV ----
+   Goodreads still publishes every shelf as a feed, and refuses it to a web
+   page (measured 2026-09-02: no CORS header) while handing it to a server.
+   goodreads-function.ts in your Supabase fetches it with your private feed
+   link kept as a secret there; this reads the XML it passes through, shapes
+   each item like a row of the CSV export, and stages it through the same
+   fromGoodreads and stageImportRows the file goes through — so the list, the
+   duplicate marks, ＋ Add and Fill in are exactly the ones a CSV gets. A feed
+   carries less than the export: no private notes, no read count. */
+const GR_SHELVES=[["#ALL#","Everything"],["read","Read"],["currently-reading","Currently reading"],["to-read","Want to read"]];
+async function fetchGoodreadsFeed(shelf,page){
+  const base=String(CFG.url||"").replace(/\/+$/,"");
+  const r=await fetch(base+"/functions/v1/goodreads",{method:"POST",
+    headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+CFG.anonKey},
+    body:JSON.stringify({shelf,page})});
+  const text=await r.text();
+  if(!r.ok){
+    let why="";try{why=String(JSON.parse(text).error||"");}catch(e){}
+    /* a function never deployed answers 404 with Supabase's own words, not ours */
+    if(r.status===404&&!/goodreads-function/.test(why))
+      throw new Error("nothing answered at your Supabase — if the one-time setup in goodreads-function.ts hasn't been done yet, this is just that");
+    throw new Error(why||("Goodreads answered "+r.status));
+  }
+  return grParseFeed(text,shelf);
+}
+/* the feed's items, each shaped like a row of the CSV export so fromGoodreads
+   reads it unchanged */
+function grParseFeed(text,shelf){
+  const doc=new DOMParser().parseFromString(text,"text/xml");
+  if(doc.querySelector("parsererror"))throw new Error("Goodreads sent something that isn't a feed — is the GOODREADS_RSS secret the whole link?");
+  const g=(el,t)=>{const n=el.querySelector(t);return n?String(n.textContent||"").trim():"";};
+  return [...doc.querySelectorAll("item")].map(it=>({
+    Title:g(it,"title"),Author:g(it,"author_name"),ISBN13:g(it,"isbn13")||g(it,"isbn"),
+    "My Rating":g(it,"user_rating"),"Number of Pages":g(it,"num_pages"),
+    "Date Read":grDate(g(it,"user_read_at")),
+    "Exclusive Shelf":grShelfOf(g(it,"user_shelves"),shelf),
+    Bookshelves:g(it,"user_shelves"),"My Review":stripHtml(g(it,"user_review")),"Private Notes":"","Read Count":"1",
+    _added:grDate(g(it,"user_date_added"))}));
+}
+/* Goodreads writes "Tue, 02 Sep 2026 10:11:12 -0700" — cleanDate wants a day */
+function grDate(s){if(!s)return "";const d=new Date(s);return isNaN(d)?"":d.toISOString().slice(0,10);}
+/* the exclusive shelf is not named as such in a feed item: user_shelves lists
+   the shelves the book is on, exclusive one included, and when the feed was
+   asked for one shelf that shelf is the answer */
+function grShelfOf(shelves,asked){
+  if(asked&&asked!=="#ALL#")return asked;
+  const s=String(shelves||"").toLowerCase().split(",").map(x=>x.trim());
+  return s.includes("currently-reading")?"currently-reading":s.includes("to-read")?"to-read":"read";
+}
+async function importGoodreadsFeed(shelf){
+  const msg=q("#grSay");const say=t=>{if(msg)msg.textContent=t;};
+  qa("[data-grshelf]").forEach(b=>b.disabled=true);
+  const rows=[];
+  try{
+    for(let page=1;page<=15;page++){
+      say(`Asking Goodreads for page ${page}…${rows.length?" "+rows.length+" so far":""}`);
+      const got=await fetchGoodreadsFeed(shelf,page);
+      rows.push(...got);
+      if(got.length<200)break;
+    }
+  }catch(e){
+    /* a function that was never deployed dies as a bare "Failed to fetch" —
+       the browser's name for a door with nobody behind it (same as Hardcover) */
+    const em=String(e&&e.message||e);
+    say("Goodreads didn't answer: "+(/failed to fetch/i.test(em)
+      ?"nothing answered at your Supabase — if the one-time setup in goodreads-function.ts hasn't been done yet, this is just that"
+      :em.slice(0,160)));
+    qa("[data-grshelf]").forEach(b=>b.disabled=false);return;}
+  /* newest added first, so what is new on Goodreads is at the top of the list */
+  rows.sort((a,b)=>String(b._added).localeCompare(String(a._added)));
+  const staged=rows.map(fromGoodreads).filter(it=>it.title);
+  const {n,fresh,updated}=stageImportRows(staged);
+  refreshImport();
+  const pend=importQueue.filter(it=>!it.dupe).length,dup=importQueue.filter(it=>it.dupe).length;
+  say(`${n} on that shelf at Goodreads · ${pend} new to your shelf below${dup?` · ${dup} you already have`:""}${updated?` · ${updated} re-read`:""}`);
+  qa("[data-grshelf]").forEach(b=>b.disabled=false);
+  const list=q("#impList");if(list&&n)list.scrollIntoView({block:"start",behavior:"smooth"});
 }
 /* a batch that dies half-way — storage full is the realistic way — used to leave
    the button frozen on "Adding…" with no word of how far it got */
