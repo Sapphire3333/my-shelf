@@ -33,8 +33,10 @@
 <p class="mut">Every screen, at every width, must not scroll sideways. A red cell names what pokes out — click it for details.
 Widths marked ⛶ run with the scrapbook showing, the rest without it, matching how each size is really used. There is no Simple mode any more — the width decides the layout by itself, so every pass is testing the real thing.</p>
 <button id="go">Run the sweep</button>
+<button id="smoke" title="Adds, edits, stages, rates, imports, exports, backs up, deletes and restores a book — for real, in a throwaway database of its own — and merges two devices' game state. Run it before every commit.">Run the smoke</button>
 <span class="mut" id="prog"></span>
 <div id="out"></div>
+<div id="smokeOut"></div>
 <div id="detail"></div>
 <iframe id="frame" width="253"></iframe>
 
@@ -245,6 +247,165 @@ function draw(){
     detail.textContent=td.dataset.k+"\n\n"+(r.offenders||[]).join("\n");
   });
 }
+
+/* ┌─ THE SMOKE RUN ────────────────────────────────────────────────────────┐
+   │ The sweep asks whether every screen LAYS OUT. This asks whether the app  │
+   │ still WORKS: it opens index.html with ?db=smoke — which gives the app a  │
+   │ throwaway database, myShelf-smoke, and no service worker — and then     │
+   │ does the things a reader does, through the app's own functions, checking │
+   │ the result of each: add a book, change its stage from the shelf, rate   │
+   │ it, enter a page, finish it, bring a Goodreads-shaped CSV in, write the │
+   │ CSV out and read it back, back the shelf up and restore it, delete a    │
+   │ book and fetch it back from the bin, merge another device's game state, │
+   │ the change log and the streaks, and draw every screen. Any thrown error │
+   │ or wrong value fails its row and says why. The database is deleted at   │
+   │ the start of every run, so each run begins on an empty shelf.           │
+   │ Run it before every commit: press the button, or call __runSmoke().     │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const SMOKE=`
+  const wait=ms=>new Promise(s=>setTimeout(s,ms));
+  const step=s=>{window.__devStep=s;};
+  const rows=[];const errs=[];
+  window.addEventListener("error",e=>errs.push(String(e.message||e)));
+  window.addEventListener("unhandledrejection",e=>errs.push("unhandled: "+String(e.reason&&e.reason.message||e.reason)));
+  const check=async(name,fn)=>{step(name);try{const note=await fn();rows.push({name,ok:true,note:note||""});}
+    catch(e){rows.push({name,ok:false,note:e&&e.message||String(e)});}};
+  const must=(cond,msg)=>{if(!cond)throw new Error(msg);};
+  const au=document.querySelector("#auLocal");
+  if(au){au.click();await wait(1200);}
+  await wait(500);
+  await check("a throwaway database, empty",async()=>{
+    must(db&&db.name==="myShelf-smoke","opened "+(db&&db.name)+" instead of myShelf-smoke");
+    must(books.length===0,books.length+" books already in it");
+    return db.name;});
+  let id=null;
+  await check("add a book",async()=>{
+    const b=Object.assign(blankBook(uid()),{title:"Smoke Test Book",author:"Smoke Author",pages:100,status:"want",created:Date.now()});
+    books.unshift(b);await dbPut("books",b);id=b.id;
+    const back=await dbGet("books",id);
+    must(back&&back.title==="Smoke Test Book","not found in the store after dbPut");
+    return "id "+id;});
+  await check("stage changed from the shelf",async()=>{
+    await setStatus(id,"reading");const b=books.find(x=>x.id===id);
+    must(statusOf(b)==="reading","status is "+statusOf(b));
+    must(openRead(b),"no open reading was started");
+    must(histLog.some(e=>e.id===id&&(e.what||[]).includes("stage")),"no 'stage' line in the change log");
+    const st=(await dbGet("books",id)).status;must(st==="reading","store says "+st);
+    return "reading, open reading started, logged";});
+  await check("rating from the shelf",async()=>{
+    await setRating(id,"7");const b=books.find(x=>x.id===id);
+    must(b.rating===7,"rating is "+b.rating);
+    must((await dbGet("books",id)).rating===7,"store disagrees");return "★ 7";});
+  await check("a page entered, and a pace",async()=>{
+    const b=books.find(x=>x.id===id);setProgress(b,50);await dbPut("books",b);
+    must(b.progress===50,"progress is "+b.progress);
+    must((b.progLog||[]).length===1,"trail has "+(b.progLog||[]).length+" entries");
+    const p=paceOf(b);must(p&&p.per>0,"no pace worked out");
+    return "p.50 of 100 — "+paceLine(b).replace(/<[^>]*>/g,"").slice(0,60);});
+  await check("finished from the shelf",async()=>{
+    await setStatus(id,"finished");const b=books.find(x=>x.id===id);
+    must(statusOf(b)==="finished","status is "+statusOf(b));
+    must(timesRead(b)===1,"times read is "+timesRead(b));
+    must(lastEnd(b)===todayStr(),"finish date is "+lastEnd(b));return "finished today, read once";});
+  let id2=null;
+  await check("a Goodreads CSV maps in",async()=>{
+    const csv='Title,Author,ISBN13,My Rating,Number of Pages,Date Read,Exclusive Shelf,Bookshelves,Read Count\\r\\n'
+      +'"Smoke, Imported",Import Author,="9781401684877",4,222,2026/03/04,read,"fantasy, slow-burn",1\\r\\n'
+      +'Second Import,Another Author,,0,,,to-read,,0\\r\\n';
+    const {head,items}=csvObjects(csv);
+    must(csvSource(head)==="goodreads","source read as "+csvSource(head));
+    must(items.length===2,items.length+" rows");
+    const g=fromGoodreads(items[0]);
+    must(g.title==="Smoke, Imported","title "+g.title);
+    must(g.rating===8,"rating "+g.rating+" (4 stars should be 8)");
+    must(g.status==="finished"&&g.dateFinished==="2026-03-04","status "+g.status+" / "+g.dateFinished);
+    must(g.isbn==="9781401684877","isbn "+g.isbn);
+    must(g.tags.length===2,"tags "+JSON.stringify(g.tags));
+    const b=Object.assign(blankBook(uid()),g,{created:Date.now()});delete b.id;b.id=uid();
+    books.unshift(b);await dbPut("books",b);id2=b.id;return "2 rows, first added";});
+  await check("the CSV export reads back",async()=>{
+    const {head,items}=csvObjects(csvText());
+    must(csvSource(head)==="goodreads","export not recognised as goodreads");
+    must(items.some(r=>r.Title==="Smoke Test Book")&&items.some(r=>r.Title==="Smoke, Imported"),"a title missing from the export");
+    const r=items.find(r=>r.Title==="Smoke Test Book");
+    must(r["My Rating"]==="4"&&r["Rating (0-10)"]==="7.0","rating columns "+r["My Rating"]+" / "+r["Rating (0-10)"]);
+    return items.length+" rows";});
+  await check("backup, wipe, restore",async()=>{
+    const data=JSON.parse(JSON.stringify(await buildBackup()));
+    must(data.books.length>=2,"backup holds "+data.books.length+" books");
+    for(const bid of [id,id2]){await dbDel("books",bid);const i=books.findIndex(x=>x.id===bid);if(i>=0)books.splice(i,1);}
+    must(!(await dbGet("books",id)),"the wipe did not take");
+    await applyBackup(data);
+    const back=await dbGet("books",id);
+    must(back&&back.rating===7&&back.status==="finished","restored book is wrong: "+JSON.stringify(back&&{rating:back.rating,status:back.status}));
+    must(await dbGet("books",id2),"the imported book did not come back");
+    if(!books.some(x=>x.id===id))books.unshift(back);
+    return "both books back with their fields";});
+  await check("delete to the bin, and restore",async()=>{
+    const b=books.find(x=>x.id===id)||await dbGet("books",id);
+    await removeBook(b);
+    must(!books.some(x=>x.id===id),"still on the shelf");
+    must((await binIds()).includes(id),"not in the bin");
+    await restoreTrash(id);
+    must(books.some(x=>x.id===id),"did not come back");return "binned and restored";});
+  await check("another device's game state merges",async()=>{
+    questInit();
+    const xp0=quests.xp||0;
+    const ch=mergeQuests({xp:xp0+500,buys:[{id:"smoke-buy",kind:"shield",cost:100,at:Date.now()}],
+      week:{wk:questWeek(),k:weekGoalOf(questWeek()).k,got:1,paid:false},shieldDays:[]});
+    must(ch===true,"merge reported no change");
+    must(quests.xp===xp0+500,"xp is "+quests.xp);
+    must((quests.buys||[]).some(b=>b.id==="smoke-buy"),"the purchase did not arrive");
+    must(quests.week.got>=1,"week got is "+quests.week.got);
+    must(mergeQuests({xp:0})===false,"a lesser state changed something");
+    return "xp, purchases and week joined";});
+  await check("the change log merges",async()=>{
+    const n=histLog.length;
+    must(mergeHistLog([{t:Date.now()+1,id:"smoke-remote",title:"Remote",what:["cover"],dev:"phone"}])===true,"nothing added");
+    must(histLog.length===n+1&&histLog[0].id==="smoke-remote","not newest first");
+    return "one remote line, newest first";});
+  await check("streaks recount",async()=>{
+    const t=todayStr();const s={days:{},cur:1,last:t};[3,2,1,0].forEach(k=>s.days[dayBack(t,k)]=1);
+    must(streakFromDays(s).cur===4,"recount gives "+streakFromDays(s).cur);return "4-day chain counts 4";});
+  await check("every screen draws",async()=>{
+    const drawn=[];
+    for(const v of ["overview","care","library","challenges","ach","search","insights","quotes","history","settings"]){
+      view=v;render();await wait(120);
+      must(document.querySelector("#main")&&document.querySelector("#main").children.length>0,v+" drew nothing");drawn.push(v);}
+    settings.bookEdit=false;await openBook(id,false);await wait(200);must(document.querySelector("#vRate"),"reading page did not draw");
+    settings.bookEdit=true;await openBook(id,false);await wait(200);must(document.querySelector("#kindRow")||document.querySelector("#genChips"),"editor did not draw");
+    return drawn.length+" screens, reading page, editor";});
+  await check("no errors thrown on the way",async()=>{must(!errs.length,errs.slice(0,3).join(" | "));return "clean console";});
+  return {rows};
+`;
+async function __runSmoke(){
+  const btn=document.getElementById("smoke");btn.disabled=true;
+  const out=document.getElementById("smokeOut");
+  prog.textContent=" smoke: clearing the throwaway database…";
+  /* the frame may still hold the last run's database open — let it go first */
+  frame.src="about:blank";await new Promise(r=>setTimeout(r,300));
+  await new Promise(r=>{const d=indexedDB.deleteDatabase("myShelf-smoke");d.onsuccess=d.onerror=d.onblocked=()=>r();setTimeout(r,3000);});
+  prog.textContent=" smoke: running…";
+  frame.width=1000;
+  await new Promise(res=>{
+    let done=false;const finish=()=>{if(!done){done=true;res();}};
+    frame.onload=()=>{const t0=Date.now();const poll=setInterval(()=>{let ready=false;
+      try{ready=!!(frame.contentDocument&&frame.contentDocument.querySelector("#app,#auLocal"));}catch(e){}
+      if(ready||Date.now()-t0>20000){clearInterval(poll);finish();}},120);};
+    frame.src="index.html?db=smoke&t="+Date.now();setTimeout(finish,25000);});
+  let res;
+  try{res=await runInFrame(SMOKE);}catch(e){res={ERROR:String(e)};}
+  const rows=res.ERROR?[{name:"the run itself",ok:false,note:res.ERROR}]:res.rows;
+  const bad=rows.filter(r=>!r.ok).length;
+  out.innerHTML='<h2 style="font:600 17px Georgia,serif;margin:18px 0 6px">Smoke run — '
+    +(bad?'<span style="color:#be123c">'+bad+" failed</span>":'<span style="color:#047857">all '+rows.length+" passed</span>")+"</h2>"
+    +"<table>"+rows.map(r=>'<tr><td class="'+(r.ok?"ok":"bad")+'" style="text-align:left">'+(r.ok?"✓":"✗")+" "+r.name+'</td><td style="text-align:left">'+(r.note||"").replace(/</g,"&lt;")+"</td></tr>").join("")+"</table>";
+  window.__smoke={rows,bad};
+  prog.textContent=" smoke: "+(bad?bad+" failed":"all passed")+".";
+  btn.disabled=false;
+  return window.__smoke;
+}
+document.getElementById("smoke").onclick=__runSmoke;
 
 document.getElementById("go").onclick=async()=>{
   document.getElementById("go").disabled=true;
