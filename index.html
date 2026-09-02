@@ -3338,6 +3338,7 @@ const LINK_SITES=[
   [/(^|\.)thestorygraph\.com/,"📊","StoryGraph"],
   [/(^|\.)hardcover\.app/,"📙","Hardcover"],
   [/(^|\.)openlibrary\.org/,"📗","Open Library"],
+  [/(^|\.)anilist\.co/,"🅰","AniList"],
   [/(^|\.)dropbox\.com/,"📦","Dropbox"],
   [/(^|\.)onedrive\.live\.com|(^|\.)1drv\.ms/,"☁️","OneDrive"],
   [/(^|\.)notion\.so/,"📓","Notion"],
@@ -7244,6 +7245,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-03.4",lines:[
+    "<b>Auto-fill has a fourth voice: AniList, for manhwa, webtoons and manga.</b> Asked on every lookup beside the other three, no key needed. It answers to a Korean title as readily as an English one — <i>나 혼자만 레벨업</i> and <i>Solo Leveling</i> are the same book to it — and brings the comic's own cover (first in the row, since it can actually be downloaded), its blurb, genres and tags, who drew and wrote it, the year, the chapter and volume counts, and whether the series is <b>finished</b> or <b>still releasing</b>, all on its own line in the panel. It refuses anything that isn't a comic, by the same rule Hardcover keeps: the hit has to be called what you asked for, or it is turned away as a different book. It knows the comic, not the novel it was drawn from, and it knows no ISBNs. The bulk fill asks it too."]},
   {v:"2026-09-03.3",lines:[
     "<b>Share words and links to My Shelf, not only files.</b> On the phone, select a line in ReadEra — or any app — and Share → My Shelf; share a book's page from the browser the same way. A card shows <i>exactly</i> what arrived, and offers three things: <b>❝ Keep as a quote…</b> on a book you're reading (or any book, through the 🔎 box), <b>＋ Add a book from it</b> (a link's own name is read off its address and ⚡ Quick add opens already filled), or <b>⧉ Copy</b>. The card shows the raw text on purpose: what a reader puts in a shared line isn't known until one has been seen, so the first share is the one that teaches the next build what to read out of it. The app has to be added to the home screen again once for the phone to offer it for text.",
     "<b>Paste to add, on the Library.</b> Ctrl+V with nothing selected: a copied picture opens ⚡ Quick add with the photo already being read; an ISBN opens the ISBN sheet with the number in it; a link or a blurb opens ⚡ Quick add with the box filled and the details read. Pinning pictures with 🖼 Pictures keeps its own paste."]},
@@ -12256,7 +12259,7 @@ async function openBulkFill(ids){
      rather than absent. */
   function srcLine(){
     if(!S.asked)return "";
-    const names=["Google Books","Hardcover","Open Library"]
+    const names=["Google Books","Hardcover","AniList","Open Library"]
       .filter(n=>n!=="Hardcover"||hardcoverOn()||S.srcHit[n]);
     return `<div class="hint" style="margin:6px 0 7px">${
       names.map(n=>`${n} brought something for <b>${S.srcHit[n]||0}</b> of ${S.asked}`).join(" · ")}</div>`;
@@ -30423,6 +30426,46 @@ async function fetchHardcover(title,author,isbn){
     slug:String(doc.slug||"").trim(),
     series:sName,seriesPos:sPos?String(sPos):""};
 }
+/* ---- the fourth voice: AniList, for manhwa, webtoons and manga ----
+   The open database of comics, and it answers a web page directly with no
+   key (measured 2026-09-02: CORS open, covers on s4.anilist.co download).
+   It knows the comic, not the novel it was drawn from, and it knows no
+   ISBNs. Asked by every lookup, it refuses everything that is not a comic
+   by the same rule Hardcover keeps: the hit has to BE the book — one of its
+   three names (English, romanised, native) folded equal to the title asked
+   for — or it is turned away as a different book. What it brings that the
+   other three cannot: the native title, whether the series is FINISHED or
+   still RELEASING, and chapter and volume counts. */
+async function fetchAniList(title,author,isbn){
+  const t=String(title||"").trim();
+  if(!t)return {ok:false,why:"knows no ISBNs — asked by title only"};
+  const j=await fetchJson("https://graphql.anilist.co",1,7000,{
+    method:"POST",
+    headers:{"Content-Type":"application/json","Accept":"application/json"},
+    body:JSON.stringify({query:"query($s:String){Page(perPage:6){media(search:$s,type:MANGA){id siteUrl format status chapters volumes countryOfOrigin startDate{year} title{romaji english native} genres description(asHtml:false) coverImage{extraLarge large} tags{name rank isMediaSpoiler} staff(perPage:4){edges{role node{name{full}}}}}}}",variables:{s:t}})});
+  if(j&&j.errors&&j.errors.length)throw new Error(String(j.errors[0].message||"query refused").slice(0,120));
+  const hits=((j&&j.data&&j.data.Page&&j.data.Page.media)||[]).filter(Boolean);
+  if(!hits.length)return {ok:false,why:"but it doesn't know this one"};
+  const want=softFold(t);
+  const names=m=>[m.title&&m.title.english,m.title&&m.title.romaji,m.title&&m.title.native].map(x=>String(x||"").trim()).filter(Boolean);
+  const m=hits.find(h=>names(h).some(n=>softFold(n)===want));
+  if(!m)return {ok:false,why:"only offered “"+(names(hits[0])[0]||"").slice(0,60)+"” — a different book, refused"};
+  const people=((m.staff&&m.staff.edges)||[]).filter(e=>e&&e.node&&e.node.name&&/story|art|author|original/i.test(String(e.role||"")))
+    .map(e=>String(e.node.name.full||"").trim()).filter((x,i,a)=>x&&a.indexOf(x)===i);
+  const tags=((m.tags)||[]).filter(x=>x&&x.name&&!x.isMediaSpoiler&&(x.rank||0)>=40).sort((a,b)=>(b.rank||0)-(a.rank||0)).map(x=>String(x.name).trim()).slice(0,12);
+  const ci=m.coverImage||{};
+  const st=String(m.status||"");
+  return {ok:true,
+    title:names(m)[0]||t,native:String((m.title&&m.title.native)||"").trim(),
+    author:people.join(", "),
+    blurb:stripHtml(String(m.description||"").replace(/<br\s*\/?>/gi,"\n")).trim(),
+    genres:(m.genres||[]).map(g=>String(g).trim()).filter(Boolean),
+    tags,chapters:parseInt(m.chapters)||"",volumes:parseInt(m.volumes)||"",
+    year:m.startDate&&m.startDate.year?String(m.startDate.year):"",
+    cover:String(ci.extraLarge||ci.large||"").trim(),
+    status:st,released:st==="FINISHED"?"finished":st==="RELEASING"?"still releasing":st?st.toLowerCase().replace(/_/g," "):"",
+    format:String(m.format||""),country:String(m.countryOfOrigin||""),url:String(m.siteUrl||"")};
+}
 /* `probe`, when given, is filled in with what was actually asked — but only on
    the way out of a failure, so it costs nothing when a book is found.
    `quick` drops the one request that is a request of its own — Open Library's
@@ -30439,8 +30482,8 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      else the title is what you searched BY, so nothing ever read it back. Asked
      by number there is nothing on screen to name the book with. */
   const out={title:"",author:"",summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
-    blurbs:[],genres:[],gCovers:[],hcCover:"",series:null,per:[]};
-  let gErr=false,oErr=false,hErr=false;
+    blurbs:[],genres:[],gCovers:[],hcCover:"",alCover:"",anilist:null,series:null,per:[]};
+  let gErr=false,oErr=false,hErr=false,aErr=false;
   /* Both sites are asked at the same moment, and neither is given as long to
      answer. They used to be asked one after the other, each with three
      attempts at a nine-second wait — so a Google that simply hung meant half a
@@ -30467,9 +30510,11 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      owner's own Supabase, and only where one is configured at all */
   const hOn=hardcoverOn();
   const hP=hOn?fetchHardcover(title,author,isbn):null;
+  /* the fourth, AniList — asked at the same moment, no key, comics only */
+  const aP=fetchAniList(title,author,isbn);
   /* all are awaited below; this only stops a rejection being called unhandled
      while another one is still being waited on */
-  gP.catch(()=>{});oP.catch(()=>{});if(hP)hP.catch(()=>{});
+  gP.catch(()=>{});oP.catch(()=>{});if(hP)hP.catch(()=>{});aP.catch(()=>{});
   /* Each site's own settling moment, stamped as it happens — measuring at the
      `await` below would charge the second one waited on for the first one's
      time. This is the readout that turned "auto-fill took twenty seconds and
@@ -30479,6 +30524,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   gP.then(()=>stamp.g=performance.now()-t0,()=>stamp.g=performance.now()-t0);
   oP.then(()=>stamp.o=performance.now()-t0,()=>stamp.o=performance.now()-t0);
   if(hP)hP.then(()=>stamp.h=performance.now()-t0,()=>stamp.h=performance.now()-t0);
+  aP.then(()=>stamp.a=performance.now()-t0,()=>stamp.a=performance.now()-t0);
   /* `say` was taken — it feeds probe.asked further down. This one feeds the
      timings. */
   const tell=(what,ms,ok,note)=>{if(probe)(probe.times=probe.times||[]).push({what,ms:Math.round(ms||0),ok:!!ok,note:note||""});};
@@ -30539,6 +30585,35 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
     tell("Hardcover",stamp.h,false,/failed to fetch/i.test(hm)
       ?"nothing answered at your Supabase — if the one-time setup in hardcover-function.ts hasn't been done yet, this is just that"
       :hm.slice(0,90));}
+  /* ---- AniList, after Hardcover and before Google ----
+     It only ever answers for a comic, and when it does it is the voice that
+     knows the comic: its blurb, genres and tags fill what Hardcover left
+     empty, ahead of Google's catalogue entry for the same title. */
+  try{
+    const a=await aP;
+    if(!a.ok)tell("AniList",stamp.a,true,a.why);
+    else{
+      const bits=[];
+      if(a.blurb&&a.blurb.length>40){out.blurbs.push({text:a.blurb,from:"AniList"});bits.push("a blurb");}
+      if(!out.summary&&a.blurb)out.summary=a.blurb;
+      if(a.genres.length){out.genres.push(...a.genres);bits.push(a.genres.length>1?a.genres.length+" genres":"a genre");}
+      if(a.tags.length){out.tags.push(...a.tags);bits.push(a.tags.length>1?a.tags.length+" tags":"a tag");}
+      if(!out.author&&a.author)out.author=a.author;
+      if(!out.title&&a.title)out.title=a.title;
+      if(!out.year&&a.year)out.year=a.year;
+      if(a.year)bits.push("year");
+      if(a.chapters)bits.push(a.chapters+" chapters");
+      if(a.volumes)bits.push(a.volumes+" volumes");
+      if(a.released)bits.push(a.released);
+      if(a.native&&softFold(a.native)!==softFold(a.title))bits.push("native title "+a.native);
+      if(a.cover){out.alCover=a.cover;bits.push("a cover");}
+      out.anilist={status:a.status,released:a.released,chapters:a.chapters,volumes:a.volumes,native:a.native,format:a.format,country:a.country,url:a.url};
+      if(a.url)out.links.push({name:"AniList",url:a.url});
+      out.source.push("AniList");
+      out.per.push({src:"AniList",bits});
+      tell("AniList",stamp.a,true);
+    }
+  }catch(e){aErr=true;tell("AniList",stamp.a,false,String(e&&e.message||"").slice(0,90));}
   try{
     const j=await gP;
     const items=(j.items||[]).map(x=>x.volumeInfo||{});
@@ -30725,7 +30800,11 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   /* Hardcover's cover sits between the two: its host is untested for
      downloads, so Open Library's — which are known to allow them — go first,
      and Google's known refusers stay last */
-  out.covers=[out.olCover,
+  /* AniList's cover goes FIRST when it answered: it is the comic's own
+     cover, it downloads (measured), and on a manhwa Open Library's, when it
+     has one at all, is usually a novel's */
+  out.covers=[out.alCover||"",
+    out.olCover,
     isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
     ...(out.olCovers||[]),
     out.hcCover||"",
@@ -30737,7 +30816,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      thinner — no Google means no Google blurb, no tidy categories — and nothing
      anywhere said so, which is indistinguishable from the books simply being
      thin. Now the run can count it and tell you. */
-  out.gErr=gErr;out.oErr=oErr;out.hErr=hErr;
+  out.gErr=gErr;out.oErr=oErr;out.hErr=hErr;out.aErr=aErr;
   if(out.summary||out.tags.length||out.pages||out.covers.length||out.title||out.author){
     /* A title-only ask has nothing corroborating it, so it has to earn the
        answer. Searching "Beware of the Ghost" without an author returned
@@ -30758,6 +30837,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   say(`Google Books · ${qs}${gErr?" · no answer at all (out of quota, or offline)":" · nothing matched"}`);
   say(`Open Library · ${isbn?"isbn "+isbn:`title “${title}”${author?`, author “${author}”`:""}`}${oErr?" · no answer at all":" · nothing matched"}`);
   if(hOn)say(`Hardcover · ${isbn?"isbn "+isbn:`“${title}”${author?" "+author:""}`}${hErr?" · no answer at all":" · nothing matched"}`);
+  say(`AniList · ${title?`“${title}”`:"nothing to ask with — it knows no ISBNs"}${aErr?" · no answer at all":" · nothing matched (it knows comics only)"}`);
   /* And ask again without the author. The author is a hard constraint at both
      sites — Google's inauthor:"…" and Open Library's author= each demand a
      match — so a collection whose author is a series name, a publisher, or
