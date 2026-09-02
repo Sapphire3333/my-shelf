@@ -7032,6 +7032,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-02.11",lines:[
+    "<b>How you use the app now says what you press, not only where the minutes go.</b> Under the screens in ✨ Insights: every button counted by the words on it — the thirty most pressed with a bar each, and then the list that answers the real question, <i>seen on screen and never pressed</i>. Counted on this device from now; the phone keeps its own. A row or tile opened counts once as a whole, and buttons with only a picture on them are counted under their tooltip."]},
   {v:"2026-09-02.10",lines:[
     "<b>Your level has a name now, and XP can buy things.</b> Page-Turner at one, Chapter Chaser at five, Keeper of the Stacks at ten, Legend of the Shelf at fifteen — on the ⚡ chip's card and the tasks card. The names are a first draft; say the word and any of them changes.",
     "What XP buys, without ever lowering the level (the level counts what you <i>earned</i>; spending comes off a wallet beside it): a <b>🛡 streak shield</b> for 100 XP, one in hand at a time, which covers one more missed day for all three runs and spends itself the moment a run would otherwise break; and <b>↻ a task redrawn</b> for 20 XP, on any of today's three you genuinely can't do — once per task, the same replacement on both screens.",
@@ -8703,8 +8705,59 @@ function useTick(newView){
     useView=newView;
   }
   useT0=now;
+  scheduleSeen();
   clearTimeout(usageTimer);
   usageTimer=setTimeout(()=>{dbPut("meta",{k:"usage",v:usage}).catch(()=>{});},2000);
+}
+/* ---- what you press ----
+   The tabs say where the time goes; this says which controls actually get
+   used, which is the question "what is redundant" really asks. Every press on
+   a <button> is counted under its LABEL — the words on it with counts and
+   numbers taken out, so "Finished 341" and "Finished 342" are one button; an
+   icon-only one is counted under its tooltip. A row or tile opened is counted
+   once as a whole, not under the book's name. And the labels merely SEEN on a
+   drawn screen are kept too, so the card can say which buttons have been in
+   front of you and never once pressed. Per device, like the minutes. */
+const PRESS_MAX=400,SEEN_MAX=600;
+function pressLabel(el){
+  let s=String(el.textContent||"").replace(/\s+/g," ").replace(/\b\d[\d.,:%]*\b/g,"").replace(/[×✕✓▸▾▴]\s*$/,"").replace(/\s+/g," ").trim();
+  if(s.length<2)s=String(el.getAttribute("title")||el.getAttribute("aria-label")||"").replace(/\s+/g," ").trim();
+  if(!s)return "";
+  return s.length>48?s.slice(0,47)+"…":s;
+}
+document.addEventListener("click",e=>{
+  if(!usage)return;
+  const b=e.target.closest&&e.target.closest("button,[data-open]");
+  if(!b)return;
+  const label=b.matches("[data-open]")&&!b.matches("button")?"Open a book from its row or tile":pressLabel(b);
+  if(!label)return;
+  usage.presses=usage.presses||{};
+  const p=usage.presses[label];
+  if(p){p.n++;p.last=Date.now();}
+  else{
+    if(Object.keys(usage.presses).length>=PRESS_MAX)return;
+    usage.presses[label]={n:1,last:Date.now()};
+  }
+  clearTimeout(usageTimer);
+  usageTimer=setTimeout(()=>{dbPut("meta",{k:"usage",v:usage}).catch(()=>{});},2000);
+},true);
+/* the labels on screen, gathered a moment after a draw settles — bounded, so
+   a Library page of two hundred rows costs one pass and not one per row */
+let seenTimer=0;
+function scheduleSeen(){
+  clearTimeout(seenTimer);
+  seenTimer=setTimeout(()=>{
+    if(!usage)return;
+    usage.seen=usage.seen||{};
+    const els=document.querySelectorAll("button");
+    const n=Math.min(els.length,3000);
+    let added=0;
+    for(let i=0;i<n;i++){
+      const l=pressLabel(els[i]);
+      if(l&&!usage.seen[l]){if(Object.keys(usage.seen).length>=SEEN_MAX)break;usage.seen[l]=1;added++;}
+    }
+    if(added){clearTimeout(usageTimer);usageTimer=setTimeout(()=>{dbPut("meta",{k:"usage",v:usage}).catch(()=>{});},2000);}
+  },900);
 }
 document.addEventListener("visibilitychange",()=>{
   if(document.visibilityState==="hidden")useTick(null);
@@ -19945,7 +19998,28 @@ function usageCardHtml(){
         <span class="prog" style="flex:1 1 60px;min-width:40px;max-width:260px"><i style="width:${Math.round(r.s/max*100)}%"></i></span>
         <span class="hint" style="flex:0 0 auto">${r.s?fmt(r.s):"—"}${r.n?` · ${r.n}×`:""}</span></div>`).join("")}
       ${untouched.length?`<div class="hint" style="margin:9px 0 0">Not opened since counting began: ${esc(untouched.join(", "))}.</div>`:""}
-    </div></div>`;
+    </div>
+    ${(()=>{
+      /* what you press: the thirty most-pressed, and what has stood in front
+         of you and never been pressed — the honest answer to "what is
+         redundant", read off this device */
+      const pr=Object.entries(usage.presses||{}).sort((a,b)=>b[1].n-a[1].n);
+      const seen=Object.keys(usage.seen||{}).filter(l=>!(usage.presses||{})[l]).sort((a,b)=>a.localeCompare(b));
+      if(!pr.length&&!seen.length)return "";
+      const pmax=Math.max(1,...pr.slice(0,30).map(x=>x[1].n));
+      return `<div class="hcard" style="margin-top:9px">
+        <div class="hrow2" style="margin:0 0 6px"><b style="font-size:13.5px">What you press</b>
+          <span class="hint" style="margin:0">every button, by the words on it — counted on this device since ${esc(fmtEdited(usage.since))}</span></div>
+        ${pr.length?pr.slice(0,30).map(([l,v])=>`<div class="hrow2" style="gap:9px;margin:2px 0;flex-wrap:nowrap">
+          <span style="flex:0 0 46%;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(l)}">${esc(l)}</span>
+          <span class="prog" style="flex:1 1 40px;min-width:30px;max-width:220px;height:7px"><i style="width:${Math.round(v.n/pmax*100)}%"></i></span>
+          <span class="hint" style="flex:0 0 auto">${v.n}×</span></div>`).join("")
+          :`<div class="hint">Nothing counted yet — presses start counting from now.</div>`}
+        ${pr.length>30?`<div class="hint" style="margin-top:4px">…and ${pr.length-30} more, pressed less often.</div>`:""}
+        ${seen.length?`<div class="hint" style="margin-top:9px"><b>Seen on screen and never pressed</b> (${seen.length}): ${esc(seen.slice(0,60).join(" · "))}${seen.length>60?" · …":""}</div>`:""}
+      </div>`;
+    })()}
+    </div>`;
 }
 
 /* =============== editor =============== */
