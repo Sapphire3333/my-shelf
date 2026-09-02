@@ -21,6 +21,16 @@
 // with — nothing to paste into the app itself, on any device. If a lookup's
 // "Hardcover didn't answer" line ever names this file or the secret, one of
 // the three steps above is the thing to check.
+//
+// When this file changes, do step 2 again: open the function in the editor,
+// replace its code with this file, Deploy. The secret stays.
+//
+// Two shapes of ask, both read-only:
+//   { query: "words" }              — the book search the lookup makes
+//   { gql: "query …", variables }  — a plain GraphQL query, used for the
+//                                    books of a series. A mutation is refused
+//                                    at the door: nothing here ever writes to
+//                                    your Hardcover shelf.
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -35,11 +45,15 @@ const say = (status: number, body: unknown) =>
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-  let q = "";
+  let q = "", gql = "", variables: unknown = null;
   try {
-    q = String((await req.json()).query || "").slice(0, 300);
+    const body = await req.json();
+    q = String(body.query || "").slice(0, 300);
+    gql = String(body.gql || "").slice(0, 4000);
+    variables = body.variables ?? null;
   } catch (_e) { /* an unreadable body falls through to the check below */ }
-  if (!q.trim()) return say(400, { error: "no query" });
+  if (!q.trim() && !gql.trim()) return say(400, { error: "no query" });
+  if (gql.trim() && /\bmutation\b/i.test(gql)) return say(400, { error: "only queries are passed through — nothing here writes to your shelf" });
 
   let token = (Deno.env.get("HARDCOVER_TOKEN") || "").trim();
   if (!token) {
@@ -59,10 +73,12 @@ Deno.serve(async (req) => {
       "Authorization": token,
       "User-Agent": "My Shelf (personal library, single user)",
     },
-    body: JSON.stringify({
-      query: 'query ($q: String!) { search(query: $q, query_type: "Book", per_page: 5, page: 1) { results } }',
-      variables: { q },
-    }),
+    body: JSON.stringify(gql.trim()
+      ? { query: gql, variables: variables && typeof variables === "object" ? variables : {} }
+      : {
+        query: 'query ($q: String!) { search(query: $q, query_type: "Book", per_page: 5, page: 1) { results } }',
+        variables: { q },
+      }),
   });
   // Passed through as-is, status and all — the app reads Hardcover's own
   // error wording out of the body, which is what makes failures diagnosable

@@ -7245,6 +7245,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-03.5",lines:[
+    "<b>Hardcover can hand you the rest of a series.</b> On a book's page, open the series line and press <b>📙 The missing ones, from Hardcover</b>: it fetches Hardcover's list of that series, works out which you haven't got — by title, and by number — names them, and on your yes puts them on the shelf as ⌛ Don't have it yet, numbered, in the series, with their covers where Hardcover has them. One press of ↶ Undo takes them all back; the books you already had are not touched. In a collection's editor, <b>📋 The rest of the series…</b> has grown <b>📙 Ask Hardcover instead</b>, which writes Hardcover's list into the box for the same filing the paste gets — no chat, no copying.",
+    "<b>This needs the function pasted into Supabase once more</b> — hardcover-function.ts learnt a second, read-only kind of ask. Until that is done the button says <i>Hardcover didn't answer</i> and names the reason. Nothing here can ever write to your Hardcover shelf: a mutation is refused at the door."]},
   {v:"2026-09-03.4",lines:[
     "<b>Auto-fill has a fourth voice: AniList, for manhwa, webtoons and manga.</b> Asked on every lookup beside the other three, no key needed. It answers to a Korean title as readily as an English one — <i>나 혼자만 레벨업</i> and <i>Solo Leveling</i> are the same book to it — and brings the comic's own cover (first in the row, since it can actually be downloaded), its blurb, genres and tags, who drew and wrote it, the year, the chapter and volume counts, and whether the series is <b>finished</b> or <b>still releasing</b>, all on its own line in the panel. It refuses anything that isn't a comic, by the same rule Hardcover keeps: the hit has to be called what you asked for, or it is turned away as a different book. It knows the comic, not the novel it was drawn from, and it knows no ISBNs. The bulk fill asks it too."]},
   {v:"2026-09-03.3",lines:[
@@ -21975,8 +21978,9 @@ function seriesPanelHtml(b){
       </button>`;}).join("")}
     ${missing?`<div class="hint" style="margin:5px 0 0">${mates.length} of ${denom} are on your shelf — ${missing} you haven't got${next?"":"."}</div>`:""}
     ${next?`<div class="hint" style="margin:5px 0 0">Next unread: <b>${esc(next.title)||"Untitled"}</b></div>`:""}
-    <div class="hrow2" style="margin-top:7px">
+    <div class="hrow2" style="margin-top:7px;flex-wrap:wrap">
       <button class="btn smallbtn" id="vSerAll" title="Show every book under this name in Search">🔎 All of them together</button>
+      ${hardcoverOn()?`<button class="btn smallbtn" id="vSerHc" title="Ask Hardcover for the books of this series and add the ones you haven't got as ⌛ Don't have it yet — it asks first">📙 The missing ones, from Hardcover</button>`:""}
     </div>
   </div>`;
 }
@@ -22802,7 +22806,9 @@ function renderBookView(){
      const s=seriesShown(b);if(!s)return;
      S.q="";S.multi=[];S.kmulti=[];S.filter={type:"series",value:s,label:s};
      keepMyPlace();view="search";render();window.scrollTo(0,0);
-   };}
+   };
+   const hb=q("#vSerHc");
+   if(hb)hb.onclick=e=>{e.stopPropagation();fetchSeriesMissing(b);};}
   /* ---- moving a tag between the collection and the stories in it ----
      Because tags add rather than replace, both directions are a plain move with
      nothing lost: up takes it off every story and puts it on the collection,
@@ -26622,6 +26628,7 @@ function renderEditor(){
         <button class="btn" id="spX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
       <div class="hint" style="margin:0 0 8px">Ask Claude for the missing books, one per line as <b>#4 The Title</b>, and paste the answer here. Chatter around the list is ignored, stories you already have are skipped, and everything new arrives marked ★ Want to read.</div>
       <button class="btn" id="spAsk" style="margin-bottom:9px">📋 Copy a message that asks for exactly this</button>
+      ${hardcoverOn()?`<button class="btn" id="spHc" style="margin-bottom:9px;margin-left:6px" title="Hardcover's own list of this series, written into the box below — the ones you have are skipped the same way">📙 Ask Hardcover instead</button>`:""}
       <textarea id="spText" placeholder="#4 The next book&#10;#5 The one after"></textarea>
       <div class="hint" id="spSay" style="margin:8px 0 0">Nothing yet</div>
       <div class="hrow2" style="margin-top:9px"><button class="btn pri" id="spGo" style="margin-left:auto" disabled>Add them</button></div>`;
@@ -26663,6 +26670,19 @@ function renderEditor(){
     q("#spAsk",wrap).onclick=async()=>{
       try{await navigator.clipboard.writeText(ask);q("#spAsk",wrap).textContent="✓ Copied — paste it to Claude";}
       catch(e){prompt("Copy this:",ask);}
+    };
+    /* Hardcover's list into the same box, so the same parser and the same
+       skipping of what is already inside do the filing — see fetchHardcoverSeries */
+    const hb=q("#spHc",wrap);
+    if(hb)hb.onclick=async()=>{
+      hb.disabled=true;hb.textContent="📙 Asking Hardcover…";
+      try{
+        const r=await fetchHardcoverSeries(sName);
+        if(!r.ok){hb.textContent="📙 Hardcover "+r.why;return;}
+        ta.value=r.books.map(x=>(x.pos?"#"+x.pos+" ":"")+x.title).join("\n");
+        refresh();
+        hb.textContent=`📙 Hardcover lists ${r.books.length} in “${r.name}”`;
+      }catch(e){hb.textContent="📙 Hardcover didn't answer: "+String(e&&e.message||e).slice(0,70);}
     };
     go.onclick=()=>{
       const {fresh}=parse();if(!fresh.length)return;
@@ -30425,6 +30445,102 @@ async function fetchHardcover(title,author,isbn){
     cover:String((img&&typeof img==="object"?img.url:img)||"").trim(),
     slug:String(doc.slug||"").trim(),
     series:sName,seriesPos:sPos?String(sPos):""};
+}
+/* ---- the rest of a series, from Hardcover ----
+   The edge function takes a read-only GraphQL query beside its search
+   (hardcover-function.ts, {gql, variables}). This asks for every series
+   called the name and takes the one whose name folds equal with the most
+   books, else the fullest. The full ask names the fields a book carries;
+   if Hardcover's schema turns a field away, the thin ask — title, position
+   and slug only — is tried before giving up, so a renamed field costs a
+   cover, not the feature. Both go through hcSlot like every Hardcover ask. */
+async function fetchHardcoverSeries(name){
+  const nm=String(name||"").trim();
+  if(!nm)return {ok:false,why:"has no series name to ask with"};
+  const base=String(CFG.url||"").replace(/\/+$/,"");
+  const ask=async gql=>{
+    await hcSlot();
+    const j=await fetchJson(base+"/functions/v1/hardcover",1,12000,{method:"POST",
+      headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+CFG.anonKey},
+      body:JSON.stringify({gql,variables:{name:nm}})});
+    if(j&&j.error)throw new Error(String(j.error).slice(0,160));
+    if(j&&j.errors&&j.errors.length)throw new Error(String(j.errors[0].message||"query refused").slice(0,160));
+    return (j&&j.data&&j.data.series)||[];
+  };
+  /* the function as first deployed knows only {query}; it answers this ask
+     with "no query", which read as a broken network and is really the
+     one-time re-paste */
+  const askSaid=async gql=>{try{return await ask(gql);}
+    catch(e){if(/no query/i.test(String(e&&e.message||"")))throw new Error("your Supabase still runs the first version of the function — paste hardcover-function.ts in again (its step 2)");throw e;}};
+  const FULL="query ($name: String!) { series(where: {name: {_ilike: $name}}, limit: 5) { id name books_count primary_books_count book_series(order_by: {position: asc}, limit: 80) { position book { id title slug release_year pages image { url } contributions { author { name } } } } } }";
+  const THIN="query ($name: String!) { series(where: {name: {_ilike: $name}}, limit: 5) { id name books_count book_series(order_by: {position: asc}, limit: 80) { position book { id title slug } } } }";
+  let rows,thin=false;
+  try{rows=await askSaid(FULL);}
+  catch(e){
+    /* the message Hasura writes when a field is not there; anything else is
+       a real failure and is said as itself */
+    if(!/field|unknown|not found|cannot query|validation/i.test(String(e&&e.message||"")))throw e;
+    rows=await askSaid(THIN);thin=true;
+  }
+  if(!rows.length)return {ok:false,why:"knows no series called that"};
+  const want=softFold(nm);
+  const pick=rows.map(s=>({s,n:((s&&s.book_series)||[]).length,same:softFold(s&&s.name)===want?1:0}))
+    .sort((a,b)=>(b.same-a.same)||(b.n-a.n))[0].s;
+  const list=((pick.book_series)||[]).map(bs=>{
+    const b=(bs&&bs.book)||{},img=b.image;
+    return {pos:(bs&&bs.position!=null)?String(bs.position):"",title:String(b.title||"").trim(),slug:String(b.slug||"").trim(),
+      year:b.release_year?String(b.release_year).slice(0,4):"",pages:parseInt(b.pages)||"",
+      cover:String((img&&typeof img==="object"?img.url:img)||"").trim(),
+      author:((b.contributions)||[]).map(c=>c&&c.author&&c.author.name).filter(Boolean).join(", ")};
+  }).filter(x=>x.title);
+  return {ok:true,name:String(pick.name||nm),count:parseInt(pick.primary_books_count||pick.books_count)||list.length,books:list,thin};
+}
+/* The missing books of a SERIES — separate books linked by name — brought
+   onto the shelf from Hardcover's list as ⌛ Don't have it yet, numbered, with
+   their covers where Hardcover has them, after a confirm that names them.
+   What is already here is told by title (titleKey, then softFold) or by
+   number, so a spelling Hardcover disagrees with does not become a second
+   copy of a book you have. One press, one bulk op; ↶ Undo takes them all
+   back. The books already on the shelf are not touched — a number or a total
+   written by hand is never overwritten (the rule the series editor keeps). */
+async function fetchSeriesMissing(b){
+  const s=seriesShown(b);if(!s)return;
+  const btn=q("#vSerHc");
+  const say=t=>{if(btn)btn.textContent=t;};
+  if(btn)btn.disabled=true;
+  say("📙 Asking Hardcover…");
+  let r;
+  try{r=await fetchHardcoverSeries(s);}
+  catch(e){say("📙 Hardcover didn't answer: "+String(e&&e.message||e).slice(0,80));return;}
+  if(!r.ok){say("📙 Hardcover "+r.why);return;}
+  const mates=seriesMates(b);
+  const haveK=new Set(mates.map(x=>titleKey(x.title))),haveF=new Set(mates.map(x=>softFold(x.title)));
+  const havePos=new Set(mates.map(x=>parseFloat(x.seriesNum)).filter(n=>isFinite(n)).map(String));
+  const missing=r.books.filter(x=>!haveK.has(titleKey(x.title))&&!haveF.has(softFold(x.title))
+    &&!(x.pos&&isFinite(parseFloat(x.pos))&&havePos.has(String(parseFloat(x.pos)))));
+  if(!missing.length){say(`📙 Hardcover lists ${r.books.length} in “${r.name}” — you have them all`);return;}
+  const lines=missing.map(x=>(x.pos?"#"+x.pos+" ":"")+x.title).join("\n");
+  if(!confirm(`Hardcover lists ${r.books.length} in “${r.name}”. Add these ${missing.length} to the shelf as ⌛ Don't have it yet, in “${s}”?\n\n${lines}`)){
+    say("📙 The missing ones, from Hardcover");if(btn)btn.disabled=false;return;
+  }
+  say(`📙 Adding ${missing.length}, fetching covers…`);
+  const author=String(b.author||"").trim();
+  const items=[];
+  for(const x of missing){
+    const nb=blankBook(uid());
+    nb.title=x.title;nb.author=x.author||author;nb.series=s;nb.seriesNum=x.pos;
+    if(r.count)nb.seriesTotal=String(r.count);
+    nb.status="want";nb.unowned=true;nb.pages=x.pages||"";
+    if(x.slug)nb.hcSlug=x.slug;
+    nb.modified=Date.now();
+    if(x.cover){try{const data=await fetchCoverData([x.cover]);if(data){await dbPut("covers",{id:nb.id,data});coverCache.delete(nb.id);nb.coverV=Date.now();}}catch(e){}}
+    await dbPut("books",nb);books.unshift(nb);
+    items.push({id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))});
+    if(SYNC.on){enqueue({kind:"book",id:nb.id});if(nb.coverV)enqueue({kind:"cover",id:nb.id});}
+  }
+  pushOp({t:"bulk",items});
+  if(SYNC.on)flushQueue();
+  refreshShelfSub();renderBookView();
 }
 /* ---- the fourth voice: AniList, for manhwa, webtoons and manga ----
    The open database of comics, and it answers a web page directly with no
