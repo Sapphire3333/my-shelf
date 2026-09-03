@@ -7294,6 +7294,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-04.4",lines:[
+    "<b>A shelf of your own no longer arrives marked Finished — sorry.</b> Asking Goodreads for one of your own shelves brings back books that name that shelf and nothing else: measured, every book of <i>fanfics</i> said only “fanfics”. The app took the shelf you asked for as the stage, and anything that wasn't to-read or currently-reading fell through to Read — so a whole shelf of want-to-read books arrived as finished. Read is the one shelf Goodreads never names (it is the absence of the others), so it may only be concluded from <b>Everything</b>. Books from a shelf of your own now wait as <b>★ Want to read</b>, the card says so, and pressing Everything afterwards puts each one's real stage in place — a guessed stage never overwrites a known one.",
+    "<b>And the stage can be set on many books at once.</b> ☑ Select books → <b>📖 a stage…</b>, beside the genre and keyword buttons: it names the number, and one press of ↶ Undo puts them all back. <b>To mend a shelf that came in wrong:</b> 📚 Library → <b>⭱ Straight from an import</b> → ☑ Select books → ✓ Tick all → 📖 a stage… → ★ Want to read."]},
   {v:"2026-09-04.3",lines:[
     "<b>Your own Goodreads shelves are buttons too.</b> Press <b>Everything</b> once and the shelves you made yourself — <i>looks-interesting</i>, <i>fanfics</i>, <i>to-add-later</i>, <i>did-not-finish</i> — join the row by themselves, because every book the feed hands over names the shelves it sits on. (A shelf asked for on its own only ever names itself, which is why Everything is the one that teaches them.) <b>＋ a shelf…</b> takes one by name if you'd rather not wait. Goodreads spells them without the star its own sidebar draws.",
     "<b>Everything now reaches your whole library.</b> It stopped at fifteen pages of two hundred — three thousand books — and said nothing about the rest. Forty pages now, and if even that runs out it says so and points at the export file.",
@@ -12872,6 +12875,7 @@ function renderLibrary(){
         <button class="btn" id="selGen" ${libSel.size?"":"disabled"}>🏷 a genre…</button>
         <button class="btn" id="selAud" ${libSel.size?"":"disabled"}>👥 an audience…</button>
         <button class="btn" id="selKw" ${libSel.size?"":"disabled"}>＋ a keyword…</button>
+        <button class="btn" id="selSt" ${libSel.size?"":"disabled"} title="Set the stage on every ticked book at once — one step of ↶ Undo puts them all back">📖 a stage…</button>
       </div>
       <div class="hrow2" style="margin-top:7px">
         <button class="btn" id="selFill" ${libSel.size?"":"disabled"} title="Look every ticked book up on Google Books and Open Library, and fill in what is still blank">🔎 Fill them in from the internet…</button>
@@ -13329,6 +13333,29 @@ function renderLibrary(){
     if(sf)sf.onclick=()=>openBulkFill([...libSel]);
     const sd=q("#selDel",m);
     if(sd)sd.onclick=()=>deleteTicked();
+    /* the stage, on every ticked book at once. The flags are set rather than
+       toggled — markStatus flips ⏸ ⌛ ✕ and asks before a re-read, which is
+       right for one book and wrong for four hundred — and applyReading then
+       opens or closes the reading exactly as a single press would. */
+    const sst=q("#selSt",m);
+    const ST_BULK=[["★ Want to read","want"],["📖 Reading now","reading"],["✓ Finished","finished"],
+      ["⏸ On hold","hold"],["✕ Did not finish","dnf"],["⌛ Don't have it yet","unowned"]];
+    if(sst)sst.onclick=()=>openApply("Which stage",ST_BULK.map(x=>x[0]),lbl=>{
+      const k=(ST_BULK.find(x=>x[0]===lbl)||[])[1];if(!k)return;
+      if(!confirm(`Set ${libSel.size} book${libSel.size===1?"":"s"} to ${lbl}?\n\nOne press of ↶ Undo puts them all back.`))return;
+      applyToSel(b=>{
+        if(k==="hold"){b.hold=true;b.dnf=false;}
+        else if(k==="dnf"){b.dnf=true;b.hold=false;}
+        else if(k==="unowned"){b.unowned=true;}
+        else{
+          b.status=k;b.dnf=false;b.hold=false;
+          if(k==="reading"||k==="finished")b.unowned=false;
+          if((k==="reading"||k==="finished")&&inUpNext(b))delete b.upnext;
+          if(k==="finished")finishProgress(b);
+        }
+        applyReading(b,statusOf(b),b.dnf||b.hold);
+      });
+    });
     const sk=q("#selKw",m);
     if(sk)sk.onclick=()=>openApply("Which keyword",[...new Set(books.flatMap(allKeywordsOf))].sort((a,b)=>a.localeCompare(b)),k=>{
       unmarkMetaDel("kw:"+k);   /* its two neighbours above do; a standing mark strips the word's colour and family on every pull */
@@ -29743,7 +29770,12 @@ function fromGoodreads(o){
        feed — the one name that cannot drift between the two (see impKeys) */
     grId:String(o["Book Id"]||"").trim(),
     isbn:cleanIsbn(o["ISBN13"]||o["ISBN"]),
-    status:shelf==="currently-reading"?"reading":shelf==="to-read"?"want":"finished",dnf,
+    /* no shelf named means nobody knows the stage — see grShelfOf. It waits
+       as ★ Want to read, which is what a shelf of your own nearly always
+       holds, and says so: `stageGuess` keeps it from overwriting a stage the
+       app actually knows when the same book arrives again. */
+    status:shelf==="currently-reading"?"reading":shelf==="to-read"?"want":shelf?"finished":"want",dnf,
+    stageGuess:!shelf,
     rating:r>0?Math.min(10,r*2):null,
     pages:parseInt(o["Number of Pages"]||"")||"",
     dateFinished:cleanDate(o["Date Read"]),
@@ -30522,8 +30554,12 @@ const impKeys=it=>{
    ones an export left behind — the old rule, "the file is what is true",
    was written when a row could only ever come from one file. */
 const impMerge=(old,it)=>{
+  /* a stage the app only guessed at — a shelf of your own says nothing about
+     whether you have read the book — never overwrites one it knows */
+  const guessing=!!it.stageGuess&&!old.stageGuess;
   Object.keys(it).forEach(k=>{
     if(k==="id")return;
+    if(guessing&&(k==="status"||k==="dnf"||k==="stageGuess"))return;
     const v=it[k];
     if(v===""||v==null)return;
     if(Array.isArray(v)&&!v.length)return;
@@ -30642,9 +30678,17 @@ function grDate(s){if(!s)return "";const d=new Date(s);return isNaN(d)?"":d.toIS
    the shelves the book is on, exclusive one included, and when the feed was
    asked for one shelf that shelf is the answer */
 function grShelfOf(shelves,asked){
-  if(asked&&asked!=="#ALL#")return asked;
-  const s=String(shelves||"").toLowerCase().split(",").map(x=>x.trim());
-  return s.includes("currently-reading")?"currently-reading":s.includes("to-read")?"to-read":"read";
+  const s=String(shelves||"").toLowerCase().split(",").map(x=>x.trim()).filter(Boolean);
+  if(s.includes("currently-reading"))return "currently-reading";
+  if(s.includes("to-read"))return "to-read";
+  /* Goodreads never names the read shelf — read is the ABSENCE of the others
+     — so "read" may only be concluded when the ask covered every shelf. A
+     shelf of your own names only itself (measured 2026-09-04: asking for
+     fanfics, every item's user_shelves said "fanfics" and nothing else), so
+     it says nothing about whether the book has been read, and taking the ask
+     as the stage marked a whole shelf of want-to-read books as Finished. */
+  if(asked&&!GR_FIXED.has(asked))return "";
+  return "read";
 }
 async function importGoodreadsFeed(shelf){
   const msg=q("#grSay");const say=t=>{if(msg)msg.textContent=t;};
@@ -30686,6 +30730,7 @@ async function importGoodreadsFeed(shelf){
     +(merged?` ${merged} row${merged===1?"":"s"} that had been listed twice joined up.`:"")
     +` The list holds ${importQueue.length}: ${pend} to pick from${dup?`, ${dup} already on your shelf`:""}.`
     +(capped?` That is as far as ${GR_PAGE_MAX} pages reach — the newest first; an export file carries the rest.`:"")
+    +(GR_FIXED.has(shelf)?"":` A shelf of your own doesn't say whether you've read them, so they wait as ★ Want to read — press Everything and each one's real stage takes its place.`)
     +grBuiltLine(built));
   qa("[data-grshelf]").forEach(b=>b.disabled=false);
   const list=q("#impList");if(list&&n)list.scrollIntoView({block:"start",behavior:"smooth"});
