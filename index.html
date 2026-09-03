@@ -7287,6 +7287,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-03.12",lines:[
+    "<b>📙 The missing ones, from Hardcover — measured against the real thing and mended.</b> Hardcover refused the first ask outright, so the series is now found through Hardcover's own search and then asked for by its number. Its list files every edition and translation under the same position — six “#1”s for one book, a box set among them — so it is one book per position now: box sets out, then the most-read edition, then a title in your alphabet over another. And the fullest series of a name is not always yours — <i>The Scholomance</i> is Novik's three books and somebody's twelve-part manga — so the author on your shelf settles which. Winternight came back as its three, Small Spaces as its four, Wingfeather as its four plus the three companions."]},
   {v:"2026-09-03.11",lines:[
     "<b>Waiting for the next one can ask AniList whether the next one exists.</b> The card on Today has <b>🅰 Ask AniList about these</b>: one press asks about every book on it, and under each row it says what came back — <i>still releasing</i>, <i>finished — the next part may be out</i>, on hiatus, or that AniList doesn't know the book — with the chapter and volume counts and the day it was checked. Any Auto-fill that AniList answered writes the same line onto the book by itself. It knows manhwa, webtoons and manga, not novels, and it says so rather than guessing."]},
   {v:"2026-09-03.10",lines:[
@@ -26824,7 +26826,7 @@ function renderEditor(){
     if(hb)hb.onclick=async()=>{
       hb.disabled=true;hb.textContent="📙 Asking Hardcover…";
       try{
-        const r=await fetchHardcoverSeries(sName);
+        const r=await fetchHardcoverSeries(sName,by);
         if(!r.ok){hb.textContent="📙 Hardcover "+r.why;return;}
         ta.value=r.books.map(x=>(x.pos?"#"+x.pos+" ":"")+x.title).join("\n");
         refresh();
@@ -30685,46 +30687,92 @@ async function fetchHardcover(title,author,isbn){
    if Hardcover's schema turns a field away, the thin ask — title, position
    and slug only — is tried before giving up, so a renamed field costs a
    cover, not the feature. Both go through hcSlot like every Hardcover ask. */
-async function fetchHardcoverSeries(name){
+async function fetchHardcoverSeries(name,author){
   const nm=String(name||"").trim();
   if(!nm)return {ok:false,why:"has no series name to ask with"};
   const base=String(CFG.url||"").replace(/\/+$/,"");
-  const ask=async gql=>{
+  const ask=async(gql,variables)=>{
     await hcSlot();
     const j=await fetchJson(base+"/functions/v1/hardcover",1,12000,{method:"POST",
       headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+CFG.anonKey},
-      body:JSON.stringify({gql,variables:{name:nm}})});
+      body:JSON.stringify({gql,variables})});
     if(j&&j.error)throw new Error(String(j.error).slice(0,160));
     if(j&&j.errors&&j.errors.length)throw new Error(String(j.errors[0].message||"query refused").slice(0,160));
-    return (j&&j.data&&j.data.series)||[];
+    return (j&&j.data)||{};
   };
   /* the function as first deployed knows only {query}; it answers this ask
      with "no query", which read as a broken network and is really the
      one-time re-paste */
-  const askSaid=async gql=>{try{return await ask(gql);}
+  const askSaid=async(gql,variables)=>{try{return await ask(gql,variables);}
     catch(e){if(/no query/i.test(String(e&&e.message||"")))throw new Error("your Supabase still runs the first version of the function — paste hardcover-function.ts in again (its step 2)");throw e;}};
-  const FULL="query ($name: String!) { series(where: {name: {_ilike: $name}}, limit: 5) { id name books_count primary_books_count book_series(order_by: {position: asc}, limit: 80) { position book { id title slug release_year pages image { url } contributions { author { name } } } } } }";
-  const THIN="query ($name: String!) { series(where: {name: {_ilike: $name}}, limit: 5) { id name books_count book_series(order_by: {position: asc}, limit: 80) { position book { id title slug } } } }";
-  let rows,thin=false;
-  try{rows=await askSaid(FULL);}
-  catch(e){
-    /* the message Hasura writes when a field is not there; anything else is
-       a real failure and is said as itself */
-    if(!/field|unknown|not found|cannot query|validation/i.test(String(e&&e.message||"")))throw e;
-    rows=await askSaid(THIN);thin=true;
-  }
-  if(!rows.length)return {ok:false,why:"knows no series called that"};
+  /* Found by Hardcover's own search first, then asked for by id. A filter on
+     the name ("_ilike") is refused by their server — measured 2026-09-03:
+     "ilike and related operations are not permitted" — and an exact "_eq"
+     would miss on case and spacing, which the search forgives. */
+  const SEARCH='query ($q: String!) { search(query: $q, query_type: "Series", per_page: 5, page: 1) { results } }';
+  const sd=await askSaid(SEARCH,{q:nm});
+  let res=sd&&sd.search&&sd.search.results;
+  if(typeof res==="string"){try{res=JSON.parse(res);}catch(e){res=null;}}
+  const found=((res&&res.hits)||[]).map(h=>h&&(h.document||h)).filter(h=>h&&h.id!=null);
+  if(!found.length)return {ok:false,why:"knows no series called that"};
+  /* the fullest series whose name holds the name asked for (or the other way
+     round) — "Winternight" alone was a two-book Portuguese listing beside the
+     three-book "Winternight Trilogy"; the exact name only breaks ties */
   const want=softFold(nm);
-  const pick=rows.map(s=>({s,n:((s&&s.book_series)||[]).length,same:softFold(s&&s.name)===want?1:0}))
-    .sort((a,b)=>(b.same-a.same)||(b.n-a.n))[0].s;
-  const list=((pick.book_series)||[]).map(bs=>{
+  const cands=found.map(h=>{const f=softFold(h.name);return {h,near:(f===want||f.includes(want)||want.includes(f))?1:0,same:f===want?1:0,n:parseInt(h.books_count||h.primary_books_count)||0};})
+    .sort((a,b)=>(b.near-a.near)||(b.n-a.n)||(b.same-a.same)).map(x=>x.h).filter(h=>isFinite(parseInt(h.id))).slice(0,3);
+  if(!cands.length)return {ok:false,why:"offered a series without a number to ask by"};
+  const FULL="query ($id: Int!) { series(where: {id: {_eq: $id}}, limit: 1) { id name books_count primary_books_count book_series(order_by: {position: asc}, limit: 200) { position book { id title slug release_year pages users_read_count image { url } contributions { author { name } } } } } }";
+  const THIN="query ($id: Int!) { series(where: {id: {_eq: $id}}, limit: 1) { id name books_count book_series(order_by: {position: asc}, limit: 200) { position book { id title slug } } } }";
+  const fetchOne=async sid=>{
+    try{return {rows:(await askSaid(FULL,{id:sid})).series||[],thin:false};}
+    catch(e){
+      /* the message Hasura writes when a field is not there; anything else is
+         a real failure and is said as itself */
+      if(!/field|unknown|not found|cannot query|validation|not permitted/i.test(String(e&&e.message||"")))throw e;
+      return {rows:(await askSaid(THIN,{id:sid})).series||[],thin:true};
+    }
+  };
+  /* The fullest series of that name is not always yours: "The Scholomance"
+     is Novik's three books and somebody's twelve-part manga, and the manga
+     is fuller. The author on the shelf settles it — the first candidate
+     whose books name that author is taken; with no author, or no match
+     anywhere, the fullest stands. */
+  const aw=authorWords(author||"");
+  let pick=null,thin=false,first=null;
+  for(const h of cands){
+    const r=await fetchOne(parseInt(h.id));
+    const s=r.rows[0];if(!s)continue;
+    if(!first){first=s;thin=r.thin;}
+    if(!aw.size){pick=s;break;}
+    const names=((s.book_series)||[]).flatMap(bs=>((bs&&bs.book&&bs.book.contributions)||[]).map(c=>c&&c.author&&c.author.name)).filter(Boolean);
+    if(names.some(n=>[...authorWords(n)].some(w=>aw.has(w)))){pick=s;thin=r.thin;break;}
+  }
+  if(!pick)pick=first;
+  if(!pick)return {ok:false,why:"named a series and then had nothing under it"};
+  const raw=((pick.book_series)||[]).map(bs=>{
     const b=(bs&&bs.book)||{},img=b.image;
     return {pos:(bs&&bs.position!=null)?String(bs.position):"",title:String(b.title||"").trim(),slug:String(b.slug||"").trim(),
       year:b.release_year?String(b.release_year).slice(0,4):"",pages:parseInt(b.pages)||"",
+      readers:parseInt(b.users_read_count)||0,
       cover:String((img&&typeof img==="object"?img.url:img)||"").trim(),
       author:((b.contributions)||[]).map(c=>c&&c.author&&c.author.name).filter(Boolean).join(", ")};
   }).filter(x=>x.title);
-  return {ok:true,name:String(pick.name||nm),count:parseInt(pick.primary_books_count||pick.books_count)||list.length,books:list,thin};
+  /* Hardcover files every edition and translation of a book under the series
+     with the same position — measured: six "#1"s for one book, a box set
+     among them. One per position: the box sets and omnibuses out, then the
+     most-read, then a Latin-script title over another script, then the
+     shorter name. A position with nothing else left keeps what it has. */
+  const isSet=t=>/\b(box(ed)? set|book set|boxset|collection|omnibus|volumes? \d+ ?[-–&]|bundle)\b/i.test(t);
+  const latin=t=>!/[^\p{Script=Latin}\p{N}\p{P}\p{Z}\p{S}]/u.test(t);
+  const byPos=new Map();
+  raw.forEach(x=>{const k=x.pos||("~"+softFold(x.title));(byPos.get(k)||byPos.set(k,[]).get(k)).push(x);});
+  const list=[...byPos.entries()].map(([,xs])=>{
+    const pool=xs.filter(x=>!isSet(x.title)).length?xs.filter(x=>!isSet(x.title)):xs;
+    return pool.sort((a,b)=>(b.readers-a.readers)||((latin(b.title)?1:0)-(latin(a.title)?1:0))||(a.title.length-b.title.length))[0];
+  }).sort((a,b)=>{const x=parseFloat(a.pos),y=parseFloat(b.pos);
+    if(isFinite(x)&&isFinite(y)&&x!==y)return x-y;if(isFinite(x)!==isFinite(y))return isFinite(x)?-1:1;return a.title.localeCompare(b.title);});
+  return {ok:true,name:String(pick.name||nm),count:parseInt(pick.primary_books_count||pick.books_count)||list.length,books:list,thin,editions:raw.length};
 }
 /* The missing books of a SERIES — separate books linked by name — brought
    onto the shelf from Hardcover's list as ⌛ Don't have it yet, numbered, with
@@ -30741,7 +30789,7 @@ async function fetchSeriesMissing(b){
   if(btn)btn.disabled=true;
   say("📙 Asking Hardcover…");
   let r;
-  try{r=await fetchHardcoverSeries(s);}
+  try{r=await fetchHardcoverSeries(s,b.author);}
   catch(e){say("📙 Hardcover didn't answer: "+String(e&&e.message||e).slice(0,80));return;}
   if(!r.ok){say("📙 Hardcover "+r.why);return;}
   const mates=seriesMates(b);
