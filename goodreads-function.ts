@@ -16,6 +16,10 @@
 //   2. Deploy this file: supabase.com → your project → Edge Functions →
 //      Deploy a new function → Via Editor. Name it exactly:  goodreads
 //      Delete the sample code, paste this entire file in, press Deploy.
+//      (The NAME is the address — the editor offers a sample name such as
+//      smart-task, and renaming the title afterwards does not change it. If
+//      that has happened, either make a new function called goodreads, or
+//      tell the app the name: goodreadsFunction: "smart-task" in config.js.)
 //
 //   3. Store the link: still under Edge Functions, open Secrets and add one
 //      named  GOODREADS_RSS  with the whole link from step 1 as its value.

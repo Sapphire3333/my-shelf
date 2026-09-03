@@ -36,5 +36,11 @@
 window.SHELF_CONFIG = {
   url: "https://ckomxkieiypfznyfagpc.supabase.co",
   anonKey: "sb_publishable_n6ma7ssOgVU2wG5XFjXPHA_5B4XhiGQ",
-  googleBooksKey: "AIzaSyB4loZgVC1-ymgnZKzr96WLX2pFo0zFWmg"
+  googleBooksKey: "AIzaSyB4loZgVC1-ymgnZKzr96WLX2pFo0zFWmg",
+  /* the name of the Goodreads function on Supabase (goodreads-function.ts).
+     Leave it out to use "goodreads". It is set here because the function
+     was made under the editor's sample name and its title renamed after —
+     the address kept the sample name. Not a secret: the feed key lives in
+     the function's own GOODREADS_RSS secret, never here. */
+  goodreadsFunction: "smart-task"
 };
