@@ -7287,6 +7287,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-03.11",lines:[
+    "<b>Waiting for the next one can ask AniList whether the next one exists.</b> The card on Today has <b>🅰 Ask AniList about these</b>: one press asks about every book on it, and under each row it says what came back — <i>still releasing</i>, <i>finished — the next part may be out</i>, on hiatus, or that AniList doesn't know the book — with the chapter and volume counts and the day it was checked. Any Auto-fill that AniList answered writes the same line onto the book by itself. It knows manhwa, webtoons and manga, not novels, and it says so rather than guessing."]},
   {v:"2026-09-03.10",lines:[
     "<b>Up next can be dragged into order on the computer.</b> Take a row on Today's Up next card and drop it on the one whose place it should have; the rest close up, and it counts as one step of ↶ Undo. The phone keeps ↑ ↓ — a finger dragging a row there is a finger scrolling the page."]},
   {v:"2026-09-03.9",lines:[
@@ -8902,7 +8904,7 @@ const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blu
      the change log, and a book kept in percent would otherwise earn neither */
   reads:"readings",progress:"progress",pct:"progress",progLog:"",rereads:"re-reads",series:"series",seriesNum:"series number",
   seriesTotal:"series total",isbn:"ISBN",hcSlug:"",favorite:"favourite",dnf:"given up",dnfReasons:"why given up",
-  hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",upnext:"up next",entries:"stories",maturity:"maturity",aspects:"what stood out",
+  hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",upnext:"up next",serial:"",entries:"stories",maturity:"maturity",aspects:"what stood out",
   pros:"likes",cons:"dislikes",meh:"so-sos",fandoms:"fandoms",characters:"characters",ships:"relationships",
   link:"link",kind:"kind",audience:"audience",draw:"drawing",bg:"background",type:"shape",
   chapters:"chapters",warnings:"warnings",entOrdered:"",canvasV:"",modified:"",touched:"",created:"",id:"",
@@ -11909,6 +11911,7 @@ async function openBulkFill(ids){
        book's own page. It rides silently on rows that found something. */
     const mineHc=String((en?en.hcSlug:b.hcSlug)||"").trim();
     if(!mineHc&&info.hcSlug)want.hcSlug=String(info.hcSlug).trim();
+    if(info.anilist)want.serial=serialOf(info.anilist);
     /* a story's words are its own; a plain book's are its own. Genres are the
        exception and always the collection's — a genre on a story replaces
        rather than adds, and would lift that one book out from under its series. */
@@ -12186,6 +12189,7 @@ async function openBulkFill(ids){
         if(r.want.pages!==undefined&&r.want.pages!==""){tgt.pages=r.want.pages;did=true;}
         if(r.want.isbn){tgt.isbn=r.want.isbn;did=true;}
         if(r.want.hcSlug){tgt.hcSlug=r.want.hcSlug;did=true;}
+        if(r.want.serial){tgt.serial=r.want.serial;did=true;}
         if(r.want.blurb){tgt.summary=esc(r.want.blurb).replace(/\n/g,"<br>");did=true;}
         if(!en&&r.want.author){b.author=r.want.author;did=true;}
         r.chips.filter(c=>c.on).forEach(c=>{
@@ -16766,8 +16770,11 @@ async function renderHub(part){
     ${nextLineHtml}
     ${nextUp.length?`<div class="sec" id="secNext">
       <div class="heading"><h2 class="serif">Waiting for the next one</h2>${nextUp.length>1?`<span class="n">(${nextUp.length})</span>`:""}</div>
-      ${nextUp.map(b=>rowHtml(b,false)).join("")}
-      <div class="hint" style="margin:6px 0 0">Put on hold until the next part is out. Worth a glance now and then — when it has arrived, 📖 Reading now takes the book off this list.</div>
+      ${nextUp.map(b=>rowHtml(b,false)+(b.serial?`<div class="hint" style="margin:-4px 0 8px 4px">${esc(serialLine(b.serial))}</div>`:"")).join("")}
+      <div class="hrow2" style="margin-top:4px;flex-wrap:wrap;gap:6px">
+        <button class="btn smallbtn" id="nextAsk" title="Ask AniList whether each of these series is finished or still going — it knows manhwa, webtoons and manga, and says so when it doesn't know one">🅰 Ask AniList about these</button>
+        <span class="hint" style="margin:0">Put on hold until the next part is out. Worth a glance now and then — when it has arrived, 📖 Reading now takes the book off this list.</span>
+      </div>
     </div>`:""}
     <!-- the storage READING stays on the first page, at its foot: how much
          room the shelf takes is a thing glanced at on the way in. The
@@ -16855,7 +16862,8 @@ async function renderHub(part){
   m.innerHTML=today?todayHtml:careHtml;
 
   const nxSec=q("#secNext",m);
-  if(nxSec&&nextUp.length){wireOpen(nxSec,false);hydrateCovers(nxSec);}
+  if(nxSec&&nextUp.length){wireOpen(nxSec,false);hydrateCovers(nxSec);
+    const ask=q("#nextAsk",nxSec);if(ask)ask.onclick=e=>{e.stopPropagation();askSerials(nextUp.map(b=>b.id),ask);};}
   /* Reading now and Next in line: rows that open, covers that arrive after */
   ["#secReading","#secContinue","#secNextLine","#secUpNext"].forEach(id=>{const s=q(id,m);if(s){wireOpen(s,false);hydrateCovers(s);}});
   /* the queue's own buttons answer before the row does (see upNextMove) */
@@ -24657,7 +24665,9 @@ function renderEditor(){
        on a successful lookup — the panel's "nothing until you press" promise
        is about the fields you read, and this is an address, not a field. */
     {const th=en||cur;
-     if(info.hcSlug&&!String(th.hcSlug||"").trim()){th.hcSlug=String(info.hcSlug).trim();scheduleSave();}}
+     if(info.hcSlug&&!String(th.hcSlug||"").trim()){th.hcSlug=String(info.hcSlug).trim();scheduleSave();}
+     /* and AniList's word on whether the series is still going — see serialOf */
+     if(info.anilist){th.serial=serialOf(info.anilist);scheduleSave();}}
     const tagSel=new Set();
     /* Looking up ONE story and the words come back about that story, so that is
        where they belong. They went on the collection until stories had anywhere
@@ -30802,6 +30812,41 @@ async function fetchAniList(title,author,isbn){
     cover:String(ci.extraLarge||ci.large||"").trim(),
     status:st,released:st==="FINISHED"?"finished":st==="RELEASING"?"still releasing":st?st.toLowerCase().replace(/_/g," "):"",
     format:String(m.format||""),country:String(m.countryOfOrigin||""),url:String(m.siteUrl||"")};
+}
+/* what AniList said about whether the series is still going, kept on the
+   book as `serial` — stamped quietly on a lookup that matched (like hcSlug:
+   a fact fetched, not a field you read), and refreshed by the ↻ on Today's
+   "Waiting for the next one" card. `status` empty means AniList was asked and
+   does not know the book. */
+const serialOf=a=>({src:"AniList",status:String((a&&a.status)||""),released:String((a&&a.released)||""),
+  chapters:(a&&a.chapters)||"",volumes:(a&&a.volumes)||"",at:todayStr(),url:String((a&&a.url)||"")});
+const serialLine=s=>{
+  if(!s||s.src!=="AniList")return "";
+  const when=s.at?" · checked "+rdWhen(s.at):"";
+  if(!s.status)return "🅰 AniList doesn't know this one"+when;
+  const cnt=[s.chapters?s.chapters+" chapters":"",s.volumes?s.volumes+" volumes":""].filter(Boolean).join(", ");
+  return "🅰 "+(s.status==="FINISHED"?"AniList says the series is finished — the next part may be out"
+    :s.status==="RELEASING"?"AniList says it is still releasing"
+    :s.status==="HIATUS"?"AniList says it is on hiatus"
+    :s.status==="CANCELLED"?"AniList says it was cancelled"
+    :s.status==="NOT_YET_RELEASED"?"AniList says it hasn't started yet"
+    :"AniList: "+String(s.released||s.status).toLowerCase())+(cnt?" · "+cnt:"")+when;
+};
+/* ask AniList about a set of books at once — the ↻ on the card — and write
+   the answers as one bulk op */
+async function askSerials(ids,btn){
+  const say=t=>{if(btn)btn.textContent=t;};
+  if(btn)btn.disabled=true;
+  const got={};let n=0;
+  for(const id of ids){
+    const b=books.find(x=>x.id===id);if(!b)continue;
+    say(`🅰 Asking AniList… ${++n} of ${ids.length}`);
+    try{const a=await fetchAniList(b.title,b.author,"");got[id]=serialOf(a.ok?a:null);}
+    catch(e){got[id]=null;}
+  }
+  const wrote=Object.keys(got).filter(id=>got[id]);
+  if(wrote.length)await upNextWrite(wrote,x=>{x.serial=got[x.id];});
+  renderMain();
 }
 /* `probe`, when given, is filled in with what was actually asked — but only on
    the way out of a failure, so it costs nothing when a book is found.
