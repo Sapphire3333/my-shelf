@@ -7294,6 +7294,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-04.2",lines:[
+    "<b>The import list stops holding your books twice.</b> A Goodreads export says a book's ISBN in thirteen digits; the feed of the same shelf says it in ten — measured, not one of two hundred items carried a thirteen — so the same book arrived under two names and the list kept both, which is why a shelf of 2,666 could read as 5,386. A staged row now answers to three names in falling order of certainty: Goodreads' own book number, which the export and the feed both carry; the ISBN said as thirteen digits, so ten and thirteen meet; and the title with the author. <b>Pressing any shelf button or choosing an export mends the list you already have</b> — the rows that had been split join back up, keeping whatever either of them knew, and the card says how many.",
+    "<b>And “already on your shelf” finds them now.</b> The same ten-against-thirteen mismatch was hiding books you own from the list's own duplicate check, so it said you had twelve when you had far more. Your shelf is indexed under both forms.",
+    "<b>The card says two numbers instead of one.</b> What that press brought — new to the list, already waiting — and then what the whole list holds. They were one number before, and it read like the shelf had grown."]},
   {v:"2026-09-03.21",lines:[
     "<b>Straight from Goodreads works.</b> Your function was made under the editor's sample name, so its address stayed <i>smart-task</i> while its title said goodreads; config.js now names the function the app should ask, and the shelf buttons on 🧰 Shelf care answer with your real shelves."]},
   {v:"2026-09-03.20",lines:[
@@ -18442,13 +18446,14 @@ q("#csvFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
   const msg=q("#busyMsg");if(msg)msg.textContent="Reading the file…";
   try{
-    const {src,n,updated}=await loadCsvFile(f);
+    const {src,n,updated,merged}=await loadCsvFile(f);
     if(q("#busyMsg"))q("#busyMsg").textContent="";
     refreshImport();
     const pend=importQueue.filter(it=>!it.dupe).length;
     const dup=importQueue.filter(it=>it.dupe).length;
     alert(`Found ${n} ${src==="ao3"?"fic":"book"}${n===1?"":"s"} in your ${src==="goodreads"?"Goodreads":src==="ao3"?"AO3":"StoryGraph"} export.`
       +(updated?`\n\n${updated} were already waiting in the list and have been read again from the file, so anything it knows that they were missing is there now.`:"")
+      +(merged?`\n\n${merged} row${merged===1?"":"s"} that had been listed twice — an export says a book's ISBN in thirteen digits where the Goodreads feed says ten — ${merged===1?"has":"have"} joined up.`:"")
       +`\n\n${pend} are new to your shelf — pick the ones you want below, or add a whole section at once.`
       +(dup?`\n${dup} you already have: tick “Show only the ${dup} already on your shelf” to see what the file can still add to them.`:""));
   }catch(err){
@@ -29721,6 +29726,9 @@ function fromGoodreads(o){
   const dnf=DNF_SHELF.test(shelf)||splitTags(o["Bookshelves"]).some(s=>DNF_SHELF.test(s.toLowerCase()));
   const r=parseFloat(pickCol(o,"My Rating","Rating","Star Rating")||"0")||0;
   return {id:uid(),title:o["Title"]||"",author:o["Author"]||"",
+    /* Goodreads' own number for the book, carried by the export AND by the
+       feed — the one name that cannot drift between the two (see impKeys) */
+    grId:String(o["Book Id"]||"").trim(),
     isbn:cleanIsbn(o["ISBN13"]||o["ISBN"]),
     status:shelf==="currently-reading"?"reading":shelf==="to-read"?"want":"finished",dnf,
     rating:r>0?Math.min(10,r*2):null,
@@ -29936,6 +29944,10 @@ function markDupes(){
     /* staged rows carry digits-only ISBNs — a hand-typed hyphenated one on the
        shelf never matched until it was cleaned the same way */
     put(byIsbn,cleanIsbn(b.isbn),{b,en:null});
+    /* and under its thirteen-digit form as well: a shelf filled from an
+       export carries thirteen digits where a row off the feed carries ten,
+       and "already on your shelf" was missing every one of them */
+    put(byIsbn,isbn13Of(b.isbn),{b,en:null});
     putTitles(b.title,{b,en:null});
     if(!isColl(b))continue;
     for(const en of ((b.entries)||[])){
@@ -29944,12 +29956,13 @@ function markDupes(){
          learned to look at it — so an import row matching a story BY ITS NUMBER,
          under an edition's different title, came through as new */
       put(byIsbn,cleanIsbn(en.isbn),{b,en});
+      put(byIsbn,isbn13Of(en.isbn),{b,en});
       putTitles(en.title,{b,en});
     }
   }
   const sameHand=(it,t)=>authorsOverlap(it.author,t.en?entAuthorOf(t.b,t.en):t.b.author);
   importQueue.forEach(it=>{
-    let hit=(it.isbn?byIsbn.get(it.isbn):null)||byKey.get(dupeKey(it.title,it.author));
+    let hit=(it.isbn?(byIsbn.get(it.isbn)||byIsbn.get(isbn13Of(it.isbn))):null)||byKey.get(dupeKey(it.title,it.author));
     /* The title-only key was being written down and never read, so a book whose
        author is spelled differently in the export — which is most of them once
        a co-author is involved — came through as new, and "Add all" would have
@@ -30469,31 +30482,62 @@ async function loadCsvFile(file){
 /* The staging every import shares — the CSV file above, and the Goodreads
    feed (importGoodreadsFeed) — taking rows already mapped to the import's
    shape and joining them onto the waiting list. */
+/* ┌─ EVERY NAME A STAGED ROW ANSWERS TO ─────────────────────────────────────┐
+   │ One key was not enough, and the cost was a list holding every book twice: │
+   │ a Goodreads EXPORT carries the thirteen-digit ISBN, while the FEED of the │
+   │ same shelf carries no thirteen at all — measured 2026-09-03, 0 of 200     │
+   │ items had one and 178 had the ten. So "i:9780316484541" and               │
+   │ "i:0316484547" are one book under two names, and the list kept both.      │
+   │ Three names now, in falling order of certainty: Goodreads' own book id,   │
+   │ which both the export and the feed carry; the ISBN said as thirteen       │
+   │ digits, so ten and thirteen meet; and the title with the author, which    │
+   │ catches a row that has neither. A row answering to ANY of them is the     │
+   │ row already there.                                                        │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+const impKeys=it=>{
+  const out=[];
+  const g=String((it&&it.grId)||"").trim();
+  if(g)out.push("g:"+g);
+  const i=isbn13Of(it&&it.isbn)||cleanIsbn(it&&it.isbn);
+  if(i)out.push("i:"+i);
+  const t=dupeKey(it&&it.title,it&&it.author);
+  if(t&&t!=="|")out.push("t:"+t);
+  return out;
+};
+/* What the newer row says wins; what it says NOTHING about is left alone. A
+   feed row knows no private notes and no read count, and it must not wipe the
+   ones an export left behind — the old rule, "the file is what is true",
+   was written when a row could only ever come from one file. */
+const impMerge=(old,it)=>{
+  Object.keys(it).forEach(k=>{
+    if(k==="id")return;
+    const v=it[k];
+    if(v===""||v==null)return;
+    if(Array.isArray(v)&&!v.length)return;
+    old[k]=v;
+  });
+};
 function stageImportRows(staged){
-  /* the same book listed twice in one file stages once */
-  const inFile=new Set();
-  const once=staged.filter(it=>{
-    const k=it.isbn?("i:"+it.isbn):dupeKey(it.title,it.author);
-    if(inFile.has(k))return false;inFile.add(k);return true;
-  });
-  /* A row already waiting in the list is REPLACED by the one just read, not
-     skipped. The list is kept in the browser between visits, so rows staged by
-     an older version of the app sat there for good — and choosing the same file
-     again, which is exactly what you do when the reading of that file has been
-     improved, quietly added nothing at all. The file is what is true; the
-     staged row is only its shadow. The row keeps its id, so anything ticked
-     stays ticked. */
-  const keyOf=it=>it.isbn?("i:"+it.isbn):dupeKey(it.title,it.author);
-  const have=new Map(importQueue.map(it=>[keyOf(it),it]));
+  const index=new Map(),rows=[];
+  /* returns true when the row is new to the list */
+  const take=it=>{
+    const keys=impKeys(it);
+    let old=null;
+    for(const k of keys){const o=index.get(k);if(o){old=o;break;}}
+    if(old){impMerge(old,it);keys.forEach(k=>{if(!index.has(k))index.set(k,old);});return false;}
+    rows.push(it);keys.forEach(k=>index.set(k,it));return true;
+  };
+  /* The list as it stands is folded FIRST, so a press mends what an older
+     build split: rows already waiting under two different keys become one
+     row again, keeping the id anything ticked was ticked by. */
+  const before=importQueue.length;
+  importQueue.forEach(take);
+  const merged=before-rows.length;
   let fresh=0,updated=0;
-  once.forEach(it=>{
-    const old=have.get(keyOf(it));
-    if(old){Object.assign(old,it,{id:old.id});updated++;}
-    else{have.set(keyOf(it),it);fresh++;}
-  });
-  importQueue=[...have.values()];
+  staged.forEach(it=>{take(it)?fresh++:updated++;});
+  importQueue=rows;
   markDupes();saveImportQueue();
-  return {n:staged.length,fresh,updated};
+  return {n:staged.length,fresh,updated,merged};
 }
 /* ---- your Goodreads shelves, without the CSV ----
    Goodreads still publishes every shelf as a feed, and refuses it to a web
@@ -30531,6 +30575,9 @@ function grParseFeed(text,shelf){
   if(doc.querySelector("parsererror"))throw new Error("Goodreads sent something that isn't a feed — is the GOODREADS_RSS secret the whole link?");
   const g=(el,t)=>{const n=el.querySelector(t);return n?String(n.textContent||"").trim():"";};
   return [...doc.querySelectorAll("item")].map(it=>({
+    /* the feed's own book number, the same one the export's first column
+       carries — see impKeys for why the ISBN alone was not enough */
+    "Book Id":g(it,"book_id"),
     Title:g(it,"title"),Author:g(it,"author_name"),ISBN13:g(it,"isbn13")||g(it,"isbn"),
     "My Rating":g(it,"user_rating"),"Number of Pages":g(it,"num_pages"),
     "Date Read":grDate(g(it,"user_read_at")),
@@ -30570,10 +30617,14 @@ async function importGoodreadsFeed(shelf){
   /* newest added first, so what is new on Goodreads is at the top of the list */
   rows.sort((a,b)=>String(b._added).localeCompare(String(a._added)));
   const staged=rows.map(fromGoodreads).filter(it=>it.title);
-  const {n,fresh,updated}=stageImportRows(staged);
+  const {n,fresh,updated,merged}=stageImportRows(staged);
   refreshImport();
   const pend=importQueue.filter(it=>!it.dupe).length,dup=importQueue.filter(it=>it.dupe).length;
-  say(`${n} on that shelf at Goodreads · ${pend} new to your shelf below${dup?` · ${dup} you already have`:""}${updated?` · ${updated} re-read`:""}`);
+  /* what THIS press brought, and then what the list holds — the two were said
+     as one number before, so a shelf of 2,666 read "6,829 new" and looked broken */
+  say(`${n} on that shelf at Goodreads — ${fresh} new to the list, ${updated} already waiting.`
+    +(merged?` ${merged} row${merged===1?"":"s"} that had been listed twice joined up.`:"")
+    +` The list holds ${importQueue.length}: ${pend} to pick from${dup?`, ${dup} already on your shelf`:""}.`);
   qa("[data-grshelf]").forEach(b=>b.disabled=false);
   const list=q("#impList");if(list&&n)list.scrollIntoView({block:"start",behavior:"smooth"});
 }
