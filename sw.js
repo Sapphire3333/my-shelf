@@ -54,7 +54,18 @@ self.addEventListener("fetch", e => {
       try {
         const form = await req.formData();
         const file = form.get("file");
-        if (file && file.size) {
+        /* Android hands a shared LINE of text over as a small text file when
+           the target takes files — measured on the phone: "know what…" arrived
+           as a file and was read as a backup. Words are words. */
+        const isWords = file && file.size && file.size < 20000 && /^text\/plain/i.test(file.type || "");
+        if (isWords) {
+          const text = await file.text();
+          const c = await caches.open(SHARE);
+          await c.put(SHARED_TEXT_KEY, new Response(JSON.stringify({ title: "", text, url: "", at: Date.now() }), {
+            headers: { "content-type": "application/json" }
+          }));
+          ok = "t";
+        } else if (file && file.size) {
           const c = await caches.open(SHARE);
           await c.put(SHARED_KEY, new Response(file, {
             headers: { "content-type": file.type || "application/octet-stream",
