@@ -53,7 +53,12 @@ Deno.serve(async (req) => {
     shelf = String(body.shelf || "#ALL#").slice(0, 40);
     page = Math.max(1, Math.min(50, parseInt(body.page) || 1));
   } catch (_e) { /* an unreadable body keeps the defaults */ }
-  if (!/^(#ALL#|[a-z0-9-]{1,40})$/.test(shelf)) return say(400, { error: "that is not a shelf name" });
+  // Your own shelves are named by you, so the test only keeps out the
+  // characters that could change the address itself. Goodreads hands its
+  // shelf names over without the star its own sidebar draws — the shelf
+  // shown as "*to-add-later" is "to-add-later" here — so this is wider than
+  // anything seen in the wild rather than a fix for a name that failed.
+  if (!/^(#ALL#|[A-Za-z0-9_.*-]{1,60})$/.test(shelf)) return say(400, { error: "that is not a shelf name" });
 
   const link = (Deno.env.get("GOODREADS_RSS") || "").trim();
   if (!link) {

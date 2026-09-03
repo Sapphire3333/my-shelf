@@ -7294,6 +7294,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-04.3",lines:[
+    "<b>Your own Goodreads shelves are buttons too.</b> Press <b>Everything</b> once and the shelves you made yourself — <i>looks-interesting</i>, <i>fanfics</i>, <i>to-add-later</i>, <i>did-not-finish</i> — join the row by themselves, because every book the feed hands over names the shelves it sits on. (A shelf asked for on its own only ever names itself, which is why Everything is the one that teaches them.) <b>＋ a shelf…</b> takes one by name if you'd rather not wait. Goodreads spells them without the star its own sidebar draws.",
+    "<b>Everything now reaches your whole library.</b> It stopped at fifteen pages of two hundred — three thousand books — and said nothing about the rest. Forty pages now, and if even that runs out it says so and points at the export file.",
+    "<b>And the card says how old Goodreads' list is.</b> A book you shelved today may be missing, and it is not the app losing it: Goodreads serves a snapshot it rebuilds when it pleases — measured, one built the previous morning, and neither a changed address, a no-cache header nor a sort would hurry it. The line now reads <i>Goodreads built this list 3 Sept 13:00 and won't be hurried — anything shelved since then isn't in it yet</i>. The export file is always today's; the feed is the convenience."]},
   {v:"2026-09-04.2",lines:[
     "<b>The import list stops holding your books twice.</b> A Goodreads export says a book's ISBN in thirteen digits; the feed of the same shelf says it in ten — measured, not one of two hundred items carried a thirteen — so the same book arrived under two names and the list kept both, which is why a shelf of 2,666 could read as 5,386. A staged row now answers to three names in falling order of certainty: Goodreads' own book number, which the export and the feed both carry; the ISBN said as thirteen digits, so ten and thirteen meet; and the title with the author. <b>Pressing any shelf button or choosing an export mends the list you already have</b> — the rows that had been split join back up, keeping whatever either of them knew, and the card says how many.",
     "<b>And “already on your shelf” finds them now.</b> The same ten-against-thirteen mismatch was hiding books you own from the list's own duplicate check, so it said you had twelve when you had far more. Your shelf is indexed under both forms.",
@@ -16915,8 +16919,10 @@ async function renderHub(part){
         ${hcSettings()?`<div class="hrow2" style="margin-top:9px;flex-wrap:wrap;gap:6px">
           <span class="lbl" title="Read straight from Goodreads through your own Supabase — see goodreads-function.ts">📚 Straight from Goodreads:</span>
           ${GR_SHELVES.map(([k,l])=>`<button class="btn smallbtn" data-grshelf="${k}">${l}</button>`).join("")}
+          ${grMine().map(s=>`<button class="btn smallbtn" data-grshelf="${esc(s)}" title="Your own shelf at Goodreads">${esc(s)}</button>`).join("")}
+          <button class="btn smallbtn" id="grAdd" title="Name one of your own Goodreads shelves — the others appear by themselves once a fetch has seen them">＋ a shelf…</button>
         </div>
-        <div class="hint" id="grSay" style="margin:5px 0 0">Your shelves at Goodreads, staged below the way a CSV is — no file to download. A feed carries no private notes and no read count; the CSV still does.</div>`:""}
+        <div class="hint" id="grSay" style="margin:5px 0 0">Your shelves at Goodreads, staged below the way a CSV is — no file to download. A feed carries no private notes and no read count; the CSV still does. Your own shelves join the row once a fetch has seen the books on them.</div>`:""}
         <div class="hint" style="margin:9px 0 0">
           <b>Goodreads:</b> My Books → Import and Export → Export Library → download the .csv.<br>
           <b>StoryGraph:</b> Manage Account → Manage Your Data → Export StoryGraph Library.<br>
@@ -17044,6 +17050,13 @@ async function renderHub(part){
   refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
   qa("[data-grshelf]",m).forEach(b=>b.onclick=()=>importGoodreadsFeed(b.dataset.grshelf));
+  {const ga=q("#grAdd",m);
+   if(ga)ga.onclick=()=>{
+     const name=(prompt("Which shelf, as Goodreads spells it in its own list?\n\nIts own name, not its heading — “to-add-later”, “looks-interesting”, “god”.")||"").trim();
+     if(!name)return;
+     settings.grShelves=[...new Set([...grMine(),name])].sort((a,b)=>a.localeCompare(b));
+     saveSettings();renderMain();importGoodreadsFeed(name);
+   };}
   {const rb=q("#reBtn");if(rb)rb.onclick=()=>q("#reFile").click();renderShareHint();renderReadEra();}
   {const sb=q("#scanBtn");if(sb)sb.onclick=()=>q("#scanFiles").click();
    const sd=q("#scanDirBtn");if(sd)sd.onclick=()=>q("#scanDir").click();
@@ -30549,6 +30562,39 @@ function stageImportRows(staged){
    duplicate marks, ＋ Add and Fill in are exactly the ones a CSV gets. A feed
    carries less than the export: no private notes, no read count. */
 const GR_SHELVES=[["#ALL#","Everything"],["read","Read"],["currently-reading","Currently reading"],["to-read","Want to read"]];
+const GR_FIXED=new Set(["#ALL#","read","currently-reading","to-read"]);
+/* ---- the shelves you made yourself ----
+   Goodreads' feed never lists your shelves, but every book it hands over
+   names the ones it sits on — so one fetch of any shelf teaches the card the
+   rest, and they become buttons of their own. Kept on this device, like the
+   text size; a fetch on the other device fills them in there too. */
+const grMine=()=>(settings.grShelves||[]).filter(s=>s&&!GR_FIXED.has(s));
+function grLearnShelves(rows){
+  const found=new Set(grMine());
+  /* Goodreads names them without the star its own sidebar draws — measured:
+     "*to-add-later" on the page comes over as "to-add-later" — and its
+     did-not-finish shelf is as fetchable as any other, so it stays in */
+  rows.forEach(r=>String(r.Bookshelves||"").split(",").map(s=>s.trim()).filter(Boolean)
+    .forEach(s=>{if(!GR_FIXED.has(s))found.add(s);}));
+  const list=[...found].sort((a,b)=>a.localeCompare(b));
+  if(list.join(" ")===grMine().join(" "))return false;
+  settings.grShelves=list;saveSettings();return true;
+}
+/* Goodreads' feed is a snapshot it rebuilds when it feels like it, and the
+   channel says when. A book added since then is simply not in the file —
+   measured 2026-09-04: a feed built the previous morning, and neither a
+   changed address, a no-cache header nor a sort parameter would move it. So
+   the card says the age rather than leaving a missing book a mystery. */
+const grBuiltLine=t=>{
+  if(!t)return "";
+  const d=new Date(t);
+  if(isNaN(d))return "";
+  const mins=(Date.now()-d.getTime())/60000;
+  const when=d.toLocaleString(undefined,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+  return mins>90
+    ?` Goodreads built this list ${when} and won't be hurried — anything shelved since then isn't in it yet.`
+    :` Goodreads built this list ${when}.`;
+};
 /* the function's name on Supabase — "goodreads" unless config.js says
    otherwise, because the editor's "deploy a new function" hands out a sample
    name (smart-task) and renaming the title afterwards leaves the address */
@@ -30574,7 +30620,8 @@ function grParseFeed(text,shelf){
   const doc=new DOMParser().parseFromString(text,"text/xml");
   if(doc.querySelector("parsererror"))throw new Error("Goodreads sent something that isn't a feed — is the GOODREADS_RSS secret the whole link?");
   const g=(el,t)=>{const n=el.querySelector(t);return n?String(n.textContent||"").trim():"";};
-  return [...doc.querySelectorAll("item")].map(it=>({
+  const ch=doc.querySelector("channel");
+  const out=[...doc.querySelectorAll("item")].map(it=>({
     /* the feed's own book number, the same one the export's first column
        carries — see impKeys for why the ISBN alone was not enough */
     "Book Id":g(it,"book_id"),
@@ -30584,6 +30631,10 @@ function grParseFeed(text,shelf){
     "Exclusive Shelf":grShelfOf(g(it,"user_shelves"),shelf),
     Bookshelves:g(it,"user_shelves"),"My Review":stripHtml(g(it,"user_review")),"Private Notes":"","Read Count":"1",
     _added:grDate(g(it,"user_date_added"))}));
+  /* when Goodreads last rebuilt this snapshot, carried on the list itself —
+     see grBuiltLine for why it is worth saying out loud */
+  out.built=ch?g(ch,"lastBuildDate"):"";
+  return out;
 }
 /* Goodreads writes "Tue, 02 Sep 2026 10:11:12 -0700" — cleanDate wants a day */
 function grDate(s){if(!s)return "";const d=new Date(s);return isNaN(d)?"":d.toISOString().slice(0,10);}
@@ -30598,13 +30649,19 @@ function grShelfOf(shelves,asked){
 async function importGoodreadsFeed(shelf){
   const msg=q("#grSay");const say=t=>{if(msg)msg.textContent=t;};
   qa("[data-grshelf]").forEach(b=>b.disabled=true);
-  const rows=[];
+  /* two hundred books a page, and their whole library is nearly six thousand
+     — the old ceiling of fifteen pages stopped three thousand short without
+     saying so */
+  const GR_PAGE_MAX=40;
+  const rows=[];let built="",capped=false;
   try{
-    for(let page=1;page<=15;page++){
+    for(let page=1;page<=GR_PAGE_MAX;page++){
       say(`Asking Goodreads for page ${page}…${rows.length?" "+rows.length+" so far":""}`);
       const got=await fetchGoodreadsFeed(shelf,page);
+      if(page===1)built=got.built||"";
       rows.push(...got);
       if(got.length<200)break;
+      if(page===GR_PAGE_MAX)capped=true;
     }
   }catch(e){
     /* a function that was never deployed dies as a bare "Failed to fetch" —
@@ -30618,13 +30675,18 @@ async function importGoodreadsFeed(shelf){
   rows.sort((a,b)=>String(b._added).localeCompare(String(a._added)));
   const staged=rows.map(fromGoodreads).filter(it=>it.title);
   const {n,fresh,updated,merged}=stageImportRows(staged);
+  /* the shelves these books sit on become buttons of their own */
+  const learned=grLearnShelves(rows);
   refreshImport();
+  if(learned)renderMain();
   const pend=importQueue.filter(it=>!it.dupe).length,dup=importQueue.filter(it=>it.dupe).length;
   /* what THIS press brought, and then what the list holds — the two were said
      as one number before, so a shelf of 2,666 read "6,829 new" and looked broken */
   say(`${n} on that shelf at Goodreads — ${fresh} new to the list, ${updated} already waiting.`
     +(merged?` ${merged} row${merged===1?"":"s"} that had been listed twice joined up.`:"")
-    +` The list holds ${importQueue.length}: ${pend} to pick from${dup?`, ${dup} already on your shelf`:""}.`);
+    +` The list holds ${importQueue.length}: ${pend} to pick from${dup?`, ${dup} already on your shelf`:""}.`
+    +(capped?` That is as far as ${GR_PAGE_MAX} pages reach — the newest first; an export file carries the rest.`:"")
+    +grBuiltLine(built));
   qa("[data-grshelf]").forEach(b=>b.disabled=false);
   const list=q("#impList");if(list&&n)list.scrollIntoView({block:"start",behavior:"smooth"});
 }
