@@ -1896,7 +1896,15 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .gcov.framed{border-color:#b8860b}
   /* Reading now (🏠 Today): cover down the left at a book's proportions, the
      words beside it — the phone row's shape, on every screen */
-  .rnrow{display:grid;grid-template-columns:56px minmax(0,1fr);gap:4px 12px;align-items:start;
+  /* THE COLUMN IS AS WIDE AS THE COVER IT HOLDS, whatever that turns out to
+     be. It used to say 56px, which was true on a computer and false on a
+     phone: `html[data-phone="1"] .thumb{width:84px}` outranks `.rnrow
+     .rnthumb{width:56px}` by one attribute, and the cover size control scales
+     that again — measured at 375px wide, a 96.6px cover in a 56px column,
+     overhanging the words by 18px and painting over them, because .thumb is
+     position:relative and a positioned element is drawn above the plain text
+     beside it. `auto` cannot be out-voted by a rule about the cover. */
+  .rnrow{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 12px;align-items:start;
     padding:8px 2px;cursor:pointer;border-radius:10px}
   .rnrow+.rnrow{border-top:1px solid var(--line)}
   .rnrow:hover{background:var(--bg)}
@@ -7303,6 +7311,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-04.9",lines:[
+    "<b>On the phone, Today's covers no longer sit on top of the words.</b> The Reading now rows were drawn with a column 56 pixels wide and a cover the phone made 84 wide, so every cover overhung the title, the author and the pace line by sixteen pixels and painted over them — <i>ead Voices</i>, <i>therine Arden</i>. The column is now as wide as whatever cover it is actually holding, so no rule about cover size can put one over the words again.",
+    "<b>↶ Undo puts a pasted cover back.</b> Pasting a picture over a book's cover wrote it straight to where covers are kept and changed nothing on the book itself — so Undo faithfully undid the nothing, and the press did, visibly, nothing at all. The old picture now travels with the undo step: one press puts it back, and Redo brings the new one again. The six most recent cover changes are the ones that can be undone; beyond that the pictures are let go rather than held in memory for a press nobody will make.",
+    "<b>The reading run is warned about where you would see it in time.</b> On 🎲 Challenges, under today's three: on a day you have read, one line saying so; on a day you have not, <b>📖 Nothing read today</b> with what actually happens to your run — this week's forgiven day is still there, or a 🛡 shield would cover it, or it breaks when the day turns. It was only ever shown as a chip on 🏅 Achievements, which is not where anyone goes to be warned. The 🔥 run cannot be warned about at all: standing on this page is already the thing that feeds it."]},
   {v:"2026-09-04.8",lines:[
     "<b>“…and 13 more” is something you can press now.</b> A staged import list draws forty rows a section and summarised the rest in a sentence with nowhere to go — the forty were chosen well (whatever you had ticked, then whatever the app had something to say about), but the other thirteen were simply out of reach unless you could think of a word to search for. Under every shortened section there are buttons: <b>Show 40 more</b>, and where there is a lot left, <b>Show all 130</b>. The cap is still there, because a thousand rows each carrying a cover is a page that will not move; it is just no longer a wall. A new search, a new file or a new shelf starts the list back at forty."]},
   {v:"2026-09-04.7",lines:[
@@ -9244,8 +9256,18 @@ document.addEventListener("visibilitychange",()=>{
    │ "undefined", which is how merging two tags stopped giving a word its      │
    │ colour back on undo and wrote a junk mark to the other device on redo.    │
    └───────────────────────────────────────────────────────────────────────────┘ */
+const COVER_OPS=6;
 function pushOp(op){
   HIST.undo.push(op);if(HIST.undo.length>50)HIST.undo.shift();HIST.redo=[];refreshHistBtns();
+  /* An op carrying pictures is the one shape here with real weight — two
+     covers, and a cover is up to a thousand pixels of base64. Fifty of those
+     in the stack is tens of megabytes held for a press nobody will make. The
+     six most recent keep theirs; older ones let the pictures go and undo the
+     book alone, which is exactly what every cover change did before this. */
+  {let n=0;
+   for(let i=HIST.undo.length-1;i>=0;i--){const o=HIST.undo[i];
+     if(!o.cover)continue;
+     if(++n>COVER_OPS)delete o.cover;}}
   /* the tag list rides it too: a word standing on a book is a word you have
      used, and this is the one place every edit passes. Undo does not come
      through here, so undoing the moment a word was invented leaves it on your
@@ -9295,6 +9317,23 @@ async function applyOp(op,inv,quiet){
       await dbPut("books",clone);
       const i=books.findIndex(x=>x.id===id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
+      /* ---- the picture, which is not part of the book ----
+         A cover lives in its own store keyed by the book's id, so nothing on
+         a book op could ever bring an old one back. Pasting a cover over
+         another wrote the picture straight to that store and bumped a stamp
+         on the book, so ↶ Undo faithfully put the stamp back and left the
+         picture where it was: a press that did, visibly, nothing at all.
+         `op.cover` holds the two pictures, and the op that changed one
+         carries them — see quickEdit's `extra`. */
+      if(op.cover){
+        const pic=inv?op.cover.before:op.cover.after;
+        if(pic){try{await dbPut("covers",{id,data:pic});}catch(e){}coverCache.set(id,pic);}
+        else{try{await dbDel("covers",id);}catch(e){}coverCache.set(id,null);}
+        if(view==="book"&&cur&&cur.id===id)curCover=pic||null;
+        if(SYNC.triedCover)SYNC.triedCover.delete(id);
+        bumpCovers();
+        if(SYNC.on)enqueue({kind:pic?"cover":"coverDel",id});
+      }
       /* ---- and it comes OUT of Recently deleted ----
          Undoing a delete used to leave the book sitting in the bin as well as
          standing on the shelf, and the bin's entry is a copy from the moment it
@@ -15815,6 +15854,30 @@ function questHtml(){
         })()}</div>`;
     })()}
     ${(()=>{
+      /* ---- the 📖 run, warned about while it can still be saved ----
+         The ⚡ run above is about clearing the three tasks, and the 🔥 one is
+         about opening the app at all — which a person standing here has by
+         definition already done, so it can never be a warning. The reading
+         run is the one a day costs you quietly: it is fed only by a page, a
+         reading or a finish date (see the two bumpStreak calls), and until
+         now the only place it was said at all was a chip on 🏅 Achievements,
+         where nobody goes to be warned. It says nothing on a day already fed,
+         so seeing it means something. */
+      const r=(streaks&&streaks.read)||{},run=r.cur||0,day=questToday();
+      if(r.last===day)
+        return `<div class="hint" style="margin-top:5px">📖 <b>${run} day${run===1?"":"s"} of reading</b> — today already counts.</div>`;
+      if(run<1)return "";
+      /* what tomorrow's bumpStreak would actually do with a gap of one day:
+         the week's forgiveness, if this week's has not been spent, then a
+         shield if one is in hand. Asked of TOMORROW's week, or a run warned
+         about on a Sunday would be told about the wrong week's grace. */
+      const free=r.grace!==weekKeyOf(dayBack(day,-1));
+      return `<div class="hint" style="margin-top:5px;color:#b45309">📖 <b>Nothing read today.</b> Your ${run}-day reading run ${
+        free?"still has this week's forgiven day, so one quiet day will not break it"
+        :shieldStock()>0?"has no forgiveness left this week — a 🛡 shield would cover it"
+        :`breaks when the day turns at ${esc(dlHourLabel(dayLineH()))}`}. A page said on a book's page, or from the ✎ on its row, feeds it.</div>`;
+    })()}
+    ${(()=>{
       /* the week's work, on the same notepad as the day's three: it is the
          same kind of thing read in the same glance, and a card of its own
          would have been an eighth cell on an already long tab */
@@ -22246,7 +22309,12 @@ function openTagDownPanel(b,k){
   document.body.appendChild(wrap);
   close=dismissable(wrap);
 }
-async function quickEdit(mut){
+/* `extra` rides along on the op this pushes. It exists for the cover: the
+   picture does not live on the book record — it is its own row in the covers
+   store — so a change to it is invisible to ↶ Undo unless the op carries it.
+   ONE press is ONE op, so it goes on the book's op rather than pushing a
+   second one of its own. */
+async function quickEdit(mut,extra){
   const stored=books.find(x=>x.id===cur.id);
   /* Gone from the shelf while this page was open — deleted here in another tab,
      or on another device whose deletion has just arrived. The form has guarded
@@ -22267,7 +22335,7 @@ async function quickEdit(mut){
   cur.touched=true;
   cur.modified=Math.max(Date.now(),(cur.modified||0)+1,seenFloor(cur.id)+1);
   const after=JSON.parse(JSON.stringify(cur));
-  pushOp({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))});
+  pushOp(Object.assign({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))},extra||null));
   try{await dbPut("books",after);}catch(e){alert("Couldn't save — storage may be full.");return;}
   /* and again after the write, because the deletion could have landed during it.
      Putting it back on the shelf here would undo the same guard from underneath. */
@@ -23231,14 +23299,16 @@ function renderBookView(){
     if(!it)return;
     e.preventDefault();
     const f=it.getAsFile();if(!f)return;
-    const had=!!curCover;
+    const was=curCover||null,had=!!was;
     if(!confirm(had?"Replace this book's cover with the picture you copied?":"Use the picture you copied as this book's cover?"))return;
     let data;
     try{data=await compressImage(f,COVER_MAX,.85);}catch(err){alert("That picture couldn't be read.");return;}
     try{await dbPut("covers",{id:b.id,data});}
     catch(err){alert("That cover couldn't be saved — storage may be full.");return;}
     curCover=data;coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);bumpCovers();
-    await quickEdit(bk=>{bk.coverV=Date.now();});
+    /* the picture that was there rides on the op, so ↶ Undo can put it back —
+       `had` above is only whether there was one, `was` is the one itself */
+    await quickEdit(bk=>{bk.coverV=Date.now();},{cover:{before:was,after:data}});
     if(SYNC.on)enqueue({kind:"cover",id:b.id});
   };
   document.addEventListener("paste",window.__covPaste);
