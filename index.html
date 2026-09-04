@@ -1366,11 +1366,18 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   /* the covers were flex-centred boxes for the emoji; the drawn cover fills them
      from the corner instead, so the box itself must anchor it */
   .vcover,.entcov{position:relative}
-  /* the quotes wall — every kept quote, as cards in newspaper columns */
+  /* the quotes wall — every kept quote, as cards in newspaper columns.
+     SCOPED TO THE WALL, and it took a phone to show why: `.qcard` is also the
+     class every challenge card wears, so this hand-me-down gave the Dare, the
+     guess and the cover boards a finger cursor and a teal edge on hover — and
+     a hover on a touch screen is not a hover, it is the last thing you tapped,
+     which stays lit until you tap something else. Answering a guess lit the
+     whole box instead of the answer. Two different things must not share a
+     class, and while they do, every rule for one of them says which. */
   .qwall{columns:2 250px;column-gap:12px}
-  .qcard{break-inside:avoid;margin:0 0 12px;background:var(--card,#fff);border:1px solid var(--line);
+  .qwall .qcard{break-inside:avoid;margin:0 0 12px;background:var(--card,#fff);border:1px solid var(--line);
     border-radius:12px;padding:12px 14px;cursor:pointer}
-  .qcard:hover{border-color:#2dd4bf}
+  @media(hover:hover){.qwall .qcard:hover{border-color:#2dd4bf}}
   .qtxt{font-family:Georgia,serif;font-style:italic;font-size:14.5px;line-height:1.5;display:flex;gap:7px}
   .qtxt .qm{color:#818cf8;flex:none;font-size:19px;line-height:1.1;font-style:normal}
   .qtxt>div,.qtxt>span:not(.qm){min-width:0}
@@ -6601,6 +6608,7 @@ async function initSync(){
   try{const us=await dbGet("meta","usage");
     usage=(us&&us.v&&us.v.byView)?us.v:{since:Date.now(),byView:{},days:{}};
   }catch(e){usage={since:Date.now(),byView:{},days:{}};}
+  usageWeed();
   useView=null;useT0=Date.now();
   /* the medal stamps and the two streaks; the first meeting with this build
      records everything already earned in silence */
@@ -7295,6 +7303,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-04.7",lines:[
+    "<b>“Seen on screen and never pressed” counts the app's own buttons again, not your books.</b> It read 557 on the computer and 574 on the phone, and almost all of it was your shelf: every rating on it stood as a separate button (sixty of <i>★ 4.5 — press to change it…</i>, because a star's own text is one character once the numbers come out and the tooltip it fell back on kept the number), and every chapter of every book you had open put its title in the list. Numbers now come out of a tooltip exactly as they come out of a button's words; ▸ Show and ▾ Show meet as one button instead of two; a label that names something on your shelf is not a feature and is not counted; and the chapter rows, the contents lines and the readings folds say outright that their words are yours, not the app's.",
+    "<b>The lists you already had were weeded on the way in</b>, so the card answers the question today rather than in six months — which also gives the counter its room back: it stops at six hundred names, and it had filled up with books years of presses ago. What is left is what you actually asked for — the draw tools, the fill-in, the diagnostics, everything set up here — with what you use at the top and what has only ever sat there underneath.",
+    "<b>On the phone, answering a challenge lights the answer and not the whole box.</b> The quotes wall and the challenge cards were both called the same thing in the stylesheet, so the wall's hover — a teal edge, meant for a mouse — was reaching the Dare, the guess and the cover boards. A hover on a touch screen is not a hover; it is the last thing you tapped, and it stays lit until you tap something else."]},
   {v:"2026-09-04.6",lines:[
     "<b>Pressing the shelf again mends a list that was staged wrong.</b> The rows already waiting from one of your own Goodreads shelves say <i>Read</i>, because that is what the app wrongly concluded when it fetched them. Press that shelf's button once more and they become <b>★ Want to read</b> where they stand, in the list, with nothing added to your shelf and nothing to tick. A stage the app actually knows — anything <b>Everything</b> brought — is still never overwritten by a guess."]},
   {v:"2026-09-04.5",lines:[
@@ -9065,10 +9077,115 @@ function useTick(newView){
    drawn screen are kept too, so the card can say which buttons have been in
    front of you and never once pressed. Per device, like the minutes. */
 const PRESS_MAX=400,SEEN_MAX=600;
+/* ---- A LABEL IS THE APP'S OWN WORDS, NEVER THE SHELF'S ----
+   The question this card exists to answer is which of the things set up here
+   get used — the draw tools, the fill-in, the diagnostics — and it was
+   answering a different one: 557 labels on the desktop and 574 on the phone,
+   nearly all of them a book. Two leaks made that list. A star button's own
+   text is "★ 4.5", which is one character once the numbers come out, so it
+   fell through to its tooltip — and the tooltip was NOT number-stripped, so
+   every rating on the shelf stood as its own button, sixty of them. And a
+   chapter row's words are the chapter's title, so a book with forty chapters
+   put forty entries in.
+   Three rules, in this order: numbers come out of the tooltip exactly as they
+   come out of the text; a leading fold arrow goes, or ▸ Show and ▾ Show are
+   counted as two buttons; and a label naming anything on the shelf is not a
+   feature — it falls back to the tooltip, and with no tooltip it is not
+   counted at all. `data-nolog` is the door for what no list of titles can
+   catch, a row whose words are dates rather than names. */
+const pressStrip=s=>String(s||"").replace(/\s+/g," ").replace(/\b\d[\d.,:%]*\b/g,"")
+  .replace(/^[×✕✓▸▾▴]\s*/,"").replace(/[×✕✓▸▾▴]\s*$/,"").replace(/\s+/g," ").trim();
+/* every name on the shelf, as a phrase rather than as loose words: over four
+   thousand books nearly every common word IS somewhere in some title, so
+   "⇄ Flip upside down" would have died of a book called Upside Down. Whole
+   names only — the titles, the series, the authors, the stories inside a
+   collection, and the chapters of the book open at the time. Single words are
+   in it only from seven letters up, which takes Wundersmith and leaves Bible.
+   Built once per shelf size and once per opened book, not once per sweep. */
+let shelfPhN=-1,shelfPhSet=null,chapPhId="",chapPhSet=null;
+/* the SAME number-stripping the labels get, or the two can never meet: a
+   chapter filed as "Chapter 12: A New Beginning" reaches the label as
+   "Chapter : A New Beginning", and a phrase list that kept the 12 would go on
+   letting every one of them through */
+const phNorm=v=>String(v||"").toLowerCase().replace(/\b\d[\d.,:%]*\b/g," ")
+  .replace(/[^a-z0-9à-ÿ' ]+/g," ").replace(/\s+/g," ").trim();
+function phEat(set,v){const t=phNorm(v);if(t&&(t.indexOf(" ")>0||t.length>=7))set.add(t);}
+function shelfPhrases(){
+  if(shelfPhN===books.length&&shelfPhSet)return shelfPhSet;
+  const s=new Set();
+  books.forEach(b=>{phEat(s,b.title);phEat(s,b.series);phEat(s,b.author);
+    (b.entries||[]).forEach(en=>{phEat(s,en.title);phEat(s,en.author);});
+    /* every book's chapters, not only the open one's: the weed below runs
+       before any book is open, and the names it has to recognise came off a
+       chapter list read weeks ago */
+    (b.chapters||[]).forEach(c=>{phEat(s,c.title);phEat(s,c.part);});});
+  shelfPhN=books.length;shelfPhSet=s;return s;
+}
+function chapPhrases(){
+  const id=cur?String(cur.id)+":"+((cur.chapters||[]).length):"";
+  if(id===chapPhId&&chapPhSet)return chapPhSet;
+  const s=new Set();
+  if(cur)(cur.chapters||[]).forEach(c=>{phEat(s,c.title);phEat(s,c.part);});
+  chapPhId=id;chapPhSet=s;return s;
+}
+/* A name STANDING ALONE is the thing itself and always goes. A name sitting
+   INSIDE a longer label has to be substantial before it can condemn one, or a
+   shelf this size takes the app's own words down with it: on a four-thousand
+   book shelf almost any two-word phrase is somebody's title, and the first
+   run of this dropped "⇄ Flip upside down" because a book is called Upside
+   Down. Three words, or fourteen letters — which still takes "chapter a new
+   beginning" and leaves the drawing tools alone. */
+const phBig=p=>p.indexOf(" ")>0&&(p.split(" ").length>=3||p.length>=14);
+function madeOfShelf(l){
+  const t=phNorm(l);if(!t)return false;
+  const a=shelfPhrases(),b=chapPhrases();
+  if(a.has(t)||b.has(t))return true;
+  const w=t.split(" ");
+  for(let i=0;i<w.length;i++){
+    if(w[i].length>=7&&(a.has(w[i])||b.has(w[i])))return true;
+    for(let n=2;n<=6&&i+n<=w.length;n++){
+      const p=w.slice(i,i+n).join(" ");
+      if(phBig(p)&&(a.has(p)||b.has(p)))return true;
+    }
+  }
+  return false;
+}
+/* what was filed under the old rules, weeded once on the way in — otherwise
+   the rules above mend the counting from today and the card goes on reading
+   557. Every stored name goes back through the same strip, so ▸ Show and
+   ▾ Show meet on one key and sixty ratings meet on one; anything naming a book
+   is dropped, which is also what gives the ceiling of six hundred its room
+   back, since it filled with books and stopped recording features years of
+   presses ago. */
+function usageWeed(){
+  if(!usage)return;
+  let changed=false;
+  const clean=(o,merge)=>{
+    const out={};
+    Object.keys(o||{}).forEach(k=>{
+      const l=pressStrip(k);
+      /* one shape the phrase list cannot reach, and only in what was already
+         stored: a chapter row's words are the chapter's name followed by the
+         word count, so a two-word chapter like "Bonds" is too small to be
+         recognised as a name. It is unmistakable as a shape, though — nothing
+         the app says of its own accord ends in a lone w. */
+      if(!l||/\sw$/.test(l)||madeOfShelf(l)){changed=true;return;}
+      const t=l.length>48?l.slice(0,47)+"…":l;
+      if(t!==k)changed=true;
+      out[t]=Object.prototype.hasOwnProperty.call(out,t)?merge(out[t],o[k]):o[k];
+    });
+    return out;
+  };
+  if(usage.presses)usage.presses=clean(usage.presses,(a,b)=>({n:(a&&a.n||0)+(b&&b.n||0),last:Math.max(a&&a.last||0,b&&b.last||0)}));
+  if(usage.seen)usage.seen=clean(usage.seen,()=>1);
+  if(changed){clearTimeout(usageTimer);usageTimer=setTimeout(()=>{dbPut("meta",{k:"usage",v:usage}).catch(()=>{});},2000);}
+}
 function pressLabel(el){
-  let s=String(el.textContent||"").replace(/\s+/g," ").replace(/\b\d[\d.,:%]*\b/g,"").replace(/[×✕✓▸▾▴]\s*$/,"").replace(/\s+/g," ").trim();
-  if(s.length<2)s=String(el.getAttribute("title")||el.getAttribute("aria-label")||"").replace(/\s+/g," ").trim();
-  if(!s)return "";
+  if(el.closest&&el.closest("[data-nolog]"))return "";
+  const tip=pressStrip(el.getAttribute("title")||el.getAttribute("aria-label")||"");
+  let s=pressStrip(el.textContent);
+  if(s.length<2||madeOfShelf(s))s=tip;
+  if(!s||madeOfShelf(s))return "";
   return s.length>48?s.slice(0,47)+"…":s;
 }
 document.addEventListener("click",e=>{
@@ -22381,14 +22498,14 @@ function renderBookView(){
       <div class="hint" id="vChFound" style="margin:0 0 8px" hidden></div>`:""}
     ${(()=>{const ps=chapterParts(chap);
       return ps.length?`<div class="chtoc"><div class="lbl" style="margin:0 0 4px">Contents</div>
-        ${ps.map((p,k)=>`<button class="tocline" data-vchjump="${p.at}">
+        ${ps.map((p,k)=>`<button class="tocline" data-nolog data-vchjump="${p.at}">
           <span class="tocn">${k+1}</span>
           <span class="tocmain"><span class="toctitle">${esc(p.name)}</span>
             ${chap[p.at]&&chap[p.at].partNote?`<span class="tocnote">${esc(chap[p.at].partNote)}</span>`:""}</span>
           <span class="toccount">${p.n}</span>
         </button>`).join("")}</div>`:"";})()}
     <div id="vChapList">${chap.map((c,i)=>`${String(c.part||"").trim()?`<div id="vchpart-${i}"><div class="chpart"><h4>${esc(c.part)}</h4><span class="rule"></span></div>${c.partNote?`<div class="vchnote">${esc(c.partNote)}</div>`:""}</div>`:""}
-      <div class="chrow" id="vchrow-${i}" data-chrow="${esc(c.id)}"><button class="chhead" data-vch="${esc(c.id)}">
+      <div class="chrow" id="vchrow-${i}" data-chrow="${esc(c.id)}"><button class="chhead" data-nolog data-vch="${esc(c.id)}">
         <span class="chev">▸</span><span class="chn">${i+1}</span>
         <span class="cht">${esc(c.title||"Untitled")}</span>
         ${c.mark?`<span class="mk ${c.mark}" title="${esc((chapMark(c.mark)||[])[2]||"")}">${(chapMark(c.mark)||[])[1]||""}</span>`:""}
@@ -22405,7 +22522,7 @@ function renderBookView(){
   const discBox=!disc.length?"":`<div class="lbox discbox"><div class="lhead">
       <h3>Discussion <span class="none" style="font-weight:400">${disc.length}</span></h3>
       <button class="btn" data-vfold="vDiscList" data-what="it">▸ Show it</button></div>
-    <div id="vDiscList" hidden>${disc.map((c,i)=>`<div class="chrow"><button class="chhead" data-vch="${esc(c.id)}">
+    <div id="vDiscList" hidden>${disc.map((c,i)=>`<div class="chrow"><button class="chhead" data-nolog data-vch="${esc(c.id)}">
         <span class="chev">▸</span><span class="chn">${i+1}</span>
         <span class="cht">${esc(c.title||"Untitled")}</span>
         <span class="chw">${(c.words||0).toLocaleString()} w</span></button>
@@ -22642,7 +22759,7 @@ function renderBookView(){
           const fc=chipInk(genres[(b.genres||[])[0]]||"#78716c");
           return `<dl class="vfactgrid"${fc?` style="--fcbg:${fc.bg};--fcbd:${fc.bd};--fcink:${fc.fg}"`:""}>${facts.map(f=>`<dt>${f[0]}</dt><dd>${f[1]}</dd>`).join("")}</dl>`;})():""}
         ${readsOf(b).length||(statusOf(b)==="finished"&&!b.dnf)?`<div class="vreads">
-          <button class="rdtog" id="vReads" title="Every time you've read this — correct a date, add one, or take a reading off">${vReadsOpen?"▾":"▸"} ${esc(readSummary(b,false))}</button>
+          <button class="rdtog" id="vReads" data-nolog title="Every time you've read this — correct a date, add one, or take a reading off">${vReadsOpen?"▾":"▸"} ${esc(readSummary(b,false))}</button>
           ${vReadsOpen?readListHtml(b,b.id):""}
         </div>`:""}
         ${b.dnf&&(b.dnfReasons||[]).length?`<div class="vfacts">Gave up: ${(b.dnfReasons||[]).map(esc).join(", ")}</div>`:""}
@@ -22783,7 +22900,7 @@ function renderBookView(){
                   value="" placeholder="–" title="How many pages this story has — a page is a better record than a percent"></span></span>`;
               return `<span class="entprog"><span class="prog" style="width:56px"><i style="width:${p||0}%"></i></span>
                 <span class="rr">${pcIn}% · p.${pgIn} of ${esc(String(en.pages))}</span></span>`;})()}
-            ${readsOf(en).length?`<button class="rdtog" data-enrd="${en.id}" title="Every time you've read this story — correct a date, add one, or take a reading off">${vEntReads===en.id?"▾":"▸"} ${esc(readSummary(en,true))}</button>`:""}</div>
+            ${readsOf(en).length?`<button class="rdtog" data-enrd="${en.id}" data-nolog title="Every time you've read this story — correct a date, add one, or take a reading off">${vEntReads===en.id?"▾":"▸"} ${esc(readSummary(en,true))}</button>`:""}</div>
           ${(()=>{
             /* What this story says for itself, shown where you are looking at
                it. A story's own genres REPLACE the collection's while its own
@@ -25536,7 +25653,7 @@ function renderEditor(){
       <div id="chPartsBox"></div>
         ${(()=>{const ps=chapterParts(ch);
           return ps.length?`<div class="chtoc"><div class="lbl" style="margin:0 0 4px">Contents</div>
-            ${ps.map((p,k)=>`<button class="tocline" data-chjump="${p.at}">
+            ${ps.map((p,k)=>`<button class="tocline" data-nolog data-chjump="${p.at}">
               <span class="tocn">${k+1}</span>
               <span class="tocmain"><span class="toctitle">${esc(p.name)}</span>
                 ${ch[p.at]&&ch[p.at].partNote?`<span class="tocnote">${esc(ch[p.at].partNote)}</span>`:""}</span>
@@ -25548,7 +25665,7 @@ function renderEditor(){
             <button class="btn foldbtn" id="chMarkFold">${chMarkOpen?"▾ Hide":"▸ Show"}</button>
             <span class="lbl" style="margin:0">Chapters you marked</span><span class="n">${marked.length}</span>
             ${chMarkOpen?`<div style="flex:1 1 100%;margin-top:6px">${marked.map(({c,i})=>{const m=chapMark(c.mark);
-              return `<button class="chmrow" data-chjump="${i}"><span class="mk ${c.mark}">${m[1]}</span>
+              return `<button class="chmrow" data-nolog data-chjump="${i}"><span class="mk ${c.mark}">${m[1]}</span>
                 <span class="chn">${i+1}</span><span class="cht">${esc(c.title||"Untitled")}</span>
                 <span class="chw">${esc(partOfChapter(ch,i))}</span></button>`;}).join("")}</div>`:""}
           </div>`:"";})()}
@@ -25557,7 +25674,7 @@ function renderEditor(){
             <button class="cnt" data-chpart="${c.id}" title="Rename this part, or take the marker off">✎</button>
           </div><button class="chnote" data-chnote="${c.id}" title="What this part is about — press to write or change it">${c.partNote?esc(c.partNote):"＋ what happens in this part"}</button></div>`:""}
           <div class="chrow" id="chrow-${i}" data-chrow="${esc(c.id)}">
-          <button class="chhead" data-cho="${c.id}">
+          <button class="chhead" data-nolog data-cho="${c.id}">
             <span class="chev">${chapOpen.has(c.id)?"▾":"▸"}</span>
             <span class="chn">${i+1}</span>
             <span class="cht">${esc(c.title||"Untitled")}</span>
@@ -25576,7 +25693,7 @@ function renderEditor(){
         <button class="btn" id="diTog">${discOpen?"▾ Hide it":"▸ Show it"}</button></div>
         <div class="hint" style="margin:0 0 6px">The replies that were not chapters — the working-out between the writing.</div>
         ${discOpen?di.map((d,i)=>`<div class="chrow">
-          <button class="chhead" data-dio="${d.id}">
+          <button class="chhead" data-nolog data-dio="${d.id}">
             <span class="chev">${chapOpen.has(d.id)?"▾":"▸"}</span>
             <span class="chn">${i+1}</span>
             <span class="cht">${esc(d.title||"Untitled")}</span>
