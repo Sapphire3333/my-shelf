@@ -356,7 +356,11 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   /* what a share brought, verbatim — sharedTextCard */
   .sgtext{white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.45 ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:8px 0;max-height:32vh;overflow:auto;color:var(--ink);user-select:text}
   /* the jump box — openJump */
-  .jumpwrap{position:fixed;left:50%;top:10vh;transform:translateX(-50%);width:min(560px,94vw);z-index:120;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px;box-shadow:0 18px 50px rgba(0,0,0,.28)}
+  /* 940, not 120: the shared-text card (#shareGot) is a full-screen sheet at
+     900, and "Another book…" opens this box from inside it — at 120 the box
+     was drawn behind the sheet's own dimming, so the press looked dead and a
+     shared quote could only ever go on the four books already offered */
+  .jumpwrap{position:fixed;left:50%;top:10vh;transform:translateX(-50%);width:min(560px,94vw);z-index:940;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px;box-shadow:0 18px 50px rgba(0,0,0,.28)}
   .jumpwrap .field{font-size:16px}
   .jumplist{display:flex;flex-direction:column;gap:2px;margin-top:6px;max-height:min(52vh,420px);overflow:auto}
   .jumprow{display:flex;align-items:baseline;gap:8px;width:100%;text-align:left;padding:8px 10px;border-radius:9px;border:none;background:none;font:inherit;color:var(--ink);cursor:pointer;min-width:0}
@@ -5181,9 +5185,13 @@ async function backfillCollRatings(){
    button, but nobody should have to hunt for one. The backdrop is what the
    outside click lands on, so dismissing a panel cannot also press whatever was
    sitting underneath it. */
-function dismissable(wrap,onClose){
+/* `z` raises the backdrop for a panel that opens over another full-screen
+   sheet: the backdrop sits at 59, which is under everything the shared-text
+   card draws, so a chooser opened from inside it had nothing to close it on */
+function dismissable(wrap,onClose,z){
   const back=document.createElement("div");
   back.className="ratebackdrop";
+  if(z)back.style.zIndex=z;
   const close=()=>{
     document.removeEventListener("keydown",key,true);
     back.remove();wrap.remove();
@@ -5348,7 +5356,7 @@ function openJump(onPick){
   wrap.innerHTML=`<input class="field" id="jumpQ" type="search" autocomplete="off" spellcheck="false" placeholder="${onPick?"Which book?":"Jump to a book, an author, a series, a tag…"}" aria-label="${onPick?"Which book":"Jump to"}">
     <div class="jumplist" id="jumpList" role="listbox"></div>
     <div class="hint" style="margin:6px 2px 0">↑ ↓ choose · Enter opens · Esc closes</div>`;
-  const close=dismissable(wrap);
+  const close=dismissable(wrap,null,939);
   document.body.appendChild(wrap);
   const inp=q("#jumpQ",wrap),list=q("#jumpList",wrap);
   let hits=[],sel=0;
@@ -7933,6 +7941,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-05.1",lines:[
+    "<b>A shared quote can reach any book on the shelf again.</b> <i>❝ Keep as a quote…</i> offered the four books you are reading and <b>Another book…</b> underneath — and Another book did nothing at all. It opens the same 🔎 box the header does, and that box was drawn at layer 120 while the shared-to-My-Shelf sheet stands at 900: it was opening every time, behind the sheet's own dimming, where it could be neither seen nor pressed. So a line out of a book you finished years ago had nowhere to go.",
+    "<b>And the four it offers are the books, not the boxes they live in.</b> While you are reading a story inside a collection the shortlist said <i>Small Spaces</i> and <i>The Red Rock Mysteries</i> — the sets — where what you are actually reading is <i>Dead Voices</i> and <i>Stolen Secrets</i>. It names the story now, and the quote is written down as that story's: it will say which one it came from wherever quotes are shown, instead of joining twenty volumes' worth under one name. Picking a story through <b>Another book…</b> does the same."]},
   {v:"2026-09-04.31",lines:[
     "<b>The ? sheet opens as a contents list now, not a wall.</b> Eleven headings, each saying how many entries are behind it — <i>📚 Library 7</i>, <i>🎲 Challenges &amp; 🏅 Achievements 14</i> — and <b>one open at a time</b>. It still lands on the screen you pressed <b>?</b> from, so the thing you were looking at is the thing that is open; everything else is one press away and out of the road.",
     "<b>And a find box over all of it.</b> Type and only the entries holding that word stand, still under the screens they live on, with the word lit in each — <i>“quote” — 13 entries</i>. Clearing it gives the headings back exactly as they were. Your two complaints were really two: a wall with no door needs a door, and ninety entries need a search, so it has both."]},
@@ -20180,11 +20191,16 @@ function routeArrived(text,url){
 }
 /* a quote onto a book from outside its page — through pushOp like the
    line the reading page adds, and written the same way */
-async function addQuoteTo(id,text){
+async function addQuoteTo(id,text,enId){
   const b=books.find(x=>x.id===id);if(!b)return false;
   const t=String(text||"").trim();if(!t)return false;
   const before=JSON.parse(JSON.stringify(b));
   b.quotes=[...(b.quotes||[]),esc(t)];
+  /* and which story it came out of, where one was named. Quotes live on the
+     shelf item, so a line out of one story of twenty was landing on the
+     collection with nothing saying which — quotesFrom is the slot for it, and
+     an id in it reads back as a place rather than as typed words */
+  if(enId&&(b.entries||[]).some(e=>e.id===enId))listFromArr(b)[b.quotes.length-1]=enId;
   b.touched=true;
   b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -20198,8 +20214,22 @@ function sharedTextCard(v){
   const old=document.getElementById("shareGot");if(old)old.remove();
   const title=String(v.title||"").trim(),text=String(v.text||"").trim(),url=String(v.url||"").trim();
   const words=text||title;
-  const reading=stageUnits().filter(u=>!u.dnf&&!u.hold&&u.status==="reading").map(u=>u.book)
-    .filter((b,i,a)=>a.indexOf(b)===i).slice(0,4);
+  /* what you are actually reading, which inside a collection is the STORY and
+     not the collection — a shared line came out of one book, and the shortlist
+     was offering the twenty-volume set it happens to sit in.
+     A story only stands here on its own if it SAYS it is being read: the silent
+     ones inherit the collection's stage, so offering them would be offering the
+     same set twenty times over. Where none of them speaks, the collection is
+     the one row. */
+  const reading=[];
+  const byBook=new Map();
+  stageUnits().filter(u=>!u.dnf&&!u.hold&&u.status==="reading")
+    .forEach(u=>{const l=byBook.get(u.book)||[];l.push(u);byBook.set(u.book,l);});
+  byBook.forEach((list,b)=>{
+    const own=list.filter(u=>u.en&&String(u.en.status||"").trim()==="reading");
+    if(own.length)own.forEach(u=>reading.push(u));else reading.push({book:b,en:null});
+  });
+  reading.splice(4);
   const el=document.createElement("div");
   el.id="shareGot";
   el.innerHTML=`<div class="sgcard">
@@ -20214,7 +20244,7 @@ function sharedTextCard(v){
     </div>
     <div class="sgrow" id="sgPick" hidden>
       <span class="sgline" style="width:100%">On which book?</span>
-      ${reading.map(b=>`<button class="sgbtn" data-sgq="${b.id}">📖 ${esc(b.title||"Untitled")}</button>`).join("")}
+      ${reading.map(u=>`<button class="sgbtn" data-sgq="${u.book.id}" data-sgqe="${u.en?esc(u.en.id):""}">📖 ${esc((u.en?u.en.title:u.book.title)||"Untitled")}</button>`).join("")}
       <button class="sgbtn" id="sgAny">Another book…</button>
     </div>
     <div class="sgfoot">Kept for an hour, in case this window reloads.</div>
@@ -20231,12 +20261,19 @@ function sharedTextCard(v){
   if(add)add.onclick=()=>{go();if(view==="book"){view=cameFrom||"library";cur=null;render();}routeArrived(text||title,url);};
   const qb=el.querySelector("#sgQuote");
   if(qb)qb.onclick=()=>{const p=el.querySelector("#sgPick");p.hidden=!p.hidden;};
-  const took=async id=>{
-    const ok=await addQuoteTo(id,words);
-    if(ok){const b=books.find(x=>x.id===id);el.querySelector(".sgfoot").textContent="✓ Kept on "+(b?b.title:"the book")+". Undo puts it back.";el.querySelector("#sgPick").hidden=true;}
+  const took=async (id,enId)=>{
+    const ok=await addQuoteTo(id,words,enId);
+    const foot=el.querySelector(".sgfoot");
+    if(!ok){foot.textContent="Couldn't keep it — nothing was written.";return;}
+    const b=books.find(x=>x.id===id);
+    const en=enId&&b?((b.entries||[]).find(e=>e.id===enId)):null;
+    foot.textContent="✓ Kept on "+((en&&en.title)||(b&&b.title)||"the book")+". Undo puts it back.";
+    el.querySelector("#sgPick").hidden=true;
   };
-  qa("[data-sgq]",el).forEach(b=>b.onclick=()=>took(b.dataset.sgq));
-  el.querySelector("#sgAny").onclick=()=>openJump(h=>took(h.id));
+  qa("[data-sgq]",el).forEach(b=>b.onclick=()=>took(b.dataset.sgq,b.dataset.sgqe||""));
+  /* the chooser hands back a hit: a story names its collection in `id` and
+     itself in `en`, which is exactly the pair took wants */
+  el.querySelector("#sgAny").onclick=()=>openJump(h=>took(h.id,h.en||""));
 }
 /* ---- paste to add, on the Library ----
    Ctrl+V with nothing focused: a picture becomes a new book's photo to read,
