@@ -7941,6 +7941,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-05.2",lines:[
+    "<b>A story given its own page takes its quotes with it.</b> ⤴ Give it its own page moved the rating, the tags, the pages, the dates, the cover and the writing, and left every quote behind on the collection — where they went on standing under a story that was no longer there. The lines <b>marked as that story's</b> now travel with it, with the ❝ mark you gave each one; the collection's own lines, and the ones that came from its other stories, stay exactly where they are. ⤴ Unfold into a series does the same for all of them at once, which matters more there — the collection itself goes to Recently deleted, so anything left on it goes with it.",
+    "A quote lives on the shelf item and never on the story — that is why <b>＋ from</b> exists, and it is what this reads. A quote with nothing said about where it came from is the collection's, and stays; if some of yours should have travelled and didn't, mark them with ＋ from and take the story out again."]},
   {v:"2026-09-05.1",lines:[
     "<b>A shared quote can reach any book on the shelf again.</b> <i>❝ Keep as a quote…</i> offered the four books you are reading and <b>Another book…</b> underneath — and Another book did nothing at all. It opens the same 🔎 box the header does, and that box was drawn at layer 120 while the shared-to-My-Shelf sheet stands at 900: it was opening every time, behind the sheet's own dimming, where it could be neither seen nor pressed. So a line out of a book you finished years ago had nowhere to go.",
     "<b>And the four it offers are the books, not the boxes they live in.</b> While you are reading a story inside a collection the shortlist said <i>Small Spaces</i> and <i>The Red Rock Mysteries</i> — the sets — where what you are actually reading is <i>Dead Voices</i> and <i>Stolen Secrets</i>. It names the story now, and the quote is written down as that story's: it will say which one it came from wherever quotes are shown, instead of joining twenty volumes' worth under one name. Picking a story through <b>Another book…</b> does the same."]},
@@ -12088,7 +12091,11 @@ function selfToFirstStory(b){
    single story, and ⤴ Unfold into a series, which does it to every story at
    once. It builds the book and copies the picture; taking the story OUT of the
    collection is the caller's job, since the two dispose of the collection
-   differently — one keeps it, the other retires it. */
+   differently — one keeps it, the other retires it. The QUOTES are the one
+   exception and they have to be: they live on the collection's own list, so
+   moving them is a change to the collection, and only this function knows
+   which of them belong to the story. A caller with the editor open must bring
+   its own copy along afterwards, exactly as it does for the entry list. */
 async function entryToBook(coll,en){
   const nb=blankBook(uid());
   nb.title=en.title||"";
@@ -12100,6 +12107,26 @@ async function entryToBook(coll,en){
      in bookToEntry, in the other direction */
   nb.progress=en.progress||"";nb.pct=en.pct||"";nb.progLog=(en.progLog||[]).slice();
   nb.summary=en.summary||"";nb.canvasText=en.notes||"";
+  /* ---- the lines it was keeping on the collection's list ----
+     A quote lives on the shelf item and never on the story, and quotesFrom is
+     the field that says which story it came out of — so the ones marked as
+     this story's are its own and go with it, and the rest stay where they are.
+     They are taken OFF the collection rather than copied, or the two lists
+     would disagree the first time either was edited. The strengths travel and
+     the collection's stay lined up with what is left. On a book of its own
+     there is no longer a story to name, so the sources arrive blank. */
+  const qFrom=listFromArr(coll).slice(),qW=listWArr(coll,"quotes").slice();
+  const qMine=[],qRest=[],qRestF=[],qRestW=[];
+  (coll.quotes||[]).forEach((t,i)=>{
+    if(String(qFrom[i]||"")===en.id)qMine.push({t,w:qW[i]});
+    else{qRest.push(t);qRestF.push(qFrom[i]||"");qRestW.push(qW[i]);}
+  });
+  if(qMine.length){
+    nb.quotes=qMine.map(x=>x.t);
+    nb.quotesFrom=qMine.map(()=>"");
+    nb.quotesW=qMine.map(x=>x.w);
+    coll.quotes=qRest;coll.quotesFrom=qRestF;coll.quotesW=qRestW;
+  }
   nb.keywords=entKeywordsOf(coll,en).slice();
   nb.genres=entGenresOf(coll,en).slice();
   nb.favorite=!!en.favorite;
@@ -28858,7 +28885,7 @@ function renderEditor(){
     qa("[data-eout]",list).forEach(el=>el.onclick=()=>{
       const en=find(el.dataset.eout);if(!en)return;
       const left=cur.entries.length-1;
-      if(!confirm(`Take “${en.title||"Untitled"}” out of “${cur.title||"this collection"}”?\n\nIt becomes its own book on the shelf again — its rating, tags, pages, dates, cover and writing go with it. The collection keeps its other ${left} ${entWord(cur,left)}.\n\nUndo puts it back.`))return;
+      if(!confirm(`Take “${en.title||"Untitled"}” out of “${cur.title||"this collection"}”?\n\nIt becomes its own book on the shelf again — its rating, tags, pages, dates, cover, writing and the quotes marked as its own go with it. The collection keeps its other ${left} ${entWord(cur,left)}.\n\nUndo puts it back.`))return;
       finishSaveThen(async()=>{
         const coll=books.find(x=>x.id===cur.id);if(!coll)return;
         const before=JSON.parse(JSON.stringify(coll));
@@ -28871,8 +28898,15 @@ function renderEditor(){
         await dbPut("books",nb);
         books.unshift(nb);
         delete curEnt[en.id];
-        /* the open editor keeps drawing from its own copy — bring it along */
+        /* the open editor keeps drawing from its own copy — bring it along.
+           The quote list as well as the entry list, since entryToBook takes
+           the story's lines off the collection: without this the editor's next
+           save would write its stale copy back and hand them over again. */
         cur.entries=cur.entries.filter(x=>x.id!==en.id);
+        cur.quotes=(coll.quotes||[]).slice();
+        cur.quotesFrom=(coll.quotesFrom||[]).slice();
+        cur.quotesW=(coll.quotesW||[]).slice();
+        renderList("quotes");
         cur.modified=coll.modified;
         pushOp({t:"bulk",items:[
           {id:coll.id,before,after:JSON.parse(JSON.stringify(coll))},
@@ -29016,7 +29050,7 @@ function renderEditor(){
        const n=(cur.entries||[]).length;
        const name=(seriesShown(cur)||String(cur.title||"").trim())||"this series";
        if(!confirm(`Unfold “${cur.title||"this collection"}” into a series?\n\n`
-         +`All ${n} of them become their own book on the shelf, and all ${n} are linked under the series name “${name}”. Each keeps its rating, tags, pages, dates, cover and writing.\n\n`
+         +`All ${n} of them become their own book on the shelf, and all ${n} are linked under the series name “${name}”. Each keeps its rating, tags, pages, dates, cover, writing and the quotes marked as its own.\n\n`
          +`This collection's own page goes to Recently deleted, where it waits ${TRASH_DAYS} days.\n\n`
          +`To divide one of them into its own stories afterwards: tick “a whole series / collection as one shelf item” on it — it offers to make itself the first story — then press ✂ Split.\n\n`
          +`↶ Undo puts all of it back.`))return;
