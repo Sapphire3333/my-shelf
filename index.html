@@ -10076,6 +10076,24 @@ function refreshHistBtns(){
    redraw each time round is the second-long stall the scale work went to some
    trouble to remove. The books move; the page is drawn once at the end. */
 async function applyOp(op,inv,quiet){
+  /* ---- staged import rows the op took off the list ----
+     Filing staged rows into a collection is the one write on the shelf that
+     consumes something which is NOT a book: the rows leave importQueue and
+     become entries, so putting the collection back is only half an undo — the
+     rows themselves have nowhere to return to and the books are simply gone.
+     `op.impq` carries them, exactly as `op.cover` carries a picture: a payload
+     the op holds because the shelf cannot reconstruct it from before/after.
+     Read here rather than in a branch, so any op shape may carry one. */
+  if(op.impq&&op.impq.length){
+    if(inv){
+      const have=new Set(importQueue.map(x=>x.id));
+      importQueue=op.impq.filter(r=>!have.has(r.id)).map(r=>JSON.parse(JSON.stringify(r))).concat(importQueue);
+    }else{
+      const ids=new Set(op.impq.map(r=>r.id));
+      importQueue=importQueue.filter(x=>!ids.has(x.id));
+    }
+    saveImportQueue();
+  }
   /* several books deleted in one press, undone in one press. It walks the same
      path a single delete does, one book at a time, so there is only ever one
      description of what deleting means. */
@@ -12320,6 +12338,8 @@ async function retireBook(b){
    story, then let the old page go to the bin — done for a ticked handful. */
 async function foldIntoCollection(ids,coll){
   if(!coll||!isColl(coll))return 0;
+  const before=JSON.parse(JSON.stringify(coll));
+  const items=[];
   coll.entries=coll.entries||[];
   const st=statusOf(coll);
   /* a collection with no author of its own takes the one its new books agree
@@ -12333,9 +12353,15 @@ async function foldIntoCollection(ids,coll){
   for(const id of ids){
     const b=books.find(x=>x.id===id);
     if(!b||isColl(b)||b.id===coll.id)continue;
+    const was=JSON.parse(JSON.stringify(b));
     const {en}=await bookToEntry(b,coll.id,st,coll.author,coll.dnf,coll.keywords);
     coll.entries.push(en);
     await retireBook(b);
+    /* after:null — retired to the bin by this press, the same shape ⤴ Unfold
+       uses for the collection it empties, so the bulk branch puts each book
+       back on the shelf and out of Recently deleted on undo, and back into it
+       on redo */
+    items.push({id:b.id,before:was,after:null});
     n++;
   }
   if(!n)return 0;
@@ -12343,6 +12369,8 @@ async function foldIntoCollection(ids,coll){
   coll.modified=Math.max(Date.now(),(coll.modified||0)+1,seenFloor(coll.id)+1);
   await dbPut("books",coll);
   if(SYNC.on){enqueue({kind:"book",id:coll.id});flushQueue();}
+  items.push({id:coll.id,before,after:JSON.parse(JSON.stringify(coll))});
+  pushOp({t:"bulk",items});
   return n;
 }
 async function makeCollectionFrom(ids,name,author){
@@ -19529,7 +19557,10 @@ function refreshImport(light){
     if(!confirm(`Make “${coll.title||"Untitled"}” a collection and put ${items.length} book${items.length===1?"":"s"} inside it as stories?\n\nIt keeps its own rating, dates, tags and writing. Each story keeps its own rating, pages, dates and writing.`))return;
     b.disabled=true;
     const msg=q("#busyMsg");if(msg)msg.textContent=`Filing ${items.length}…`;
-    try{await makeCollection(coll);await importIntoCollection(items,coll);}
+    /* the standalone book as it stood, so the two steps below are one op and
+       one ↶ Undo gives the plain book back instead of an empty collection */
+    const wasColl=JSON.parse(JSON.stringify(coll));
+    try{await makeCollection(coll);await importIntoCollection(items,coll,wasColl);}
     catch(e){alert("They couldn't be saved into the collection — storage may be full. Export a backup from the Overview tab and free some space.");}
     impIntoOpen=false;impIntoQ="";
     if(q("#busyMsg"))q("#busyMsg").textContent="";
@@ -32659,9 +32690,10 @@ function wireBookImport(b){
     if(!fresh&&items.length>1&&!confirm(`Put ${items.length} books inside “${b.title||"Untitled"}” as stories?\n\nEach keeps its own rating, pages, dates and writing.`))return;
     if(btn)btn.disabled=true;
     const msg=q("#busyMsg");if(msg)msg.textContent=`Filing ${items.length}…`;
+    const wasB=JSON.parse(JSON.stringify(b));
     try{
       if(fresh)await makeCollection(b);
-      await importIntoCollection(items,b);
+      await importIntoCollection(items,b,wasB);
       /* `b` is the open book — cur, which is a COPY of the shelf's object, and
          the copy is what both steps above just mutated and saved. So the shelf
          array is the stale one and has to be told, not asked: reading it back
@@ -33161,7 +33193,12 @@ async function importOne(it,extra){
    than beside it. Each story keeps its own rating, pages, dates and writing;
    its stage is recorded only where it differs from the collection's, so a
    series you have simply finished stays one row on the shelf. */
-async function importIntoCollection(items,coll){
+/* `wasBefore` is for the two doors that make a plain book INTO a collection and
+   then file rows inside it: one press of a button is one op, so they snapshot
+   the book before makeCollection touches it and hand that in, and a single ↶
+   Undo puts the standalone book back rather than leaving an empty collection. */
+async function importIntoCollection(items,coll,wasBefore){
+  const before=JSON.parse(JSON.stringify(wasBefore||coll));
   coll.entries=coll.entries||[];
   const collSt=statusOf(coll);
   for(const it of items){
@@ -33184,7 +33221,10 @@ async function importIntoCollection(items,coll){
   await dbPut("books",coll);
   if(SYNC.on)enqueue({kind:"book",id:coll.id});
   const ids=new Set(items.map(x=>x.id));
+  const took=importQueue.filter(x=>ids.has(x.id)).map(r=>JSON.parse(JSON.stringify(r)));
   importQueue=importQueue.filter(x=>!ids.has(x.id));
+  saveImportQueue();
+  pushOp({t:"book",id:coll.id,before,after:JSON.parse(JSON.stringify(coll)),impq:took});
 }
 /* several staged entries -> ONE collection book, each as a story inside it */
 /* Each story keeps the day it was read and the stage it was at. Goodreads and
@@ -33216,7 +33256,12 @@ async function importCollection(items,name){
   books.unshift(nb);
   if(SYNC.on)enqueue({kind:"book",id:nb.id});
   const ids=new Set(items.map(x=>x.id));
+  const took=importQueue.filter(x=>ids.has(x.id)).map(r=>JSON.parse(JSON.stringify(r)));
   importQueue=importQueue.filter(x=>!ids.has(x.id));
+  saveImportQueue();
+  /* before:null — the collection did not exist until this press, so undoing it
+     is un-creating it, and the rows it swallowed go back on the list */
+  pushOp({t:"bulk",items:[{id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))}],impq:took});
 }
 
 /* =============== look a book up online (Google Books + Open Library) =============== */
