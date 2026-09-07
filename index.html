@@ -3219,8 +3219,34 @@ html[data-phone="1"] #genSug .chip{--tapz:1.25}
    that const lives in the main script further down, which has not run yet
    when this block does, and naming it here threw a ReferenceError that left
    the worker unregistered */
+/* ---- THE STAMP CAN LIE, AND A LYING STAMP NEVER HEALS ITSELF ----
+   The worker serves our own files network-first with a 2.5s budget and falls
+   back to the cached copy, and every file races on its own. So index.html can
+   win its race while version.js loses it — measured on their phone, which ran
+   build .15's code while the stamp on the page, and the worker, both said .14.
+   That is not merely a wrong number: index.html registers sw.js?v=THE STAMP, so
+   a stale stamp registers the OLD worker's address, no new worker installs, the
+   cache keeps its old name, and version.js goes on being served from it. It can
+   stick for good.
+   So the stamp is asked for again, from the network, with no cache in the way.
+   It is 263 bytes and it is the one file whose staleness poisons everything
+   else. If the live one differs, the worker is registered again at the REAL
+   address — which installs it, which deletes the old cache on activate, which
+   makes the next open clean — and the difference is remembered for the trouble
+   card, so the lie is visible rather than silently mended. */
 if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0&&!/[?&]db=smoke(&|$)/.test(location.search)){
-  window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js?v="+encodeURIComponent(window.APP_VERSION||"dev")).catch(()=>{}));
+  window.addEventListener("load",()=>{
+    const reg=v=>navigator.serviceWorker.register("sw.js?v="+encodeURIComponent(v||"dev")).catch(()=>{});
+    reg(window.APP_VERSION);
+    fetch("version.js",{cache:"no-store"}).then(r=>r.ok?r.text():"").then(t=>{
+      const m=/APP_VERSION\s*=\s*"([^"]+)"/.exec(t||"");
+      const live=m&&m[1];
+      if(live&&live!==window.APP_VERSION){
+        window.__stampWas=window.APP_VERSION;window.__stampLive=live;
+        reg(live);
+      }
+    }).catch(()=>{});
+  });
 }
 </script>
 </head>
@@ -8215,6 +8241,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-07.16",lines:[
+    "<b>Sharing a file to the app now says so.</b> Sharing ReadEra's whole backup — its entire library in one 1.9 MB file — instead of a single quote is an easy thing to do by accident, and the app took it in complete silence: the file was kept, but on another screen, so nothing where you were standing moved at all. It says what arrived, how big it was, that it is the whole library rather than the line you had picked, where it has gone — and, for a ReadEra backup, how to send a <b>quote</b> instead: open <b>Quotes</b>, press and hold the one you want, and share that.",
+    "<b>And the build number at the top of the trouble card can no longer lie.</b> The app's files are each fetched fresh with a short deadline and fall back to the saved copy, one race per file — so the page could be a new build while the little file that carries the version number was still the old one. That is not just a wrong number: the app asks for its offline worker by that number, so a stale one asked for the old worker, which kept the old files, which kept the number stale. It could stick that way for good. The number is now checked against the server on every open, and where it disagrees the card says <b>THIS PAGE IS STALE</b> and the app repairs itself for the next open."]},
   {v:"2026-09-07.15",lines:[
     "<b>A share is now read by what actually arrived, not by what the app was told.</b> There were two separate roads in — one for words, one for a file — and each looked in one place only. So when the phone said “this is a file” and the words were sitting somewhere else, the app opened an empty drawer and said nothing whatsoever. That is why a shared quote could vanish without even an error.",
     "There is one road now. Whatever the phone calls it, the app looks in <b>both</b> places and decides on what it finds — and every step writes a line in the trouble card, including the ones that fail. The step that hid all of this was a failure being swallowed silently; that is gone."]},
@@ -18636,7 +18665,9 @@ function tuneDiagnostics(){
   };
   const ti=window.__tuneInfo;
   const lines=[
-    "Build "+(window.APP_VERSION||"unknown"),
+    "Build "+(window.APP_VERSION||"unknown")
+      +(window.__stampLive?"  ⚠ THIS PAGE IS STALE — the server has "+window.__stampLive
+        +"; the worker has been re-registered at the real one, so the next open should be clean":""),
     "Screen "+realWidth()+" css px, text "+(settings.fontScale||100)+"% — the page lays out for "
       +Math.round(realWidth()/((settings.fontScale||100)/100))+", bucket "
       +(document.documentElement.getAttribute("data-vw")||"?"),
@@ -20935,6 +20966,15 @@ async function collectShare(flag){
     shareNote("kept as a backup",{name,size:blob.size});
     try{await keepSharedBackup(name,blob);}
     catch(e){shareNote("could not keep the backup",{err:String(e&&e.message||e)});}
+    /* ---- AND IT SAYS SO, WHICH IT DID NOT ----
+       A whole ReadEra backup shared instead of a quote is not a fault, but the
+       app took it in silence: the file went to a card on another screen and
+       nothing on this one moved, so from where they were standing a share had
+       simply done nothing. Measured from their own log — 1.9 MB of
+       ReadEra-Premium_…_auto.bak arriving where a quote was meant to. The card
+       names the file, says what it is, and says where it went; and it says how
+       to send a quote instead, since that is what was actually being tried. */
+    sharedFileCard(name,blob.size);
     return;
   }
   const st=await storedSharedText();
@@ -21010,6 +21050,36 @@ async function addQuoteTo(id,text,enId){
   if(view==="book"&&cur&&cur.id===b.id)await rebaseOpenBook(b.id);
   else if(view==="quotes")renderMain();
   return true;
+}
+/* The receipt for a FILE, drawn on the same sheet the words get, for the same
+   reason: an arriving share must move something on the screen you are standing
+   on. It lives outside the app's own zoom, like its sibling, so it is readable
+   whatever the page behind it is doing. */
+function sharedFileCard(name,size){
+  const old=document.getElementById("shareGot");if(old)old.remove();
+  const mb=size>=1048576?(size/1048576).toFixed(1)+" MB":Math.round(size/1024)+" KB";
+  const readEra=/\.bak$/i.test(name||"")||/readera/i.test(name||"");
+  const el=document.createElement("div");
+  el.id="shareGot";
+  el.innerHTML=`<div class="sgcard">
+    <div class="sgtitle">📦 That was a file, not a quote</div>
+    <div class="sgline"><b>${esc(name||"a file")}</b><br><span style="opacity:.75">${esc(mb)}</span></div>
+    <div class="sgline" style="font-size:14px">${readEra
+      ? "This is ReadEra's own backup — its whole library in one file, not the line you had selected. It has been kept, and <b>🧰 Shelf care</b> can read your books out of it."
+      : "It has been kept, and <b>🧰 Shelf care</b> can read it."}</div>
+    ${readEra?`<div class="sgfoot">To send a <b>quote</b> instead: in ReadEra open <b>Quotes</b>, press and hold the one you want, and share that — a single quote comes across as words and lands on a book here.</div>`:""}
+    <div class="sgsize" style="justify-content:flex-end">
+      <button class="btn" id="sgFileOpen">Take me to Shelf care</button>
+      <button class="btn pri" id="sgFileDone">Got it</button>
+    </div>
+  </div>`;
+  document.body.appendChild(el);
+  const go=()=>el.remove();
+  el.querySelector("#sgFileDone").onclick=go;
+  el.querySelector("#sgFileOpen").onclick=()=>{
+    go();view="care";render();
+    setTimeout(()=>{const b=q("#reOut");if(b)b.scrollIntoView({block:"start",behavior:"smooth"});},250);
+  };
 }
 function sharedTextCard(v){
   const old=document.getElementById("shareGot");if(old)old.remove();
