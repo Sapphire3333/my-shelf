@@ -6312,6 +6312,22 @@ const seenFloor=id=>Math.max(SYNC.seen[id]||0,SYNC.held[id]||0);
    loses the last-write race against a cloud copy this device has already seen,
    and the change quietly un-happens at the next pull */
 const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,(b?seenFloor(b.id):0)+1);
+/* ---- TWO CLOCKS, BECAUSE THEY ANSWER TWO QUESTIONS ----
+   `modified` is the SYNC clock. It has to move whenever the stored book moves,
+   including for housekeeping nobody asked for, or the local copy loses the
+   last-write race and the change quietly un-happens at the next pull. That is
+   what nextMod is for and it is not negotiable.
+   But History's "Recently edited" was reading it as "when did I last change
+   this", and those are different questions. backfillCollRatings runs at every
+   boot, writes a collection whose stored mark has drifted from its stories'
+   average, and stamps modified — so collections nobody had touched floated to
+   the top of the list, over and over, with nothing in What changed to explain
+   them, because a housekeeping pass does not go through pushOp either.
+   `edited` is the second clock: set only where a person's change is being
+   written down. Nothing derives it, nothing backfills it, and a book that has
+   never been edited on this build simply falls back to modified, so the list
+   is no worse than it was for anything untouched. */
+const touchBook=b=>{if(!b)return 0;b.edited=Date.now();return b.modified=nextMod(b);};
 
 /* the two values being filled in — the address and the public key. Separate
    from syncConfigured because plenty can be done with just these two: an
@@ -8059,6 +8075,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-07.6",lines:[
+    "<b>Recently edited means edited by you again.</b> Books and collections you had not touched kept climbing to the top of it, with nothing in 📝 <i>What changed</i> to explain them. The shelf keeps two dates on every book: when you last changed it, and when its stored copy last moved for any reason — and that second one moves for housekeeping too. Every time the app opens it levels a collection's mark with the ratings of the stories inside it, which is a real repair and has to be saved, but it is not something you did. The list was reading the second date. It reads the first now, and anything the app tidies by itself stays where it belongs.",
+    "<b>The usage card stops counting your medals.</b> <i>Magpie Silver II · to Silver III</i> is not a button you press, it is a medal wearing one — and four hundred of them crowded out the thing that card exists to answer, which is which of the app's controls you actually use. They are no longer counted, and the ones already counted are cleared out the next time the app opens.",
+    "<b>And a button that was in the list three times is in it once.</b> A label longer than about fifty characters is stored shortened, and where it got shortened has moved over time — so one control sat there as three different lengths of the same sentence. They are folded together, and the times you pressed each are added up rather than thrown away."]},
   {v:"2026-09-07.5",lines:[
     "<b>Today's quote and today's picture hold still all day.</b> They were chosen by counting to a place in the list of everything you have kept — so every quote you added, every book you imported, every edit that moved a book to the front of the shelf changed how long that list was and the count landed somewhere else. An afternoon of ordinary tidying changed the day's quote three or four times. It is chosen by the quote itself now, not by where it stands, and then held by name until the day turns. ↻ <i>Another</i> works exactly as it did, and what it gives you is held in the same way.",
     "<b>Turning one daily task off no longer redraws the other two.</b> The day's three were drawn out of the list of tasks that were switched ON, so switching one off made that list shorter and shuffled every one of them — you turned off a task you did not want and got three strangers. The three are drawn from the full list now, and only the slot belonging to the task you turned off is filled by something else. Turn off a task that isn't in today's three and nothing moves at all.",
@@ -9838,7 +9858,7 @@ const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blu
   hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",upnext:"up next",serial:"",apart:"set apart",entries:"stories",maturity:"maturity",aspects:"what stood out",
   pros:"likes",cons:"dislikes",meh:"so-sos",fandoms:"fandoms",characters:"characters",ships:"relationships",
   link:"link",kind:"kind",audience:"audience",draw:"drawing",bg:"background",type:"shape",
-  chapters:"chapters",warnings:"warnings",entOrdered:"",canvasV:"",modified:"",touched:"",created:"",id:"",
+  chapters:"chapters",warnings:"warnings",entOrdered:"",canvasV:"",modified:"",edited:"",touched:"",created:"",id:"",
   /* the real list behind `audience`, which is the one written for older
      backups to read. Unnamed here it fell through to "add the raw key", so
      setting an audience wrote the words `audience, audienceList` into your
@@ -10030,6 +10050,23 @@ function madeOfShelf(l){
    is dropped, which is also what gives the ceiling of six hundred its room
    back, since it filled with books and stopped recording features years of
    presses ago. */
+/* The medals stopped being counted the day they were given data-nolog, but four
+   hundred of them were already stored and the weed is the only thing that
+   reaches those. A medal's face always ends in where the next rung is — "· to
+   Gold III", "Not yet, to Bronze I" — which no control on the shelf says, and
+   the metals and stages are read off the ladder's own lists so a new metal
+   cannot be missed here. */
+/* built on first use, never at load: ACH_METALS is declared five thousand lines
+   below this and a top-level const reaching down to it would throw before the
+   script had finished evaluating — which takes every name in the app with it */
+let medalTail=null;
+function looksLikeMedal(s){
+  if(!medalTail){
+    const m=ACH_METALS.join("|"),g=ACH_STAGES.join("|");
+    medalTail=new RegExp("\\bto\\s+(?:"+m+")\\s+(?:"+g+")\\b|(?:^|[·,]\\s*)(?:"+m+")\\s+(?:"+g+")\\s*$");
+  }
+  return medalTail.test(String(s||""));
+}
 function usageWeed(){
   if(!usage)return;
   let changed=false;
@@ -10042,10 +10079,22 @@ function usageWeed(){
          word count, so a two-word chapter like "Bonds" is too small to be
          recognised as a name. It is unmistakable as a shape, though — nothing
          the app says of its own accord ends in a lone w. */
-      if(!l||/\sw$/.test(l)||madeOfShelf(l)){changed=true;return;}
+      if(!l||/\sw$/.test(l)||madeOfShelf(l)||looksLikeMedal(l)){changed=true;return;}
       const t=l.length>48?l.slice(0,47)+"…":l;
       if(t!==k)changed=true;
       out[t]=Object.prototype.hasOwnProperty.call(out,t)?merge(out[t],o[k]):o[k];
+    });
+    /* ---- a label cut short is the same label ----
+       Anything over 48 characters is stored as 47 and an ellipsis, and the
+       cutting has moved as pressStrip has been sharpened — so one button sat in
+       the list three times over, as three different lengths of the same
+       sentence. A shortened key is folded into any full one it is the start of. */
+    Object.keys(out).forEach(k=>{
+      if(!/…$/.test(k))return;
+      const stem=k.slice(0,-1);
+      const full=Object.keys(out).find(x=>x!==k&&x.indexOf(stem)===0);
+      if(!full)return;
+      out[full]=merge(out[full],out[k]);delete out[k];changed=true;
     });
     return out;
   };
@@ -10190,7 +10239,7 @@ async function applyOp(op,inv,quiet){
       /* stamped as edited-now, same as restoreTrash: an undo carrying its old time
          would lose the sync race to the version it undid — the other device still
          holds that newer copy and would quietly put it back */
-      clone.modified=Math.max(Date.now(),(clone.modified||0)+1,seenFloor(id)+1);
+      clone.edited=Date.now();clone.modified=Math.max(Date.now(),(clone.modified||0)+1,seenFloor(id)+1);
       await dbPut("books",clone);
       const i=books.findIndex(x=>x.id===id);
       if(i>=0)books[i]=clone;else books.unshift(clone);
@@ -10283,7 +10332,7 @@ async function applyOp(op,inv,quiet){
         continue;
       }
       const clone=JSON.parse(JSON.stringify(body));
-      clone.modified=Math.max(Date.now(),(clone.modified||0)+1,seenFloor(it.id)+1);
+      clone.edited=Date.now();clone.modified=Math.max(Date.now(),(clone.modified||0)+1,seenFloor(it.id)+1);
       await dbPut("books",clone);
       /* and out of Recently deleted, for the reason the single-book path gives
          above: a bulk op can now retire a book as part of itself (⤴ Unfold
@@ -11368,7 +11417,7 @@ async function upNextWrite(ids,mut){
     const b=books.find(x=>x.id===id);if(!b)continue;
     const before=JSON.parse(JSON.stringify(b));
     mut(b);
-    b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+    touchBook(b);
     items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
     await dbPut("books",b);
     if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -11770,7 +11819,7 @@ async function setStatus(id,what){
   const before=JSON.parse(JSON.stringify(b));
   const wasDone=statusOf(b)==="finished"&&!b.dnf;
   if(markStatus(b,what)===false){stPickFor=null;paintStPick();return;}
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+  touchBook(b);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
@@ -11790,7 +11839,7 @@ async function setRating(id,n){
   /* a mark set by hand on a collection takes it off the average of its
      stories, the same rule the editor's own box follows */
   b.ratingOwn=isColl(b)&&b.rating!=null;
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+  touchBook(b);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
@@ -11800,7 +11849,7 @@ async function setFav(id){
   const b=books.find(x=>x.id===id);if(!b)return;
   const before=JSON.parse(JSON.stringify(b));
   b.favorite=!b.favorite;
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+  touchBook(b);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   await dbPut("books",b);
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
@@ -11835,7 +11884,7 @@ async function rowProgress(key,v,thought){
     (r.notes=r.notes||[]).push({d:todayStr(),p:at,pc:!total,t});
   }
   b.touched=true;
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+  touchBook(b);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");return;}
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
@@ -12461,7 +12510,7 @@ async function foldIntoCollection(ids,coll){
   }
   if(!n)return 0;
   syncCollRating(coll);
-  coll.modified=Math.max(Date.now(),(coll.modified||0)+1,seenFloor(coll.id)+1);
+  touchBook(coll);
   await dbPut("books",coll);
   if(SYNC.on){enqueue({kind:"book",id:coll.id});flushQueue();}
   items.push({id:coll.id,before,after:JSON.parse(JSON.stringify(coll))});
@@ -12514,7 +12563,7 @@ async function makeSeriesFrom(ids,name){
        number you can see. */
     if(!b.seriesTotal&&sel.length>1)b.seriesTotal=String(sel.length);
     n++;
-    b.modified=nextMod(b);
+    touchBook(b);
     await dbPut("books",b);
     if(SYNC.on)enqueue({kind:"book",id:b.id});
     items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -12569,7 +12618,7 @@ async function addToSeries(ids,name){
     b.type="series";b.series=nm;
     if(!String(b.seriesNum||"").trim())b.seriesNum=String(++next);
     if(agreed&&!String(b.seriesTotal||"").trim())b.seriesTotal=agreed;
-    b.modified=nextMod(b);
+    touchBook(b);
     await dbPut("books",b);
     if(SYNC.on)enqueue({kind:"book",id:b.id});
     items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -12794,7 +12843,7 @@ function renderAuthorPanel(name){
         if((b.author||"").trim()===name)delete en.author;
         else en.author=name;
       });
-      b.modified=nextMod(b);
+      touchBook(b);
       await dbPut("books",b);
       if(SYNC.on)enqueue({kind:"book",id:b.id});
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -13472,7 +13521,7 @@ async function openBulkFill(ids){
       });
       if(g.author&&g.author.on&&g.author.name&&looksBlank(b.author)){b.author=g.author.name;changed=true;}
       if(!changed)continue;
-      b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+      touchBook(b);
       b.touched=true;
       /* Storage filling up mid-run threw straight out of the button. Everything
          written so far was already written and already queued to go up, but the
@@ -13559,7 +13608,7 @@ async function openBulkFill(ids){
     await dbPut("covers",{id:b.id,data});
     coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);
     b.coverV=Date.now();
-    b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+    touchBook(b);
     await dbPut("books",b);
     if(SYNC.on){enqueue({kind:"cover",id:b.id});enqueue({kind:"book",id:b.id});flushQueue();}
     pushOp({t:"bulk",items:[{id:b.id,before,after:JSON.parse(JSON.stringify(b))}]});
@@ -13783,7 +13832,7 @@ async function openBulkFill(ids){
             b.coverV=Date.now();
             if(SYNC.on)enqueue({kind:"cover",id:b.id});
           }
-          b.modified=Math.max(Date.now(),(b.modified||0)+1);
+          touchBook(b);
           await dbPut("books",b);
           if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
           bumpCovers();
@@ -14483,7 +14532,7 @@ function renderLibrary(){
         const b=books.find(x=>x.id===id);if(!b)continue;
         const before=JSON.parse(JSON.stringify(b));
         fn(b);
-        b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+        touchBook(b);
         b.touched=true;
         await dbPut("books",b);
         if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -14988,7 +15037,7 @@ async function restoreTrash(tid){
   /* stamped as edited-now, not left on its old time: the deletion's tombstone is
      newer than the book's last edit, so an unstamped restore would lose to it on
      every other device — and be quietly deleted again here at the next pull */
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+  touchBook(b);
   await dbPut("books",b);
   if(t.cover){await dbPut("covers",{id:b.id,data:t.cover});coverCache.delete(b.id);SYNC.triedCover.delete(b.id);}
   for(const[k,d]of Object.entries(t.images||{}))await dbPut("images",{key:k,data:d});
@@ -15675,7 +15724,13 @@ function renderAch(){
     return `<div class="achsec k-${kind}"><div class="lbl" style="display:block;margin:2px 0 2px">${ACH_KIND_NAMES[kind]}</div>
       <div class="achwall">${rs.map(r=>{
         const st2=achStanding(r.tier);
-        return `<button class="achb${r.tier?"":" locked"}" data-ach="${r.k}" title="${esc(achHover(r,st2))}">
+        /* A MEDAL IS NOT A CONTROL. The usage card asks "which of the app's
+           buttons do you actually use", and a medal's face is its name, its
+           standing and how far the next rung is — "Magpie Silver II · to Silver
+           III". Four hundred of those crowded out the answer. It is the same
+           rule the shelf's own words already keep (see madeOfShelf); a medal is
+           simply the third kind of thing that is data wearing a button. */
+        return `<button class="achb${r.tier?"":" locked"}" data-nolog data-ach="${r.k}" title="${esc(achHover(r,st2))}">
           <span class="amd ${st2?st2.cls:"a-bronze"}">${r.icon}</span>
           ${achLadderHtml(r)}
           <span class="aname">${esc(r.name)}</span>
@@ -17976,7 +18031,14 @@ function renderHistory(){
       <div id="trashList"><span class="none">Looking…</span></div>`;
   }
   else if(mode2==="edited"){
-    const list=[...books].sort((a,b)=>(b.modified||b.created||0)-(a.modified||a.created||0));
+    /* `edited` before `modified`: the first is when YOU last changed this, the
+       second is when the stored copy last moved for any reason at all — see
+       touchBook. Sorting on the second put collections nobody had touched at
+       the top, because the boot pass that keeps a collection's mark level with
+       its stories writes them. A book last changed before this build has no
+       `edited` and falls back to `modified`, exactly as the list always was. */
+    const editedAt=b=>b.edited||b.modified||b.created||0;
+    const list=[...books].sort((a,b)=>editedAt(b)-editedAt(a));
     /* Only as many as anyone reads. This list is "what did I just change", and
        its answer is at the top — but it was drawing every book on the shelf,
        which at four thousand is a second of the browser measuring and placing
@@ -17986,7 +18048,7 @@ function renderHistory(){
     body='<div class="hint" style="margin-bottom:10px">Your books and collections, most recently edited first — only real changes count, not just opening one.'
       +(histLog.length?' Which fields changed, and where each change came from, is in <b>📝 What changed</b>.':"")
       +'</div>'
-      +show.map(b=>rowHtml(b,false,"edited "+fmtEdited(b.modified||b.created||Date.now()))).join("")
+      +show.map(b=>rowHtml(b,false,"edited "+fmtEdited(editedAt(b)||Date.now()))).join("")
       +(list.length>show.length?`<div class="hrow2" style="margin-top:10px;justify-content:center">
         <button class="btn" id="histMore">Show ${Math.min(HIST_PAGE,list.length-show.length)} more — ${list.length-show.length} older still</button></div>`:"");
   }
@@ -19459,7 +19521,7 @@ async function makeCollection(b){
   b.seriesNum="";b.seriesTotal="";
   if(!String(b.series||"").trim())b.series=b.title||"";
   if(b.rating!=null)b.ratingOwn=true;
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+  touchBook(b);
   await dbPut("books",b);
   if(SYNC.on)enqueue({kind:"book",id:b.id});
 }
@@ -20203,7 +20265,7 @@ function renderReadEra(){
     for(const r of want){
       const bk=r.have,before=JSON.parse(JSON.stringify(bk));
       reFillInto(bk,r.it,r.fill);
-      bk.modified=nextMod(bk);
+      touchBook(bk);
       await dbPut("books",bk);
       if(SYNC.on)enqueue({kind:"book",id:bk.id});
       items.push({id:bk.id,before,after:JSON.parse(JSON.stringify(bk))});
@@ -20247,7 +20309,7 @@ function renderReadEra(){
         listWArr(b,"quotes")[b.quotes.length-1]=0;
         added++;
       }
-      b.modified=nextMod(b);
+      touchBook(b);
       await dbPut("books",b);
       if(SYNC.on)enqueue({kind:"book",id:b.id});
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -20547,7 +20609,7 @@ async function addQuoteTo(id,text,enId){
      an id in it reads back as a place rather than as typed words */
   if(enId&&(b.entries||[]).some(e=>e.id===enId))listFromArr(b)[b.quotes.length-1]=enId;
   b.touched=true;
-  b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+  touchBook(b);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");return false;}
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
@@ -20661,7 +20723,7 @@ async function autoTakeQuotes(){
       listWArr(b,"quotes")[b.quotes.length-1]=0;
       added++;
     }
-    b.modified=nextMod(b);
+    touchBook(b);
     await dbPut("books",b);
     if(SYNC.on)enqueue({kind:"book",id:b.id});
     items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -20909,7 +20971,7 @@ function refreshNameDupes(){
       for(const b of g.spellings[nm]){
         const before=JSON.parse(JSON.stringify(b));
         b[g.field]=keep;
-        b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+        touchBook(b);
         await dbPut("books",b);
         if(SYNC.on)enqueue({kind:"book",id:b.id});
         items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -21344,7 +21406,7 @@ function refreshKwDupes(){
       if(!was.has(bk.id))was.set(bk.id,JSON.parse(JSON.stringify(bk)));
       bk.genres=bk.genres||[];
       if(!bk.genres.includes(h.g))bk.genres.push(h.g);
-      bk.modified=Math.max(Date.now(),(bk.modified||0)+1,seenFloor(bk.id)+1);
+      touchBook(bk);
       bk.touched=true;
       try{await dbPut("books",bk);}
       catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
@@ -21422,7 +21484,7 @@ function refreshKwDupes(){
     }
     /* one write per book, however many of the two things happened to it */
     for(const b of touched.values()){
-      b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+      touchBook(b);
       try{await dbPut("books",b);}
       catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
       if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -21635,7 +21697,7 @@ async function mergeGenre(from,to){
     if(cur&&cur.id===b.id)rebaseOpenBook(b.id);
   }
   for(const b of touched.values()){
-    b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+    touchBook(b);
     try{await dbPut("books",b);}
     catch(e){alert("This couldn't be saved — storage may be full.");break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -21696,7 +21758,7 @@ async function mergeTag(from,to){
     if(isColl(b))(b.entries||[]).forEach(en=>{if(hasWord(en.keywords,from))en.keywords=swap(en.keywords);});
   }
   for(const b of touched.values()){
-    b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+    touchBook(b);
     try{await dbPut("books",b);}
     catch(e){alert("This couldn't be saved — storage may be full.");break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -21753,7 +21815,7 @@ async function capitaliseTags(pairs){
     if(isColl(b))(b.entries||[]).forEach(en=>{if(hits(en.keywords))en.keywords=swap(en.keywords);});
   }
   for(const b of touched.values()){
-    b.modified=Math.max(Date.now(),(b.modified||0)+1,seenFloor(b.id)+1);
+    touchBook(b);
     try{await dbPut("books",b);}
     catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -24045,7 +24107,7 @@ async function commitCur(){
   if(!cur)return;
   /* beat our previous save AND anything the cloud has shown us, so a device whose
      clock runs fast can't have its older copy win forever */
-  after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,diskAt+1,seenFloor(cur.id)+1);
+  after.edited=Date.now();after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,diskAt+1,seenFloor(cur.id)+1);
   after.touched=true;cur.touched=true;   /* you've worked on it — no longer a raw import */
   cur.modified=after.modified;
   try{await dbPut("books",after);}
@@ -24224,7 +24286,7 @@ async function moveWordEverywhere(name,toGenre){
   }
   for(const bk of touched.values()){
     bk.touched=true;
-    bk.modified=Math.max(Date.now(),(bk.modified||0)+1,seenFloor(bk.id)+1);
+    touchBook(bk);
     try{await dbPut("books",bk);}
     catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
     if(SYNC.on)enqueue({kind:"book",id:bk.id});
@@ -24617,7 +24679,7 @@ async function quickEdit(mut,extra){
      no place at the top of Recently edited, no cloud write */
   if(mut(cur)===false)return;
   cur.touched=true;
-  cur.modified=Math.max(Date.now(),(cur.modified||0)+1,seenFloor(cur.id)+1);
+  touchBook(cur);
   const after=JSON.parse(JSON.stringify(cur));
   pushOp(Object.assign({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))},extra||null));
   try{await dbPut("books",after);}catch(e){alert("Couldn't save — storage may be full.");return;}
@@ -28555,7 +28617,7 @@ function renderEditor(){
         if(kept.length===(b.characters||[]).length)continue;
         const it=items.find(x=>x.id===b.id);
         const before=it?null:JSON.parse(JSON.stringify(b));
-        b.characters=kept;b.modified=nextMod(b);
+        b.characters=kept;touchBook(b);
         await dbPut("books",b);
         if(SYNC.on)enqueue({kind:"book",id:b.id});
         if(it)it.after=JSON.parse(JSON.stringify(b));
@@ -29221,7 +29283,7 @@ function renderEditor(){
            entryToBook, which is the only place that knows what a story keeps */
         const nb=await entryToBook(coll,en);
         coll.entries=coll.entries.filter(x=>x.id!==en.id);
-        coll.modified=Math.max(Date.now(),(coll.modified||0)+1);
+        touchBook(coll);
         await dbPut("books",coll);
         await dbPut("books",nb);
         books.unshift(nb);
@@ -30164,7 +30226,7 @@ function renderEditor(){
       const before=collect?JSON.parse(JSON.stringify(b)):null;
       if(mine)b[field]=swap(list);
       swapEnts(b);swapBrk(b);
-      b.modified=nextMod(b);
+      touchBook(b);
       if(cur&&b.id===cur.id){
         if(hasWord(cur[field],oldN))cur[field]=swap(cur[field]);
         swapEnts(cur);swapBrk(cur);
@@ -31534,7 +31596,7 @@ async function scanTake(key,asCover){
       if(SYNC.on)enqueue({kind:"img",key:b.id+"|"+pm.id});
     }
   }catch(e){say("Couldn't be saved — storage may be full.");return;}
-  b.modified=nextMod(b);b.touched=true;
+  touchBook(b);b.touched=true;
   try{await dbPut("books",b);}catch(e){}
   if(SYNC.on){enqueue({kind:"book",id:b.id});if(asCover)enqueue({kind:"cover",id:b.id});flushQueue();}
   if(asCover)bumpCovers();
@@ -33071,7 +33133,7 @@ async function importMerge(it){
     const fills=importFills(it,t.b,t.en);
     if(fills.length){
       applyImportFills(it,t.b,t.en,fills);
-      t.b.modified=Math.max(Date.now(),(t.b.modified||0)+1,seenFloor(t.b.id)+1);
+      touchBook(t.b);
       try{await dbPut("books",t.b);}catch(e){return false;}
       if(SYNC.on)enqueue({kind:"book",id:t.b.id});
     }
@@ -33385,7 +33447,7 @@ async function importIntoCollection(items,coll,wasBefore){
   /* a mark of your own stays yours; one that was the stories' average follows
      the stories it now has */
   syncCollRating(coll);
-  coll.modified=Math.max(Date.now(),(coll.modified||0)+1,seenFloor(coll.id)+1);
+  touchBook(coll);
   await dbPut("books",coll);
   if(SYNC.on)enqueue({kind:"book",id:coll.id});
   const ids=new Set(items.map(x=>x.id));
