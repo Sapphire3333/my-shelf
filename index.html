@@ -8214,6 +8214,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-07.11",lines:[
+    "<b>Finish the week's goal and it offers you a harder one.</b> Crossing the line on Wednesday used to leave the card saying “done” until Monday. <b>↑ Harder</b> doubles the same goal — twenty blanks becomes forty, then eighty — and pays half again on top, +200 then +300 then +450. What you have already done counts toward it, and the XP you have been paid stays paid. It is the same goal made bigger rather than a fresh one, because which goal a week gets is worked out from the date so both your devices agree on it; a new draw mid-week would put that back.",
+    "<b>And one of the day's three is now a game.</b> <i>Win 5 of 🎴 Guess the book</i> — and tomorrow it is a different one of the four. Same +10 XP as the others. It ticks itself like everything else here: play on the 🎲 Tasks tab and it notices. It only turns up once you have four books to deal from."]},
   {v:"2026-09-07.10",lines:[
     "<b>The quotes wall can put the lines themselves newest first.</b> A new <b>🕘 Newest first</b> beside the other groupings: not the books, the quotes, each saying which book it came from and opening it, with the day it was kept beside it. Nothing recorded that day until now, so every line already on your shelf has no date and follows at the end — the pill says how many of them carry one. From here on every quote you keep is stamped, however you keep it: the editor's box, a whole pile pasted at once, a line shared to the app, a marked line out of a reader's backup.",
     "<b>Pressing the order you are already on turns it round.</b> <i>Best-rated book</i> pressed twice starts with the worst; the pill wears ▼ or ▲ so you can see which way it is facing. Choosing a different order starts the right way up again.",
@@ -16014,6 +16017,9 @@ function wireQuestCards(m){
     const pk2=q("#qPeek",m);if(pk2)pk2.onclick=()=>{togglePeek();renderChallenges();};
     const ah=q("#qAhead",m);if(ah)ah.onclick=()=>{if(buyAhead()){questCheck();renderChallenges();}};
     const st2=q("#qStake",m);if(st2)st2.onclick=()=>{if(buyStake())renderChallenges();};
+    /* the harder tier — questCheck sees the new need on its next pass and pays
+       again the moment it is crossed, so nothing here has to do the arithmetic */
+    {const hd=q("#qHarder",m);if(hd)hd.onclick=()=>{if(weekHarder()){questCheck();renderChallenges();}};}
     const rm=q("#qRoom",m);if(rm)rm.onclick=()=>{if(buysOf("room").length<2&&questBuy("room",ROOM_XP))renderChallenges();};}
    const pk=q("#qpKeep",m);if(pk)pk.onclick=()=>{
      quests.picks=quests.picks||[];
@@ -16195,13 +16201,21 @@ function mergeQuests(rv){
   /* today's three: the same three on both screens, and doing one in either
      place is doing it */
   if(rv.daily){
-    if(!l.daily||rv.daily.day>l.daily.day)l.daily={day:rv.daily.day,got:[...(rv.daily.got||[])]};
+    if(!l.daily||rv.daily.day>l.daily.day)l.daily={day:rv.daily.day,got:[...(rv.daily.got||[])],
+      won:Object.assign({},rv.daily.won||{})};
     else if(rv.daily.day===l.daily.day){
       l.daily.got=[...new Set([...(l.daily.got||[]),...(rv.daily.got||[])])];
       /* a task redrawn on either screen is redrawn on both; a peek bought on
          either is bought */
       if(rv.daily.swap)l.daily.swap=Object.assign({},rv.daily.swap,l.daily.swap||{});
       if(rv.daily.peek)l.daily.peek=true;
+      /* the day's game wins, taken the FURTHER of the two rather than added —
+         the same rule every other count here keeps. Two screens adding up would
+         pay the task off on five wins that were really three seen twice. */
+      if(rv.daily.won){
+        const w=l.daily.won=l.daily.won||{};
+        Object.keys(rv.daily.won).forEach(k=>{w[k]=Math.max(w[k]||0,rv.daily.won[k]||0);});
+      }
     }
   }
   /* a day bought ahead joins exactly as the day's three do — a later day wins
@@ -16234,8 +16248,22 @@ function mergeQuests(rv){
       l.week=JSON.parse(JSON.stringify(rv.week));
     else if(sameWk&&rv.week.k===l.week.k){
       l.week.got=Math.max(l.week.got||0,rv.week.got||0);
-      l.week.paid=!!(l.week.paid||rv.week.paid);
       l.week.stake=!!(l.week.stake||rv.week.stake);
+      /* ---- and the HARDER tier wins, with its own need and its own paid ----
+         Taking the further count and OR-ing `paid` is right while both sides
+         are asking for the same number. Once one device has pressed ↑ Harder
+         they are not: that device wants forty and has been paid for twenty,
+         the other still wants twenty and has been paid. OR-ing there would
+         have marked the harder tier paid without it being reached, and the
+         plain Math.max on `got` would then never pay it at all. So the tier
+         decides, and `paid` is taken from whichever side owns it. */
+      const lt=weekTier(l.week),rt=weekTier(rv.week);
+      if(rt>lt){
+        l.week.tier=rt;l.week.need=rv.week.need;l.week.xp=rv.week.xp;
+        l.week.paid=!!rv.week.paid;
+      }else if(lt>rt){
+        /* keep this device's harder tier and its own paid mark */
+      }else l.week.paid=!!(l.week.paid||rv.week.paid);
     }
   }
   /* the three drawn things are single: the newest draw wins, and the one it
@@ -16438,7 +16466,24 @@ const QTASKS=[
   ["chaps","Count a fic's chapters",w=>w.includes("chapters"),
     "Adding or naming a chapter on a fanfic or an AI story.",
     ()=>books.some(ficLive)],
+  /* ---- the one that is not read off the change log ----
+     Every task above is answered by a word the log already records. A game
+     writes no receipt — it is played, not filed — so this one carries its own
+     answer in the SIXTH slot, and taskDoneToday asks that instead. Its name
+     and its help are functions of the day, because the game rotates; every
+     other task's are plain strings and stay so. Gated on there being enough
+     shelf to deal from, the way the fic tasks are gated on there being a fic. */
+  ["game",
+    day=>"Win "+GAME_WIN+" of "+gameOfDay(day)[2],
+    null,
+    day=>"On the 🎲 Tasks tab: "+gameOfDay(day)[3]+". Five wins, however long they take — the game changes day by day.",
+    ()=>books.length>=4,
+    day=>gameWonToday(gameOfDay(day)[0])>=GAME_WIN],
 ];
+/* a task's words may be a plain string or, for the game, worked out from the
+   day it is being asked about */
+const taskLabel=(t,day)=>typeof t[1]==="function"?t[1](day):t[1];
+const taskHelp=(t,day)=>typeof t[3]==="function"?t[3](day):(t[3]||"");
 /* ---- which tasks are in the hat today ----
    Two ways a task can be out of it: the shelf cannot do it yet (the fifth
    element above, a test against your own books), or you turned it off in
@@ -16450,6 +16495,39 @@ const QTASKS=[
    day with two tasks on it. */
 /* the old per-device list is still read as a fallback, for the moment before
    questInit has run on a device that has never opened the cabinet */
+/* ---- THE DAY'S GAME, AND WINNING IT ----
+   The four games each kept a lifetime tally and nothing else, so "win five
+   today" had nothing to read: a task cannot be answered by a number that has
+   been climbing since August. bumpGame keeps both — the lifetime count the
+   medals are worked out from, and a tally on the day, which questInit clears at
+   midnight with the rest of the day's state.
+   ONE task, naming a different game each day, rather than four tasks competing
+   for the three slots: four would have put two game tasks on the same day about
+   one day in ten, and left the shelf's own jobs fighting for one slot. Which
+   game is worked out from the date, like everything else here, so both devices
+   are asked for the same one. */
+const GAME_WIN=5;
+const GAMES=[
+  ["guess","guessDone","🎴 Guess the book","a line from one of your own books, and four covers"],
+  ["fill","fillDone","✍ Fill it in","the blanks on one book, against the clock"],
+  ["link","linkDone","🔗 Connect","matching what you wrote to the book you wrote it about"],
+  ["deco","decoDone","🎨 Decorate","putting pictures and notes on a page, against the clock"]
+];
+const gameOfDay=day=>GAMES[strHash("game|"+(day||questToday()))%GAMES.length];
+const gameWonToday=k=>{
+  const d=quests&&quests.daily;
+  return (d&&d.day===questToday()&&d.won&&d.won[k])||0;
+};
+function bumpGame(k){
+  const row=GAMES.find(g=>g[0]===k);
+  if(row)quests[row[1]]=(quests[row[1]]||0)+1;
+  try{
+    questInit();
+    const w=quests.daily.won=quests.daily.won||{};
+    w[k]=(w[k]||0)+1;
+  }catch(e){}
+  questSave();
+}
 const taskOff=()=>Array.isArray(quests&&quests.off)?quests.off
   :(Array.isArray(settings.taskOff)?settings.taskOff:[]);
 const taskHere=t=>!t[4]||t[4]();
@@ -16516,8 +16594,12 @@ function todaysTasks(forDay){
   const sw=(quests&&quests.daily&&quests.daily.day===day&&quests.daily.swap)||{};
   return three.map(t=>{const r=sw[t[0]]&&here.find(x=>x[0]===sw[t[0]]);return r||t;});
 }
-function taskDoneToday(t){
+function taskDoneToday(t,forDay){
   const day=questToday();
+  /* a task that knows its own answer — the game — is asked directly; the rest
+     are read off today's receipts */
+  if(t[5])return !!t[5](forDay||day);
+  if(typeof t[2]!=="function")return false;
   /* both sides of this comparison have to be measured by the same clock: the
      day being asked about is the shelf's, so the receipt's day must be too */
   return histLog.some(e=>shelfDayOf(e.t)===day&&t[2](e.what||[]));
@@ -17100,6 +17182,32 @@ const WEEKLIES=[
    now:w=>{const p=weekPool(w.wk);return {s:p.reduce((n,b)=>n+blanksOf(b).length,0),n:p.length};}},
 ];
 const weeklyOf=w=>w&&WEEKLIES.find(x=>x.k===w.k)||null;
+/* ---- FINISHING A WEEK'S GOAL ON WEDNESDAY LEFT NOTHING TO DO ----
+   The goal was a line you crossed once and then the card sat there saying
+   "done" for four days. Their answer when asked whether to offer a DIFFERENT
+   goal or the same one harder was the same one harder — and it has to be, for
+   the reason weekGoalOf exists: which goal a week gets is worked out from the
+   date so two devices cannot disagree about it, and drawing a fresh one
+   mid-week would put that back. A tier only multiplies the target, which both
+   devices reach the same way.
+   Doubling each time — twenty blanks, then forty, then eighty — and the payout
+   grows by half again, which is deliberately less than the work: the second
+   tier is a reason to keep going, not a better rate than the first.
+   `got` is kept, so the twenty already filled count toward the forty. */
+const weekTier=w=>Math.max(0,(w&&w.tier)||0);
+const weekNeedAt=(g,t)=>g.need*Math.pow(2,t);
+const weekXpAt=(g,t)=>Math.round(g.xp*Math.pow(1.5,t));
+function weekHarder(){
+  const w=quests&&quests.week,g=weeklyOf(w);
+  if(!w||!g||!w.paid)return false;
+  const t=weekTier(w)+1;
+  w.tier=t;w.need=weekNeedAt(g,t);w.xp=weekXpAt(g,t);
+  /* the stake was settled on the tier it was placed against; a harder one is a
+     fresh bet or none at all, never the old one riding along for free */
+  w.paid=false;w.stake=false;
+  questSave();
+  return true;
+}
 /* ┌─ 🎴 GUESS THE BOOK ──────────────────────────────────────────────────────┐
    │ The last of their seven, and the only one that is a GAME rather than a    │
    │ job: a line out of your own quotes, or a blurb, and four covers to choose │
@@ -17270,7 +17378,7 @@ function guessPick(id){
   if(!g||g.picked)return;
   g.picked=id;
   if(id===g.id){
-    quests.guessDone=(quests.guessDone||0)+1;
+    bumpGame("guess");
     const r=guessRowOf(g.id);
     questAward(GUESS_PAY[g.lv||1]||GUESS_XP,"Guessed it: “"+((r&&r.b.title)||"Untitled")+"”");
   }
@@ -17424,7 +17532,7 @@ function fillWatch(){
       if(!bit[2](b)){f.got=[...(f.got||[]),k];questAward(FILL_EACH,"Filled in "+bit[1]+": “"+(b.title||"Untitled")+"”");}
     });
     if((f.got||[]).length>=(f.want||[]).length&&!f.over){
-      f.over=true;quests.fillDone=(quests.fillDone||0)+1;
+      f.over=true;bumpGame("fill");
       questAward(FILL_ALL,"Every blank filled with time to spare: “"+(b.title||"Untitled")+"”");
     }
     questSave();return;
@@ -17488,7 +17596,7 @@ function linkJoin(clueId,bookId){
     L.got=[...(L.got||[]),clueId];
     questAward(LINK_EACH,"Joined up: “"+((books.find(b=>b.id===clueId)||{}).title||"Untitled")+"”");
     if(L.got.length>=L.pairs.length){
-      L.done=true;quests.linkDone=(quests.linkDone||0)+1;
+      L.done=true;bumpGame("link");
       if(!L.wrong)questAward(LINK_ALL,"Every line joined, and none of them wrongly");
     }
     questSave();return "right";
@@ -17568,7 +17676,7 @@ function decoWatch(){
     d.got=now;
     questAward(DECO_EACH*gained,gained+" on the page of “"+(b.title||"Untitled")+"”");
     if(d.got>=DECO_ENOUGH&&!d.paid){
-      d.paid=true;quests.decoDone=(quests.decoDone||0)+1;
+      d.paid=true;bumpGame("deco");
       questAward(DECO_ALL,"A page decorated inside the three minutes: “"+(b.title||"Untitled")+"”");
     }
     questSave();
@@ -17679,7 +17787,7 @@ function questCheck(){
   const three=todaysTasks();
   three.forEach(t=>{
     if(quests.daily.got.indexOf(t[0])<0&&taskDoneToday(t)){
-      quests.daily.got.push(t[0]);questAward(10,t[1]);
+      quests.daily.got.push(t[0]);questAward(10,taskLabel(t));
     }
   });
   /* tomorrow's three, asked of today's reading, once the day has been bought.
@@ -17687,9 +17795,11 @@ function questCheck(){
      three are being asked, and where the tick is filed. */
   if(aheadBought()){
     todaysTasks(quests.ahead.day).forEach(t=>{
-      if((quests.ahead.got||[]).indexOf(t[0])<0&&taskDoneToday(t)){
+      /* the day is handed over so the game task is judged on TOMORROW'S game —
+         won today, like every other task bought a day early */
+      if((quests.ahead.got||[]).indexOf(t[0])<0&&taskDoneToday(t,quests.ahead.day)){
         quests.ahead.got=[...(quests.ahead.got||[]),t[0]];
-        questAward(10,t[1]+" — a day early");
+        questAward(10,taskLabel(t,quests.ahead.day)+" — a day early");
       }
     });
   }
@@ -17759,7 +17869,9 @@ function questCheck(){
         /* a staked week pays half again on top — the stake itself was spent
            when it was put down, so a missed week simply keeps it */
         const pay=Math.round((w.xp||150)*(w.stake?1.5:1));
-        questAward(pay,"The week's work: "+g.name.toLowerCase()+(w.stake?" — stake won":""));
+        const t=weekTier(w);
+        questAward(pay,"The week's work: "+g.name.toLowerCase()
+          +(t?" ×"+Math.pow(2,t):"")+(w.stake?" — stake won":""));
       }
     }
   }
@@ -17861,7 +17973,7 @@ function questHtml(){
       const swapped=Object.values(sw).includes(t[0]);
       const canRedraw=!done&&!swapped&&questWallet()>=REDRAW_XP;
       return `<div class="qtask${done?" done":""}"><span class="qbx">${done?"✓":""}</span>
-        <span style="min-width:0"><span class="qtt">${esc(t[1])}</span>${swapped?` <span class="hint">· redrawn</span>`:""}<br><span class="hint">${esc(t[3]||"")}</span></span>
+        <span style="min-width:0"><span class="qtt">${esc(taskLabel(t))}</span>${swapped?` <span class="hint">· redrawn</span>`:""}<br><span class="hint">${esc(taskHelp(t))}</span></span>
         <span class="qrw">+10 XP${canRedraw?`<br><button class="btn smallbtn qredraw" data-qredraw="${esc(t[0])}" title="Swap this one for another out of the hat — for a day it can't honestly be done. ${REDRAW_XP} XP, once per task.">↻ ${REDRAW_XP} XP</button>`:""}</span></div>`;}).join("")}
     ${(()=>{
       /* 👀 tomorrow's three — free to open, and once the day is bought its
@@ -17875,7 +17987,7 @@ function questHtml(){
         h+=`<div style="margin-top:5px">${tm.map(t=>{
           const got=bought&&(quests.ahead.got||[]).indexOf(t[0])>=0;
           return `<div class="qtask${got?" done":""}" style="padding:2px 0"><span class="qbx">${got?"✓":""}</span>
-            <span style="min-width:0"><span class="qtt">${esc(t[1])}</span>${bought?"":` <span class="hint">· tomorrow</span>`}</span>
+            <span style="min-width:0"><span class="qtt">${esc(taskLabel(t,aheadDay()))}</span>${bought?"":` <span class="hint">· tomorrow</span>`}</span>
             <span class="qrw">${got?"+10 XP":bought?"+10 XP":""}</span></div>`;}).join("")}</div>`;
         if(bought){
           const n=(quests.ahead.got||[]).length;
@@ -17944,12 +18056,17 @@ function questHtml(){
       const w=quests.week,g=weeklyOf(w);
       if(!g)return "";
       const got=Math.min(w.need,Math.max(w.got||0,weekProgress()));
+      const tier=weekTier(w);
       return `<div class="hint" style="margin-top:7px;border-top:1px dashed var(--line);padding-top:7px">
-        📅 <b>This week: ${esc(g.name)}</b> · ${w.paid?`done — <b>+${w.xp} XP</b> paid`:`+${w.xp} XP`}
+        📅 <b>This week: ${esc(g.name)}${tier?` <span class="rr">×${Math.pow(2,tier)}</span>`:""}</b> · ${w.paid?`done — <b>+${w.xp} XP</b> paid`:`+${w.xp} XP`}
         <span class="prog" style="display:block;height:8px;margin:5px 0 4px"><i style="width:${Math.round(got/w.need*100)}%"></i></span>
         <b>${got} of ${w.need}</b>${w.paid?"":`. ${esc(g.ask)}`}
         A fresh one is drawn every Monday${w.paid?", and this one is already carried":""}.
-        ${w.paid?(w.stake?" The stake paid off.":"")
+        ${/* their item 1: a goal crossed on Wednesday left nothing to do until
+              Monday. The same goal, twice as big, for half again as much —
+              and what you have already done counts toward it. */""}
+        ${w.paid?`<br><button class="btn smallbtn pri" id="qHarder" title="The same goal at ${weekNeedAt(g,tier+1)}, paying +${weekXpAt(g,tier+1)} XP. Your ${w.got||0} so far count toward it, and the ${w.xp} XP you have been paid stays paid.">↑ Harder — go for ${weekNeedAt(g,tier+1)}</button>`
+          +(w.stake?" The stake paid off.":"")
           :w.stake?`<br>🎲 <b>Staked ${STAKE_XP} XP</b> — finish it and it pays <b>+${Math.round(w.xp*1.5)}</b> instead of +${w.xp}; miss it and the stake is gone.`
           :`<br><button class="btn smallbtn" id="qStake" ${questWallet()>=STAKE_XP?"":"disabled"} title="${questWallet()>=STAKE_XP?`Put ${STAKE_XP} XP on this week's goal: finish it and it pays +${Math.round(w.xp*1.5)} instead of +${w.xp}; miss it and the stake is gone`:`Costs ${STAKE_XP} XP; you have ${questWallet()} to spend`}">🎲 Double or nothing · stake ${STAKE_XP} XP</button>`}</div>`;
     })()}
@@ -18793,8 +18910,8 @@ function renderSettings(){
           <div class="hrow2" style="flex-wrap:wrap;margin-top:4px">${QTASKS.map(t=>{
             const here=taskHere(t),on=taskOff().indexOf(t[0])<0;
             return `<button class="pill ${here&&on?"on":""}" data-qtask="${esc(t[0])}"${here?"":" disabled"}
-              title="${esc(here?t[3]:"Waiting — this one needs a fanfic or an AI story on the shelf. "+t[3])}"
-              >${esc(t[1])}${here?"":" · waiting"}</button>`;}).join("")}</div>
+              title="${esc(here?taskHelp(t):"Waiting — this one needs more on the shelf. "+taskHelp(t))}"
+              >${esc(taskLabel(t))}${here?"":" · waiting"}</button>`;}).join("")}</div>
         </div>
         <div class="opac" style="margin-top:9px">Text size
           <input type="range" id="fontScale" min="60" max="220" step="5" value="${settings.fontScale||100}">
