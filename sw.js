@@ -54,12 +54,30 @@ self.addEventListener("fetch", e => {
       try {
         const form = await req.formData();
         const file = form.get("file");
-        /* Android hands a shared LINE of text over as a small text file when
-           the target takes files — measured on the phone: "know what…" arrived
-           as a file and was read as a backup. Words are words. */
-        const isWords = file && file.size && file.size < 20000 && /^text\/plain/i.test(file.type || "");
+        /* ---- WORDS ARE TOLD FROM A BACKUP BY WHAT IS IN THEM ----
+           Android hands a shared LINE of text over as a small file when the
+           target takes files. This used to ask the file what it CLAIMED to be
+           — `text/plain` — and Android very often declares nothing at all:
+           `file.type` is "". Measured from the phone's own share log, a quote
+           shared out of a reader arrived with a type this test rejected, so it
+           was filed as a backup, redirected with ?shared=1, and never reached
+           the quote card. Three landed and the fourth did not, which is exactly
+           what a share sheet that sometimes names the type and sometimes does
+           not looks like from the outside.
+           So: a SMALL file that is not JSON and not a zip is words, whatever it
+           says it is. That is the same test the app has always applied one step
+           further down the same road — now both sides ask the one question, and
+           a declared type is only ever a hint that gets the benefit of the
+           doubt. */
+        let isWords = false, wordsText = "";
+        if (file && file.size && file.size < 20000) {
+          try {
+            wordsText = await file.text();
+            isWords = !/^\s*[\[{]/.test(wordsText) && !/^PK/.test(wordsText) && /\S/.test(wordsText);
+          } catch (er) { isWords = false; }
+        }
         if (isWords) {
-          const text = await file.text();
+          const text = wordsText;
           const c = await caches.open(SHARE);
           await c.put(SHARED_TEXT_KEY, new Response(JSON.stringify({ title: "", text, url: "", at: Date.now() }), {
             headers: { "content-type": "application/json" }

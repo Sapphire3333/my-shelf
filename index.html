@@ -8215,6 +8215,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-07.14",lines:[
+    "<b>Quotes shared from a reader come through every time now.</b> Some of them stopped arriving, and the share log said why in one line: the phone had handed the quote over as a file <i>without saying what kind of file it was</i>, and the app was asking it to declare itself as plain text before treating it as words. So it was filed as a backup and never reached the quote card — which is why three came through and the fourth did not, since a share sheet names the type some of the time and not others.",
+    "It no longer asks. A small file that is not a backup — not JSON, not a zip, not blank — is words, whatever it says about itself. Sharing an actual backup is untouched. And you do not have to wait for anything to update on the phone: the app rescues a quote out of the file road on its own, so it works from the moment this build loads."]},
   {v:"2026-09-07.13",lines:[
     "<b>The trouble card now lists every share that reached the app.</b> When quotes shared from a reader stop arriving, three quite different things look identical from the outside: the app was never opened, the share carried nothing, or the card was never drawn. Each arrival now writes a line — when, what came with it, how many characters, and whether the quote was saved — in <i>⚙ Settings → Trouble → If something looks wrong</i>. A share with <b>no line at all</b> means the app was never opened by it, which is the one failure that otherwise leaves no trace anywhere."]},
   {v:"2026-09-07.12",lines:[
@@ -21135,27 +21138,39 @@ async function takeSharedBackup(){
     try{history.replaceState(null,"",location.pathname+location.hash);}catch(e){}
     /* a share with words in it rather than a file — see takeSharedText */
     if(flag==="t"){await takeSharedText();return;}
-    if(flag!=="1"){alert("That file did not come through. Try choosing it in the app instead.");return;}
+    if(flag!=="1"){shareNote("the worker could not read the share",{flag:String(flag)});
+      alert("That file did not come through. Try choosing it in the app instead.");return;}
     /* off the worker's shelf and into the database, where a refresh cannot
        lose it. The cache copy goes; the kept one is what matters now. */
     try{
       const c=await caches.open("my-shelf-share");
       const hit=await c.match("shared-backup");
+      if(!hit)shareNote("the worker's file cache was EMPTY");
       if(hit){
         const name=decodeURIComponent(hit.headers.get("x-shared-name")||"shared");
         const blob=await hit.blob();
         await c.delete("shared-backup");
-        /* a shared line arriving as a small text file — the phone's doing,
-           see sw.js — is words, not a backup: an older worker still on the
-           phone hands it over this way, so the app tells them apart too */
-        if(blob.size<20000&&(/^text\/plain/i.test(blob.type||"")||/\.txt$/i.test(name))){
+        /* a shared line arriving as a small file — the phone's doing, see
+           sw.js — is words, not a backup, and this is the second place that
+           has to know it: a worker one build behind still redirects with
+           ?shared=1, so the app must be able to rescue words out of the file
+           branch on its own.
+           The type and the name are GONE from this test. Asking a file what it
+           calls itself is what sent a shared quote down here in the first
+           place; Android frequently declares nothing. Small, not JSON, not a
+           zip, and not blank — that is words, and it is the same question the
+           worker now asks. */
+        if(blob.size<20000){
           const text=await blob.text();
-          if(!/^\s*[\[{]/.test(text)&&!/^PK/.test(text)){
+          if(!/^\s*[\[{]/.test(text)&&!/^PK/.test(text)&&/\S/.test(text)){
+            shareNote("words rescued from the file road",{name,type:blob.type||"(none declared)",chars:text.length});
             await keepSharedText({title:"",text,url:""});
             const st=await storedSharedText();
-            if(st)sharedTextCard(st);
+            if(st){shareNote("card drawn",{chars:String(st.text||"").length});sharedTextCard(st);}
+            else shareNote("NOTHING TO SHOW — no card");
             return;
           }
+          shareNote("a small file, but it reads as data",{name,type:blob.type||"(none declared)",size:blob.size});
         }
         await keepSharedBackup(name,blob);
       }
