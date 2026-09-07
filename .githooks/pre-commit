@@ -4,16 +4,46 @@
 # and the service worker's cache is named after it — which is what guarantees
 # a new build can never be served from an old cache.
 #
+# It also refuses a commit that would leave an ALREADY SHIPPED build with no
+# line in WHATS_NEW. Today's card on the shelf is the only place a build ever
+# announces itself; three builds once went out with nothing written for any of
+# them, and from the outside that is indistinguishable from the app not having
+# changed. See the note above unseenNews in index.html.
+#
 # This hook only runs if git is told where to find it (once per machine):
 #   git config core.hooksPath .githooks
 
 d=$(date +%Y-%m-%d)
 n=1
+cur=""
 if [ -f version.js ]; then
   cur=$(sed -n 's/.*APP_VERSION = "\([^"]*\)".*/\1/p' version.js)
   case "$cur" in
     "$d".*) n=$(( ${cur##*.} + 1 )) ;;
   esac
+fi
+
+# The newest entry in WHATS_NEW — the array is newest-first, so it is the first
+# v:"…" after the opening bracket.
+news=""
+if [ -f index.html ]; then
+  news=$(sed -n '/const WHATS_NEW=\[/,$p' index.html \
+    | grep -o 'v:"[0-9][0-9-]*\.[0-9][0-9]*"' | head -1 | sed 's/^v:"//;s/"$//')
+fi
+
+# Builds are DATE.N: the date sorts as text, the run number as a number.
+newer_of() { printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1 -k2,2n | tail -1; }
+
+if [ -n "$news" ] && [ -n "$cur" ] && [ "$(newer_of "$news" "$cur")" != "$news" ]; then
+  echo "pre-commit: build $cur has already shipped and WHATS_NEW stops at $news." >&2
+  echo "  Today's What's new card is the only place a build announces itself," >&2
+  echo "  and it shows nothing for a build with no entry. Add one at the top of" >&2
+  echo "  WHATS_NEW in index.html, or commit with SKIP_NEWS=1 to say it needs none." >&2
+  [ -n "$SKIP_NEWS" ] || exit 1
+fi
+
+if [ -n "$news" ] && [ "$(newer_of "$news" "$d.$n")" != "$news" ]; then
+  echo "pre-commit: note — this commit becomes $d.$n and WHATS_NEW stops at $news." >&2
 fi
 
 cat > version.js <<EOF
