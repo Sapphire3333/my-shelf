@@ -4345,8 +4345,54 @@ const SHELF_DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","S
    chose instead of starting the day over, and tomorrow forgets it by itself. */
 const dayIndex=()=>Math.floor(shelfNow().getTime()/864e5);
 const dayNudge=k=>{const s=settings[k];return (s&&s.d===todayStr())?(s.n||0):0;};
-function nudgeDay(k){settings[k]={d:todayStr(),n:dayNudge(k)+1};saveSettings();}
-const dayPick=(arr,k)=>arr.length?arr[(dayIndex()+dayNudge(k))%arr.length]:null;
+/* asking for another lets go of the pin below, or the pin would hand back the
+   one you just asked to be rid of */
+function nudgeDay(k){settings[k]={d:todayStr(),n:dayNudge(k)+1};delete settings[k+"Pin"];saveSettings();}
+/* ---- THE DAY'S PICK HELD STILL ----
+   This was `arr[(dayIndex()+nudge) % arr.length]`, which is a pick by POSITION
+   in a list the shelf rewrites all day. Every quote kept, every book imported,
+   every edit that puts a book back at the front of `books` changes the length
+   or the order of that list, and the modulo then lands somewhere else — so the
+   day's quote and the day's picture changed three or four times in an
+   afternoon of ordinary tidying. Nothing was wrong with the arithmetic; it was
+   being asked the wrong question.
+   Two things instead. The pick is a TOURNAMENT: every candidate is hashed with
+   the day, and the smallest hash wins. That answer cannot be moved by the
+   order of the list, and two devices holding the same shelf reach it alike.
+   And it is then PINNED by name for the rest of the day, so even the one thing
+   a tournament cannot survive — a new candidate that happens to win — leaves
+   today's alone. The pin is dropped when the day turns, when ↻ Another is
+   pressed, or when the thing it names has gone. */
+/* the hash is `strHash`, which the covers wash already owns — declared further
+   down and reached from here because both uses are inside functions, and a top
+   level const is in scope everywhere by the time any of them runs. Declaring a
+   second one killed the whole script: two `const`s of one name is a
+   SyntaxError, and a SyntaxError in this file means every name in the app
+   comes back undefined at once. */
+function dayPickBy(arr,k,keyOf){
+  if(!arr||!arr.length)return null;
+  const day=todayStr(),pinK=k+"Pin",pin=settings[pinK];
+  if(pin&&pin.d===day&&pin.key){
+    const hit=arr.find(x=>keyOf(x)===pin.key);
+    if(hit)return hit;
+  }
+  const seed=day+"|"+dayNudge(k)+"|";
+  let best=arr[0],bestH=strHash(seed+keyOf(arr[0]));
+  for(let i=1;i<arr.length;i++){
+    const h=strHash(seed+keyOf(arr[i]));
+    /* the tie-break is the key itself, so a draw is settled the same way twice */
+    if(h<bestH||(h===bestH&&String(keyOf(arr[i]))<String(keyOf(best)))){bestH=h;best=arr[i];}
+  }
+  const key=keyOf(best);
+  if(!pin||pin.d!==day||pin.key!==key){settings[pinK]={d:day,key};saveSettings();}
+  return best;
+}
+/* what names a quote and a picture, so a pin can find the same one tomorrow's
+   list would have shuffled. A quote is named by its WORDS, not its place in
+   the box: deleting an earlier one slides every index down and would have
+   quietly re-pointed the pin at its neighbour. */
+const quoteKey=x=>x.b.id+"|"+stripHtml(x.t).trim().slice(0,120);
+const picKey=x=>x.b.id+"|"+x.im.id;
 /* ---- a collection's stories: how big their covers are, and whether anybody
    ever chose the order they stand in ----
    The size is one number for the whole shelf, set on the collection you are
@@ -8013,6 +8059,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-07.5",lines:[
+    "<b>Today's quote and today's picture hold still all day.</b> They were chosen by counting to a place in the list of everything you have kept — so every quote you added, every book you imported, every edit that moved a book to the front of the shelf changed how long that list was and the count landed somewhere else. An afternoon of ordinary tidying changed the day's quote three or four times. It is chosen by the quote itself now, not by where it stands, and then held by name until the day turns. ↻ <i>Another</i> works exactly as it did, and what it gives you is held in the same way.",
+    "<b>Turning one daily task off no longer redraws the other two.</b> The day's three were drawn out of the list of tasks that were switched ON, so switching one off made that list shorter and shuffled every one of them — you turned off a task you did not want and got three strangers. The three are drawn from the full list now, and only the slot belonging to the task you turned off is filled by something else. Turn off a task that isn't in today's three and nothing moves at all.",
+    "<b>And a task you have already done today stays put even if you turn it off.</b> You did it, it counts, and the switch takes that slot from tomorrow instead."]},
   {v:"2026-09-07.3",lines:[
     "<b>The trouble card can say whether a press was written down at all.</b> In <i>⚙ Settings → Trouble → If something looks wrong</i>, two new lines: how many steps of ↶ Undo are waiting and what the newest one holds, and the last three lines of your change log with the book, what changed on it, which device and when. It is there for the times something seems not to have happened — the card can now answer whether it did."]},
   {v:"2026-09-07.2",lines:[
@@ -16197,25 +16247,61 @@ function taskPool(){
 }
 /* `forDay` is for the peek: tomorrow's three are the same arithmetic on
    tomorrow's date. A redraw only ever applies to today's. */
+/* ---- TURNING ONE TASK OFF USED TO REDRAW ALL THREE ----
+   The day's three were drawn out of `taskPool()`, which is the list AFTER the
+   off-list has been taken out of it. So switching one task off in Settings
+   made the list one shorter, every index landed somewhere new, and the two
+   tasks you had said nothing about — and may well have already done — were
+   swapped for strangers.
+   The draw is made from the STABLE list now: everything your shelf can
+   actually do, whether you have turned it off or not. Then, and only then, a
+   drawn task you have switched off is replaced IN ITS OWN SLOT by a live one
+   chosen from a place that task's own name decides — so the same task turned
+   off always yields the same stand-in, and the other two slots never move.
+   And a task already ticked today is left where it is even when it is turned
+   off: you did it, it counts, and the off-list takes that slot tomorrow. */
 function todaysTasks(forDay){
   const day=forDay||questToday();
-  const pool=taskPool();
-  const want=Math.min(3,pool.length);
+  /* the stable list: only the shelf's own reach narrows it, never the off-list */
+  const here=QTASKS.filter(taskHere);
+  if(!here.length)return [];
+  const want=Math.min(3,here.length);
   let s=0;for(let i=0;i<day.length;i++)s=(Math.imul(s,31)+day.charCodeAt(i))>>>0;
   const idx=[];
   /* bounded on principle — an unbounded while over homemade arithmetic is
      how this function froze the page once already */
   for(let n=0;n<200&&idx.length<want;n++){
     s=(Math.imul(s,1103515245)+12345)>>>0;
-    const j=s%pool.length;
+    const j=s%here.length;
     if(idx.indexOf(j)<0)idx.push(j);
   }
-  /* the top-up counts against the pool, never against three: filling to three
-     out of a shorter pool would index past its end and draw undefined */
+  /* the top-up counts against the list, never against three: filling to three
+     out of a shorter one would index past its end and draw undefined */
   while(idx.length<want)idx.push(idx.length);
+  let three=idx.map(j=>here[j]);
+  const off=taskOff();
+  if(off.length){
+    const live=here.filter(t=>off.indexOf(t[0])<0);
+    /* the floor the old taskPool kept: if the off-list would leave fewer than
+       three to draw from, it is ignored rather than handing you a short day */
+    if(live.length>=want){
+      const ticked=t=>!forDay&&quests&&quests.daily&&quests.daily.day===day
+        &&(quests.daily.got||[]).indexOf(t[0])>=0;
+      const taken=new Set(three.filter(t=>off.indexOf(t[0])<0||ticked(t)).map(t=>t[0]));
+      three=three.map(t=>{
+        if(off.indexOf(t[0])<0||ticked(t))return t;
+        const start=strHash(day+"|"+t[0])%live.length;
+        for(let i=0;i<live.length;i++){
+          const c=live[(start+i)%live.length];
+          if(!taken.has(c[0])){taken.add(c[0]);return c;}
+        }
+        return t;
+      });
+    }
+  }
   /* a task redrawn today stands in for the one drawn — see redrawTask */
   const sw=(quests&&quests.daily&&quests.daily.day===day&&quests.daily.swap)||{};
-  return idx.map(j=>pool[j]).map(t=>{const r=sw[t[0]]&&pool.find(x=>x[0]===sw[t[0]]);return r||t;});
+  return three.map(t=>{const r=sw[t[0]]&&here.find(x=>x[0]===sw[t[0]]);return r||t;});
 }
 function taskDoneToday(t){
   const day=questToday();
@@ -18826,14 +18912,14 @@ async function renderHub(part){
      a verse greets you as a verse, and the novels' quote stays a novel's */
   const qEvery=allQuotes();
   const qAll=qEvery.filter(x=>!x.b.apart),qApart=qEvery.filter(x=>x.b.apart);
-  const qod=dayPick(qAll,"qodSkip");
-  const qod2=dayPick(qApart,"qod2Skip");
+  const qod=dayPickBy(qAll,"qodSkip",quoteKey);
+  const qod2=dayPickBy(qApart,"qod2Skip",quoteKey);
   /* and today's picture, the same way: one of the pictures you have put on your
      book pages, saying which book it lives on. Notes are not pictures and are
      left out — the owner's own line. The picture itself is fetched after this
      page is drawn, because reading it out of the database is not instant and
      nothing else here should wait for it. */
-  const pod=dayPick(picPool(),"podSkip");
+  const pod=dayPickBy(picPool(),"podSkip",picKey);
   /* On this day — the shelf remembering with you, from your own finish dates.
      Nothing on days with nothing; a story finished inside a collection opens
      at that story, the courtesy every other list already pays.
@@ -22919,7 +23005,7 @@ function renderQuotes(){
   const nBooks=new Set(all.map(x=>x.b.id)).size;
   /* the same date-keyed pick Overview greets you with, nudge and all, so
      asking for another in either place changes both */
-  const qod=dayPick(all.filter(x=>!x.b.apart),"qodSkip");
+  const qod=dayPickBy(all.filter(x=>!x.b.apart),"qodSkip",quoteKey);
   const f=QT.q.trim().toLowerCase(),fq=softFold(f);   /* see softHit */
   const hits=QT.hand||all.filter(x=>!f
     ||softHit(stripHtml(x.t),fq)
