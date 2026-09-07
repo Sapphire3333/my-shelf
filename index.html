@@ -7217,6 +7217,7 @@ async function initSync(){
   const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
   /* the change log and the usage counter, both this device's own */
   try{const hl=await dbGet("meta","histLog");if(hl&&Array.isArray(hl.v))histLog=hl.v.slice(0,HISTLOG_MAX);}catch(e){}
+  try{const sl=await dbGet("meta","shareLog");if(sl&&Array.isArray(sl.v))shareLog=sl.v.slice(0,SHARELOG_MAX);}catch(e){}
   try{const us=await dbGet("meta","usage");
     usage=(us&&us.v&&us.v.byView)?us.v:{since:Date.now(),byView:{},days:{}};
   }catch(e){usage={since:Date.now(),byView:{},days:{}};}
@@ -8214,6 +8215,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-07.13",lines:[
+    "<b>The trouble card now lists every share that reached the app.</b> When quotes shared from a reader stop arriving, three quite different things look identical from the outside: the app was never opened, the share carried nothing, or the card was never drawn. Each arrival now writes a line — when, what came with it, how many characters, and whether the quote was saved — in <i>⚙ Settings → Trouble → If something looks wrong</i>. A share with <b>no line at all</b> means the app was never opened by it, which is the one failure that otherwise leaves no trace anywhere."]},
   {v:"2026-09-07.12",lines:[
     "<b>Dragging genres and tags into order is retired.</b> Since they are drawn A–Z everywhere, the order you dragged them into reached nothing — the chips snapped back to alphabetical and it read as the app refusing you. The editor's own rows now show them A–Z too, so every screen agrees. Tapping a chip to take it off, and holding it for its menu, are exactly as they were, and the order you had is still stored, untouched. Relationships and chapters keep their drag: for those, the order is still what you see."]},
   {v:"2026-09-07.11",lines:[
@@ -18705,6 +18708,16 @@ function tuneDiagnostics(){
       return "What changed: "+histLog.length+" kept. Newest — "
         +histLog.slice(0,3).map(line).join(" · ");
     })(),
+    /* every share that reached the app, newest first — see shareNote. A share
+       you made that has NO line here never opened the app at all, which is the
+       one failure that otherwise leaves no evidence anywhere. */
+    shareLog.length?("Shared to the app, newest first — "+shareLog.length+" kept:")
+      :"Shared to the app: nothing recorded yet.",
+    ...shareLog.slice(0,10).map(e=>{
+      const bits=Object.keys(e).filter(k=>k!=="t"&&k!=="what"&&e[k]).map(k=>k+": "+e[k]);
+      return "   · "+new Date(e.t).toLocaleString()+" — "+e.what
+        +(bits.length?" ("+bits.join(", ")+")":"");
+    }),
     covOne(prev,"The screen before"),
     covOne(cs,"This screen")
   ].filter(Boolean);
@@ -20802,6 +20815,25 @@ function renderShareHint(){
    Undo. Everything else — books, blurbs, reading progress — still waits to be
    picked, because those change what is already written. */
 const SHARED_KEEP=60*60*1000;
+/* ---- WHAT ARRIVED, EVERY TIME SOMETHING WAS SHARED TO THE APP ----
+   "The first three quotes came through and then nothing" cannot be answered
+   from this side at all: whether the app was opened, whether the worker had
+   put anything down, and whether the card was drawn are three different
+   failures that look identical from the outside — and the one that matters
+   most, the app never running, leaves no trace anywhere by definition.
+   So every arrival writes a line: when, which flag rode in on the address,
+   what the worker's cache was holding, and how it ended. If a share leaves NO
+   line, the app never opened and the fault is upstream of everything here.
+   Twenty lines, this device only, printed in the trouble card. */
+let shareLog=[];
+const SHARELOG_MAX=20;
+function shareNote(what,extra){
+  try{
+    shareLog.unshift(Object.assign({t:Date.now(),what},extra||{}));
+    if(shareLog.length>SHARELOG_MAX)shareLog.length=SHARELOG_MAX;
+    dbPut("meta",{k:"shareLog",v:shareLog}).catch(()=>{});
+  }catch(e){}
+}
 async function keepSharedBackup(name,blob){
   try{await dbPut("meta",{k:"sharedBackup",v:{at:Date.now(),name,blob}});}catch(e){}
 }
@@ -20837,16 +20869,17 @@ async function storedSharedText(){
 }
 async function forgetSharedText(){try{await dbDel("meta","sharedText");}catch(e){}}
 async function takeSharedText(){
-  let v=null;
+  let v=null,err="";
   try{
     const c=await caches.open("my-shelf-share");
     const hit=await c.match("shared-text");
     if(hit){v=await hit.json();await c.delete("shared-text");}
-  }catch(e){}
+  }catch(e){err=String(e&&e.message||e);}
+  shareNote("words arrived",{fromWorker:v?String(v.text||"").length+" chars":"the worker's cache was EMPTY",err});
   if(v){await keepSharedText({title:String(v.title||""),text:String(v.text||""),url:String(v.url||"")});}
   const st=await storedSharedText();
-  if(st)sharedTextCard(st);
-  else alert("Nothing readable came through with that share.");
+  if(st){shareNote("card drawn",{chars:String(st.text||"").length});sharedTextCard(st);}
+  else{shareNote("NOTHING TO SHOW — no card");alert("Nothing readable came through with that share.");}
 }
 /* what a piece of text is: a bare ISBN, a link, or words */
 function arrivedKind(text){
@@ -20908,7 +20941,10 @@ async function addQuoteTo(id,text,enId){
   b.touched=true;
   touchBook(b);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
-  try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");return false;}
+  try{await dbPut("books",b);}
+  catch(e){shareNote("SAVE FAILED",{book:b.title||"Untitled",err:String(e&&e.message||e)});
+    alert("Couldn't save — storage may be full.");return false;}
+  shareNote("quote kept",{book:b.title||"Untitled",now:(b.quotes||[]).length+" on that book"});
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
   if(view==="book"&&cur&&cur.id===b.id)await rebaseOpenBook(b.id);
   else if(view==="quotes")renderMain();
@@ -21093,6 +21129,9 @@ async function takeSharedBackup(){
   try{flag=new URL(location.href).searchParams.get("shared");}catch(e){}
   const arriving=flag!=null;
   if(arriving){
+    /* the first line of every arrival, written before anything can go wrong —
+       a share with no line at all here never reached the app */
+    shareNote("app opened by a share",{flag:String(flag)});
     try{history.replaceState(null,"",location.pathname+location.hash);}catch(e){}
     /* a share with words in it rather than a file — see takeSharedText */
     if(flag==="t"){await takeSharedText();return;}
