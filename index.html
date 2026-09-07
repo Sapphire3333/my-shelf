@@ -8215,6 +8215,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-07.15",lines:[
+    "<b>A share is now read by what actually arrived, not by what the app was told.</b> There were two separate roads in — one for words, one for a file — and each looked in one place only. So when the phone said “this is a file” and the words were sitting somewhere else, the app opened an empty drawer and said nothing whatsoever. That is why a shared quote could vanish without even an error.",
+    "There is one road now. Whatever the phone calls it, the app looks in <b>both</b> places and decides on what it finds — and every step writes a line in the trouble card, including the ones that fail. The step that hid all of this was a failure being swallowed silently; that is gone."]},
   {v:"2026-09-07.14",lines:[
     "<b>Quotes shared from a reader come through every time now.</b> Some of them stopped arriving, and the share log said why in one line: the phone had handed the quote over as a file <i>without saying what kind of file it was</i>, and the app was asking it to declare itself as plain text before treating it as words. So it was filed as a backup and never reached the quote card — which is why three came through and the fourth did not, since a share sheet names the type some of the time and not others.",
     "It no longer asks. A small file that is not a backup — not JSON, not a zip, not blank — is words, whatever it says about itself. Sharing an actual backup is untouched. And you do not have to wait for anything to update on the phone: the app rescues a quote out of the file road on its own, so it works from the moment this build loads."]},
@@ -20871,18 +20874,73 @@ async function storedSharedText(){
   }catch(e){return null;}
 }
 async function forgetSharedText(){try{await dbDel("meta","sharedText");}catch(e){}}
-async function takeSharedText(){
-  let v=null,err="";
+/* which worker is actually in charge of this page, and which build it is from.
+   A worker one build behind still decides what a share IS before the app ever
+   sees it, and nothing anywhere said so — the script's address carries the
+   build stamp, so this is simply reading it back. */
+const workerStamp=()=>{
   try{
-    const c=await caches.open("my-shelf-share");
-    const hit=await c.match("shared-text");
-    if(hit){v=await hit.json();await c.delete("shared-text");}
-  }catch(e){err=String(e&&e.message||e);}
-  shareNote("words arrived",{fromWorker:v?String(v.text||"").length+" chars":"the worker's cache was EMPTY",err});
-  if(v){await keepSharedText({title:String(v.title||""),text:String(v.text||""),url:String(v.url||"")});}
+    const c=navigator.serviceWorker&&navigator.serviceWorker.controller;
+    if(!c)return "no worker is controlling this page";
+    const v=new URL(c.scriptURL).searchParams.get("v");
+    return "worker from build "+(v||"(unstamped)");
+  }catch(e){return "worker unknown";}
+};
+/* ---- ONE ROAD IN, AND THE FLAG IS ONLY A HINT ----
+   There were two roads — words on ?shared=t, a file on ?shared=1 — and each
+   looked in one drawer only. So the app believed the worker about which kind
+   of thing had been shared, and when the worker was wrong, or was a build
+   behind, or had put the thing in the other drawer, the app opened an empty
+   drawer and said nothing at all. Measured from their phone: two shares in a
+   row logged "app opened by a share (flag: 1)" and not one line more.
+   Now: whatever the flag said, LOOK IN BOTH, and decide by what is actually
+   there. Every branch writes a line, the catch included — a silent catch is
+   what made this invisible the first time. */
+async function collectShare(flag){
+  let c=null;
+  try{c=await caches.open("my-shelf-share");}
+  catch(e){shareNote("COULD NOT OPEN the worker's cache",{err:String(e&&e.message||e)});}
+  if(c){
+    let keys=[];
+    try{keys=(await c.keys()).map(r=>{
+      try{return new URL(r.url).pathname.split("/").pop();}catch(e2){return String(r.url);}});}
+    catch(e){shareNote("could not list the cache",{err:String(e&&e.message||e)});}
+    shareNote("the worker left",{holding:keys.length?keys.join(" + "):"NOTHING AT ALL"});
+  }
+  /* the words drawer */
+  let v=null;
+  try{const hit=c&&await c.match("shared-text");
+    if(hit){v=await hit.json();await c.delete("shared-text");}}
+  catch(e){shareNote("the words drawer would not open",{err:String(e&&e.message||e)});}
+  /* the file drawer — which is where a shared LINE keeps turning up */
+  let blob=null,name="";
+  try{const hit=c&&await c.match("shared-backup");
+    if(hit){name=decodeURIComponent(hit.headers.get("x-shared-name")||"shared");
+      blob=await hit.blob();await c.delete("shared-backup");}}
+  catch(e){shareNote("the file drawer would not open",{err:String(e&&e.message||e)});}
+  /* a small file that is not JSON, not a zip and not blank is words, whatever
+     it calls itself and whichever drawer it was left in */
+  if(!v&&blob&&blob.size&&blob.size<20000){
+    try{
+      const text=await blob.text();
+      if(!/^\s*[\[{]/.test(text)&&!/^PK/.test(text)&&/\S/.test(text)){
+        shareNote("words rescued from the file drawer",{name,type:blob.type||"(none declared)",chars:text.length});
+        v={title:"",text,url:""};blob=null;
+      }else shareNote("a small file, but it reads as data",{name,type:blob.type||"(none declared)",size:blob.size});
+    }catch(e){shareNote("could not read the file",{err:String(e&&e.message||e)});}
+  }
+  if(v){
+    await keepSharedText({title:String(v.title||""),text:String(v.text||""),url:String(v.url||"")});
+  }else if(blob&&blob.size){
+    shareNote("kept as a backup",{name,size:blob.size});
+    try{await keepSharedBackup(name,blob);}
+    catch(e){shareNote("could not keep the backup",{err:String(e&&e.message||e)});}
+    return;
+  }
   const st=await storedSharedText();
   if(st){shareNote("card drawn",{chars:String(st.text||"").length});sharedTextCard(st);}
-  else{shareNote("NOTHING TO SHOW — no card");alert("Nothing readable came through with that share.");}
+  else{shareNote("NOTHING TO SHOW — no card",{flag:String(flag)});
+    alert("Nothing readable came through with that share.");}
 }
 /* what a piece of text is: a bare ISBN, a link, or words */
 function arrivedKind(text){
@@ -21134,47 +21192,18 @@ async function takeSharedBackup(){
   if(arriving){
     /* the first line of every arrival, written before anything can go wrong —
        a share with no line at all here never reached the app */
-    shareNote("app opened by a share",{flag:String(flag)});
+    shareNote("app opened by a share",{flag:String(flag),by:workerStamp()});
     try{history.replaceState(null,"",location.pathname+location.hash);}catch(e){}
-    /* a share with words in it rather than a file — see takeSharedText */
-    if(flag==="t"){await takeSharedText();return;}
-    if(flag!=="1"){shareNote("the worker could not read the share",{flag:String(flag)});
-      alert("That file did not come through. Try choosing it in the app instead.");return;}
-    /* off the worker's shelf and into the database, where a refresh cannot
-       lose it. The cache copy goes; the kept one is what matters now. */
-    try{
-      const c=await caches.open("my-shelf-share");
-      const hit=await c.match("shared-backup");
-      if(!hit)shareNote("the worker's file cache was EMPTY");
-      if(hit){
-        const name=decodeURIComponent(hit.headers.get("x-shared-name")||"shared");
-        const blob=await hit.blob();
-        await c.delete("shared-backup");
-        /* a shared line arriving as a small file — the phone's doing, see
-           sw.js — is words, not a backup, and this is the second place that
-           has to know it: a worker one build behind still redirects with
-           ?shared=1, so the app must be able to rescue words out of the file
-           branch on its own.
-           The type and the name are GONE from this test. Asking a file what it
-           calls itself is what sent a shared quote down here in the first
-           place; Android frequently declares nothing. Small, not JSON, not a
-           zip, and not blank — that is words, and it is the same question the
-           worker now asks. */
-        if(blob.size<20000){
-          const text=await blob.text();
-          if(!/^\s*[\[{]/.test(text)&&!/^PK/.test(text)&&/\S/.test(text)){
-            shareNote("words rescued from the file road",{name,type:blob.type||"(none declared)",chars:text.length});
-            await keepSharedText({title:"",text,url:""});
-            const st=await storedSharedText();
-            if(st){shareNote("card drawn",{chars:String(st.text||"").length});sharedTextCard(st);}
-            else shareNote("NOTHING TO SHOW — no card");
-            return;
-          }
-          shareNote("a small file, but it reads as data",{name,type:blob.type||"(none declared)",size:blob.size});
-        }
-        await keepSharedBackup(name,blob);
-      }
-    }catch(e){}
+    /* EVERY arrival goes the one way now — collectShare looks in both drawers
+       and decides on what it finds, so a flag that is wrong, or written by a
+       worker a build behind, no longer decides anything on its own. Flag 0 is
+       the worker saying it could not read the share at all, and even that is
+       worth looking for something after: it may have put words down and failed
+       on something later. */
+    if(flag!=="1")shareNote("the worker did not call it a file",{flag:String(flag)});
+    await collectShare(flag);
+    /* NOT a return: a share that turned out to be a backup has been kept by
+       collectShare, and the reading of a kept backup lives below */
   }
   /* words shared within the hour and not yet dealt with come back up on an
      ordinary opening too — the window the share sheet opens is the one that
