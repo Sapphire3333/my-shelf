@@ -807,8 +807,24 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .rdtog{font-size:12px;color:var(--faint);padding:2px 0}
   .rdtog:hover{color:var(--teal)}
   /* a row's bookmark strip (pgStripHtml), and thoughts under a reading (readListHtml) */
-  .pgedit{font-size:12px;color:var(--faint);background:none;border:0;padding:0 4px;cursor:pointer;line-height:1.2}
-  .pgedit:hover{color:var(--teal)}
+  .pgedit{font-size:12px;color:var(--faint);background:none;border:0;padding:1px 5px;cursor:pointer;line-height:1.2;
+    border-radius:999px}
+  /* ---- PRESSING THE ✎ IS NOT PRESSING THE BOOK ----
+     Both rows that carry this strip ARE the "open this book" target and light
+     up whole on hover — a teal edge on a Library row, a tinted panel on
+     Today's — so aiming at the pencil lit the entire book and nothing said the
+     pencil was a button of its own. The row stands down while the pointer is
+     on the pencil or anywhere inside the open strip, and the pencil takes the
+     highlight instead. `:has` rather than a class from JS because the hover is
+     the browser's own and nothing has to stay in step with it; it is already
+     used twice in this stylesheet. */
+  .pgedit:hover,.pgedit:focus-visible{color:var(--teal);background:#f0fdfa;outline:none}
+  .pgedit:active{background:#ccfbf1}
+  [data-theme="dark"] .pgedit:hover,[data-theme="dark"] .pgedit:focus-visible{background:#134e4a}
+  [data-theme="dark"] .pgedit:active{background:#115e59}
+  .row:hover:has(.pgedit:hover),.row:hover:has(.pgstrip:hover){
+    border-color:var(--line);box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .rnrow:hover:has(.pgedit:hover),.rnrow:hover:has(.pgstrip:hover){background:transparent}
   /* Measured at 412 wide and 210% text, which is what the owner runs: 42x30
      real pixels, under the 44 a thumb wants and well under the 50x50 the ✕ on
      a reading gets. It has no edge either, so where the row's line wraps it
@@ -816,6 +832,10 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
      pressed. On a phone it becomes a pill of its own: 78x63 there. */
   html[data-phone="1"] .pgedit{font-size:15px;padding:6px 11px;border:1px solid var(--line);
     border-radius:999px;background:var(--card);color:var(--mut);line-height:1}
+  /* the pill outranks the plain :active above on specificity, so the tap has
+     to be said again here or pressing it looks like pressing nothing */
+  html[data-phone="1"] .pgedit:active{background:#ccfbf1;border-color:var(--teal);color:var(--teal)}
+  html[data-theme="dark"][data-phone="1"] .pgedit:active{background:#115e59;border-color:var(--teal);color:#fff}
   .pgstrip{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px;padding:7px 8px;border:1px dashed var(--line);border-radius:9px;background:var(--bg);font-size:12.5px;color:var(--mut);cursor:default}
   .pgstrip .pgbox{white-space:nowrap}
   .pgstrip .pgin{width:56px}
@@ -11186,8 +11206,24 @@ const collPartWay=b=>{
    line counts stories and has nothing to type. */
 const progHtml=(b,edit)=>{
   if(statusOf(b)!=="reading"&&!collPartWay(b))return "";
-  const p=pctOf(b);if(p==null)return "";
+  const p=pctOf(b);
   const can=!!edit&&statusOf(b)==="reading"&&!(isColl(b)&&(b.entries||[]).length);
+  /* ---- NOTHING KNOWN YET IS STILL SOMETHING TO SAY ----
+     This returned "" the moment pctOf came back null, and pctOf is null for
+     every book you have just started: with a page count but no page reached,
+     `t&&a` is false and there is no percent to fall back on. So the one book
+     the strip exists for — the one you started this morning and want to write
+     a page onto — was the one book with no ✎ anywhere on the shelf, and the
+     only way in was to open it and type the page there first. Today at least
+     said "No page entered yet"; a Library row drew nothing at all.
+     The line stands with an empty bar and the ✎ beside it. A collection keeps
+     the old silence: it counts in stories, it has no page to type, and until
+     one of them is finished there is no bar to draw. */
+  if(p==null&&!can)return "";
+  if(p==null)return `<div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap">
+    <span class="prog" style="width:88px"><i style="width:0"></i></span>
+    <span class="rr">${parseInt(b.pages)?`no page yet, of ${esc(String(b.pages))}`:"no page yet"}</span>
+    <button class="pgedit" data-pgedit="${esc(edit)}" title="Say where you are — the page, or how far through">✎</button></div>${pgStripHtml(b,edit)}`;
   /* a collection counts in stories, everything else in pages */
   const said=isColl(b)&&(b.entries||[]).length
     ? `${collDone(b)} of ${(b.entries||[]).length} read`
@@ -18798,9 +18834,17 @@ async function renderHub(part){
   const rnRow=(b,body,enId,en)=>{
     const title=en?(en.title||"Untitled"):(b.title||"Untitled");
     const author=en?entAuthorOf(b,en):b.author;
+    /* THE ROW'S FACE IS THE STORY'S, NOT THE BOX IT LIVES IN.
+       These rows asked for `data-cover="${b.id}"` and nothing else, so a story
+       being read inside a collection wore the collection's cover — every
+       Small Spaces volume on Today showed the set's face instead of its own.
+       The Library's rows have carried `data-covkey` since stories got pictures;
+       hydrateCovers reads it, and storyProxy is what knows the key. The frame
+       is the collection's own and does not travel down to a story. */
+    const px=en?storyProxy(b,en):b;
     return `
       <div class="rnrow" data-open="${b.id}"${enId?` data-openen="${esc(enId)}"`:""} tabindex="0" role="button" aria-label="${esc(title)}">
-        <div class="thumb rnthumb${b.frame?" framed":""}" data-cover="${b.id}"><a class="tgo" href="${esc(bookHash(b.id,enId||""))}" tabindex="-1" aria-hidden="true">${coverInner(b,false)}</a></div>
+        <div class="thumb rnthumb${px.frame&&!px._story?" framed":""}" data-cover="${b.id}"${px._cover?` data-covkey="${esc(px._cover)}"`:""}><a class="tgo" href="${esc(bookHash(b.id,enId||""))}" tabindex="-1" aria-hidden="true">${coverInner(px,false)}</a></div>
         <div style="min-width:0">
           <div class="rtitle serif" style="font-size:15px"><a class="tgo" href="${esc(bookHash(b.id,enId||""))}">${esc(title)}</a>${en?` <span class="bst instory">in ${esc(b.title||"Untitled")}</span>`:""}</div>
           ${author?`<div class="rauth">${esc(authorParts(author)[0]||author)}</div>`:""}
