@@ -1,0 +1,49 @@
+# Every push to main is already a deploy: Pages serves this branch's root, so
+# whatever is pushed is what the phone loads a minute later. This does not stop
+# that -- it runs the smoke and the layout sweep straight afterwards and fails
+# the run if either found something, which mails whoever pushed. Knowing within
+# two minutes is the whole of what it buys; it cannot hold a bad build back.
+#
+# It also keeps the browser tooling off the machine the app is written on. The
+# app itself stays one file with no build step, and nothing below is shipped.
+name: checks
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  browser-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install a browser to run the checks in
+        run: |
+          npm install --no-save playwright@1.49.1
+          npx playwright install --with-deps chromium
+
+      - name: Serve the folder and run both checks
+        run: |
+          python3 -m http.server 8766 --bind 127.0.0.1 --directory . > /dev/null 2>&1 &
+          SERVER=$!
+          # the server is a local static one; a second is enough for it to bind
+          sleep 2
+          code=0
+          node .github/scripts/run-checks.mjs || code=$?
+          kill $SERVER || true
+          exit $code
+
+      - name: Keep the report either way
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-report
+          path: check-report.json
+          if-no-files-found: warn
