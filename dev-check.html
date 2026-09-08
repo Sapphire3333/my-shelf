@@ -377,6 +377,107 @@ const SMOKE=`
   await check("streaks recount",async()=>{
     const t=todayStr();const s={days:{},cur:1,last:t};[3,2,1,0].forEach(k=>s.days[dayBack(t,k)]=1);
     must(streakFromDays(s).cur===4,"recount gives "+streakFromDays(s).cur);return "4-day chain counts 4";});
+  /* ── the rating suggestion ────────────────────────────────────────────────
+     Arithmetic over a plain object: no database, no drawing, so these cost
+     nothing to run. What is pinned is the shape of the rule rather than the
+     curve — silence under three signals, a word of your own counting for
+     nothing, an unmarked quote counting for nothing, and a mark you set never
+     being offered over. Change the leans and these numbers move; change them
+     on purpose and move these with them. */
+  await check("the suggestion says nothing under three signals",async()=>{
+    const two={aspects:{characters:["Memorable","Likeable"]}};
+    must(suggestScore(two)===null,"two words already suggested "+suggestScore(two));
+    const own={aspects:{characters:["Memorable","Likeable"],plot:["a word of my own","and another"]}};
+    must(suggestBits(own).length===2,"words of your own were counted: "+suggestBits(own).length+" bits");
+    must(suggestScore(own)===null,"words of your own reached the threshold");
+    return "two known words plus two of your own is still silence";});
+  await check("the suggestion leans the way the words do",async()=>{
+    const warm={aspects:{characters:["Memorable","Likeable"],plot:["Gripping"]}};
+    const cold={aspects:{characters:["Couldn't connect","Annoying"],plot:["Fell apart"]}};
+    must(suggestScore(warm)===7.5,"three warm words gave "+suggestScore(warm));
+    must(suggestScore(cold)===3.5,"three cold words gave "+suggestScore(cold));
+    return "7.5 warm, 3.5 cold";});
+  await check("a pile of likes is still not an eleven",async()=>{
+    const all={aspects:{characters:["Memorable","Likeable","Grew on me"],
+      plot:["Gripping","Satisfying end","Original"],
+      writing:["Flew through it","Beautifully written","Easy to read"],
+      art:["Gorgeous","Expressive","Fits the story"]}};
+    must(suggestBits(all).length===12,suggestBits(all).length+" bits, expected 12");
+    must(suggestScore(all)===9.5,"every warm word there is gave "+suggestScore(all));
+    return "twelve warm words reach 9.5 and stop";});
+  await check("an unmarked quote is not evidence",async()=>{
+    const bare={aspects:{characters:["Memorable","Likeable"],plot:["Gripping"]}};
+    const kept={aspects:{characters:["Memorable","Likeable"],plot:["Gripping"]},
+      quotes:["a line","another","a third"]};
+    must(suggestScore(kept)===suggestScore(bare),"three unmarked quotes moved it to "+suggestScore(kept));
+    const loved={aspects:{characters:["Memorable","Likeable"],plot:["Gripping"]},
+      quotes:["a line","another"],quotesW:[1,1]};
+    must(suggestScore(loved)>suggestScore(bare),"two lines you loved did not lift it");
+    return "silent until marked, counted once marked";});
+  await check("a mark you set is never offered over",async()=>{
+    const x={aspects:{characters:["Memorable","Likeable"],plot:["Gripping"]}};
+    must(sugHtml(x,"").indexOf("Use it")>=0,"nothing offered beside an empty rating");
+    x.rating=6;
+    must(sugHtml(x,"").indexOf("Use it")<0,"offered to overwrite a mark you set");
+    return "offered when empty, silent when set";});
+
+  /* ── the import matcher ───────────────────────────────────────────────────
+     dupe / near / new, run over a fixture shelf of three books. Every case
+     below is a bug this has actually had: a co-author spelling, case drift off
+     an import, a hyphenated ISBN on the shelf against a clean one in the file,
+     a title written "Author - Title", and a story matched by its own number
+     under an edition's different title. The shelf and the queue are put back
+     before the check returns, so the rest of the run sees what it expects. */
+  let dupeMarks=null;
+  await check("the matcher runs over a fixture shelf",async()=>{
+    const shelf=[
+      {id:"fx-quiet",title:"The Quiet Library",author:"Ann Fixture",isbn:"978-1-4016-8487-7"},
+      {id:"fx-dash",title:"Korman - I want to go home",author:"Korman",isbn:""},
+      {id:"fx-series",type:"collection",title:"Fixture Chronicles",author:"Ann Fixture",isbn:"",
+       entries:[{id:"fx-rosa",title:"Rosa and Crystal",isbn:"9780306406157"}]}];
+    const rows=[
+      {title:"The Quiet Library",author:"Ann Fixture & Bo Coauthor",isbn:""},
+      {title:"the quiet library",author:"ann fixture",isbn:""},
+      {title:"Something Else Entirely",author:"Ann Fixture",isbn:"9781401684877"},
+      {title:"I Want to Go Home",author:"Korman",isbn:""},
+      {title:"A Story Under Another Name",author:"Ann Fixture",isbn:"9780306406157"},
+      {title:"Fixture Chronicles, Volume 2",author:"Ann Fixture",isbn:""},
+      {title:"A Book Nobody Has",author:"Zed Stranger",isbn:""}];
+    const keptBooks=books.slice(),keptQueue=importQueue.slice();
+    try{
+      books.length=0;books.push.apply(books,shelf);
+      importQueue.length=0;importQueue.push.apply(importQueue,rows);
+      markDupes();
+      dupeMarks={};
+      importQueue.forEach(r=>{dupeMarks[r.title]={dupe:r.dupe,near:r.near,hitB:r.hitB,hitE:r.hitE};});
+    }finally{
+      books.length=0;books.push.apply(books,keptBooks);
+      importQueue.length=0;importQueue.push.apply(importQueue,keptQueue);
+    }
+    must(Object.keys(dupeMarks).length===7,"marked "+Object.keys(dupeMarks).length+" rows, expected 7");
+    must(books.length===keptBooks.length,"the shelf was not put back");
+    return "7 rows against a 3-book shelf";});
+  await check("a duplicate is caught however it is spelled",async()=>{
+    const m=dupeMarks;
+    must(m["The Quiet Library"].dupe,"a co-author spelling came through as new");
+    must(m["the quiet library"].dupe,"case drift came through as new");
+    must(m["Something Else Entirely"].dupe&&m["Something Else Entirely"].hitB==="fx-quiet",
+      "a hyphenated ISBN on the shelf did not meet a clean one in the file");
+    must(m["I Want to Go Home"].dupe&&m["I Want to Go Home"].hitB==="fx-dash",
+      "a title written Author - Title did not match on its half");
+    return "co-author, case, hyphenated ISBN, dashed title";});
+  await check("an import row can land on a story",async()=>{
+    const r=dupeMarks["A Story Under Another Name"];
+    must(r.dupe,"a story's own number did not match under a different title");
+    must(r.hitB==="fx-series"&&r.hitE==="fx-rosa","landed on "+r.hitB+" / "+r.hitE);
+    return "matched the story, not the collection around it";});
+  await check("a trimmed volume number only ever suggests",async()=>{
+    const v=dupeMarks["Fixture Chronicles, Volume 2"];
+    must(!v.dupe,"a volume-trimmed match was called a duplicate, which skips a book you may not have");
+    must(v.near&&v.hitB==="fx-series","not offered as an instalment: near="+v.near+" hit="+v.hitB);
+    const n=dupeMarks["A Book Nobody Has"];
+    must(!n.dupe&&!n.near,"a book nobody has was marked dupe="+n.dupe+" near="+n.near);
+    return "volume 2 is near, a stranger is new";});
   await check("every screen draws",async()=>{
     const drawn=[];
     for(const v of ["overview","care","library","challenges","ach","search","insights","quotes","history","settings"]){
