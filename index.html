@@ -8260,6 +8260,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-08.8",lines:[
+    "<b>📦 A file you share is kept now, even when a quote was still waiting.</b> If an earlier share had left a quote sitting unread, the next <i>file</i> you shared — a whole ReadEra backup, say — was taken off the phone's shelf and then quietly dropped, because the waiting quote won the card instead. Nothing said so anywhere, not even the share log. The file is put away first now, before anything decides what to show you, and the log says where it went. <b>🧰 Shelf care</b> can still read it.",
+    "<b>An import no longer stops at twelve tags.</b> There was a cap of twelve and it counted the words a book already carried — so a book already holding twelve took on <i>nothing at all</i> from a file, in silence, and the row was struck off as dealt with, so running the import again could not bring them back. Everything a file offers lands now. A fic list can carry dozens of them, and a book will wear all of them.",
+    "<b>And a book named “Author - Title” is offered rather than skipped.</b> Matching on half of a dashed name was enough to call a row a duplicate, and a duplicate is dropped from <b>Add all</b> without ever being shown to you. But half a name is a thin thing to decide on, and the check meant to guard it — that the author agrees — says yes to everything when neither side names an author, which is exactly how these books are filed. So a book you did not have could quietly never arrive. Half a name <i>suggests</i> now: the row is shown as an instalment, for you to take or leave. A whole title still decides, exactly as before."]},
   {v:"2026-09-08.2",lines:[
     "<b>🩺 What's covering this page now catches thin marks too.</b> It only ever looked for something big enough to flood the page, so a few short coloured bars — the kind that turn up now and then and clear when you leave the screen and come back — were invisible to it. It makes two passes now: anything that could flood the page, and any <b>line, rule or dot</b> however small, each with its size, where it sits, and what colour it is painted.",
     "<b>And an empty answer is now an answer.</b> If you can see a mark and this says nothing is painted there, the mark is not part of the page at all — it is the browser still showing something it has already thrown away, which is exactly why leaving and coming back clears it. The readout says so in as many words, so the two cases can be told apart. On a healthy page it lists nothing at all, so anything it does list is worth reading."]},
@@ -20339,7 +20343,7 @@ function reFillable(b,it){
 function reFillInto(b,it,what){
   const did=new Set(what.map(w=>w[0]));
   if(did.has("summary"))b.summary=esc(it.summary);
-  if(did.has("tags"))b.keywords=(it.tags||[]).slice(0,IMPORT_TAG_CAP);
+  if(did.has("tags"))b.keywords=(it.tags||[]);
   if(did.has("series")){b.series=it.series;if(it.seriesNum&&!String(b.seriesNum||"").trim())b.seriesNum=it.seriesNum;}
   if(did.has("pages"))b.pages=it.pages;
   if(did.has("progress"))b.progress=it.progress;
@@ -20987,12 +20991,24 @@ async function collectShare(flag){
       }else shareNote("a small file, but it reads as data",{name,type:blob.type||"(none declared)",size:blob.size});
     }catch(e){shareNote("could not read the file",{err:String(e&&e.message||e)});}
   }
-  if(v){
-    await keepSharedText({title:String(v.title||""),text:String(v.text||""),url:String(v.url||"")});
-  }else if(blob&&blob.size){
+  /* ---- KEPT BEFORE ANYTHING DECIDES WHICH CARD TO DRAW ----
+     The file has already been taken out of the worker's cache by the time this
+     runs, so a branch that merely declines to SHOW it destroys it. That is what
+     happened whenever both drawers were full: a words-share whose redirect
+     never opened the app leaves shared-text behind, the next share is a backup,
+     the words win the card — and the file went to nothing, with no line in the
+     log to say one had ever arrived. Measured with both drawers filled: both
+     emptied, nothing in the database, two lines logged and neither about a
+     file. Keeping comes first now; choosing a card comes after. */
+  if(blob&&blob.size){
     shareNote("kept as a backup",{name,size:blob.size});
     try{await keepSharedBackup(name,blob);}
     catch(e){shareNote("could not keep the backup",{err:String(e&&e.message||e)});}
+  }
+  if(v){
+    if(blob&&blob.size)shareNote("words won the card, the file is in Shelf care",{name});
+    await keepSharedText({title:String(v.title||""),text:String(v.text||""),url:String(v.url||"")});
+  }else if(blob&&blob.size){
     /* ---- AND IT SAYS SO, WHICH IT DID NOT ----
        A whole ReadEra backup shared instead of a quote is not a fault, but the
        app took it in silence: the file went to a card on another screen and
@@ -32707,7 +32723,13 @@ const IMPORT_SECTIONS=[["finished","Read"],["reading","Currently reading"],["wan
    allowed nearly twice what the two that created one did. Same pipeline, same
    number now. (Folding your OWN books into a collection keeps its own, larger
    allowance: those keywords are ones you chose.) */
-const IMPORT_TAG_CAP=12;
+/* ---- THE TAG CAP IS GONE, AND THAT IS THE POINT ----
+   Twelve was applied to the MERGED list, so the cap was spent on words the book
+   already carried: a book holding twelve keywords took on nothing at all from
+   an import, silently, and the row was then struck off as dealt with, so
+   re-running the file could not recover them. Measured: twelve existing, two
+   offered, zero landed. An import now brings everything it has. A fic list can
+   carry dozens of freeform tags and a book will now wear all of them. */
 const secOf=it=>it.dnf?"dnf":it.status;
 const dupeKey=(t,a)=>((t||"")+"|"+(a||"")).toLowerCase().replace(/\s+/g," ").trim();
 
@@ -33203,6 +33225,27 @@ function titleVariants(t){
   });
   return [...out];
 }
+/* Just the halves of a dashed name, told apart from the whole titles above
+   because they are a WEAKER key and the import matcher files them accordingly.
+   The note above says a stray half is safe since "the match still has to agree
+   about the author" — but authorsOverlap answers yes whenever either side names
+   nobody, which is precisely the shelf this was built for: books called
+   "Author - Title" BECAUSE the author field is empty, and backup rows that
+   carry no author at all. So the guard it leans on is not there when it is
+   needed. Measured: a shelf holding "The Hobbit - There and Back Again" with no
+   author called an authorless row titled "There and Back Again" a duplicate
+   outright, and a duplicate is skipped. */
+const titleHalves=t=>{
+  const out=new Set();
+  const add=s=>{s=String(s||"").toLowerCase().replace(/\s+/g," ").trim();if(s.length>2)out.add(s);};
+  const base=String(t||"").toLowerCase().replace(/\s+/g," ").trim();
+  const noParen=base.replace(/\s*\([^)]*\)\s*$/,"");
+  [base,noParen].forEach(s=>{
+    const d=s.split(/\s+[-–—]\s+/);
+    if(d.length>1&&d.length<4)d.forEach(add);
+  });
+  return out;
+};
 /* Punctuation is not a difference. "Not-Sew-Wicked-Stepmom" on the shelf and
    "Not-Sew-Wicked Stepmom" in the export are one title written two ways, and
    comparing them collapsed runs of whitespace but never a hyphen — so the app
@@ -33259,11 +33302,19 @@ const stemOK=s=>{
 function markDupes(){
   const byKey=new Map(),byIsbn=new Map(),byTitle=new Map(),byNear=new Map();
   const put=(m,k,v)=>{if(k&&!m.has(k))m.set(k,v);};
-  const putTitles=(t,v)=>titleVariants(t).forEach(x=>{
-    put(byTitle,titleKey(x),v);
-    const stem=volTrim(x);
-    if(stemOK(stem))put(byNear,titleKey(stem),v);
-  });
+  /* A half of a dashed name is the weaker key — see titleHalves — so it is
+     filed with the volume stems, which suggest and never skip, rather than with
+     the whole titles, which decide. As `near` the row is still shown and can
+     still be added; as `dupe` it was dropped from Add all unseen. */
+  const putTitles=(t,v)=>{
+    const halves=titleHalves(t);
+    titleVariants(t).forEach(x=>{
+      if(halves.has(x)){put(byNear,titleKey(x),v);return;}
+      put(byTitle,titleKey(x),v);
+      const stem=volTrim(x);
+      if(stemOK(stem))put(byNear,titleKey(stem),v);
+    });
+  };
   for(const b of books){
     put(byKey,dupeKey(b.title,b.author),{b,en:null});
     /* staged rows carry digits-only ISBNs — a hand-typed hyphenated one on the
@@ -33292,7 +33343,12 @@ function markDupes(){
        author is spelled differently in the export — which is most of them once
        a co-author is involved — came through as new, and "Add all" would have
        put a second copy on the shelf beside the one already there. */
+    /* A half of the ROW's own dashed name is skipped here for the same reason
+       the shelf's halves are not in this map at all: on its own it is not
+       enough to call something a duplicate. It gets its turn below. */
+    const rowHalves=titleHalves(it.title);
     if(!hit)for(const v of titleVariants(it.title)){
+      if(rowHalves.has(v))continue;
       const t=byTitle.get(titleKey(v));
       if(t&&sameHand(it,t)){hit=t;break;}
     }
@@ -33306,6 +33362,13 @@ function markDupes(){
       const stem=volTrim(v);
       if(!stemOK(stem))continue;
       const t=byNear.get(titleKey(stem));
+      if(t&&sameHand(it,t)){near=t;break;}
+    }
+    /* and the row's own halves, against whole titles as well as near ones —
+       "Korman - I want to go home" arriving for a shelf that calls it
+       "I Want to Go Home" is worth offering, and only offering */
+    if(!hit&&!near)for(const v of rowHalves){
+      const t=byNear.get(titleKey(v))||byTitle.get(titleKey(v));
       if(t&&sameHand(it,t)){near=t;break;}
     }
     it.dupe=!!hit;
@@ -33772,7 +33835,7 @@ function applyImportFills(it,b,en,fills){
     else if(f.k==="maturity")b.maturity=it.maturity;
     else if(f.k==="link")b.link=it.link;
     else if(f.k==="fandoms"||f.k==="ships"||f.k==="characters")b[f.k]=[...(b[f.k]||[]),...f.v];
-    else if(f.k==="tags")T.keywords=[...((T.keywords)||[]),...f.v].slice(0,IMPORT_TAG_CAP);
+    else if(f.k==="tags")T.keywords=[...((T.keywords)||[]),...f.v];
   }
   return b;
 }
@@ -34050,7 +34113,7 @@ async function importOne(it,extra){
     ...((it.ships||[]).length?{ships:it.ships.slice()}:{}),
     readings:readingsFromRow(it),
     summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
-    keywords:(it.tags||[]).slice(0,IMPORT_TAG_CAP),imported:Date.now(),modified:Date.now()},extra||{});
+    keywords:(it.tags||[]),imported:Date.now(),modified:Date.now()},extra||{});
   /* the fandom vocabulary learns what arrived, through its one door — the
      characters filed under the first fandom, the same way the editor does */
   if((b.fandoms||[]).length){
@@ -34126,7 +34189,7 @@ async function importCollection(items,name){
     author:items[0].author||"",
     status,dnf:allDnf,
     dateFinished:items.map(it=>it.dateFinished||"").sort().pop()||"",
-    keywords:[...new Set(items.flatMap(it=>it.tags||[]))].slice(0,IMPORT_TAG_CAP),
+    keywords:[...new Set(items.flatMap(it=>it.tags||[]))],
     entries:items.map(it=>syncReads(Object.assign(blankEntry(),{
       title:it.title,rating:it.rating,pages:it.pages,
       dateFinished:it.dateFinished||"",readings:readingsFromRow(it),
