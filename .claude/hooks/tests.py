@@ -76,6 +76,27 @@ CASES = [
      "New-Item -ItemType Directory -Force " + win("./tmpdir")),
     ("Bash writing a file", 0, "Bash",
      "cat > notes.md <<'EOF'" + chr(10) + "hi" + chr(10) + "EOF"),
+    # --- the write TARGET, not merely a path somewhere in the line ---
+    # Every case here failed, in one direction or the other, before the guard
+    # was narrowed to the segment that writes.
+    ("a backslash path with no extension", 2, "PowerShell",
+     "Set-Content -Path " + win("./notes") + " -Value x"),
+    ("a nested backslash path with no extension", 2, "PowerShell",
+     "Out-File " + win("./docs/CHANGELOG")),
+    ("an absolute extensionless path in the project", 2, "PowerShell",
+     "Set-Content " + CWD + SEP + "LICENSE -Value x"),
+    ("a forward-slash path with no extension", 2, "PowerShell",
+     "Set-Content -Path ./notes -Value x"),
+    ("writing into the project later in a pipeline", 2, "PowerShell",
+     "Get-Content " + TMP + SEP + "in.txt | Out-File " + win("./notes.md")),
+    ("reading here while writing elsewhere", 0, "PowerShell",
+     "Get-Content index.html | Out-File " + TMP + SEP + "out.txt"),
+    ("a project file given as a value, not a target", 0, "PowerShell",
+     "Set-Content -Path " + TMP + SEP + "a.txt -Value (Get-Content index.html)"),
+    ("a version number given as a value", 0, "PowerShell",
+     "Set-Content -Path " + TMP + SEP + "v.txt -Value 1.0"),
+    ("redirecting outside the project", 0, "PowerShell",
+     "echo hi > " + TMP + SEP + "out.txt"),
 ]
 
 

@@ -73,37 +73,73 @@ if tool != "PowerShell":
     sys.exit(0)
 
 # --- 2. PowerShell writes into the project ---------------------------------
-# Stream redirections (2>$null, 2>&1) are dropped before looking for a plain
-# > or >>, so suppressing errors is not mistaken for writing a file.
-scan = re.sub(r"\d*>\s*&\s*\d|\d>", " ", cmd)
+# Only the part of a command that actually WRITES is examined. Collecting every
+# project path anywhere in the line refused `Get-Content index.html | Out-File
+# C:\Temp\out.txt`, which reads here and writes elsewhere, and reported "1.0"
+# as a file in this folder for `Set-Content -Path C:\Temp\v.txt -Value 1.0`. A
+# guard that refuses correct commands, naming the wrong reason, gets turned off,
+# and then it guards nothing.
+#
+# A separator is tested for by character, never by regex. The class that did it
+# was written [\/] and reached the file as [\/], which matches a forward slash
+# ONLY -- so every backslash path without a file extension walked straight
+# through the finished, installed, passing-its-tests guard.
+SEPARATORS = "/" + chr(92)
 
-WRITE_OP = re.compile(
+TOKEN = re.compile(r"""["']([^"']*)["']|([^\s"']+)""")
+PATH_FLAG = re.compile(r"^-(?:Path|FilePath|LiteralPath|Destination)$", re.I)
+WRITE_CMD = re.compile(
     r"Set-Content|Add-Content|Out-File|Export-Csv|Export-Clixml|Tee-Object"
-    r"|WriteAllText|WriteAllLines|WriteAllBytes|AppendAllText|>",
+    r"|WriteAllText|WriteAllLines|WriteAllBytes|AppendAllText",
     re.I,
 )
 # New-Item makes a file only when it is not making a directory.
 NEW_FILE = re.compile(r"New-Item(?!.*-ItemType\s+Directory)", re.I)
+# Stream redirections (2>$null, 2>&1) are dropped before looking for a plain
+# > or >>, so suppressing errors is not mistaken for writing a file.
+STREAM = re.compile(r"\d*>\s*&\s*\d|\d>")
 
-if not (WRITE_OP.search(scan) or NEW_FILE.search(scan)):
-    sys.exit(0)
 
-# Everything in the command that could be a path: quoted strings, plus bare
-# runs that hold a separator or an extension. A flag is never a path.
-TOKEN = re.compile(r"""["']([^"']*)["']|([^\s"']+)""")
+def looks_like_path(t):
+    return any(c in t for c in SEPARATORS) or bool(re.search(r"\.[\w-]{1,15}$", t))
+
+
+def tokens_of(text):
+    return [q or u for q, u in TOKEN.findall(text) if (q or u)]
+
+
+def written_by(segment):
+    """The path this segment writes to, or every path in it when that cannot be
+    told apart -- an unparsed write is refused rather than waved through."""
+    redirected = re.search(r">>?\s*([^\s;|]+)", STREAM.sub(" ", segment))
+    if redirected:
+        return [redirected.group(1).strip("\"'")]
+    toks = tokens_of(segment)
+    for i, t in enumerate(toks):
+        if PATH_FLAG.match(t) and i + 1 < len(toks):
+            return [toks[i + 1]]
+    seen = False
+    for t in toks:
+        if not seen:
+            seen = bool(WRITE_CMD.search(t) or NEW_FILE.search(t))
+            continue
+        if not t.startswith("-") and looks_like_path(t):
+            return [t]
+    return [t for t in toks if not t.startswith("-") and looks_like_path(t)]
+
+
 targets = []
-for quoted, unquoted in TOKEN.findall(cmd):
-    t = quoted or unquoted
-    if not t or t.startswith("-"):
+for segment in re.split(r"[|;\n]|&&", cmd):
+    seg = STREAM.sub(" ", segment)
+    if not (">" in seg or WRITE_CMD.search(segment) or NEW_FILE.search(segment)):
         continue
-    if not (re.search(r"[\/]", t) or re.search(r"\.[\w-]{1,15}$", t)):
-        continue
-    try:
-        full = os.path.normcase(os.path.abspath(os.path.join(cwd, t)))
-        if full != project and os.path.commonpath([full, project]) == project:
-            targets.append(os.path.relpath(full, project))
-    except (ValueError, OSError):
-        continue
+    for t in written_by(segment):
+        try:
+            full = os.path.normcase(os.path.abspath(os.path.join(cwd, t)))
+            if full != project and os.path.commonpath([full, project]) == project:
+                targets.append(os.path.relpath(full, project))
+        except (ValueError, OSError):
+            continue
 
 if targets:
     deny(

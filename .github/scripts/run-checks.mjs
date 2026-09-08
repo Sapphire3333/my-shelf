@@ -1,12 +1,11 @@
 /* Runs dev-check.html the way a person does — press Run the smoke, press Run
    the sweep — but in a browser GitHub owns, so nothing has to be installed on
    the machine the app is actually written on.
- 
+
    It reads the two results the page hands back (window.__smoke and
    window.__sweep, both {bad, ...}) rather than looking at the table it draws,
-   and exits non-zero if either found anything. A failing run mails the person
-   who pushed; the full JSON is kept as a build artifact for reading afterwards.
- 
+   and exits non-zero if either found anything.
+
    Nothing here is part of the app. The app remains one file with no build. */
 import { writeFileSync } from "node:fs";
 import { chromium } from "playwright";
@@ -14,11 +13,11 @@ import { chromium } from "playwright";
 const BASE = process.env.BASE_URL || "http://127.0.0.1:8766";
 
 /* A page Chromium considers backgrounded has its timers throttled to about one
-   a second, and the sweep gives each screen 60s before it gives up -- run it
-   throttled and every screen fails with "gave up after 60s" while the layout is
-   perfectly fine. Measured locally in a hidden browser pane: 24 false failures
-   out of the first 60 checks. These three flags are what stop a runner doing
-   the same, and they are why a green run here means something. */
+   a second, and the sweep gives each screen a fixed budget before it gives up —
+   run it throttled and screens fail for having been slow rather than wrong.
+   Measured in a throttled pane: 24 false failures out of the first 60 checks,
+   and 0 across the same passes unthrottled. These three flags are why a green
+   run here means anything. */
 const browser = await chromium.launch({
   args: [
     "--disable-background-timer-throttling",
@@ -33,39 +32,72 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
 const crashes = [];
 page.on("pageerror", (e) => crashes.push(String(e && e.message ? e.message : e)));
 
-await page.goto(BASE + "/dev-check.html", { waitUntil: "load", timeout: 60000 });
+let smoke = null;
+let sweep = null;
+let fatal = null;
 
-/* Neither of these is given a timeout. The smoke waits on a real database and
-   the sweep reloads the app once per width, so the only sensible limit is the
-   job's own, set in the workflow. */
-const smoke = await page.evaluate(async () => {
-  const r = await window.__runSmoke();
-  return { bad: r.bad, rows: r.rows.map((x) => ({ name: x.name, ok: x.ok, note: x.note })) };
-});
+/* The report is written in a finally, and that is the whole point of it. Doing
+   it after both checks returned meant the run that most needed explaining — the
+   app failing to open, so the smoke rejects on its own timeout — died before
+   the file existed, and the upload step that says if: always() had nothing to
+   upload. A diagnostic that is absent exactly when things break is not one. */
+try {
+  await page.goto(BASE + "/dev-check.html", { waitUntil: "load", timeout: 60000 });
 
-const sweep = await page.evaluate(async () => {
-  const r = await window.__runSweep();
-  return { bad: r.bad, failed: r.failed };
-});
+  /* Neither call is given a timeout. The smoke waits on a real database and the
+     sweep reloads the app once per width, so the only sensible limit is the
+     job's own, set in the workflow. */
+  smoke = await page.evaluate(async () => {
+    const r = await window.__runSmoke();
+    return { bad: r.bad, rows: r.rows.map((x) => ({ name: x.name, ok: x.ok, note: x.note })) };
+  });
 
-await browser.close();
-
-const report = { when: new Date().toISOString(), crashes, smoke, sweep };
-writeFileSync("check-report.json", JSON.stringify(report, null, 1));
+  sweep = await page.evaluate(async () => {
+    const r = await window.__runSweep();
+    return { bad: r.bad, failed: r.failed };
+  });
+} catch (e) {
+  fatal = String((e && e.stack) || e);
+} finally {
+  try {
+    await browser.close();
+  } catch (e) {
+    /* a browser that already died cannot be closed twice, and saying so here
+       would bury the reason the run failed in the first place */
+  }
+  writeFileSync(
+    "check-report.json",
+    JSON.stringify({ when: new Date().toISOString(), fatal, crashes, smoke, sweep }, null, 1)
+  );
+}
 
 const line = (s) => process.stdout.write(s + "\n");
 line("");
-line("SMOKE  " + (smoke.bad ? smoke.bad + " of " + smoke.rows.length + " FAILED" : "all " + smoke.rows.length + " passed"));
-for (const r of smoke.rows) if (!r.ok) line("   x  " + r.name + " -- " + r.note);
-line("SWEEP  " + (sweep.bad ? sweep.bad + " screens scroll sideways" : "nothing scrolls sideways"));
-for (const f of (sweep.failed || []).slice(0, 20)) line("   x  " + f);
+if (smoke) {
+  line("SMOKE  " + (smoke.bad ? smoke.bad + " of " + smoke.rows.length + " FAILED" : "all " + smoke.rows.length + " passed"));
+  for (const r of smoke.rows) if (!r.ok) line("   x  " + r.name + " -- " + r.note);
+} else {
+  line("SMOKE  never finished");
+}
+if (sweep) {
+  line("SWEEP  " + (sweep.bad ? sweep.bad + " screens scroll sideways" : "nothing scrolls sideways"));
+  for (const f of (sweep.failed || []).slice(0, 20)) line("   x  " + f);
+} else {
+  line("SWEEP  never finished");
+}
 if (crashes.length) {
   line("CRASH  the check page itself threw:");
   for (const c of crashes.slice(0, 5)) line("   x  " + c);
 }
+if (fatal) {
+  line("FATAL  the run stopped early:");
+  line("   x  " + fatal.split("\n").slice(0, 4).join("\n        "));
+}
 line("");
 
-const bad = smoke.bad + sweep.bad + crashes.length;
+/* A check that never ran counts against the run. Silence is not a pass. */
+const bad =
+  (smoke ? smoke.bad : 1) + (sweep ? sweep.bad : 1) + crashes.length + (fatal ? 1 : 0);
 if (bad) {
   line("Something is wrong with what was just pushed. check-report.json has all of it.");
   process.exit(1);
