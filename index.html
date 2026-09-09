@@ -3089,6 +3089,10 @@ html[data-phone="1"] .hname{gap:8px}
   background:var(--card);color:var(--mut)}
 .qfbit.got{background:#ccfbf1;border-color:#5eead4;color:#0f766e;font-weight:600}
 [data-theme="dark"] .qfbit.got{background:#134e4a;border-color:#0f766e;color:#5eead4}
+/* the Decorate round's bar under its three ticks: how far to a decorated page */
+.qdbar{height:7px;border-radius:4px;background:var(--line);overflow:hidden;margin:8px 0 0;max-width:260px}
+.qdbar i{display:block;height:100%;background:#f59e0b;border-radius:4px;transition:width .3s}
+.qdbar.done i{background:var(--teal)}
 /* Connect: the clues stack as rows and the books sit under them as chips, so
    nothing needs two columns to be read on a phone */
 .qcard.qlink{border-color:#4d7c0f}
@@ -8415,6 +8419,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-09.4",lines:[
+    "<b>🎨 Decorate, by its own rules, said out loud.</b> The card now says what makes a round count: a page is <b>decorated</b> — the +20, a round won toward the day's “win five”, the 🎨 medal — once <b>three things</b> are on it. The +12s still pay as each thing lands. A bar under the three ticks shows how far you are.",
+    "<b>✓ Finished.</b> Once anything has landed, the button that was “Give it up” reads Finished: press it and the round ends there, without waiting out the clock, keeping what it paid — and the card says plainly whether that was a decorated page or two things short of one.",
+    "<b>Only books you have finished, and only bare pages.</b> It could deal a book you had never read, or on a well-kept shelf a page already full. Now it deals only a finished book whose page holds nothing yet, and when there is none it says so instead of dealing something else."]},
   {v:"2026-09-09.3",lines:[
     "<b>On a phone, a Library row is your drawing of it.</b> The cover and the name share the top; the genres run the whole width under them, and the blurb under those — from the card's left edge, under the cover, instead of squeezed into the name's column with a blank strip down the side of the cover. The cover keeps a book's own proportions and is never stretched; the card is as tall as the cover or the name, then the words.",
     "<b>A book's bar on a phone is one row:</b> ‹ Library 🔎 ↶ ↷ … ⋯ ✎ Edit. Previous and next, ⚙ View, 🖌 Scrapbook, 🔎 Auto-fill, Find and Fit stand behind the ⋯, which unfolds them in a row underneath — the way ⚙ View already unfolds. The cover starts two rows of buttons higher than it did.",
@@ -16358,10 +16366,15 @@ function wireQuestCards(m){
     }}
    /* ---- decorate, against a clock ---- */
    {const dd=q("#qdDraw",m);if(dd)dd.onclick=()=>{
-      if(!decoDraw())alert("There is nothing on the shelf to decorate yet.");
+      if(!decoDraw())alert(books.some(b=>statusOf(b)==="finished"&&!b.dnf)
+        ?"Every book you have finished already has something on its page — there is nothing bare left to decorate."
+        :"This deals only books you have finished, and there are none yet.");
       renderChallenges();};
+    /* ✓ Finished and Give it up are the same press: the round ends now and
+       keeps what it paid. `gaveUp` only changes the word the card says after —
+       "Finished." rather than "Time." */
     const dg=q("#qdGive",m);if(dg)dg.onclick=()=>{
-      if(quests.deco)quests.deco.over=true;questSave();renderChallenges();};
+      if(quests.deco){quests.deco.over=true;quests.deco.gaveUp=true;}questSave();renderChallenges();};
     qa("[data-qdo]",m).forEach(b=>b.onclick=()=>openBook(b.dataset.qdo));}
    const ed=q("#qeDraw",m);if(ed)ed.onclick=()=>{
      if(!errandDraw(null))alert("Nothing to run yet — an errand needs a book with blanks to fill, a series you're partway through, something waiting on Want-to-read, an old favourite, or a collection with empty entries in it.");
@@ -17888,13 +17901,17 @@ const decoCount=b=>((b.images||[]).length)+((b.pads||[]).length)+((b.draw||[]).l
 const decoLive=()=>{const d=quests&&quests.deco;
   return !!(d&&d.id&&!d.over&&books.some(b=>b.id===d.id));};
 const decoLeft=()=>{const d=quests&&quests.deco;return d?Math.max(0,(d.until||0)-Date.now()):0;};
+/* Only a book you have FINISHED, and only one whose page holds nothing yet.
+   It used to draw from every titled book, bare pages first and any page when
+   none was bare — so it could hand you a book you have not read (what belongs
+   on the page of a book you know nothing about?) or, on a well-kept shelf, a
+   page already full. Both are answered here: nothing bare and finished means
+   no round, and the card says why. */
+const decoField=()=>books.filter(b=>!b.apart&&String(b.title||"").trim()
+  &&statusOf(b)==="finished"&&!b.dnf&&decoCount(b)===0);
 function decoDraw(){
-  const field=books.filter(b=>!b.apart&&String(b.title||"").trim());
-  if(!field.length)return null;
   const was=(quests.deco&&quests.deco.id)||"";
-  /* a bare page first — decorating one that is already full is not the game */
-  const bare=field.filter(b=>b.id!==was&&decoCount(b)===0);
-  const from=bare.length?bare:field.filter(b=>b.id!==was);
+  const from=decoField().filter(b=>b.id!==was);
   if(!from.length)return null;
   const b=from[Math.floor(Math.random()*from.length)];
   quests.deco={id:b.id,title:b.title||"Untitled",base:decoCount(b),got:0,
@@ -17921,21 +17938,30 @@ function decoWatch(){
 }
 function decoCardHtml(){
   const d=quests&&quests.deco;
+  /* the one rule that was nowhere on the card: what makes a round COUNT. The
+     +12s pay as things land, but the +20, the day's "win five" and the 🎨
+     medal all turn on the third thing — and a player who put two pictures on
+     a page and pressed "Give it up" had no way of knowing whether that round
+     had been a win. */
+  const rule=`A page counts as <b>decorated</b> — the +${DECO_ALL}, a round won for the day's task, the 🎨 medal — once <b>${DECO_ENOUGH} things</b> are on it.`;
   if(!d||!d.id||!books.some(b=>b.id===d.id))
-    return `<div class="hint" style="margin:0 0 7px">One book with a bare page and <b>${DECO_MINS} minutes</b> to put something on it that belongs — a picture, a note pinned to the page, a stroke of drawing, a background of its own. <b>+${DECO_EACH}</b> for each thing that lands, and <b>+${DECO_ALL}</b> more once ${DECO_ENOUGH} of them have.</div>
+    return `<div class="hint" style="margin:0 0 7px">A book you have <b>finished</b> whose page holds nothing yet, and <b>${DECO_MINS} minutes</b> to put something on it that belongs — a picture, a note pinned to the page, a stroke of drawing, a background of its own. <b>+${DECO_EACH}</b> for each thing that lands. ${rule}</div>
       <button class="btn pri" id="qdDraw">🎨 Deal one</button>`;
   const b=books.find(x=>x.id===d.id);
-  const left=decoLeft(),running=!d.over&&left>0;
+  const left=decoLeft(),running=!d.over&&left>0,got=d.got||0;
   return `<div class="hint" style="margin:0 0 6px">${running
-      ? `⏱ <b class="qclock" data-clock="deco">${clockText(left)}</b> left · <b>${esc(b.title||"Untitled")}</b> — put something on this page that belongs.`
-      : (d.got>=DECO_ENOUGH
-        ? `<b style="color:#0f766e">A decorated page — ${nnW(d.got,"thing")} on it, and +${DECO_ALL} XP on top.</b>`
-        : `<b>Time.</b> ${d.got?`${nnW(d.got,"thing")} on the page — that is <b>+${d.got*DECO_EACH} XP</b> kept`:"Nothing landed, and nothing is lost."}.`)}</div>
-    <div class="qfbits">${[...Array(Math.max(DECO_ENOUGH,d.got||0))].map((_,i)=>
-      `<span class="qfbit${i<(d.got||0)?" got":""}">${i<(d.got||0)?"✓":"○"} ${i+1}</span>`).join("")}</div>
+      ? `⏱ <b class="qclock" data-clock="deco">${clockText(left)}</b> left · <b>${esc(b.title||"Untitled")}</b> — put something on this page that belongs. ${rule}`
+      : (got>=DECO_ENOUGH
+        ? `<b style="color:#0f766e">A decorated page — ${nnW(got,"thing")} on it, +${DECO_ALL} XP on top, and a round won for today.</b>`
+        : `<b>${d.gaveUp?"Finished.":"Time."}</b> ${got?`${nnW(got,"thing")} on the page — <b>+${got*DECO_EACH} XP</b> kept, but ${DECO_ENOUGH} make a decorated page and this is not one, so it does not count toward the day's task`:"Nothing landed, and nothing is lost"}.`)}</div>
+    <div class="qfbits">${[...Array(Math.max(DECO_ENOUGH,got))].map((_,i)=>
+      `<span class="qfbit${i<got?" got":""}">${i<got?"✓":"○"} ${i+1}</span>`).join("")}</div>
+    <div class="qdbar${got>=DECO_ENOUGH?" done":""}" title="${got} of ${DECO_ENOUGH} — a decorated page at ${DECO_ENOUGH}"><i style="width:${Math.min(100,Math.round(got/DECO_ENOUGH*100))}%"></i></div>
     <div class="hrow2" style="margin-top:8px">
       <button class="btn ${running?"pri":""}" data-qdo="${esc(d.id)}">${running?"🎨 Open its page":"Open the book"}</button>
-      ${running?`<button class="btn" id="qdGive" title="No penalty — whatever landed is already paid">Give it up</button>`
+      ${running
+        ? (got?`<button class="btn" id="qdGive" title="Ends the round here, without waiting for the clock. What landed is paid${got>=DECO_ENOUGH?", and it is a decorated page":`; it takes ${DECO_ENOUGH} to count as a decorated page`}.">✓ Finished</button>`
+              :`<button class="btn" id="qdGive" title="No penalty — nothing has landed, and nothing is lost">Give it up</button>`)
         :`<button class="btn" id="qdDraw">🎨 Another</button>`}</div>
     ${running?`<div class="hint" style="margin:7px 0 0">The scrapbook has to be on for this — ⚙ Settings → How it looks, <b>Show pictures and notes</b>. Paste a picture straight onto the page, or use the tools that appear along its foot.</div>`:""}`;
 }
