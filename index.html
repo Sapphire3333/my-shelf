@@ -4946,7 +4946,7 @@ const blankEntry=()=>({id:uid(),title:"",rating:null,pages:"",summary:"",notes:"
    │ answer — which is why every count and search filters with entOwnGenres,   │
    │ and why rateUnits/stageUnits must never be used to filter genres.         │
    └───────────────────────────────────────────────────────────────────────────┘ */
-const entGenresOf=(coll,en)=>((en&&en.genres||[]).length?en.genres:((coll&&coll.genres)||[]));
+const entGenresOf=(coll,en)=>((en&&en.genres||[]).length?en.genres:collVoice(coll));
 /* the collection's first, then the story's own — the order they read in */
 const entKeywordsOf=(coll,en)=>{
   const out=[],seen=new Set();
@@ -5288,7 +5288,32 @@ const sameWordSet=(a,b)=>{
   const A=norm(a),B=norm(b);
   return A.length===B.length&&A.every((x,i)=>x===B[i]);
 };
-const entGenresDiffer=(coll,en)=>entOwnGenres(en)&&!sameWordSet(en.genres,coll&&coll.genres);
+/* ┌─ WHAT A COLLECTION ANSWERS WITH ─────────────────────────────────────────┐
+   │ THE RULE: a collection speaks with its own genres — and where it has none │
+   │ written on it, with whatever EVERY story inside it says, if they all say  │
+   │ the same thing. Unanimous copies on the stories with a blank collection   │
+   │ above them are the collection's words that were written in the wrong      │
+   │ place, not nineteen stories each with an opinion of its own.              │
+   │ THE TELL: pressing a genre hands back every story of one collection, each │
+   │ wearing the identical ten words and "📚 in …". Four builds fixed the      │
+   │ symptom at four different doors before this one; the fifth time it was    │
+   │ Bone Chillers, and the cause was always the same — the collection's own   │
+   │ list was empty, so every story "differed" from nothing.                   │
+   │ liftUnanimousGenres below writes the words where they belong at boot and  │
+   │ after every pull; this is the belt for the minutes in between, and for a  │
+   │ device that has not restarted yet.                                        │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+const unanimousGenres=coll=>{
+  const ens=(coll&&coll.entries)||[];
+  if(!ens.length||!ens.every(entOwnGenres))return null;
+  const first=ens[0].genres;
+  return ens.every(en=>sameWordSet(en.genres,first))?first.slice():null;
+};
+const collVoice=coll=>((coll&&coll.genres)||[]).length?coll.genres:(unanimousGenres(coll)||[]);
+/* a book's genres, or the words a collection answers with — the one list every
+   count, filter and grouping on the shelf should read for a shelf item */
+const ownGenres=b=>isColl(b)?collVoice(b):((b&&b.genres)||[]);
+const entGenresDiffer=(coll,en)=>entOwnGenres(en)&&!sameWordSet(en.genres,collVoice(coll));
 /* the stories inside that no longer sit under the collection's own genres —
    which is what this always said it meant */
 const collStrays=b=>!isColl(b)?[]:((b.entries)||[]).filter(en=>entGenresDiffer(b,en));
@@ -5475,6 +5500,37 @@ async function backfillCollRatings(){
     if(!touched)continue;
     b.modified=Math.max(Date.now(),(b.modified||0)+1);
     try{await dbPut("books",b);touchedIds.push(b.id);}catch(e){}
+  }
+  return touchedIds;
+}
+/* The braces to collVoice's belt. A collection whose stories ALL carry the
+   same genre list, while its own is blank or a subset of it, takes that list
+   as its own and the copies come off the stories — the shape "a story carries
+   only what differs from its collection" has always meant. Nothing is lost:
+   the words move up one level and apply to every story from there, exactly
+   as they did from below. Where the collection says something the stories do
+   not (Fantasy above, all nineteen saying Horror), it is left alone and the
+   "! 19" badge tells the truth about it.
+   Runs at boot beside backfillCollRatings and after every pull, and like the
+   backfill it returns the ids so the caller can send them once syncing is
+   awake — enqueue drops everything while it is off. */
+async function liftUnanimousGenres(){
+  const touchedIds=[];
+  for(const b of books){
+    if(!isColl(b))continue;
+    const voice=unanimousGenres(b);
+    if(!voice)continue;
+    const own=b.genres||[];
+    if(sameWordSet(own,voice)&&!(b.entries||[]).some(entOwnGenres)){continue;}
+    const low=new Set(voice.map(g=>String(g).trim().toLowerCase()));
+    if(own.length&&!own.every(g=>low.has(String(g).trim().toLowerCase())))continue;
+    /* the collection's own order first, then what the stories add */
+    const seen=new Set(own.map(g=>String(g).trim().toLowerCase()));
+    b.genres=own.concat(voice.filter(g=>!seen.has(String(g).trim().toLowerCase())));
+    (b.entries||[]).forEach(en=>{en.genres=[];});
+    touchBook(b);
+    try{await dbPut("books",b);touchedIds.push(b.id);}catch(e){}
+    if(typeof cur!=="undefined"&&cur&&cur.id===b.id)rebaseOpenBook(b.id);
   }
   return touchedIds;
 }
@@ -7095,6 +7151,10 @@ async function pullAll(){
         imgKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
       }
     }
+    /* the other device may have written a collection's words onto its stories
+       — the same tidy boot does, on what has just arrived */
+    {const lifted=await liftUnanimousGenres();
+     if(lifted.length){touched=true;lifted.forEach(id=>enqueue({kind:"book",id}));}}
     dbPut("meta",{k:"seenMod",v:SYNC.seen});
     setSync("synced");
     /* a pull that changed nothing leaves the screen alone. Coming back to the tab
@@ -7256,6 +7316,7 @@ async function initSync(){
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
   books=await dbAll("books");
   const backfilled=await backfillCollRatings();   /* before the first paint, so the rows show it straight away */
+  backfilled.push(...await liftUnanimousGenres());  /* same reason, same send */
   const g=await dbGet("meta","genres");genres=g?g.v:{};
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
@@ -8260,6 +8321,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-09.1",lines:[
+    "<b>A genre answers with the collection, not with every story in it — and this time at the root.</b> Pressing Ghost Stories on Bone Chillers handed back nineteen stories, each wearing the same ten words and “📚 in Bone Chillers”. The cause, every time it has come back: the words were written on the <i>stories</i>, all nineteen of them alike, and the collection's own list was empty — so each story “differed” from a blank and stood up on its own. A collection now speaks with what every story inside it says, when they all say the same thing, and one row is the answer.",
+    "<b>And the words are put where they belong.</b> At every start, and after every sync, a collection whose stories all carry one identical list takes it as its own and the copies come off the stories — nothing is lost, the words apply to every story from above exactly as they did from below, and the collection's row and page now show them. A collection that says something its stories do not is left alone, and the <b>! 19</b> badge keeps telling you so."]},
   {v:"2026-09-08.8",lines:[
     "<b>📦 A file you share is kept now, even when a quote was still waiting.</b> If an earlier share had left a quote sitting unread, the next <i>file</i> you shared — a whole ReadEra backup, say — was taken off the phone's shelf and then quietly dropped, because the waiting quote won the card instead. Nothing said so anywhere, not even the share log. The file is put away first now, before anything decides what to show you, and the log says where it went. <b>🧰 Shelf care</b> can still read it.",
     "<b>An import no longer stops at twelve tags.</b> There was a cap of twelve and it counted the words a book already carried — so a book already holding twelve took on <i>nothing at all</i> from a file, in silence, and the row was struck off as dealt with, so running the import again could not bring them back. Everything a file offers lands now. A fic list can carry dozens of them, and a book will wear all of them.",
@@ -13191,7 +13255,7 @@ function groupsFor(list){
   const out=[];
   if(groupBy==="genre"){
     const map={},none=[];
-    list.forEach(b=>{const gs=b.genres||[];if(!gs.length)none.push(b);gs.forEach(g=>(map[g]=map[g]||[]).push(b));});
+    list.forEach(b=>{const gs=ownGenres(b);if(!gs.length)none.push(b);gs.forEach(g=>(map[g]=map[g]||[]).push(b));});
     Object.keys(map).sort((a,b)=>a.localeCompare(b)).forEach(k=>out.push({label:k,color:genres[k]||"#78716c",items:map[k]}));
     if(none.length)out.push({label:"No genre yet",color:"#a8a29e",items:none});
   }else if(groupBy==="author"){
@@ -22140,8 +22204,8 @@ function tagDupePairs(){
 function genreUsers(g){
   const gl=String(g).toLowerCase(),out=[];
   for(const b of books){
-    if((b.genres||[]).some(x=>String(x).toLowerCase()===gl))
-      out.push({id:b.id,en:"",title:b.title,in:"",gens:(b.genres||[])});
+    if(ownGenres(b).some(x=>String(x).toLowerCase()===gl))
+      out.push({id:b.id,en:"",title:b.title,in:"",gens:ownGenres(b)});
     if(isColl(b))for(const en of (b.entries||[]))
       if(entGenresDiffer(b,en)&&(en.genres||[]).some(x=>String(x).toLowerCase()===gl))
         out.push({id:b.id,en:en.id,title:en.title||"Untitled",in:b.title,gens:(en.genres||[])});
@@ -23030,10 +23094,10 @@ function renderSearchBody(){
      it does everywhere else — that is the whole point of giving it any. */
   const gcount={};
   {const bump=g=>gcount[g]=(gcount[g]||0)+1;
-   pool.forEach(b=>{(b.genres||[]).forEach(bump);
+   pool.forEach(b=>{ownGenres(b).forEach(bump);
      if(isColl(b))(b.entries||[]).forEach(en=>{if(entGenresDiffer(b,en))(en.genres||[]).forEach(bump);});});}
   const genreRowsWhere=test=>pool.flatMap(b=>[
-    ...(test(b.genres||[])?[b]:[]),
+    ...(test(ownGenres(b))?[b]:[]),
     ...(isColl(b)?(b.entries||[]).filter(en=>entGenresDiffer(b,en)&&test(en.genres||[])).map(en=>storyProxy(b,en)):[])
   ]);
   const allG=Object.keys(genres).sort((a,b)=>a.localeCompare(b));
