@@ -3109,6 +3109,13 @@ html[data-phone="1"] .hname{gap:8px}
 .qfbit.got{background:#ccfbf1;border-color:#5eead4;color:#0f766e;font-weight:600}
 [data-theme="dark"] .qfbit.got{background:#134e4a;border-color:#0f766e;color:#5eead4}
 /* the Decorate round's bar under its three ticks: how far to a decorated page */
+/* ---- 🐉 the dragon — see placeDragon ---- */
+.dragonfield{position:absolute;top:0;bottom:0;left:calc(50% - 50vw);right:calc(50% - 50vw);
+  overflow:hidden;pointer-events:none;z-index:0}
+html[data-dragon="0"] .dragonfield{display:none}
+.dragon{position:absolute;width:calc(700px*var(--drsz,1));height:calc(420px*var(--drsz,1));
+  opacity:var(--drop,.55);color:var(--teal)}
+.dragon svg,.dragon img{display:block;width:100%;height:100%;object-fit:contain}
 /* the standing offer above a collection's contents — see renderEntries */
 .entself{border:1px solid #fcd34d;background:var(--warn-bg);color:var(--ink);border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:13.5px}
 [data-theme="dark"] .entself{border-color:#92400e}
@@ -3424,6 +3431,7 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0&&!/[?&]db
 <input type="file" id="gartFile" accept="image/*" hidden>
 <input type="file" id="libArtFile" accept="image/*" multiple hidden>
 <input type="file" id="avatarFile" accept="image/*" hidden>
+<input type="file" id="dragonFile" accept="image/*" hidden>
 
 <script>
 /* =============== constants & helpers =============== */
@@ -7429,6 +7437,7 @@ async function initSync(){
     usage=(us&&us.v&&us.v.byView)?us.v:{since:Date.now(),byView:{},days:{}};
   }catch(e){usage={since:Date.now(),byView:{},days:{}};}
   await loadAvatar();   /* before the first paint, or the badge draws the owl and then swaps */
+  await loadDragon();
   usageWeed();
   useView=null;useT0=Date.now();
   /* the medal stamps and the two streaks; the first meeting with this build
@@ -7801,6 +7810,7 @@ function applyWidthClass(){
 }
 function applyLook(){
   document.documentElement.setAttribute("data-scrap",scrapOn()?"1":"0");
+  applyDragon();
   /* The text size is a zoom on #app, and the few things that live OUTSIDE #app
      — the round jump buttons in the corner, chiefly — never saw it. At 210%
      everything on the page was drawn a little over twice its size and those
@@ -8441,6 +8451,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-09.7",lines:[
+    "<b>🐉 A dragon on the Library.</b> Off until you switch it on in ⚙ Settings, under <i>You, in the corner</i>: its head holds the top right corner of the list and its body runs behind the rows, showing in the margins and in the gaps between them. Two sliders — size and strength — and two dragons: the one in the box, drawn in lines in the shelf's own teal, and <b>your own picture</b>, pasted in with one button and kept on this device like the badge's picture. A picture with a see-through background sits best. On a phone the list has no margins, so the phone sees the head and little else — the tail is for the computer's screen."]},
   {v:"2026-09-09.6",lines:[
     "<b>Where a book's genre colours go is yours to choose — seven places.</b> Under the journal look in ⚙ Settings, beside the colour strength: <b>Left edge</b> (what it has been), <b>Both edges</b>, <b>A ribbon under the bar</b>, <b>The whole page, faintly</b>, <b>Index tabs on the right</b> — one per genre, named — <b>Only the rules</b> (the title's underline, the section headings, the blurb's rail) and <b>The page on a card</b> with a coloured top. The same three colours, the same slider; the choice is kept per device like the rest of the look, and none of them moves anything on the page — the card is drawn under the page, not around it, so your pictures stay exactly where you put them."]},
   {v:"2026-09-09.5",lines:[
@@ -15139,6 +15151,7 @@ function renderLibrary(){
   }
   wireOpen(m,true);
   hydrateCovers(m);
+  placeDragon(m);
 }
 
 /* ---- loose pictures on the library page ---- */
@@ -15271,6 +15284,15 @@ q("#avatarFile").addEventListener("change",async e=>{
   try{data=await compressImage(f,AVATAR_MAX,.85);}
   catch(err){alert("That picture couldn't be read.");return;}
   await setAvatar(data);
+  if(view==="settings")renderSettings();
+});
+q("#dragonFile").addEventListener("change",async e=>{
+  const f=e.target.files[0];e.target.value="";
+  if(!f)return;
+  let data;
+  try{data=await compressImage(f,DRAGON_MAX,.85);}
+  catch(err){alert("That picture couldn't be read.");return;}
+  await setDragonPic(data);
   if(view==="settings")renderSettings();
 });
 /* paste a picture straight onto the library page */
@@ -17162,6 +17184,83 @@ function refreshBadge(){
 }
 async function loadAvatar(){
   try{const r=await dbGet("covers","__avatar");avatarPic=(r&&r.data)||"";}catch(e){avatarPic="";}
+}
+/* ---- 🐉 the dragon on the Library ----
+   A picture that holds the top right corner of the list and runs BEHIND the
+   rows, so it shows in the margins and in the gaps between them. It lives in
+   .dragonfield, an absolutely placed box that spans the whole window's width
+   over #main and clips (overflow hidden), so the body can trail off either
+   side without the page ever growing a horizontal scroll — the 7px rule. Rows
+   are position:relative with a solid ground and come after it in the DOM, so
+   they paint over it; headings and hints do not, and it shows through them.
+   Two dragons: the one drawn below in lines, in the shelf's own teal, and any
+   picture of your own — stored on this device like the badge's picture, never
+   sent anywhere. Size and strength are two CSS variables applyDragon writes,
+   so the sliders in Settings move a Library open in another tab at once. */
+let dragonPic="";
+const DRAGON_MAX=1400;
+const dragonCfg=()=>Object.assign({on:false,size:100,strength:55,own:false},settings.dragon||{});
+async function loadDragon(){
+  try{const r=await dbGet("covers","__dragon");dragonPic=(r&&r.data)||"";}catch(e){dragonPic="";}
+}
+async function setDragonPic(data){
+  try{
+    if(data)await dbPut("covers",{id:"__dragon",data});
+    else await dbDel("covers","__dragon");
+  }catch(e){alert("That picture couldn't be saved — storage may be full.");return;}
+  dragonPic=data||"";
+  const c=dragonCfg();c.own=!!data;settings.dragon=c;saveSettings();
+}
+function applyDragon(){
+  const c=dragonCfg(),de=document.documentElement;
+  de.setAttribute("data-dragon",c.on?"1":"0");
+  de.style.setProperty("--drsz",(Math.max(50,Math.min(200,+c.size||100))/100).toFixed(2));
+  de.style.setProperty("--drop",(Math.max(10,Math.min(100,+c.strength||55))/100).toFixed(2));
+}
+/* drawn in lines: a long serpent from the head at top right, down the right
+   side, sweeping left behind the rows; a dorsal fin, whiskers, a claw on the
+   list's corner. currentColor, so it wears the theme's teal. 700×420. */
+const DRAGON_SVG=`<svg viewBox="0 0 700 420" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+ <path d="M620 70 C 690 110, 690 190, 640 230 C 590 270, 560 300, 600 330 C 640 360, 560 405, 440 395 C 320 385, 260 330, 170 340 C 90 350, 40 320, 20 290" stroke-width="26" opacity=".35"/>
+ <path d="M620 70 C 690 110, 690 190, 640 230 C 590 270, 560 300, 600 330 C 640 360, 560 405, 440 395 C 320 385, 260 330, 170 340 C 90 350, 40 320, 20 290" stroke-width="14" stroke="var(--card)" opacity=".7"/>
+ <path d="M620 70 C 690 110, 690 190, 640 230 C 590 270, 560 300, 600 330 C 640 360, 560 405, 440 395 C 320 385, 260 330, 170 340 C 90 350, 40 320, 20 290" stroke-width="3" stroke-dasharray="1 9"/>
+ <path d="M660 120 l14 -22 l6 26 M672 170 l18 -16 l0 26 M655 215 l22 -8 l-8 24 M598 262 l20 -4 l-4 22 M600 330 l24 4 l-14 18 M520 400 l6 -22 l14 18 M380 385 l2 -22 l16 16 M270 340 l0 -22 l16 16 M170 340 l0 -22 l16 16" stroke-width="3"/>
+ <path d="M620 70 C 590 40, 560 40, 545 60 C 535 72, 540 92, 560 98 C 585 105, 612 100, 622 88 Z" stroke-width="4" fill="var(--card)"/>
+ <path d="M548 62 L 520 30 M556 58 L 540 22 M600 46 L 612 10 M610 50 L 636 22" stroke-width="4"/>
+ <path d="M545 80 C 520 88, 505 105, 500 125 M547 86 C 530 100, 522 118, 522 138" stroke-width="3"/>
+ <circle cx="588" cy="66" r="5" fill="currentColor"/>
+ <path d="M560 96 c -6 10, -14 14, -24 12" stroke-width="3"/>
+ <path d="M655 235 c -14 10, -24 26, -22 44 M640 250 c -6 14, -6 26, 0 36 M668 250 c 4 14, 2 28, -8 38" stroke-width="4"/>
+</svg>`;
+/* Put the dragon on a freshly drawn Library. The field is first in #main so
+   every row paints over it; the dragon's own place is worked out from the
+   first row: its head (the top right of the drawing) stands over the list's
+   right edge, a little above the first row, and the body runs left from there.
+   Layout pixels throughout (offsetWidth, not getBoundingClientRect), because
+   the style values are layout pixels too and #app is zoomed. */
+function placeDragon(m){
+  const old=q("#dragonField",m);if(old)old.remove();
+  const c=dragonCfg();if(!c.on)return;
+  const first=q(".row,.gcov",m);if(!first)return;
+  const field=document.createElement("div");
+  field.id="dragonField";field.className="dragonfield";
+  field.innerHTML=`<div class="dragon">${c.own&&dragonPic?`<img src="${dragonPic}" alt="">`:DRAGON_SVG}</div>`;
+  m.prepend(field);
+  /* The field spans the WINDOW, worked out here rather than with 50vw in the
+     stylesheet: #app is zoomed for the text size, and a vw inside it is a vw
+     times the zoom — measured 1472px of field on a 1280px window at 115%. The
+     window's edges in layout pixels are the visual edges divided by the zoom. */
+  const z=parseFloat(getComputedStyle(q("#app")).zoom)||1;
+  const mr=m.getBoundingClientRect(),listLeft=mr.left/z;
+  /* a window that reports no width (a tab not yet composited) keeps the
+     stylesheet's own 50vw box rather than a field zero pixels wide */
+  if(innerWidth>0){field.style.left=(-listLeft)+"px";field.style.right="auto";field.style.width=(innerWidth/z)+"px";}
+  const s=Math.max(50,Math.min(200,+c.size||100))/100,W=700*s;
+  const d=field.firstElementChild;
+  /* the list's right edge, in the field's own coordinates */
+  const listRight=listLeft+m.offsetWidth;
+  d.style.left=Math.round(listRight-W+110*s)+"px";
+  d.style.top=Math.round(Math.max(0,first.offsetTop-95*s))+"px";
 }
 /* 256 pixels is plenty for a 52-pixel circle at any screen's density, and it
    keeps a phone photo from putting three megabytes into the picture store for
@@ -19169,6 +19268,20 @@ function renderSettings(){
             const have=questLevel()>=need,on=badgeFrame()[0]===k;
             return `<button class="pill ${on?"on":""}" data-bfr="${k}" ${have?"":"disabled"} title="${have?(need?"Earned at level "+need:"No frame at all"):"Reach level "+need+" and it is yours"}">${g?g+" ":""}${esc(l)}${have?"":" · Lv "+need}</button>`;}).join("")}</div>
         </div>
+        <!-- the dragon on the Library: see placeDragon -->
+        ${(()=>{const c=dragonCfg();return `<div class="hrow2" style="margin-top:12px;flex-wrap:wrap;align-items:flex-start;flex-direction:column;gap:4px">
+          <label class="hrow2" style="font-size:13px;gap:6px"><input type="checkbox" id="drChk" ${c.on?"checked":""}> 🐉 A dragon on the Library</label>
+          <span class="none" style="font-size:12px">Its head holds the top corner of the list and its body runs behind the rows, showing in the margins and the gaps between them. On a phone the list has no margins, so the phone sees the head and little else. The one in the box is drawn in lines; <b>your own picture stays on this device</b>, like the badge's, and one with a see-through background (a PNG) sits best.</span>
+          <div class="opac" style="margin-top:4px">Size
+            <input type="range" id="drSz" min="50" max="200" step="5" value="${c.size}">
+            <b id="drSzV" style="width:46px;text-align:right">${c.size}%</b></div>
+          <div class="opac" style="margin-top:4px">Strength
+            <input type="range" id="drOp" min="10" max="100" step="5" value="${c.strength}">
+            <b id="drOpV" style="width:46px;text-align:right">${c.strength}%</b></div>
+          <div class="hrow2" style="margin-top:5px">
+            <button class="btn" id="drPick">${dragonPic?"🖼 Change the picture…":"🖼 Use my own picture…"}</button>
+            ${dragonPic?`<button class="btn" id="drDrawn">✎ Back to the drawn one</button>`:""}</div>
+        </div>`;})()}
         <!-- the owl, and how often it is allowed to speak -->
         <div class="hrow2" style="margin-top:12px;flex-wrap:wrap;align-items:flex-start;flex-direction:column;gap:4px">
           <span class="lbl" style="margin:0">🦉 The owl</span>
@@ -19395,6 +19508,19 @@ function wireSettings(m){
    {const pick=q("#avPick",m),drop=q("#avDrop",m);
     if(pick)pick.onclick=()=>q("#avatarFile").click();
     if(drop)drop.onclick=async()=>{await setAvatar("");renderSettings();};
+    /* the dragon: on/off, the two sliders (live, like the sticker sliders),
+       and the picture */
+    const dset=(k,v)=>{const c=dragonCfg();c[k]=v;settings.dragon=c;saveSettings();applyDragon();};
+    {const dc=q("#drChk",m);if(dc)dc.onchange=e=>dset("on",e.target.checked);
+     const sz=q("#drSz",m),op=q("#drOp",m);
+     if(sz){sz.oninput=()=>{const v=q("#drSzV",m);if(v)v.textContent=sz.value+"%";
+        document.documentElement.style.setProperty("--drsz",(sz.value/100).toFixed(2));};
+       sz.onchange=()=>dset("size",+sz.value);}
+     if(op){op.oninput=()=>{const v=q("#drOpV",m);if(v)v.textContent=op.value+"%";
+        document.documentElement.style.setProperty("--drop",(op.value/100).toFixed(2));};
+       op.onchange=()=>dset("strength",+op.value);}
+     const dp=q("#drPick",m);if(dp)dp.onclick=()=>q("#dragonFile").click();
+     const dd=q("#drDrawn",m);if(dd)dd.onclick=async()=>{await setDragonPic("");renderSettings();};}
     qa("[data-bfr]",m).forEach(b=>b.onclick=()=>{
       settings.badgeFrame=b.dataset.bfr;saveSettings();refreshBadge();renderSettings();});
     {const bp=q("#badgePh",m);
