@@ -3128,6 +3128,8 @@ html[data-dragon="0"] .dragonfield{display:none}
 .dragon{position:absolute;width:calc(700px*var(--drsz,1));height:calc(420px*var(--drsz,1));
   opacity:var(--drop,.55);color:var(--teal)}
 .dragon svg,.dragon img{display:block;width:100%;height:100%;object-fit:contain}
+.dragon.own{height:auto}
+.dragon.own img{height:auto}
 /* the standing offer above a collection's contents — see renderEntries */
 .entself{border:1px solid #fcd34d;background:var(--warn-bg);color:var(--ink);border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:13.5px}
 [data-theme="dark"] .entself{border-color:#92400e}
@@ -8473,6 +8475,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-09.13",lines:[
+    "<b>🐉 Your own dragon, made ready on the way in.</b> A picture on a plain flat background — the white a drawing tool hands you — has the background cut away as it arrives, so the dragon stands on its own behind the rows instead of bringing a pale box with it; a busy sky or a gradient is left as it is, and the note under the buttons says which happened. A picture already cut out is kept exactly as it is — it used to arrive on a white slab. It keeps its own shape rather than being fitted into the drawn dragon's wide frame, a small preview on a checkered ground shows what is stored, and <b>Size</b> now goes to 300% so a big dragon can reach down the list."]},
   {v:"2026-09-09.12",lines:[
     "<b>The editor's bar on a phone is one row too:</b> ‹ Library 🔎 ↶ ↷ Saved … ⋯ 👁 Done, with previous and next, ⚙ View, 📱 Fit and ✓ Save now behind the ⋯, exactly as the reading page's bar folds. The formatting strip — bold, colours, ＋ Add, 🏷 Tag — is left as it is; that one you work in.",
     "<b>And the scrapbook has a way out on its own strip: ✓ Done.</b> The only exit was the 🖌 Scrapbook button that opened it — a toggle that never said so — and on a phone that button now sits behind the bar's ⋯. Done puts the scrapbook away and leaves everything where you placed it."]},
@@ -15329,10 +15333,13 @@ q("#avatarFile").addEventListener("change",async e=>{
 q("#dragonFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";
   if(!f)return;
-  let data;
-  try{data=await compressImage(f,DRAGON_MAX,.85);}
+  let got;
+  try{got=await dragonPrepare(f);}
   catch(err){alert("That picture couldn't be read.");return;}
-  await setDragonPic(data);
+  await setDragonPic(got.data);
+  dragonNote=got.cut?`The background was cut away — about ${got.cut}% of the picture — so the dragon stands on its own.`
+    :(got.clear?"The picture already had a see-through background, so it was left as it was."
+      :"No flat background was found to cut away — a busy sky or gradient stays. A picture on plain white, or one already cut out, sits best.");
   if(view==="settings")renderSettings();
 });
 /* paste a picture straight onto the library page */
@@ -17255,10 +17262,72 @@ async function setDragonPic(data){
   dragonPic=data||"";
   const c=dragonCfg();c.own=!!data;settings.dragon=c;saveSettings();
 }
+/* ---- a picture of your own, made ready ----
+   compressImage writes JPEG, which cannot hold transparency — so a dragon
+   already cut out would have arrived on a black or white slab. This resizes
+   as PNG instead, and then, where the picture's edges are solid (a Gemini
+   dragon on plain white, a screenshot with its sky), runs the scrapbook's
+   own cutOutImage: the edge colour flooded inward and cleared, the empty
+   margin trimmed. Edges already see-through are left alone. The tolerance is
+   the scrapbook's default; a busy background will not cut cleanly, and the
+   note under the buttons says which of the three happened. */
+let dragonNote="";
+const DRAGON_TOL=32;
+function pngResize(file,maxDim){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>{const img=new Image();
+      img.onload=()=>{let{width,height}=img;
+        if(width>maxDim||height>maxDim){const s=maxDim/Math.max(width,height);width=Math.round(width*s);height=Math.round(height*s);}
+        const c=document.createElement("canvas");c.width=width;c.height=height;
+        c.getContext("2d").drawImage(img,0,0,width,height);
+        res(c.toDataURL("image/png"));};
+      img.onerror=rej;img.src=r.result;};
+    r.onerror=rej;r.readAsDataURL(file);});
+}
+/* The picture's edge, read twice: how much of it is solid (a see-through
+   picture has none to cut), and how much of it is ONE colour — the share of
+   edge pixels within the tolerance of the edge's mean. A flat white edge is
+   1.0; a gradient sky measured well under 0.9 and, left unguarded, the flood
+   fill ate 31% of a test picture's sky and stopped in the middle of it. */
+function edgeProfile(dataURL){
+  return new Promise((res,rej)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const w=img.naturalWidth,h=img.naturalHeight;
+      const c=document.createElement("canvas");c.width=w;c.height=h;
+      const ctx=c.getContext("2d",{willReadFrequently:true});ctx.drawImage(img,0,0);
+      let d;try{d=ctx.getImageData(0,0,w,h).data;}catch(e){rej(e);return;}
+      const px=[];
+      const at=(x,y)=>{const p=(y*w+x)*4;px.push([d[p],d[p+1],d[p+2],d[p+3]]);};
+      for(let x=0;x<w;x+=2){at(x,0);at(x,h-1);}
+      for(let y=0;y<h;y+=2){at(0,y);at(w-1,y);}
+      const n=px.length||1,solid=px.filter(p=>p[3]>250);
+      const m=[0,1,2].map(i=>solid.reduce((s,p)=>s+p[i],0)/(solid.length||1));
+      const T=DRAGON_TOL*DRAGON_TOL*3;
+      const flat=solid.filter(p=>{const a=p[0]-m[0],b=p[1]-m[1],g=p[2]-m[2];return a*a+b*b+g*g<=T;}).length/(solid.length||1);
+      res({solid:solid.length/n,flat});
+    };
+    img.onerror=rej;img.src=dataURL;
+  });
+}
+async function dragonPrepare(file){
+  const png=await pngResize(file,DRAGON_MAX);
+  const e=await edgeProfile(png);
+  if(e.solid<0.5)return {data:png,cut:0,clear:true};
+  if(e.flat<0.9)return {data:png,cut:0,clear:false};
+  try{
+    const r=await cutOutImage(png,DRAGON_TOL,true);
+    /* a cut that took almost nothing found no flat background; keep the
+       picture whole rather than a version with a few stray holes */
+    if((r.pct||0)>=2)return {data:r.data,cut:r.pct,clear:false};
+  }catch(e){}
+  return {data:png,cut:0,clear:false};
+}
 function applyDragon(){
   const c=dragonCfg(),de=document.documentElement;
   de.setAttribute("data-dragon",c.on?"1":"0");
-  de.style.setProperty("--drsz",(Math.max(50,Math.min(200,+c.size||100))/100).toFixed(2));
+  de.style.setProperty("--drsz",(Math.max(50,Math.min(300,+c.size||100))/100).toFixed(2));
   de.style.setProperty("--drop",(Math.max(10,Math.min(100,+c.strength||55))/100).toFixed(2));
 }
 /* drawn in lines: a long serpent from the head at top right, down the right
@@ -17288,7 +17357,11 @@ function placeDragon(m){
   const first=q(".row,.gcov",m);if(!first)return;
   const field=document.createElement("div");
   field.id="dragonField";field.className="dragonfield";
-  field.innerHTML=`<div class="dragon">${c.own&&dragonPic?`<img src="${dragonPic}" alt="">`:DRAGON_SVG}</div>`;
+  /* a picture of your own keeps its own shape (.own: the height follows the
+     width), where the drawing is 700×420; a tall dragon in the drawing's frame
+     shrank to a third of the width the slider promised */
+  const own=c.own&&dragonPic;
+  field.innerHTML=`<div class="dragon${own?" own":""}">${own?`<img src="${dragonPic}" alt="">`:DRAGON_SVG}</div>`;
   m.prepend(field);
   /* The field spans the WINDOW, worked out here rather than with 50vw in the
      stylesheet: #app is zoomed for the text size, and a vw inside it is a vw
@@ -17299,7 +17372,7 @@ function placeDragon(m){
   /* a window that reports no width (a tab not yet composited) keeps the
      stylesheet's own 50vw box rather than a field zero pixels wide */
   if(innerWidth>0){field.style.left=(-listLeft)+"px";field.style.right="auto";field.style.width=(innerWidth/z)+"px";}
-  const s=Math.max(50,Math.min(200,+c.size||100))/100,W=700*s;
+  const s=Math.max(50,Math.min(300,+c.size||100))/100,W=700*s;
   const d=field.firstElementChild;
   /* the list's right edge, in the field's own coordinates */
   const listRight=listLeft+m.offsetWidth;
@@ -19324,9 +19397,9 @@ function renderSettings(){
         <!-- the dragon on the Library: see placeDragon -->
         ${(()=>{const c=dragonCfg();return `<div class="hrow2" style="margin-top:12px;flex-wrap:wrap;align-items:flex-start;flex-direction:column;gap:4px">
           <label class="hrow2" style="font-size:13px;gap:6px"><input type="checkbox" id="drChk" ${c.on?"checked":""}> 🐉 A dragon on the Library</label>
-          <span class="none" style="font-size:12px">Its head holds the top corner of the list and its body runs behind the rows, showing in the margins and the gaps between them. On a phone the list has no margins, so the phone sees the head and little else. The one in the box is drawn in lines; <b>your own picture stays on this device</b>, like the badge's, and one with a see-through background (a PNG) sits best.</span>
+          <span class="none" style="font-size:12px">Its head holds the top corner of the list and its body runs behind the rows, showing in the margins and the gaps between them. On a phone the list has no margins, so the phone sees the head and little else. The one in the box is drawn in lines. <b>Your own picture stays on this device</b>, like the badge's, keeps its own shape, and a plain flat background — white, say — is cut away on the way in so the dragon stands on its own; a busy sky is not.</span>
           <div class="opac" style="margin-top:4px">Size
-            <input type="range" id="drSz" min="50" max="200" step="5" value="${c.size}">
+            <input type="range" id="drSz" min="50" max="300" step="5" value="${c.size}">
             <b id="drSzV" style="width:46px;text-align:right">${c.size}%</b></div>
           <div class="opac" style="margin-top:4px">Strength
             <input type="range" id="drOp" min="10" max="100" step="5" value="${c.strength}">
@@ -19334,6 +19407,8 @@ function renderSettings(){
           <div class="hrow2" style="margin-top:5px">
             <button class="btn" id="drPick">${dragonPic?"🖼 Change the picture…":"🖼 Use my own picture…"}</button>
             ${dragonPic?`<button class="btn" id="drDrawn">✎ Back to the drawn one</button>`:""}</div>
+          ${dragonNote?`<span class="hint" style="margin-top:4px">${esc(dragonNote)}</span>`:""}
+          ${dragonPic?`<img src="${dragonPic}" alt="" style="max-width:220px;max-height:120px;margin-top:6px;border:1px dashed var(--line);border-radius:8px;background:repeating-conic-gradient(#0000 0 25%,#8882 0 50%) 0 0/16px 16px">`:""}
         </div>`;})()}
         <!-- the owl, and how often it is allowed to speak -->
         <div class="hrow2" style="margin-top:12px;flex-wrap:wrap;align-items:flex-start;flex-direction:column;gap:4px">
