@@ -7236,11 +7236,35 @@ const SYNC_BATCH=25;
    a book's own cover was queued after it anyway). A delete of any kind is a
    wall: a book re-added after a queued delete of itself must never jump the
    queue, or the delete would land second and take the fresh upload with it. */
+/* ┌─ A BOOK MUST NEVER OVERTAKE ITS OWN PICTURE ──────────────────────────────┐
+   │ This used to gather book rows across the covers sitting between them, on   │
+   │ the reasoning that "a book's own cover was queued after it anyway". That    │
+   │ is not true: setting a cover enqueues the picture and THEN saves the book,  │
+   │ so the cover is in front — and hoisting the row past it uploaded the row    │
+   │ first.                                                                      │
+   │ MEASURED, from their two readouts. The cloud's book row for Rainbow Garden  │
+   │ was written 16:45:59 and the cloud's cover file 16:46:23 — the row went up  │
+   │ twenty-four seconds ahead of the picture. Their phone pulled inside that    │
+   │ window (it records the row at 16:45:59), was told the book had changed, and │
+   │ dutifully downloaded the cover AS IT THEN WAS: the old 12.3 KB one. The     │
+   │ row never changes again, syncBookAssets only runs for rows that changed, so │
+   │ the phone kept the stale picture for ever — 12.3 KB against the computer's  │
+   │ and the cloud's 30.9, with every other number in agreement.                 │
+   │ So a book waits behind any cover or picture of its own that is still in the │
+   │ queue. It is passed over rather than made a wall: other books still batch,  │
+   │ and the flush runs the head op singly when a batch cannot form, which is    │
+   │ what sends the picture up first.                                            │
+   └────────────────────────────────────────────────────────────────────────────┘ */
 function collectBookBatch(){
-  const out=[];
+  const out=[],waiting=new Set();
   for(const o of SYNC.queue){
     if(/Del$/.test(o.kind))break;
-    if(o.kind==="book"){out.push(o);if(out.length>=SYNC_BATCH)break;}
+    if(o.kind==="cover"){waiting.add(o.id);continue;}
+    if(o.kind==="img"){waiting.add(String(o.key||"").split("|")[0]);continue;}
+    if(o.kind==="book"){
+      if(waiting.has(o.id))continue;
+      out.push(o);if(out.length>=SYNC_BATCH)break;
+    }
   }
   return out;
 }
@@ -8475,15 +8499,81 @@ async function coverDiag(){
   L.push("Run this on BOTH devices and compare line 2 and line 4. Same fp = same picture.");
   covDiagPanel(L.join("\n"));
 }
+/* how many real bytes a data URL's base64 half carries — the number the cloud
+   reports for its own file, so the two can be compared without downloading
+   twenty-five megabytes to find out */
+const covRealBytes=s=>{
+  const t=covBytes(s);if(t==null)return null;
+  const pad=t.slice(-2)==="=="?2:t.slice(-1)==="="?1:0;
+  return Math.floor(t.length*3/4)-pad;
+};
+/* ---- FETCH THE CLOUD'S COPY FOR ONE BOOK ----
+   The way back for a cover that went stale before the queue was mended. It
+   takes the cloud's picture as the true one, which is right here: the shared
+   copy is what both devices agreed on, and anything this device made and has
+   not sent is still sitting in the queue — checked, and skipped, below. */
+async function coverPullOne(id){
+  if(!(SYNC.on&&SYNC.user&&SYNC.supa&&navigator.onLine))return false;
+  const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(id));
+  if(error||!data)return false;
+  const durl=await blobToDataURL(data);
+  await dbPut("covers",{id,data:durl});
+  coverCache.set(id,durl);SYNC.triedCover.delete(id);
+  return true;
+}
+/* ---- AND FOR THE WHOLE SHELF, IN ONE LISTING ----
+   The mend above stops it happening again; it cannot repair what has already
+   gone wrong, and if it happened to one cover it happened to any that were
+   set while the other device was pulling. Asking the cloud about 798 books
+   one at a time would be 798 requests — one listing of the folder gives every
+   file's SIZE, which is enough to tell a 12.3 KB picture from a 30.9 KB one,
+   and only the ones that disagree are downloaded. */
+async function coverSweep(say){
+  if(!(SYNC.on&&SYNC.user&&SYNC.supa))return {err:"This device is not syncing, so there is no cloud copy to compare with."};
+  if(!navigator.onLine)return {err:"Offline — the cloud cannot be asked just now."};
+  const uid=SYNC.user.id,cloud=new Map();
+  say("Asking the cloud what it has…");
+  for(let off=0;off<40000;off+=1000){
+    const {data,error}=await SYNC.supa.storage.from("shelf").list(uid+"/covers",{limit:1000,offset:off});
+    if(error)return {err:"The cloud's list could not be read: "+(error.message||error)};
+    (data||[]).forEach(f=>{
+      const nm=String(f.name||""),id=nm.replace(/\.jpg$/i,"");
+      if(id&&f.metadata&&f.metadata.size!=null)cloud.set(id,f.metadata.size);});
+    if(!data||data.length<1000)break;
+  }
+  /* a cover this device has made and not yet sent is NOT behind — it is ahead,
+     and taking the cloud's copy would throw the new one away */
+  const pending=new Set(SYNC.queue.filter(o=>o.kind==="cover").map(o=>o.id));
+  const mine=books.map(b=>b.id).filter(id=>cloud.has(id)&&!pending.has(id));
+  const off=[];
+  for(let i=0;i<mine.length;i++){
+    if(i%25===0)say(`Checking ${i+1} of ${mine.length}…`);
+    const id=mine[i];
+    let local=null;try{const r=await dbGet("covers",id);local=(r&&r.data)||null;}catch(e){}
+    const n=covRealBytes(local);
+    /* no copy here at all counts as behind, and so does a different size */
+    if(n==null||n!==cloud.get(id))off.push(id);
+  }
+  if(!off.length)return {checked:mine.length,fixed:0,failed:0,skipped:pending.size};
+  let fixed=0,failed=0;
+  for(let i=0;i<off.length;i++){
+    say(`Fetching ${i+1} of ${off.length}…`);
+    if(await coverPullOne(off[i]))fixed++;else failed++;
+  }
+  bumpCovers();
+  return {checked:mine.length,fixed,failed,skipped:pending.size};
+}
 function covDiagPanel(txt){
   if(panelOpen("covDiag"))return;
   const wrap=document.createElement("div");
   wrap.id="covDiag";wrap.className="ratepanel";
   wrap.innerHTML=`<div class="axcbody"><b style="font-size:13px">🖼 This cover, here and in the cloud</b>
       <div class="hint" style="margin:2px 0 8px">Nothing here was changed. Run it on both devices and compare the <b>fp</b> lines — the same fp means the same picture.</div>
-      <pre class="covdiagpre">${esc(txt)}</pre></div>
+      <pre class="covdiagpre">${esc(txt)}</pre>
+      <div class="hint" id="cdSay" style="margin:8px 0 0"></div></div>
     <div class="hrow2 axcfoot">
       <button class="btn pri" id="cdCopy">⧉ Copy all of it</button>
+      <button class="btn" id="cdFix" title="Take the cloud's picture for every book on this device whose copy is a different size — one listing, then only the ones that disagree">🖼 Put every stale cover right</button>
       <button class="btn" id="cdX">Done</button>
     </div>`;
   document.body.appendChild(wrap);
@@ -8503,6 +8593,18 @@ function covDiagPanel(txt){
     }
     setTimeout(()=>{if(q("#cdCopy",wrap))btn.textContent="⧉ Copy all of it";},4000);
   };
+  {const fx=q("#cdFix",wrap),sayEl=q("#cdSay",wrap);
+   const say=t=>{if(document.contains(sayEl))sayEl.textContent=t;};
+   fx.onclick=async()=>{
+     fx.disabled=true;
+     let r;try{r=await coverSweep(say);}catch(e){r={err:String(e)};}
+     if(!document.contains(sayEl))return;
+     if(r.err)say(r.err);
+     else if(!r.fixed&&!r.failed)say(`Checked ${r.checked} — every one of them is the picture the cloud has.`);
+     else say(`Checked ${r.checked}. ${r.fixed} put right${r.failed?`, ${r.failed} could not be fetched`:""}${r.skipped?`, ${r.skipped} skipped because this device has not sent them yet`:""}. Open the book again to see it.`);
+     fx.disabled=false;
+     if(view!=="book")renderMain();
+   };}
 }
 /* Hover explains every button — on a screen with a mouse. On a phone nothing
    does, so the explanations also live in one place you can actually open.
@@ -8937,6 +9039,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-10.9",lines:[
+    "<b>Found it — and it was not a cache.</b> Your two readouts named it between them. Setting a cover puts the picture in the queue and then saves the book, so the picture is in front — but the queue was gathering book rows <i>across</i> the pictures sitting between them, on the assumption that a book's cover was always queued after it. So the row went up first. For Rainbow Garden the row was written at 16:45:59 and the picture at 16:46:23: <b>twenty-four seconds apart</b>. Your phone pulled inside that window, was told the book had changed, and fetched the cover as it then was — the old one. The row never changes again, and pictures are only fetched for rows that changed, so the phone kept the wrong picture for ever.",
+    "<b>A book now waits behind any picture of its own that is still queued.</b> It is passed over rather than made a wall, so other books still travel together and the picture goes up first. This cannot happen again.",
+    "<b>And there is a way back for the ones already wrong.</b> On the cover readout — <b>⚙ View → 🩺 Something looks wrong → 🖼 This cover</b> — there is now <b>🖼 Put every stale cover right</b>. It asks the cloud for its whole list of covers in one go, compares the size of each against this device's copy, and fetches only the ones that disagree. A cover you made here and have not sent yet is left alone; it is ahead of the cloud, not behind it."]},
   {v:"2026-09-10.8",lines:[
     "<b>🖼 A cover showing differently on two devices can now be asked about.</b> Open the book, then <b>⚙ View → 🩺 Something looks wrong → 🖼 This cover</b>. It asks the four places a cover can be — what is painted on the page, what this device has stored, what it is holding in memory, and what the cloud hands back <i>this second</i> — and prints a short fingerprint of each.",
     "<b>Run it on both devices and compare the fp lines.</b> The same fingerprint means the same picture; a different one says which device is behind, and the verdict at the bottom says it in words. ⧉ Copy all of it puts the whole readout on the clipboard.",
