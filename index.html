@@ -1577,6 +1577,16 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   #achXpCard .axcbody{flex:1 1 auto;min-height:0;overflow:auto}
   #achXpCard .axcfoot{flex:none;margin-top:12px;justify-content:center;
     border-top:1px solid var(--line);padding-top:10px}
+  /* the cover readout borrows the same shape: words that scroll, a foot that
+     does not — the Copy button is the whole point of it and must never be
+     below the fold */
+  #covDiag{display:flex;flex-direction:column;overflow:hidden;width:min(560px,calc(94vw/var(--uiz,1)))}
+  #covDiag .axcbody{flex:1 1 auto;min-height:0;overflow:auto}
+  #covDiag .axcfoot{flex:none;margin-top:10px;justify-content:center;
+    border-top:1px solid var(--line);padding-top:10px}
+  .covdiagpre{font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;
+    overflow-wrap:anywhere;margin:0;color:var(--ink);background:var(--bg);
+    border:1px solid var(--line);border-radius:9px;padding:9px 10px}
   /* the families panel opens from the Library palette AND from inside 🏷 Your
      tags, which is a full-screen sheet at z-index 420 — a plain .ratepanel at 60
      opened behind it and looked like a button that did nothing. It carries its
@@ -8344,12 +8354,155 @@ function wireSizeCtrl(){
      a bar that had run out of room, and neither is pressed once a month. */
   const m=q("#diagBtn");
   if(m)m.onclick=()=>openWordMenu("When something looks wrong",
-    "Neither of these changes anything — they only look, and copy what they find.",
+    "None of these changes anything — they only look, and copy what they find.",
     [["📐 What moved — the bar, the page and every picture, each time any of them changed","moved"],
-     ["🩺 What's covering this page — everything painted over it, and where it sits","over"]],
-    a=>{if(a==="moved")mwPanel();else if(a==="over")whatIsOver();});
+     ["🩺 What's covering this page — everything painted over it, and where it sits","over"],
+     /* only where there is a book to ask about — see coverDiag */
+     ...((view==="book"&&cur)?[["🖼 This cover — what is here, what is in the cloud, and whether they are the same picture","cover"]]:[])],
+    a=>{if(a==="moved")mwPanel();else if(a==="over")whatIsOver();else if(a==="cover")coverDiag();});
   /* the watchers go on whichever face has just been drawn */
   mwWatch();
+}
+/* ┌─ 🖼 THIS COVER, ON BOTH SIDES ────────────────────────────────────────────┐
+   │ Their report: a cover pasted and cropped on the computer, and the phone    │
+   │ still showing the old one. It cannot be reproduced from here — there is    │
+   │ one browser and one store — and the rule after four rounds of plausible    │
+   │ fixes for an import bug is that an instrument comes first. Two guesses at  │
+   │ where a twenty-second wait came from were also both wrong; timing the      │
+   │ calls found it in one.                                                     │
+   │ So this asks the four places a cover can be, on whichever device it is     │
+   │ run, and prints a FINGERPRINT of each so two devices' readouts can simply  │
+   │ be compared:                                                               │
+   │   1. what is painted on the page right now;                                │
+   │   2. what this device has in its own covers store;                         │
+   │   3. what is in memory (coverCache), which the page draws from;            │
+   │   4. what the cloud hands back when asked for it THIS SECOND, by exactly   │
+   │      the call syncBookAssets uses, so a cache between here and there is    │
+   │      measured rather than assumed.                                         │
+   │ Where those four disagree says which of them is behind, and the verdict    │
+   │ line says it in words. Nothing here writes anything.                       │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+/* THE PICTURE, NOT ITS LABEL. A data URL is "data:<type>;base64,<the bytes>",
+   and only the second half is the picture. The cloud's copy is rebuilt from a
+   downloaded blob, so its type is whatever the response said it was — hashing
+   the whole string made two identical pictures read as different the moment
+   the labels differed, which is exactly the false alarm this is meant to
+   settle. Measured on the stub before this: the same bytes, two fingerprints.
+   32-bit FNV, cheap enough on a 200KB string to run on a phone. */
+const covBytes=s=>{
+  if(s==null)return null;
+  const i=String(s).indexOf(",");
+  return i<0?String(s):String(s).slice(i+1);
+};
+function covFp(s){
+  const t=covBytes(s);
+  if(t==null)return "—";
+  let h=2166136261>>>0;
+  for(let i=0;i<t.length;i++){h^=t.charCodeAt(i);h=Math.imul(h,16777619)>>>0;}
+  return ("0000000"+h.toString(16)).slice(-8);
+}
+/* base64 carries three bytes in four characters, so this is the real size */
+const covKb=s=>{const t=covBytes(s);
+  return t==null?"—":(Math.round(t.length*0.75/102.4)/10).toFixed(1)+" KB";};
+async function coverDiag(){
+  const b=(view==="book"&&cur)?cur:null;
+  if(!b){alert("Open a book first — this looks at one book's cover.");return;}
+  const L=[];
+  const when=t=>t?new Date(+t).toLocaleString():"never";
+  L.push("🖼 COVER — "+(b.title||"Untitled"));
+  L.push("id "+b.id);
+  L.push("device: "+(navigator.userAgent.length>90?navigator.userAgent.slice(0,90)+"…":navigator.userAgent));
+  L.push("build "+(window.APP_VERSION||"?")+" · "+new Date().toLocaleString());
+  L.push("");
+  /* 1 — what is on the screen */
+  let screenSrc=null,screenNote="";
+  {const img=document.querySelector("#coverBox img,.vcover img,#vCover img");
+   const src=img&&img.getAttribute("src");
+   /* only a data: URL carries the picture itself. A blob: or http: one is a
+      handle, and fingerprinting it would compare two names rather than two
+      pictures — and then report a mismatch that is not one. */
+   if(!img)screenNote="no cover drawn on this page";
+   else if(!src)screenNote="an <img> with no source";
+   else if(src.slice(0,5)!=="data:")screenNote="drawn from "+src.split(":")[0]+": — not the picture itself, nothing to compare";
+   else screenSrc=src;}
+  L.push("1. on the page now   "+(screenSrc==null?("— "+screenNote):covKb(screenSrc)+"  fp "+covFp(screenSrc)));
+  /* 2 — this device's store */
+  let local=null;
+  try{const r=await dbGet("covers",b.id);local=(r&&r.data)||null;}catch(e){L.push("   (the covers store could not be read: "+e+")");}
+  L.push("2. in this device    "+covKb(local)+"  fp "+covFp(local));
+  /* 3 — what the page draws from */
+  const mem=coverCache.has(b.id)?coverCache.get(b.id):undefined;
+  L.push("3. in memory         "+(mem===undefined?"not held":covKb(mem))+"  fp "+(mem===undefined?"—":covFp(mem)));
+  L.push("");
+  L.push("book's coverV  "+when(b.coverV)+"   modified "+when(b.modified));
+  L.push("last seen from cloud "+when(SYNC.seen&&SYNC.seen[b.id]));
+  L.push("");
+  /* 4 — the cloud, asked now, by the app's own road */
+  let cloud=null,cloudNote="";
+  if(!(SYNC.on&&SYNC.user&&SYNC.supa)){cloudNote="not syncing on this device — nothing to compare with";}
+  else if(!navigator.onLine){cloudNote="offline — the cloud could not be asked";}
+  else{
+    try{
+      const {data:rows}=await SYNC.supa.from("books").select("id,modified").eq("user_id",SYNC.user.id).eq("id",b.id);
+      const cm=rows&&rows[0]?rows[0].modified:null;
+      L.push("cloud's book row     modified "+when(cm)+(cm&&b.modified&&cm>b.modified?"   ← NEWER than this device":""));
+    }catch(e){L.push("cloud's book row     could not be read: "+e);}
+    try{
+      const {data:ls}=await SYNC.supa.storage.from("shelf").list(SYNC.user.id+"/covers",{search:b.id+".jpg",limit:1});
+      const f=ls&&ls[0];
+      L.push("cloud's file         "+(f?((f.metadata&&f.metadata.size!=null?Math.round(f.metadata.size/102.4)/10+" KB":"?")
+        +"  written "+(f.updated_at||f.created_at||"?")+(f.metadata&&f.metadata.eTag?"  eTag "+String(f.metadata.eTag).replace(/"/g,""):"")):"no file there at all"));
+    }catch(e){L.push("cloud's file         could not be listed: "+e);}
+    try{
+      const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(b.id));
+      if(error)cloudNote="the download failed: "+(error.message||error);
+      else cloud=await blobToDataURL(data);
+    }catch(e){cloudNote="the download threw: "+e;}
+  }
+  L.push("4. from the cloud now "+(cloud==null?("— "+cloudNote):covKb(cloud)+"  fp "+covFp(cloud)));
+  L.push("");
+  /* the verdict, in words */
+  const fS=covFp(screenSrc),fL=covFp(local),fC=cloud==null?null:covFp(cloud);
+  const say=[];
+  if(local==null&&fC)say.push("This device has NO cover stored, and the cloud has one — this device has never pulled it.");
+  else if(fC&&fL!==fC)say.push("The cloud's picture is NOT the one this device holds. This device is behind — it has not pulled the newer one, or something between here and the cloud is handing back an old copy.");
+  else if(fC&&fL===fC)say.push("This device and the cloud hold the SAME picture.");
+  if(local!=null&&screenSrc&&fS!==fL)say.push("What is drawn on the page is not what is stored — the page is painting from something stale.");
+  if(mem!==undefined&&local!=null&&covFp(mem)!==fL)say.push("What is held in memory is not what is stored, which is what every list on this screen draws from.");
+  if(fC&&fL===fC&&(!screenSrc||fS===fL))say.push("So if the other device shows a different picture, it is the OTHER device that is behind — run this there and compare the fingerprints.");
+  L.push("VERDICT: "+(say.length?say.join(" "):"nothing conclusive — copy this from both devices and compare the fp lines."));
+  L.push("");
+  L.push("Run this on BOTH devices and compare line 2 and line 4. Same fp = same picture.");
+  covDiagPanel(L.join("\n"));
+}
+function covDiagPanel(txt){
+  if(panelOpen("covDiag"))return;
+  const wrap=document.createElement("div");
+  wrap.id="covDiag";wrap.className="ratepanel";
+  wrap.innerHTML=`<div class="axcbody"><b style="font-size:13px">🖼 This cover, here and in the cloud</b>
+      <div class="hint" style="margin:2px 0 8px">Nothing here was changed. Run it on both devices and compare the <b>fp</b> lines — the same fp means the same picture.</div>
+      <pre class="covdiagpre">${esc(txt)}</pre></div>
+    <div class="hrow2 axcfoot">
+      <button class="btn pri" id="cdCopy">⧉ Copy all of it</button>
+      <button class="btn" id="cdX">Done</button>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close=dismissable(wrap);
+  q("#cdX",wrap).onclick=()=>close();
+  /* the same fallback the tuning card's copy has: a phone browser that refuses
+     the clipboard gets a box to select from rather than nothing at all */
+  q("#cdCopy",wrap).onclick=async()=>{
+    const btn=q("#cdCopy",wrap);
+    try{await navigator.clipboard.writeText(txt);btn.textContent="✓ Copied";}
+    catch(e){
+      const ta=document.createElement("textarea");
+      ta.value=txt;ta.style.cssText="position:fixed;left:8px;right:8px;top:15%;height:50%;z-index:999";
+      document.body.appendChild(ta);ta.select();
+      btn.textContent="Select it and copy";
+      setTimeout(()=>ta.remove(),20000);
+    }
+    setTimeout(()=>{if(q("#cdCopy",wrap))btn.textContent="⧉ Copy all of it";},4000);
+  };
 }
 /* Hover explains every button — on a screen with a mouse. On a phone nothing
    does, so the explanations also live in one place you can actually open.
@@ -8784,6 +8937,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-10.8",lines:[
+    "<b>🖼 A cover showing differently on two devices can now be asked about.</b> Open the book, then <b>⚙ View → 🩺 Something looks wrong → 🖼 This cover</b>. It asks the four places a cover can be — what is painted on the page, what this device has stored, what it is holding in memory, and what the cloud hands back <i>this second</i> — and prints a short fingerprint of each.",
+    "<b>Run it on both devices and compare the fp lines.</b> The same fingerprint means the same picture; a different one says which device is behind, and the verdict at the bottom says it in words. ⧉ Copy all of it puts the whole readout on the clipboard.",
+    "It changes nothing — it only looks. This is deliberately an instrument rather than a fix: the fault has never happened on a screen I can watch, and the last time a bug like that was answered with a likely-looking mend it took four rounds and never worked. One reading from each device should end it."]},
   {v:"2026-09-10.7",lines:[
     "<b>🐉 The dragon is on every tab now, not just the Library.</b> Today, Challenges, Achievements, Search, Insights, Quotes, History, Shelf care and Settings — it runs behind the cards and the rows on all of them, showing in the margins and the gaps exactly as it did on the shelf.",
     "<b>And it is reachable from wherever you are:</b> ⚙ in the corner, beside the text size, has <b>🐉 On/Off</b> and <b>⋯ Place</b>. The Library keeps its own 🐉 Place beside ☑ Select books.",
