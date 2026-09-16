@@ -4150,7 +4150,7 @@ const surnameOf=a=>{a=String(a||"").trim();if(!a)return"";
    as typed, and if this splits it wrongly the whole string is still there to
    read and the first chip still finds the book.
    The comma is the hard part, because half of every import writes people
-   surname-first â "Lewis, C.S." is one man, not two. So a lone comma followed
+   surname-first — "Lewis, C.S." is one man, not two. So a lone comma followed
    by initials or by a single short word is left alone; a comma followed by
    something with a space in it is two people. An ampersand or a semicolon is
    never anything but a separator. */
@@ -4160,7 +4160,7 @@ function authorParts(s){
   if(/\s(?:&|and)\s/i.test(raw))return raw.split(/\s(?:&|and)\s/i).map(x=>x.trim()).filter(Boolean);
   if(raw.includes(";"))return raw.split(";").map(x=>x.trim()).filter(Boolean);
   const bits=raw.split(",").map(x=>x.trim()).filter(Boolean);
-  if(bits.length===2&&/^(?:[A-Z]\.?\s*){1,3}$|^[A-ZÃ-Å½][\w'â-]{1,12}$/.test(bits[1]))return [raw];
+  if(bits.length===2&&/^(?:[A-Z]\.?\s*){1,3}$|^[A-ZÀ-Ž][\w'’-]{1,12}$/.test(bits[1]))return [raw];
   return bits.length>1?bits:[raw];
 }
 /* A series named the same as the thing it is written on says nothing twice.
@@ -6113,7 +6113,10 @@ async function backfillCollRatings(){
     if(b.ratingOwn===undefined){b.ratingOwn=b.rating!=null;touched=true;}
     if(syncCollRating(b))touched=true;
     if(!touched)continue;
-    b.modified=Math.max(Date.now(),(b.modified||0)+1);
+    /* nextMod, not a bare Date.now(): this is a rewrite of an existing book and
+       has to outrank anything the cloud has already shown us, which is the whole
+       of what nextMod is for — see the note beside it */
+    b.modified=nextMod(b);
     try{await dbPut("books",b);touchedIds.push(b.id);}catch(e){}
   }
   return touchedIds;
@@ -8011,6 +8014,20 @@ async function initSync(){
      "best-effort" IndexedDB (books, covers AND the in-browser backups) can be wiped */
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
   books=await dbAll("books");
+  /* ┌─ THE SYNC FLOOR IS READ BEFORE ANYTHING STAMPS AGAINST IT ───────────────┐
+     │ The two repairs below write books and stamp `modified`, and the note at   │
+     │ nextMod says why that stamp must clear everything the cloud has already    │
+     │ shown this device — otherwise the repair loses the last-write race and     │
+     │ quietly un-happens at the next pull. But `SYNC.seen` was not filled until  │
+     │ loadSyncLocal, a hundred and fifty lines below here, so `seenFloor`        │
+     │ answered 0 and the stamp cleared nothing: against a cloud copy written     │
+     │ ahead of this device's clock the repair was overwritten, re-ran on the     │
+     │ next boot, stamped again and re-uploaded, for ever.                        │
+     │ The row is read here instead. loadSyncLocal still reads it — the same row, │
+     │ the same value — and then prunes it against the shelf, which is a job for  │
+     │ after the deletions are loaded and is left exactly where it was.           │
+     └──────────────────────────────────────────────────────────────────────────┘ */
+  try{const sm0=await dbGet("meta","seenMod");SYNC.seen=(sm0&&sm0.v)||{};}catch(e){}
   const backfilled=await backfillCollRatings();   /* before the first paint, so the rows show it straight away */
   backfilled.push(...await liftUnanimousGenres());  /* same reason, same send */
   const g=await dbGet("meta","genres");genres=g?g.v:{};
@@ -9304,6 +9321,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-16.4",lines:[
+    "<b>↶ Undo reverses folding books into a new collection.</b> It never did. <b>📚 As one collection…</b> was the one folding road that wrote no undo step — its neighbour <b>📥 Into a collection…</b> always had — so the press left the undo stack holding whatever you had done <i>before</i> it, and ↶ Undo then quietly reversed that instead, while the fold stood. Nothing on screen said so. Now it is one step: undo puts the books back on the shelf, out of Recently deleted, and takes the new collection away; redo folds them again. The same press also leaves a line in 📝 What changed at last, and counts as a day of touching the shelf.",
+    "<b>And the spreadsheet stops losing what you wrote about your books.</b> ⭳ Export as a spreadsheet was reading a book's notes from the wrong field, so the <i>Private Notes</i> column came out empty for every book — while stories inside collections, which spell that field differently, filled theirs in correctly. That is what hid it. A story's <i>Series Number</i> was blank for the same kind of reason and now says its place inside its collection.",
+    "Two quieter ones. An author written <i>surname, given name</i> whose given name starts with an accented letter — <i>Müller, Émile</i> — was being split into two people by a character range that had been damaged in the file itself; it reads as one person again. And the two repairs the app runs at startup now stamp themselves correctly against what your other device has already sent, so a repair can no longer be undone by the next sync and re-done on every launch."]},
   {v:"2026-09-16.3",lines:[
     "<b>Opening a collection no longer counts as reading one.</b> Anything written before the readings list existed grows one the moment something asks — out of the finish date and re-read count it already had, in memory, nothing saved. But the editor works on its own copy of a book, so merely drawing a story's dates wrote that list onto the copy while the stored one still had none, and the next save of anything at all carried it as though you had typed a reading in. Measured: a collection holding one story finished in 2019, one character typed into the <i>collection's</i> title, and the change came out as <b>title · readings</b> — which ticked <i>Move a bookmark forward</i> for 10 XP and counted the day toward your 📖 run, with no page turned. A book's own list had been doing the same for longer.",
     "A list that appears out of nothing is now measured against what the shelf would have grown from what it already knew: the same dates in the same order are the same fact said twice, and it says nothing. Add a reading yourself, or put a date on one of the grown ones, and it speaks exactly as before.",
@@ -14176,12 +14197,33 @@ async function makeCollectionFrom(ids,name,author){
   nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":sel.some(b=>statusOf(b)==="reading")?"reading":"want";
   nb.dateFinished=sel.map(b=>b.dateFinished||"").sort().pop()||"";
   nb.entries=[];
-  for(const b of sel)nb.entries.push((await bookToEntry(b,nb.id,nb.status,nb.author,nb.dnf,nb.keywords)).en);
+  /* the copies are taken BEFORE anything is retired, since retireBook takes the
+     book off `books` and out of the store */
+  const items=[];
+  for(const b of sel){
+    items.push({id:b.id,before:JSON.parse(JSON.stringify(b)),after:null});
+    nb.entries.push((await bookToEntry(b,nb.id,nb.status,nb.author,nb.dnf,nb.keywords)).en);
+  }
   nb.modified=Date.now();
   await dbPut("books",nb);
   books.unshift(nb);
   if(SYNC.on)enqueue({kind:"book",id:nb.id});
   for(const b of sel)await retireBook(b);
+  /* ┌─ THIS IS AN OP LIKE ANY OTHER ───────────────────────────────────────────┐
+     │ It was the one folding road with no pushOp, while its neighbour           │
+     │ foldIntoCollection has always had one — so "📚 As one collection…" left    │
+     │ the undo stack holding whatever op came BEFORE it, and ↶ Undo then         │
+     │ reversed an unrelated edit while the fold stood. Nothing on screen said    │
+     │ so. MEASURED on a seeded shelf: one rating change pushed `book:fc`, a      │
+     │ fold of two other books followed, and HIST.undo was still `[book:fc]`      │
+     │ afterwards with no receipt written at all.                                 │
+     │ The shapes are the ones applyOp's bulk branch already reads: a retired     │
+     │ book is {before, after:null}, which undoes by putting it back and out of   │
+     │ the bin and redoes by binning it again; the new collection is              │
+     │ {before:null, after}, which undoes by un-creating it.                      │
+     └──────────────────────────────────────────────────────────────────────────┘ */
+  items.push({id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))});
+  pushOp({t:"bulk",items});
   if(SYNC.on)flushQueue();
   return nb.id;
 }
@@ -35172,14 +35214,18 @@ function csvText(){
       "Date Added":b.created?new Date(b.created).toISOString().slice(0,10):"",
       "Read Count":timesRead(b),"Exclusive Shelf":shelf(st),
       "Bookshelves":[...gen,...tags,b.dnf?"did-not-finish":"",hold?"on-hold":""].filter(Boolean).join(", "),
-      "My Review":text(b.summary),"Private Notes":text(b.notes),
+      /* canvasText, not `notes`: that is the STORY's spelling for the same
+         field (see the row below, and ENT_FIELD_NAMES). A book has never
+         carried `notes`, so this column came out empty for every book on the
+         shelf while stories filled theirs in correctly — which is what hid it. */
+      "My Review":text(b.summary),"Private Notes":text(b.canvasText),
       "Rating (0-10)":b.rating==null||b.rating===""?"":Number(b.rating).toFixed(1),
       "Stage":stage(st,b.dnf,hold,un),"Genres":gen.join("; "),"Tags":tags.join("; "),
       "Series":seriesShown(b)||"","Series Number":b.seriesNum||"","Series Total":b.seriesTotal||"",
       "Collection":"","Kind":isColl(b)?"collection":kindOf(b),"Favourite":b.favorite?"yes":"","Link":b.link||""}));
     /* every story on its own row, answering with the collection's word where
        it has none of its own — the same rule the shelf reads them by */
-    if(isColl(b))(b.entries||[]).forEach(en=>{
+    if(isColl(b)){const entNum=entNumbers(b);(b.entries||[]).forEach(en=>{
       const es=entStatusOf(b,en),ed=entDnfOf(b,en),dd=dates(en);
       const eg=entGenresOf(b,en),et=entKeywordsOf(b,en);
       out.push(line({
@@ -35191,9 +35237,13 @@ function csvText(){
         "My Review":text(en.summary),"Private Notes":text(en.notes),
         "Rating (0-10)":en.rating==null||en.rating===""?"":Number(en.rating).toFixed(1),
         "Stage":stage(es,ed,false,false),"Genres":eg.join("; "),"Tags":et.join("; "),
-        "Series":"","Series Number":en.num||"","Series Total":"",
+        /* entNumbers, not `en.num`: nothing has ever written that field, so
+           this cell was unconditionally blank. A story's number is its place
+           inside the collection named in the Collection column — pieces of a
+           split volume wear their volume's number with their own after it. */
+        "Series":"","Series Number":entNum[en.id]||"","Series Total":"",
         "Collection":b.title||"","Kind":"story","Favourite":en.favorite?"yes":"","Link":en.link||""}));
-    });
+    });}
   });
   /* the byte-order mark is for Excel, which otherwise reads a UTF-8 file as
      ANSI and turns every curly quote and accent into rubbish */
