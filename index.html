@@ -9304,6 +9304,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-16.1",lines:[
+    "<b>A story inside a collection now counts toward the daily tasks, whatever you did to it.</b> Dating one you had finished ticked nothing — the dates saved, the shelf agreed you had read it, and <i>Date something you finished</i> sat there unticked however many times you typed a date in. Every change to a story is written down as a word, and the list of words a story could be described by was a separate, shorter list than the one a book uses: fifteen entries against forty-five. The eleven it was missing came out as the single word <b>stories</b>, which no task and neither streak has ever looked for.",
+    "So a story's <b>finish date</b>, its <b>readings</b>, its <b>author</b>, its <b>re-reads</b>, its <b>audience</b>, its <b>link</b>, its <b>maturity</b>, <b>⌛ don't have it yet</b>, <b>set aside</b> and a bookmark kept in <b>percent</b> were all invisible to the tasks and to the 📖 reading run. They aren't now: a story is described in the same words as the book around it, so six of the daily tasks that could only ever be done to a plain book work on a story too, and the reading run lights for a story's dates the way it always did for a book's.",
+    "<b>And filling a book in from 🔎 Auto-fill no longer loses three of the things it just did.</b> One receipt held eight words; <i>Use everything</i> followed by a stage writes thirteen — measured — so <b>blurb</b>, <b>cover</b> and <b>ISBN</b> fell off the end and their three tasks could not tick. Twenty now. <i>Count a re-read</i> also stopped ticking for a book you have read once, which it was doing the first time you gave a story a reading."]},
   {v:"2026-09-14.5",lines:[
     "<b>What's missing has one home now: 🧰 Shelf care.</b> It stood at the top of 🔍 Search and at the top of Shelf care, which is two cards to keep in step and two places to learn the same thing. Shelf care is the screen about what you do <i>to</i> the shelf, and filling in blanks is that job, so that is the copy that stayed. Pressing a number still opens exactly those books on 🔍 Search, where <b>☑ Select books</b> and Auto-fill finish them — nothing about that has changed.",
     "<b>Going deeper came across with it</b> — nothing written down, no likes or dislikes, nothing that stood out, no quotes, no tags, no relationships. Only Search ever had that list; now the one card carries both.",
@@ -11250,6 +11254,7 @@ let histSrc="";   /* set around bulk flows; empty means "you, editing" */
    entry says which device wrote it (`dev`). The cap is what keeps the row
    small enough to upload on every edit: measured at ~180 bytes an entry. */
 const HISTLOG_MAX=200;
+const HIST_WORDS_MAX=20;
 const histDev=()=>document.documentElement.dataset.phone==="1"?"phone":"computer";
 const histKey=e=>String(e.t)+"|"+String(e.id||"");
 function mergeHistLog(rv){
@@ -11269,7 +11274,11 @@ const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blu
   /* `pct` is a progress, said in percent, and it must be WORDED as one: the
      reading streak and the "move a bookmark" task both look for that word in
      the change log, and a book kept in percent would otherwise earn neither */
-  reads:"readings",progress:"progress",pct:"progress",progLog:"",rereads:"re-reads",series:"series",seriesNum:"series number",
+  /* `readings` is the real key; `reads` never was one, and the list only ever
+     earned its word by falling through to "add the raw key" at the foot of
+     diffWords. That accident was survivable on a book and fatal on a story,
+     where there is no such fallthrough — see the entries branch below. */
+  readings:"readings",reads:"readings",progress:"progress",pct:"progress",progLog:"",rereads:"re-reads",series:"series",seriesNum:"series number",
   seriesTotal:"series total",isbn:"ISBN",hcSlug:"",favorite:"favourite",dnf:"given up",dnfReasons:"why given up",
   hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",upnext:"up next",serial:"",apart:"set apart",entries:"stories",maturity:"maturity",aspects:"what stood out",
   pros:"likes",cons:"dislikes",meh:"so-sos",fandoms:"fandoms",characters:"characters",ships:"relationships",
@@ -11281,34 +11290,69 @@ const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blu
      change log — an internal name, in a list meant to be read. */
   audienceList:"",
   prosW:"",consW:"",mehW:"",quotesW:"",quotesAt:""};
+/* the whole of the difference between a story and the book around it. A story
+   inside a collection is worded out of the list above; these two keys are the
+   only ones it spells differently, and everything else it carries — its dates,
+   its readings, its author, its stage — has the book's own word. */
+const ENT_FIELD_NAMES={notes:"notes",cover:"cover"};
 /* nothing, in all its shapes: a field the editor lazily created as [] on a
    book that never had one is not a change anybody made */
 const histEmptyish=v=>v==null||v===""||v===false||(Array.isArray(v)&&!v.length)
   ||(typeof v==="object"&&!Array.isArray(v)&&!Object.keys(v).length);
+/* ...and one number that means the same. `rereads` is not typed, it is counted
+   by syncReads off the readings list, so a story that never carried the key at
+   all gets it written as 0 the first time a reading is added — a count of
+   nothing, arriving out of nothing, which was reading as "re-reads" and ticking
+   Count a re-read for a book read once. Kept to that one derived counter on
+   purpose: a RATING of zero is a thing you chose to say about a book, and
+   silencing zero everywhere would swallow it. */
+const HIST_ZERO_IS_NOTHING={rereads:1};
+const histNothing=(k,v)=>histEmptyish(v)||(v===0&&!!HIST_ZERO_IS_NOTHING[k]);
 function diffWords(before,after){
   const out=new Set();
   new Set([...Object.keys(before||{}),...Object.keys(after||{})]).forEach(k=>{
     const av=(before||{})[k],bv=(after||{})[k];
-    if(histEmptyish(av)&&histEmptyish(bv))return;
+    if(histNothing(k,av)&&histNothing(k,bv))return;
     if(JSON.stringify(av===undefined?null:av)===JSON.stringify(bv===undefined?null:bv))return;
     /* stories are drilled into, not lumped: a page turned INSIDE a collection
        is progress, and calling it "stories" was why moving a story's bookmark
        ticked no task and lit no reading streak — the owner caught it on day
        one. The same drilling makes every daily task count on a story too. */
     if(k==="entries"){
-      const map={progress:"progress",reads:"readings",status:"stage",pages:"pages",summary:"blurb",
-        isbn:"ISBN",rating:"rating",keywords:"tags",genres:"genres",notes:"notes",cover:"cover",
-        favorite:"favourite",dnf:"given up",title:"title",aspects:"what stood out"};
+      /* ┌─ A STORY SPEAKS THE BOOK'S VOCABULARY, NOT A SHORTER ONE ───────────┐
+         │ THE RULE: the words a story's change can be worded in are           │
+         │ HIST_FIELD_NAMES — the same list the book above uses — and never a   │
+         │ second hand-written list kept here. The drill used to hold fifteen   │
+         │ pairs of its own, so eleven fields a story really has had no word    │
+         │ at all: a finish date, a reading, an author, a re-read, an audience, │
+         │ a link, a maturity, on hold, don't-have-it-yet, the percentage flag  │
+         │ and its own cover version. Every one of them came out as "stories",  │
+         │ which is not a word any daily task or either streak looks for, so    │
+         │ dating a story you had finished ticked nothing and lit nothing.      │
+         │ A short list also rots quietly: the pair `reads` named a key no      │
+         │ story or book has ever carried, so a story's readings were unnamed   │
+         │ from the day readings were added.                                    │
+         │ The two names below are the only places a story differs from a book: │
+         │ its writing is `notes` where a book's is `canvasText`, and its cover │
+         │ is a flag called `cover` where a book's is a version number.         │
+         └─────────────────────────────────────────────────────────────────────┘ */
       const ea=Array.isArray(av)?av:[],eb=Array.isArray(bv)?bv:[];
       const byId={};ea.forEach(e=>{if(e&&e.id)byId[e.id]=e;});
       let named=false;
       eb.forEach(e=>{
         const o=e&&byId[e.id];
         if(!o)return;
-        Object.keys(map).forEach(f=>{
+        new Set([...Object.keys(o),...Object.keys(e)]).forEach(f=>{
           const a2=o[f],b2=e[f];
-          if(histEmptyish(a2)&&histEmptyish(b2))return;
-          if(JSON.stringify(a2===undefined?null:a2)!==JSON.stringify(b2===undefined?null:b2)){out.add(map[f]);named=true;}
+          if(histNothing(f,a2)&&histNothing(f,b2))return;
+          if(JSON.stringify(a2===undefined?null:a2)===JSON.stringify(b2===undefined?null:b2))return;
+          /* a key in neither list is deliberately silent rather than raw, the
+             one place this parts company with the book: a story carries
+             workings the shelf puts there itself (`_cover`, `_story`), and a
+             change log is a thing to be read */
+          const w=(f in ENT_FIELD_NAMES)?ENT_FIELD_NAMES[f]
+            :(f in HIST_FIELD_NAMES)?HIST_FIELD_NAMES[f]:"";
+          if(w){out.add(w);named=true;}
         });
       });
       if(!named)out.add("stories");
@@ -11331,7 +11375,19 @@ function histNote(id,before,after,forced){
   const what=forced||diffWords(before,after);
   if(!what.length)return;
   const src=after||before||{};
-  histLog.unshift({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,8),src:histSrc||"you",dev:histDev()});
+  /* ---- how many words one receipt may carry ----
+     Eight, and a receipt is the only evidence a daily task has: a word cut off
+     here is a task that cannot tick however plainly you did it. 🔎 Auto-fill's
+     "Use everything" followed by a stage, measured on a blank book, writes
+     THIRTEEN — title, author, genres, tags, pages, progress, finish date,
+     series, series number, blurb, cover, ISBN, readings — and the eight left
+     the last five behind, so filling a book in from a lookup could never tick
+     Fill in a blurb, Give a book its cover or Give a book its ISBN.
+     Twenty. Measured rather than guessed: two hundred receipts every one of
+     them twenty words long is 64,601 bytes against 38,201 at eight, and the
+     ordinary receipt carries one word or two, so the row this uploads on every
+     edit does not move in practice. */
+  histLog.unshift({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,HIST_WORDS_MAX),src:histSrc||"you",dev:histDev()});
   if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;
   saveHistLog();
   /* a real change is a day touched; moving through a book keeps its own
