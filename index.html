@@ -9321,6 +9321,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-17.1",lines:[
+    "<b>Pasted words arrive as words.</b> Every writing box on a book's form is somewhere a browser will happily drop a whole page of someone else's HTML: its fonts, its sizes, its theme colours, and its furniture — rules, borders, tables, pictures. That is where a line across your notes comes from, and a line with no text in it has nowhere to put the cursor, so it is a nuisance to be rid of by hand. A paste now brings only the formatting this app can itself make: bold, italic, underline, strike-through, links, lists, paragraphs, line breaks and alignment. A heading comes in as bold, since a page here has one size of text; a table comes in as its words, a line to the row; a rule, a border and a picture do not come in at all.",
+    "<b>And a colour is judged against the box it lands in.</b> White text copied off a dark site used to arrive invisible on a pale card, with nothing on screen to tell you why. A pasted colour is now measured against the box it is going into and kept only where it clears the readable minimum — so a passage copied out of one book's notes into another keeps the highlights you gave it, and the other site's theme stays where it came from.",
+    "<b>🧹 in the formatting row cleans a box you already have.</b> None of that helps the pastes already sitting in your books, so the same cleaning is also a button: put the cursor in a box, press it, and the rules, lines, tables, fonts, sizes and unreadable colours go, leaving your words with their bold, italic, underline and highlights. It says what it took out, so a line you couldn't account for finally names itself."]},
   {v:"2026-09-16.5",lines:[
     "<b>Marking a pile of books ⌛ Don't have it yet no longer says you finished them today.</b> Doing it to one book from its own stage list was always right; doing it to a ticked handful went a different way through the same machinery, and that road writes today's date onto anything marked ✓ Finished that has no dates on it. So a mixed selection — some read, some not — quietly recorded every read-but-undated one as finished <i>today</i>: a square on the calendar, a day on your 📖 run, possibly one of the year's twelve, for a book you had only said you don't own yet. ⏸ On hold and ✕ Did not finish were never affected. It says nothing at all now, which is what the single press always did.",
     "<b>⤓ Sharper reaches your other device.</b> Swapping in a bigger cover saved the picture and uploaded it, but never told the book it had changed — and your other device only goes looking for a new picture when the book itself says something is new. So the sharper copy sat in the cloud and the phone went on drawing the old one for ever. Pasting a cover never had this; now neither does ⤓ Sharper, and the swap earns its line in 📝 What changed like every other edit.",
@@ -26742,6 +26746,179 @@ function saveSel(){
 }
 document.addEventListener("selectionchange",saveSel);
 
+/* ---- what a paste is allowed to bring in ----
+   Every writing box here is a contenteditable, so a paste out of a browser
+   arrives as the other page's own HTML — its fonts, its sizes, its theme
+   colours and its furniture — and all of it used to come through untouched.
+   What comes through now is the formatting this app can itself make: bold,
+   italic, underline, strike, links, lists, paragraphs, line breaks and
+   alignment. A heading arrives as bold, since this page has one size of text;
+   a table arrives as its words, a line to the row; a rule, a picture and a
+   border do not arrive at all; everything else is unwrapped and its
+   attributes dropped.
+   Two of those are more than tidiness. A rule and an empty bordered box hold
+   no text, so they hold no caret either, and a line sitting among your words
+   with nothing in it is a thing you have to fight to select before you can be
+   rid of it. And a colour belongs to the page it was copied FROM: white text
+   off a dark site lands invisible on a light card. So a pasted colour is
+   measured against the box it is landing in and kept only if it clears 4.5 to
+   1 — the readable minimum the rest of the app is held to — which also means
+   a passage copied from one book's notes into another keeps its highlights,
+   since those already read.
+   Emphasis carried in a style rather than a tag, which is how a word
+   processor and a chat both spell it, is read off the style before the style
+   goes, so bold pasted from anywhere is still bold. */
+function urlRuns(v){
+  const u=String(v).split("").filter(c=>c.charCodeAt(0)>32).join("").toLowerCase();
+  return u.indexOf("javascript:")===0||u.indexOf("data:text/html")===0;
+}
+/* "rgb(…)" or "rgba(…)" as three numbers you can judge — an alpha is laid over
+   whatever is behind it first, since a half-transparent highlight is only as
+   readable as what it actually ends up looking like */
+function cssRgb(v,base){
+  const s=String(v||""),i=s.indexOf("("),j=s.lastIndexOf(")");
+  if(i<0||j<i)return null;
+  const p=s.slice(i+1,j).split(",").map(x=>parseFloat(x));
+  if(p.length<3||!p.slice(0,3).every(x=>isFinite(x)))return null;
+  const a=p.length>3&&isFinite(p[3])?Math.max(0,Math.min(1,p[3])):1;
+  const b=base||[255,255,255];
+  return [0,1,2].map(k=>Math.round(p[k]*a+b[k]*(1-a)));
+}
+/* what colour a writing box actually IS, so the judgement above is about this
+   box and not a guess — the dark theme gives .rich a dark card */
+function edColours(ed){
+  const cs=getComputedStyle(ed);
+  return {card:cssRgb(cs.backgroundColor)||[255,255,255],
+          ink:cssRgb(cs.color)||[41,37,36]};
+}
+const PASTE_KEEP=new Set(["A","B","STRONG","I","EM","U","S","STRIKE","DEL","MARK",
+  "BR","P","DIV","SPAN","UL","OL","LI","BLOCKQUOTE"]);
+const PASTE_GONE="script,style,iframe,object,embed,link,meta,noscript,svg,canvas,"
+  +"video,audio,form,input,button,select,textarea,hr,img,picture,source";
+const swapTag=(el,name)=>{
+  const n=document.createElement(name);
+  while(el.firstChild)n.appendChild(el.firstChild);
+  el.replaceWith(n);
+  return n;
+};
+/* `card` and `ink` are the box this is landing in, measured; `cut` is filled in
+   with what was taken away, which is what 🧹 Tidy reports back. */
+function cleanPaste(html,card,ink,cut){
+  const bg=card||[255,255,255],fg=ink||[41,37,36];
+  const tally=cut||{};
+  const bump=k=>tally[k]=(tally[k]||0)+1;
+  const t=document.createElement("template");
+  t.innerHTML=html;
+  t.content.querySelectorAll(PASTE_GONE).forEach(n=>{
+    bump(n.tagName==="HR"?"rules"
+      :(n.tagName==="IMG"||n.tagName==="PICTURE")?"pictures":"oddments");
+    n.remove();
+  });
+  /* a table's words are still words: a row becomes a line, a cell a space */
+  t.content.querySelectorAll("table").forEach(()=>bump("tables"));
+  t.content.querySelectorAll("tr").forEach(tr=>swapTag(tr,"div"));
+  t.content.querySelectorAll("td,th").forEach(td=>{
+    const s=swapTag(td,"span");
+    if(s.nextElementSibling)s.after(document.createTextNode(" "));
+  });
+  t.content.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach(h=>{
+    const d=swapTag(h,"div"),b=document.createElement("b");
+    while(d.firstChild)b.appendChild(d.firstChild);
+    d.appendChild(b);
+  });
+  /* document order, so unwrapping a parent still leaves its children in the
+     tree for their own turn */
+  [...t.content.querySelectorAll("*")].forEach(el=>{
+    const st=el.style||{};
+    /* counted before anything is decided, because a border goes whether the
+       element carrying it is kept or unwrapped — and a border with nothing in
+       it is the likeliest thing a stray line in a book of notes actually is */
+    if(["Top","Right","Bottom","Left"].some(s=>{
+      const v=st["border"+s+"Style"]||"";return v&&v!=="none";}))bump("lines");
+    if(!PASTE_KEEP.has(el.tagName)){
+      const p=el.parentNode;
+      if(!p){el.remove();return;}
+      while(el.firstChild)p.insertBefore(el.firstChild,el);
+      p.removeChild(el);
+      return;
+    }
+    const dec=st.textDecorationLine||st.textDecoration||"";
+    const wrap=[/^(bold|bolder|[6-9]00)$/.test(st.fontWeight||"")&&"b",
+                (st.fontStyle||"")==="italic"&&"i",
+                dec.indexOf("underline")>=0&&"u",
+                dec.indexOf("line-through")>=0&&"s"].filter(Boolean);
+    const align=/^(center|right|justify)$/.test(st.textAlign||"")?st.textAlign:"";
+    if(st.fontFamily||st.fontSize)bump("fonts");
+    /* the background is judged first, because the ink that has to be readable
+       is read against whatever it is sitting on */
+    const bgRaw=st.backgroundColor||"",colRaw=st.color||"";
+    const bgRgb=cssRgb(bgRaw,bg),colRgb=cssRgb(colRaw,bgRgb||bg);
+    const keepBg=bgRgb&&contrastOf(colRgb||fg,bgRgb)>=4.5?bgRaw:"";
+    const keepCol=colRgb&&contrastOf(colRgb,keepBg?bgRgb:bg)>=4.5?colRaw:"";
+    if((bgRgb&&!keepBg)||(colRgb&&!keepCol))bump("colours");
+    const href=el.tagName==="A"?el.getAttribute("href"):null;
+    for(const a of [...el.attributes])el.removeAttribute(a.name);
+    if(align)el.style.textAlign=align;
+    if(keepBg)el.style.backgroundColor=keepBg;
+    if(keepCol)el.style.color=keepCol;
+    if(href&&!urlRuns(href))el.setAttribute("href",href);
+    let inner=el;
+    wrap.forEach(tag=>{
+      const w=document.createElement(tag);
+      while(inner.firstChild)w.appendChild(inner.firstChild);
+      inner.appendChild(w);inner=w;
+    });
+    /* a span that only ever existed to carry what has just gone is furniture */
+    if(el.tagName==="SPAN"&&!el.attributes.length&&el.parentNode){
+      const p=el.parentNode;
+      while(el.firstChild)p.insertBefore(el.firstChild,el);
+      p.removeChild(el);
+    }
+  });
+  return t.innerHTML;
+}
+document.addEventListener("paste",e=>{
+  const a=document.activeElement;
+  const ed=a&&a.closest&&a.closest('[contenteditable="true"]');
+  if(!ed)return;
+  const cd=e.clipboardData;
+  if(!cd)return;
+  /* a copied picture is the scrapbook's paste, not this one — leave it be */
+  if([...(cd.items||[])].some(it=>it.type.startsWith("image/")))return;
+  const html=cd.getData("text/html");
+  if(!html)return;                 /* plain text needs nothing doing to it */
+  e.preventDefault();
+  const c=edColours(ed);
+  document.execCommand("insertHTML",false,cleanPaste(html,c.card,c.ink));
+});
+
+/* ---- 🧹 Tidy, for the pastes that came in before ----
+   Cleaning a paste does nothing at all for the pastes already sitting in
+   books, and a rule or a bordered empty box in the middle of a page of notes
+   is precisely the thing that is awkward to select by hand. This runs the same
+   cleaning over the box the cursor is in, and SAYS what it took out — which is
+   also the only way to find out, afterwards, what a line that should not be
+   there actually was. */
+function tidyField(ed){
+  const cut={};
+  if(!ed)return cut;
+  const c=edColours(ed),was=ed.innerHTML;
+  const now=cleanPaste(was,c.card,c.ink,cut);
+  if(now!==was){
+    ed.innerHTML=now;
+    ed.dispatchEvent(new Event("input",{bubbles:true}));
+  }
+  return cut;
+}
+const TIDY_WORDS={rules:["rule","rules"],lines:["line","lines"],
+  pictures:["picture","pictures"],tables:["table","tables"],
+  colours:["colour","colours"],fonts:["font","fonts"],
+  oddments:["oddment","oddments"]};
+function tidySaid(cut){
+  const parts=Object.keys(TIDY_WORDS).filter(k=>cut[k])
+    .map(k=>cut[k]+" "+TIDY_WORDS[k][cut[k]===1?0:1]);
+  return parts.length?"Took out "+parts.join(", "):"Nothing in there to take out";
+}
 /* "view" shows only what's filled in; "edit" is the form. A book you've never
    touched opens in the form, since it's waiting to be filled in. */
 let bookMode="view";
@@ -30218,6 +30395,9 @@ function renderEditor(){
           <button class="tbtn" data-cmd="justifyCenter" title="Center">${ALIGN_IC.center}</button>
           <button class="tbtn" data-cmd="justifyRight" title="Align right">${ALIGN_IC.right}</button>
           <span class="vline"></span>
+          <button class="tbtn" id="fmtTidy" title="Tidy the box you are writing in — takes out the rules, lines, tables, fonts, sizes and unreadable colours a paste brought in with it, and leaves your words with their bold, italic, underline and highlights">🧹</button>
+          <span class="lbl" id="tidySay" style="margin:0 2px"></span>
+          <span class="vline"></span>
         </span>
         <span id="colStrip"></span>
         <input type="color" id="tcol" value="#44403c" title="Any colour you like">
@@ -30396,8 +30576,23 @@ function renderEditor(){
   const tbar=q("#tbar");
   /* keep the words selected while the button is pressed — a mousedown that
      steals focus collapses the selection before the click ever lands */
-  tbar.addEventListener("mousedown",e=>{if(e.target.closest("[data-cmd],[data-col],[data-mode],#fmtHl,#fmtHlPick,[data-hlc]"))e.preventDefault();});
+  tbar.addEventListener("mousedown",e=>{if(e.target.closest("[data-cmd],[data-col],[data-mode],#fmtHl,#fmtHlPick,[data-hlc],#fmtTidy"))e.preventDefault();});
   qa("[data-cmd]",tbar).forEach(x=>x.onclick=()=>{document.execCommand("styleWithCSS",false,true);document.execCommand(x.dataset.cmd);});
+  /* the press must not take the cursor out of the box it is about to act on,
+     which is what the mousedown above is for — savedEd is the fallback for a
+     box that lost the cursor some other way */
+  const tidyB=q("#fmtTidy"),tidySayEl=q("#tidySay");
+  if(tidyB)tidyB.onclick=()=>{
+    const a=document.activeElement;
+    let ed=a&&a.closest&&a.closest('[contenteditable="true"]');
+    if(!ed&&savedEd&&document.body.contains(savedEd))ed=savedEd;
+    const said=ed?tidySaid(tidyField(ed)):"Put the cursor in the box you want tidied";
+    if(tidySayEl){
+      tidySayEl.textContent=said;
+      clearTimeout(tidyB.__t);
+      tidyB.__t=setTimeout(()=>{if(document.contains(tidySayEl))tidySayEl.textContent="";},5000);
+    }
+  };
   const tcol=q("#tcol");
   tcol.addEventListener("pointerdown",saveSel);
   tcol.addEventListener("input",e=>{
@@ -35291,10 +35486,7 @@ function cleanHtml(h){
      address in xlink:href, a form in action, a form's button in formaction.
      Judging only href and src, only as written, let all four through. Every
      attribute is now judged, on its stripped value. */
-  const runnable=v=>{
-    const u=String(v).replace(/[\u0000-\u0020]/g,"").toLowerCase();
-    return u.indexOf("javascript:")===0||u.indexOf("data:text/html")===0;
-  };
+  const runnable=urlRuns;   /* one judgement of an address, shared with cleanPaste */
   t.content.querySelectorAll("*").forEach(n=>{
     for(const a of [...n.attributes]){
       if(a.name.toLowerCase().indexOf("on")===0||runnable(a.value))n.removeAttribute(a.name);
