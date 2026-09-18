@@ -5827,6 +5827,20 @@ const entFoldedPages=(coll,en)=>((coll&&coll.entries)||[])
    inside it, and the one thing that stops a series imported book by book being
    counted once for the collection and again for every story in it. A collection
    whose stories say nothing is still counted as one thing. */
+/* ---- how far into something you actually got ----
+   A book given up on is not nothing read. `progress` is the page reached and
+   is the exact answer where it exists; `pct` is a percent standing on its own,
+   kept for books that came out of an app which only ever said 45%, and pctOf
+   already knows which of the two to believe — and, for a collection with no
+   readings of its own, works it out from the stories done. Capped at the
+   book's own length, because a page number typed against a different edition
+   should not be able to say you read more of it than there is. */
+const pagesReached=(b,total)=>{
+  const p=parseInt(b&&b.progress)||0;
+  if(p>0)return total?Math.min(p,total):p;
+  const pc=pctOf(b);
+  return (pc&&total)?Math.round(total*pc/100):0;
+};
 function readUnits(){
   const out=[];
   for(const b of books){
@@ -5836,11 +5850,26 @@ function readUnits(){
         if(!entIsOwnUnit(b,en))continue;   /* its volume answers for it */
         out.push({title:en.title||b.title,book:b,en,
           reads:doneReads(en),times:entTimesRead(b,en),
+          /* a story keeps no page of its own, so there is no part-way to count */
+          part:0,
           pages:(parseInt(en.pages)||0)+entFoldedPages(b,en)});
       }
     }else{
+      const pg=isColl(b)?(ens.reduce((s,en)=>s+(parseInt(en.pages)||0),0)||(parseInt(b.pages)||0)):(parseInt(b.pages)||0);
       out.push({title:b.title,book:b,en:null,reads:doneReads(b),times:timesRead(b),
-        pages:isColl(b)?(ens.reduce((s,en)=>s+(parseInt(en.pages)||0),0)||(parseInt(b.pages)||0)):(parseInt(b.pages)||0)});
+        /* ---- what you got through before you put it down ----
+           A book marked ✕ Did not finish reads nought times, and for a long
+           while that meant it counted nothing at all — which is its own kind
+           of untrue, since a hundred and one pages of three hundred and
+           fifty-four are a hundred and one pages read. So it counts exactly
+           how far it got. Only for one given up on: a book still on the go is
+           still on the go, and the total it feeds is about reading done.
+           One flag, one answer: a book read twice and then abandoned on a
+           third pass counts the pages of that third pass, since ✕ is a mark on
+           the whole book and there is no way to tell a reading that was
+           recorded from one the shelf grew out of an old finish date. */
+        part:b.dnf?pagesReached(b,pg):0,
+        pages:pg});
     }
   }
   return out;
@@ -9391,6 +9420,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-18.3",lines:[
+    "<b>A book you gave up on counts the pages you actually read.</b> Stopping at page 101 of 354 is a hundred and one pages read, and until now it was nothing at all — the last build stopped it from counting as a whole book, which was right, and left it counting as none, which was not. It counts how far it got: the page you had reached if you had been keeping it, and failing that the percentage, worked out against the book's own length. A page number bigger than the book is trimmed to the book, so an edition with different numbering can't claim more than there is.",
+    "It is only for ones marked <b>✕ Did not finish</b>. A book still on the go is still on the go, and this number is about reading done — say if you'd rather it counted where you are in those too. On a constructed shelf of 300 with eleven given up on, the headline went from 88,053 pages to 89,468, which is exactly the eleven part-ways added on."]},
   {v:"2026-09-18.2",lines:[
     "<b>✨ Insights stops counting books you gave up on as read.</b> The card led with <i>pages read</i> — and that total included every book marked <b>✕ Did not finish</b>, on the same card that says how many you finished and what your finish rate is, both of which correctly leave them out. One card, two meanings of the word. A book you gave up on now reads zero times, which is what the Library, the stage groups and the finish rate have always said; on a constructed shelf of 300 the headline came down from 90,930 pages to 88,053, the difference being eight books it was refusing to count two lines below. The medal that reads the same number agrees with it again.",
     "<b>And most-read author now means most read.</b> It counted every book on the shelf by author with no stage on it at all — so a name you had never opened, or a dozen you are still waiting to get hold of, could outrun a name you had genuinely finished forty times. It counts what you have read, and a re-read counts twice.",
@@ -17253,7 +17285,7 @@ const ACHS=[
      be seen; the numbers are the whole of the work. */
   ["pagesRead","📖","The Long Road","pages read, re-reads counted — the number Insights leads with","all",
     [1000,5000,15000,40000,80000,150000,300000,500000,800000,1200000,1800000,2500000,3500000,5000000,7000000],
-    c=>c.rU.reduce((s,u)=>s+u.pages*u.times,0)],
+    c=>c.rU.reduce((s,u)=>s+u.pages*u.times+(u.part||0),0)],
   ["authors","🖋","Well Acquainted","different authors you have finished something by","book",
     [3,10,25,50,100,175,275,400,600,850,1150,1500,2000,2600,3300],
     c=>new Set(c.finB.map(u=>String((u.en&&u.en.author)||u.book.author||"").trim().toLowerCase())
@@ -26636,7 +26668,7 @@ function renderInsights(){
      being read counts nothing yet; a book finished before any of this and never
      dated still counts once. */
   const units=readUnits();
-  const pagesRead=units.reduce((s,u)=>s+u.pages*u.times,0);
+  const pagesRead=units.reduce((s,u)=>s+u.pages*u.times+(u.part||0),0);
   const rereads=units.reduce((s,u)=>s+Math.max(0,u.times-1),0);
   /* every year a reading ended in, not only the year of the last one — this is
      the whole reason the readings list exists */
