@@ -5310,7 +5310,23 @@ const firstRead=b=>{const rs=readsOf(b);return rs.find(r=>r&&(r.start||r.end))||
 /* How many times you have been through it. A book you marked finished long
    before any of this and never dated still counts as read once — its shelf says
    so even though its list is empty. */
-const timesRead=b=>Math.max(doneReads(b).length,(statusOf(b)==="finished"&&!b.dnf)?1:0);
+/* ---- ✕ Did not finish beats the stage under it, here as everywhere ----
+   The guard on the right was already here, and it was already being walked
+   round. initialReadings grows a finished reading out of `dateFinished` for
+   ANY book carrying one, including a book marked DNF — it checks the flag when
+   it grows the OPEN reading and not when it grows the closed one — so
+   doneReads came back holding one and Math.max took it.
+   Measured on a shelf of 300: Insights led with "90,930 pages read" where
+   finished-and-not-given-up came to 88,053, the difference being eight books
+   it was simultaneously refusing to count in "220 finished" and in the 95%
+   finish rate, both of which had the flag right. One card, two meanings.
+   A book you gave up on now reads zero times, which is what the Library, the
+   stage groups and the finish rate have always said. It is a whole-book
+   answer: a book read twice and given up on the third time counts none, which
+   is the cost of one plain rule, and the readings themselves are untouched and
+   still listed on the book. */
+const timesRead=b=>(b&&b.dnf)?0
+  :Math.max(doneReads(b).length,statusOf(b)==="finished"?1:0);
 /* `dateFinished` and `rereads` are kept in step behind the list, so an older
    copy of the app — and every backup this one writes — still reads the book.
    The list is what is true; those two are its shadow. */
@@ -5721,8 +5737,9 @@ const entDateOf=(coll,en)=>{
    grows a list from the finish date and stage it already had, never from the
    collection's. Nothing is inherited here, so a story says nothing about when it
    was read until you say something about the story. */
-const entTimesRead=(coll,en)=>Math.max(doneReads(en).length,
-  (entStatusOf(coll,en)==="finished"&&!entDnfOf(coll,en))?1:0);
+/* the same rule for a story inside a collection — see timesRead */
+const entTimesRead=(coll,en)=>entDnfOf(coll,en)?0
+  :Math.max(doneReads(en).length,entStatusOf(coll,en)==="finished"?1:0);
 /* ---- finishing something finishes its bookmark ----
    Their report: switching from Reading to Finished left the bar where the
    bookmark was. Nothing was wrong with the bar — the stage and the bookmark had
@@ -9374,6 +9391,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-18.2",lines:[
+    "<b>✨ Insights stops counting books you gave up on as read.</b> The card led with <i>pages read</i> — and that total included every book marked <b>✕ Did not finish</b>, on the same card that says how many you finished and what your finish rate is, both of which correctly leave them out. One card, two meanings of the word. A book you gave up on now reads zero times, which is what the Library, the stage groups and the finish rate have always said; on a constructed shelf of 300 the headline came down from 90,930 pages to 88,053, the difference being eight books it was refusing to count two lines below. The medal that reads the same number agrees with it again.",
+    "<b>And most-read author now means most read.</b> It counted every book on the shelf by author with no stage on it at all — so a name you had never opened, or a dozen you are still waiting to get hold of, could outrun a name you had genuinely finished forty times. It counts what you have read, and a re-read counts twice.",
+    "<b>Your best-rated genre says by how much.</b> It named a winner and suggested you buy more of that sort, in the same words whether it led by two marks or by two hundredths. It names the runner-up and its mark now, and where the two are within a tenth of each other it says plainly that it is close enough to call a tie."]},
   {v:"2026-09-18.1",lines:[
     "<b>🕘 Recently edited opens with fifty books instead of four hundred.</b> It always had a <i>Show more</i> under it, but the first page was four hundred — which is the <i>shelf's</i> page size, and the shelf is meant to be browsed. This list answers which book you last touched, and that answer is nearly always in the first handful. Four hundred rows is something like a hundred and twenty screenfuls to pass before the button; fifty is nearer fifteen, and the button says how many are older still."]},
   {v:"2026-09-17.14",lines:[
@@ -26587,8 +26608,21 @@ function renderInsights(){
     if(u.rating!=null){gsum[g]=(gsum[g]||0)+u.rating;gn[g]=(gn[g]||0)+1;}}));
   const topG=Object.entries(gcount).sort((a,b)=>b[1]-a[1]);
   const bestG=Object.keys(gsum).filter(g=>gn[g]>=2).map(g=>[g,gsum[g]/gn[g]]).sort((a,b)=>b[1]-a[1]);
-  const aCount={};books.forEach(b=>{const a=(b.author||"").trim();if(a)aCount[a]=(aCount[a]||0)+1;
-    if(isColl(b))(b.entries||[]).forEach(en=>{const ea=String(en.author||"").trim();if(ea&&ea!==a)aCount[ea]=(aCount[ea]||0)+1;});});
+  /* ---- most-READ, not most-owned ----
+     This counted every book on the shelf by author with no stage on it at all,
+     so a name you have never opened, or twelve you are waiting to get hold of,
+     outran a name you have actually finished eleven times. Measured on a
+     constructed shelf of 300: the card named an author with 43 on the shelf,
+     three-way tied at 43 and saying nothing about the tie, while a different
+     author had 38 finished to that one's thirty-odd. It says "most-read", so
+     it counts what has been read: timesRead for a book, entTimesRead for a
+     story, which is also what makes a re-read count twice. */
+  const aCount={};books.forEach(b=>{const a=(b.author||"").trim();
+    const n=timesRead(b);
+    if(a&&n)aCount[a]=(aCount[a]||0)+n;
+    if(isColl(b))(b.entries||[]).forEach(en=>{const ea=String(en.author||"").trim();
+      const en2=entTimesRead(b,en);
+      if(ea&&ea!==a&&en2)aCount[ea]=(aCount[ea]||0)+en2;});});
   const topA=Object.entries(aCount).sort((a,b)=>b[1]-a[1]);
   /* A collection is a shelf entry, not a book: counting its combined page count as
      one title made every "how long a book do you read" number nonsense. Its stories
@@ -26631,8 +26665,23 @@ function renderInsights(){
   const say=[];
   if(topG.length){
     say.push(`Your shelf leans <b>${esc(topG[0][0])}</b>${topG[1]?` with a strong side of <b>${esc(topG[1][0])}</b>`:""} — ${topG[0][1]} title${topG[0][1]===1?"":"s"} carry that tag.`);
-    if(bestG.length&&bestG[0][0]!==topG[0][0])say.push(`But the genre you actually <i>rate</i> highest is <b>${esc(bestG[0][0])}</b> (★ ${bestG[0][1].toFixed(1)} average) — maybe your shelf wants more of it.`);
-    else if(bestG.length)say.push(`And it's not just volume — <b>${esc(bestG[0][0])}</b> is also your highest-rated genre (★ ${bestG[0][1].toFixed(1)} average). You know what you like.`);
+    /* ---- say by how much, or say that it is close ----
+       This named a winner and told you to buy more of it, in the same words
+       whether it led by two marks or by two hundredths. Measured on a
+       constructed shelf, eight genres sat between 3.06 and 3.29 and the
+       sentence was as confident as ever. The margin over the runner-up decides
+       what it is allowed to claim: under a tenth of a mark they are level and
+       it says so, and the runner-up is named either way so the number can be
+       argued with. */
+    const gGap=bestG.length>1?bestG[0][1]-bestG[1][1]:null;
+    const gRunner=bestG.length>1?` — just ahead of <b>${esc(bestG[1][0])}</b> at ★ ${bestG[1][1].toFixed(1)}`:"";
+    const gClose=gGap!=null&&gGap<0.1;
+    if(bestG.length&&bestG[0][0]!==topG[0][0])say.push(gClose
+      ?`The genre you <i>rate</i> highest is <b>${esc(bestG[0][0])}</b> (★ ${bestG[0][1].toFixed(1)} average)${gRunner} — close enough to call it a tie.`
+      :`But the genre you actually <i>rate</i> highest is <b>${esc(bestG[0][0])}</b> (★ ${bestG[0][1].toFixed(1)} average)${gRunner} — maybe your shelf wants more of it.`);
+    else if(bestG.length)say.push(gClose
+      ?`<b>${esc(bestG[0][0])}</b> is also your highest-rated genre (★ ${bestG[0][1].toFixed(1)} average)${gRunner}, though the two are level enough to be a tie.`
+      :`And it's not just volume — <b>${esc(bestG[0][0])}</b> is also your highest-rated genre (★ ${bestG[0][1].toFixed(1)} average)${gRunner}. You know what you like.`);
   }
   if(finRate!=null){
     if(finRate>=.9)say.push(`You finish what you start — ${Math.round(finRate*100)}% of the books you open get finished.`);
