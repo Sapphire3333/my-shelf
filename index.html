@@ -6896,16 +6896,65 @@ const blankBook=id=>({id,title:"",author:"",rating:null,ratingOwn:false,favorite
    real pixels and a 400-wide picture cannot answer. A cover costs about 89KB at
    600 and about 200KB at 1000 — paid once, on covers taken from here on. */
 const COVER_MAX=1000;
+/* ┌─ A PICTURE ARRIVING, AND WHAT IT WAS ─────────────────────────────────────┐
+   │ Every picture the app keeps — covers, backgrounds, the scrapbook, a       │
+   │ story's cover, a folder scan, a cover fetched from a lookup — comes       │
+   │ through here and leaves as JPEG. JPEG has no see-through, and a canvas    │
+   │ starts see-through, so every see-through pixel used to be written out     │
+   │ BLACK: measured, a 667×1000 picture with nothing in it came out a 4.6KB   │
+   │ JPEG, 100% black. A cover pasted in Firefox came out a black 5.6KB        │
+   │ square, which is what this makes; whether that paste really was           │
+   │ see-through is what picIn below is here to say.                           │
+   │ So the picture is painted onto white now (destination-over, AFTER it is   │
+   │ measured, so the measuring sees what really came in). A picture that is   │
+   │ see-through all over — or one the browser decoded and then drew nothing   │
+   │ of, which looks the same from here — is refused rather than saved as a    │
+   │ blank over whatever was there: the error carries picEmpty and says so,    │
+   │ and picFail puts that in front of you instead of "couldn't be read".      │
+   │ picIn is the instrument: what the last picture really was on its way in   │
+   │ — its type, bytes, size, how much of it was see-through and how much      │
+   │ near-black — kept on this device and printed by 🖼 This cover.             │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+const PIC_IN_KEY="shelfPicIn";
+function picInSave(o){try{localStorage.setItem(PIC_IN_KEY,JSON.stringify(o));}catch(e){}}
+function picInLast(){try{return JSON.parse(localStorage.getItem(PIC_IN_KEY)||"null");}catch(e){return null;}}
+/* see-through and near-black, as shares of the whole picture — near-black
+   counts only solid pixels, so the two never overlap */
+function picLookAt(ctx,w,h){
+  let d;try{d=ctx.getImageData(0,0,w,h).data;}catch(e){return null;}
+  const n=w*h;if(!n)return null;
+  let clear=0,dark=0;
+  for(let i=0;i<d.length;i+=4){
+    if(d[i+3]<8)clear++;
+    else if(d[i+3]>=250&&d[i]+d[i+1]+d[i+2]<45)dark++;
+  }
+  return {clear:clear/n,dark:dark/n};
+}
+const picFail=(err,plain)=>alert(err&&err.picEmpty?err.message:plain);
 function compressImage(file,maxDim=1000,quality=.82){
   return new Promise((res,rej)=>{
+    const log={at:Date.now(),type:(file&&file.type)||"?",bytes:(file&&file.size)||0};
     const r=new FileReader();
     r.onload=()=>{const img=new Image();
       img.onload=()=>{let{width,height}=img;
+        log.w=width;log.h=height;
         if(width>maxDim||height>maxDim){const s=maxDim/Math.max(width,height);width=Math.round(width*s);height=Math.round(height*s);}
         const c=document.createElement("canvas");c.width=width;c.height=height;
-        c.getContext("2d").drawImage(img,0,0,width,height);
-        res(c.toDataURL("image/jpeg",quality));};
-      img.onerror=rej;img.src=r.result;};
+        const ctx=c.getContext("2d",{willReadFrequently:true});
+        ctx.drawImage(img,0,0,width,height);
+        const look=picLookAt(ctx,width,height);
+        if(look){log.clear=look.clear;log.dark=look.dark;}
+        if(!width||!height||(look&&look.clear>=.995)){
+          log.out="refused — nothing in it to keep";picInSave(log);
+          const e=new Error(`The picture you gave came through empty — ${width&&height?`all ${log.w} × ${log.h} of its pixels see-through`:"it has no size at all"} — so it wasn't used, and nothing was replaced. Copy it again straight off the page, or save it and choose the file instead.`);
+          e.picEmpty=true;rej(e);return;}
+        ctx.globalCompositeOperation="destination-over";
+        ctx.fillStyle="#fff";ctx.fillRect(0,0,width,height);
+        const out=c.toDataURL("image/jpeg",quality);
+        log.out=`kept ${width} × ${height}`;picInSave(log);
+        res(out);};
+      img.onerror=e=>{log.out="refused — the browser couldn't open it";picInSave(log);rej(e);};
+      img.src=r.result;};
     r.onerror=rej;r.readAsDataURL(file);});
 }
 
@@ -7526,6 +7575,9 @@ async function flushQueue(){
     setSync("synced");
   }catch(e){
     console.warn("[shelf] sync paused:",e&&e.message||e);
+    /* kept for 🖼 This cover, which otherwise could only say THAT a thing is
+       still waiting, never why */
+    SYNC.lastErr={at:Date.now(),kind:op&&op.kind,msg:String(e&&e.message||e).slice(0,160)};
     if(op){
       op.fails=(op.fails||0)+1;
       /* one stuck op mustn't hold everything behind it hostage — but it may only
@@ -8809,6 +8861,26 @@ function covFp(s){
 /* base64 carries three bytes in four characters, so this is the real size */
 const covKb=s=>{const t=covBytes(s);
   return t==null?"—":(Math.round(t.length*0.75/102.4)/10).toFixed(1)+" KB";};
+/* WHAT the picture is, not only which: two fingerprints can agree on a black
+   square. Its size, and how much of it is see-through or near-black, read
+   off a copy no wider than 300 — plenty for a share of the whole. */
+const pct=v=>v==null?"?":Math.round(v*100)+"%";
+function covLook(s){
+  return new Promise(res=>{
+    if(s==null){res("");return;}
+    const im=new Image();
+    im.onload=()=>{
+      const w=im.naturalWidth,h=im.naturalHeight,k=Math.min(1,300/Math.max(w,h,1));
+      const cw=Math.max(1,Math.round(w*k)),ch=Math.max(1,Math.round(h*k));
+      const c=document.createElement("canvas");c.width=cw;c.height=ch;
+      const x=c.getContext("2d",{willReadFrequently:true});x.drawImage(im,0,0,cw,ch);
+      const l=picLookAt(x,cw,ch);
+      res({w,h,dark:l?l.dark:null,clear:l?l.clear:null});};
+    im.onerror=()=>res(null);
+    im.src=s;});
+}
+const covLookTxt=l=>l===""?"":l==null?"   (it would not open as a picture)"
+  :`   ${l.w} × ${l.h} · ${pct(l.dark)} near-black · ${pct(l.clear)} see-through`;
 async function coverDiag(){
   const b=(view==="book"&&cur)?cur:null;
   if(!b){alert("Open a book first — this looks at one book's cover.");return;}
@@ -8835,12 +8907,24 @@ async function coverDiag(){
   let local=null;
   try{const r=await dbGet("covers",b.id);local=(r&&r.data)||null;}catch(e){L.push("   (the covers store could not be read: "+e+")");}
   L.push("2. in this device    "+covKb(local)+"  fp "+covFp(local));
+  const localLook=await covLook(local);
+  if(localLook!=="")L.push(covLookTxt(localLook));
   /* 3 — what the page draws from */
   const mem=coverCache.has(b.id)?coverCache.get(b.id):undefined;
   L.push("3. in memory         "+(mem===undefined?"not held":covKb(mem))+"  fp "+(mem===undefined?"—":covFp(mem)));
   L.push("");
   L.push("book's coverV  "+when(b.coverV)+"   modified "+when(b.modified));
   L.push("last seen from cloud "+when(SYNC.seen&&SYNC.seen[b.id]));
+  /* what is still waiting to go up — the queue sends the moment something
+     joins it, so this cover or this book sitting in it for longer than a few
+     seconds is itself the finding */
+  if(SYNC.on){
+    const qu=SYNC.queue||[],mine=k=>qu.find(o=>o.kind===k&&o.id===b.id);
+    const oc=mine("cover"),ob=mine("book");
+    const tag=o=>o?"WAITING"+(o.fails?", failed "+o.fails+"×":"")+(o.at?", since "+when(o.at):""):"not waiting";
+    L.push("waiting to go up    "+qu.length+" thing"+(qu.length===1?"":"s")+" · this cover "+tag(oc)+" · this book "+tag(ob));
+    if(SYNC.lastErr)L.push("last sync failure   "+when(SYNC.lastErr.at)+" on a "+(SYNC.lastErr.kind||"?")+": "+SYNC.lastErr.msg);
+  }
   L.push("");
   /* 4 — the cloud, asked now, by the app's own road */
   let cloud=null,cloudNote="";
@@ -8865,6 +8949,13 @@ async function coverDiag(){
     }catch(e){cloudNote="the download threw: "+e;}
   }
   L.push("4. from the cloud now "+(cloud==null?("— "+cloudNote):covKb(cloud)+"  fp "+covFp(cloud)));
+  if(cloud!=null)L.push(covLookTxt(await covLook(cloud)));
+  L.push("");
+  /* the last picture that came in on this device, by any road — see picIn */
+  const pin=picInLast();
+  L.push("last picture taken in on this device"+(pin?" — "+when(pin.at):": none recorded yet"));
+  if(pin)L.push("   "+pin.type+" · "+(Math.round((pin.bytes||0)/102.4)/10)+" KB · "+(pin.w!=null?pin.w+" × "+pin.h:"never opened")
+    +" · "+pct(pin.clear)+" see-through · "+pct(pin.dark)+" near-black · "+(pin.out||"?"));
   L.push("");
   /* the verdict, in words */
   const fS=covFp(screenSrc),fL=covFp(local),fC=cloud==null?null:covFp(cloud);
@@ -8874,6 +8965,7 @@ async function coverDiag(){
   else if(fC&&fL===fC)say.push("This device and the cloud hold the SAME picture.");
   if(local!=null&&screenSrc&&fS!==fL)say.push("What is drawn on the page is not what is stored — the page is painting from something stale.");
   if(mem!==undefined&&local!=null&&covFp(mem)!==fL)say.push("What is held in memory is not what is stored, which is what every list on this screen draws from.");
+  if(localLook&&localLook.dark>=.95)say.push("The picture stored here is black all over, so it was black before it was ever sent anywhere — lost on its way in, not on its way across. The line about the last picture taken in says what arrived.");
   if(fC&&fL===fC&&(!screenSrc||fS===fL))say.push("So if the other device shows a different picture, it is the OTHER device that is behind — run this there and compare the fingerprints.");
   L.push("VERDICT: "+(say.length?say.join(" "):"nothing conclusive — copy this from both devices and compare the fp lines."));
   L.push("");
@@ -9421,6 +9513,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-23.1",lines:[
+    "<b>A picture with see-through parts no longer arrives black.</b> Every picture kept here — covers, backgrounds, the scrapbook, your avatar — is saved as a JPEG, which cannot hold see-through, and whatever was see-through was written out black. A cover with transparent corners got black corners, and a picture that came through the clipboard see-through all over became a solid black square in place of the cover you had. See-through parts are painted white now.",
+    "<b>And a picture with nothing in it is turned away rather than saved.</b> If what you paste or pick is see-through from edge to edge, it says so, with its size, and the cover you had stays where it was. A cover that already went black is not mended by this — paste it again.",
+    "<b>🖼 This cover says what the picture is, not only which one.</b> Two fingerprints can agree on a black square. The readout now gives the stored picture's size and how much of it is near-black or see-through; what the last picture taken in on this device was — its kind, size, and how much of it was see-through on the way in; and whether this cover or this book is still waiting to go up to the cloud, with the last reason sending failed."]},
   {v:"2026-09-18.6",lines:[
     "<b>Two things that were each called two names.</b> The tab is <b>🏅 Medals</b> everywhere now. On a wide screen it said <i>Achievements</i>, while the phone's own bar, the page's own heading and every word written about it said Medals — so the screen you look at most was the one place using a name nothing else used.",
     "And the thing you write about a book is a <b>blurb</b> throughout. It was <i>Summary</i> on the box you type it into, on the reading page above it and in Search's list of what to look through, while Shelf care hedged with <i>No blurb or summary</i> and everywhere else — the daily task, auto-fill, 📝 What changed, the setting for how much of it shows on a row — already said blurb. Same field, three names, and the odd one out was the caption over the box. Nothing has moved and nothing is spelled differently in your backups or your spreadsheet: those are a file format, not words on a screen."]},
@@ -10767,7 +10863,7 @@ async function preloadBgs(){
 }
 async function addCustomBg(file){
   if(!file||!file.type.startsWith("image/"))return null;
-  let data;try{data=await compressImage(file,1600,.85);}catch(e){alert("That image couldn't be read.");return null;}
+  let data;try{data=await compressImage(file,1600,.85);}catch(e){picFail(e,"That image couldn't be read.");return null;}
   const id=uid();
   try{await dbPut("images",{key:bgKey(id),data});}catch(e){alert("That background couldn't be saved — storage may be full.");return null;}
   bgList.push({id,name:(file.name||"My background").replace(/\.[^.]+$/,"").slice(0,26)||"My background"});
@@ -10812,7 +10908,7 @@ function repairGroupArt(){
 function saveGroupArt(){dbPut("meta",{k:"groupArt",v:groupArt});enqueue({kind:"meta",key:"groupArt"});}
 async function setGroupArt(key,file,maxDim){
   if(!file||!file.type.startsWith("image/"))return false;
-  let data;try{data=await compressImage(file,maxDim||2000,.88);}catch(e){alert("That image couldn't be read.");return false;}
+  let data;try{data=await compressImage(file,maxDim||2000,.88);}catch(e){picFail(e,"That image couldn't be read.");return false;}
   const id=uid();
   try{await dbPut("images",{key:gartKey(id),data});}catch(e){alert("That picture couldn't be saved — storage may be full.");return false;}
   const old=groupArt[key];
@@ -10918,7 +11014,7 @@ async function preloadPads(){
 }
 async function addCustomPad(file){
   if(!file||!file.type.startsWith("image/"))return null;
-  let data;try{data=await compressImage(file,900,.85);}catch(e){alert("That image couldn't be read.");return null;}
+  let data;try{data=await compressImage(file,900,.85);}catch(e){picFail(e,"That image couldn't be read.");return null;}
   const id=uid();
   try{await dbPut("images",{key:padKey(id),data});}catch(e){alert("That notepad couldn't be saved — storage may be full.");return null;}
   padList.push({id,name:(file.name||"My notepad").replace(/\.[^.]+$/,"").slice(0,26)||"My notepad"});
@@ -16768,7 +16864,7 @@ function renderLibrary(){
 /* ---- loose pictures on the library page ---- */
 async function addLibArt(file,at){
   if(!file||!file.type.startsWith("image/"))return null;
-  let data;try{data=await compressImage(file,1800,.86);}catch(e){alert("That image couldn't be read.");return null;}
+  let data;try{data=await compressImage(file,1800,.86);}catch(e){picFail(e,"That image couldn't be read.");return null;}
   const id=uid();
   try{await dbPut("images",{key:libArtKey(id),data});}catch(e){alert("That picture couldn't be saved — storage may be full.");return null;}
   libArt.push({id,x:(at&&at.x)||24,y:(at&&at.y)||24,w:230,group:""});
@@ -16895,7 +16991,7 @@ q("#avatarFile").addEventListener("change",async e=>{
   if(!f)return;
   let data;
   try{data=await compressImage(f,AVATAR_MAX,.85);}
-  catch(err){alert("That picture couldn't be read.");return;}
+  catch(err){picFail(err,"That picture couldn't be read.");return;}
   await setAvatar(data);
   if(view==="settings")renderSettings();
 });
@@ -29586,7 +29682,7 @@ function renderBookView(){
     const was=curCover||null,had=!!was;
     if(!confirm(had?"Replace this book's cover with the picture you copied?":"Use the picture you copied as this book's cover?"))return;
     let data;
-    try{data=await compressImage(f,COVER_MAX,.85);}catch(err){alert("That picture couldn't be read.");return;}
+    try{data=await compressImage(f,COVER_MAX,.85);}catch(err){picFail(err,"That picture couldn't be read.");return;}
     try{await dbPut("covers",{id:b.id,data});}
     catch(err){alert("That cover couldn't be saved — storage may be full.");return;}
     curCover=data;coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);bumpCovers();
@@ -30127,7 +30223,7 @@ function wireScrapbook(page,host){
 
   async function addPicture(file){
     if(!file||!file.type.startsWith("image/"))return;
-    let data;try{data=await compressImage(file);}catch(err){alert("That image couldn't be read.");return;}
+    let data;try{data=await compressImage(file);}catch(err){picFail(err,"That image couldn't be read.");return;}
     const baseY=scrapDropY(page);
     const im={id:uid(),x:30+(cur.images.length*26)%180,y:baseY+(cur.images.length*18)%90,w:240,behind:false};
     try{await dbPut("images",{key:cur.id+"|"+im.id,data});}catch(err){alert("That image couldn't be saved.");return;}
@@ -32753,7 +32849,7 @@ function renderEditor(){
     const f=e.target.files[0];e.target.value="";
     const en=(cur.entries||[]).find(x=>x.id===pendingEnt);pendingEnt=null;
     if(!f||!en)return;
-    let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(err){alert("That image couldn't be read.");return;}
+    let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(err){picFail(err,"That image couldn't be read.");return;}
     const key=cur.id+"|"+en.id;
     en.coverV=Date.now();          /* version, so replacing a cover reaches other devices too */
     try{await dbPut("images",{key,data,v:en.coverV});}catch(err){alert("That cover couldn't be saved.");return;}
@@ -35077,7 +35173,9 @@ function renderEditor(){
   wireCovZoom(document);   /* the same cover-size slider the reading page carries */
   q("#coverFile").onchange=async e=>{
     const f=e.target.files[0];e.target.value="";if(!f)return;
-    curCover=await compressImage(f,COVER_MAX,.85);
+    /* into a local first: a refusal must leave the cover you had standing */
+    let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(err){picFail(err,"That picture couldn't be read.");return;}
+    curCover=data;
     try{await dbPut("covers",{id:cur.id,data:curCover});}
     catch(err){alert("That cover couldn't be saved — storage may be full.");return;}
     coverCache.set(cur.id,curCover);SYNC.triedCover.delete(cur.id);bumpCovers();
@@ -38529,7 +38627,7 @@ async function clipboardImage(){
    a cover to keep in step with the other two. */
 async function applyCoverBlob(f){
   if(!cur)return;
-  let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){alert("That picture couldn't be read.");return;}
+  let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){picFail(e,"That picture couldn't be read.");return;}
   try{await dbPut("covers",{id:cur.id,data});}
   catch(e){alert("That cover couldn't be saved — storage may be full.");return;}
   curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);bumpCovers();
@@ -38547,7 +38645,7 @@ async function applyCoverBlob(f){
    row's own file picker takes, never the covers-store road the book takes. */
 async function applyEntCoverBlob(en,f){
   if(!cur)return;
-  let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){alert("That picture couldn't be read.");return;}
+  let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){picFail(e,"That picture couldn't be read.");return;}
   const key=cur.id+"|"+en.id;
   en.coverV=Date.now();
   try{await dbPut("images",{key,data,v:en.coverV});}catch(e){alert("That cover couldn't be saved.");return;}
