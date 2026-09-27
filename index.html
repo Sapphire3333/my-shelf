@@ -5389,20 +5389,29 @@ function applyReading(x,st,dnf,flag){
        A story's set-aside clears its stage, so without the dnf test above its
        open reading — and its start date — vanished, which a book's never did. */
   }
-  /* marked finished outright, with nothing on its list — record today, once.
-     Marked `auto`, because it is the app's guess rather than something you
-     wrote down: it stands for "read, and I don't know when". A real date
-     arriving later from an export is allowed to take its place, where a date
-     you recorded yourself never is. */
+  /* ┌─ READ, AND WHEN IS NOT KNOWN ────────────────────────────────────────────┐
+     │ Marked finished outright, with nothing on its list: one reading, once,   │
+     │ marked `auto` — "read, and I don't know when". It used to be dated       │
+     │ TODAY, and that one guess then counted as reading done today everywhere: │
+     │ measured, a single press on an undated book added one to this year's     │
+     │ goal, ticked the 📖 streak, paid the week's "Finish a book" 120 XP and   │
+     │ ticked a genre of the twelve for 50 — for a book read years ago.         │
+     │ It now has no date. It counts as finished, and towards nothing that      │
+     │ belongs to a day, a week or a year, and it waits under "Read, but no     │
+     │ date" to be dated. The note that says so carries "Finished today" for    │
+     │ when you really did just finish it (guessIsToday). A real date from an   │
+     │ export may still take its place; a date you typed never is replaced.     │
+     └──────────────────────────────────────────────────────────────────────────┘ */
   if(!flag&&!nowReading&&!openRead(x)&&st==="finished"&&!dnf&&!doneReads(x).length){
-    reads.push({id:uid(),start:"",end:todayStr(),auto:true});
+    const guess={id:uid(),start:"",end:"",auto:true};
+    reads.push(guess);
     /* AND IT SAYS SO. Writing a date on somebody's behalf is a small thing
        that has large consequences downstream — it is what ticks one of the
        year's twelve and what counts today as a day you read — and it used to
        happen in silence. The flag is read by whoever handled the press;
        applyReading itself is called by the importers too, and four thousand
        books arriving must not put four thousand notes on the screen. */
-    autoDated=x;
+    autoDated={x,rid:guess.id};
   }
   return syncReads(x);
 }
@@ -5410,14 +5419,34 @@ let autoDated=null;
 /* called by the press handlers, never by an import */
 function sayIfAutoDated(){
   if(!autoDated)return;
-  const x=autoDated;autoDated=null;
+  const {x,rid}=autoDated;autoDated=null;
   /* NOT flagged as an XP note. The corner's "⚡ the XP ones" setting can be
-     turned off entirely, and this is a warning about what was written on your
+     turned off entirely, and this is a word about what was written on your
      behalf, not a reward — it must not be silenced by a preference about
-     applause. */
-  try{achToast({icon:"📅",name:"Recorded as read today",
-    plain:"“"+((x&&x.title)||"It")+"” had no dates on it, so today's was written. The ✕ on that reading takes it off again — and anything it counted towards comes back with it.",
-    tiers:[]},0,false);}catch(e){}
+     applause. See READ, AND WHEN IS NOT KNOWN. */
+  try{achToast({icon:"📅",name:"Finished — no date",
+    plain:"“"+((x&&x.title)||"It")+"” had no dates, so it counts as read but not as read today. If you have just finished it:",
+    act:{label:"Finished today",fn:()=>guessIsToday(rid)},tiers:[]},0,false);}catch(e){}
+}
+/* the note's button: the undated guess becomes today's, through whichever
+   save the book is open in — the editor's, the reading page's, or the shelf's */
+async function guessIsToday(rid){
+  const holds=bk=>[bk,...((bk&&bk.entries)||[])].find(y=>(y&&y.readings||[]).some(r=>r&&r.id===rid));
+  const fix=bk=>{const y=holds(bk);if(!y)return false;
+    const r=y.readings.find(r=>r.id===rid);if(!r||r.end)return false;
+    r.end=todayStr();delete r.auto;syncReads(y);return true;};
+  if(view==="book"&&cur&&holds(cur)){
+    if(bookMode==="edit"){if(fix(cur)){scheduleSave();const place=bookPlace();renderBook();if(place)setTimeout(()=>restoreBookPlace(place),0);}return;}
+    await quickEdit(bk=>fix(bk)?undefined:false);return;
+  }
+  const b=books.find(bk=>holds(bk));if(!b)return;
+  const before=JSON.parse(JSON.stringify(b));
+  if(!fix(b))return;
+  touchBook(b);
+  pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+  await dbPut("books",b);
+  if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+  try{renderMain();}catch(e){}
 }
 /* Re-reads go unquestioned on purpose — see the note above readListHtml — with
    one exception, which is the only press here that is genuinely ambiguous:
@@ -5790,7 +5819,9 @@ function finishProgress(x){
   if(!x||isColl(x))return false;
   const total=parseInt(x.pages)||0;
   if(!total||(parseInt(x.progress)||0)>=total)return false;
-  if(!openRead(x)&&doneReads(x).length){x.progress=total;if(x.pct)x.pct="";return true;}
+  /* and with no reading open at all — nothing being finished today, only a
+     stage said. See READ, AND WHEN IS NOT KNOWN */
+  if(!openRead(x)){x.progress=total;if(x.pct)x.pct="";return true;}
   setProgress(x,total);
   return true;
 }
@@ -9673,6 +9704,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.14",lines:[
+    "<b>A book with no dates, marked ✓ Finished, counts as read — not as read today.</b> It used to be dated today on your behalf, and that one guess then counted as today's reading everywhere: one press on a book read years ago added one to this year's goal, ticked the 📖 streak, paid the week's <i>Finish a book</i> and ticked a genre of the twelve. Now it's finished with no date — it counts as read, waits under <b>What's missing → Read, but no date</b> for a date, and counts towards nothing that belongs to a day, a week or a year.",
+    "When you really have just finished it, the note in the corner has a <b>Finished today</b> button: one press and it's today's, counting everywhere as before. Finishing something you had on 📖 Reading now is unchanged — it's dated today straight away. A dare on a book with no dates waits for that button rather than being let go.",
+    "<b>An import's fills don't count toward the week's Fill twenty blanks.</b> Filling books in from an export filled the whole week's goal at once — ten books given a blurb and a page count counted twenty. The week now starts counting again from after an import, and what you filled in by hand before it still counts."]},
   {v:"2026-09-27.13",lines:[
     "<b>A dare pays for reading it, not for a reading from years ago.</b> The dare, a kept pick, <i>The next in line</i> and <i>The forgotten one</i> all paid the moment their book said Finished — and a book that came in on the wrong stage says Finished for a reading from another year the moment you put it right. They now pay only for a reading that ended on or after the day they were drawn or kept. A book with no dates that you mark Finished still gets today's reading and still counts.",
     "One that turns out to have been read before is let go rather than left on the card with nothing that could ever finish it — it says so in the corner, and a kept pick is marked <i>read before it was kept</i>. A pick kept for a re-read waits for the re-read, as before."]},
@@ -18276,7 +18311,13 @@ function achToast(r,t,isXp){
      one behind it — one thing happened, so it says so once */
   const xp=(!isXp&&t)?achRungXp(t):0;
   el.innerHTML=`<span class="tico">${r.icon}</span><span><b>${esc(r.name)}${st2?" · "+esc(st2.label):""}</b>${
-    xp?` <b class="txp">+${xp.toLocaleString()} XP</b>`:""}<br><span class="hint">${esc(r.plain)}</span></span>`;
+    xp?` <b class="txp">+${xp.toLocaleString()} XP</b>`:""}<br><span class="hint">${esc(r.plain)}</span>${
+    r.act?` <button class="btn smallbtn" style="margin-top:4px">${esc(r.act.label)}</button>`:""}</span>`;
+  /* a note with a button to press answers to the pointer, and stays long
+     enough to be pressed; every other note lets clicks through as before */
+  if(r.act){el.style.pointerEvents="auto";secs=Math.max(secs,12);
+    const bt=el.querySelector("button");
+    if(bt)bt.onclick=()=>{try{r.act.fn();}catch(e){}el.remove();};}
   host.appendChild(el);
   /* reading a layout value forces the browser to settle the note where it
      stands BEFORE the class goes on, which is what makes the fade a fade rather
@@ -20217,7 +20258,11 @@ const finishedSince=(b,at)=>{
   const ended=x=>readsOf(x).some(r=>r&&!r.open&&r.end&&String(r.end)>=day);
   return ended(b)||(isColl(b)&&(b.entries||[]).some(en=>!entIsPart(b,en)&&ended(en)));
 };
-const readBefore=(b,at)=>!!b&&statusOf(b)==="finished"&&!b.dnf&&!finishedSince(b,at);
+/* read before only when there is a DATE saying so — an undated reading is not
+   known to be old, and "Finished today" on its note may be one press away */
+const hasDatedRead=b=>readsOf(b).some(r=>r&&!r.open&&r.end)
+  ||(isColl(b)&&(b.entries||[]).some(en=>!entIsPart(b,en)&&readsOf(en).some(r=>r&&!r.open&&r.end)));
+const readBefore=(b,at)=>!!b&&statusOf(b)==="finished"&&!b.dnf&&!finishedSince(b,at)&&hasDatedRead(b);
 const saidReadBefore=(what,title)=>{try{achToast({icon:"🗓",name:"Read before it was drawn",
   plain:"“"+(title||"Untitled")+"” has no reading that ended after the "+what+" was drawn, so it pays nothing — marking an old read Finished puts the record right, it isn't reading it. Draw another.",
   tiers:[]},0,false);}catch(e){}};
@@ -20499,6 +20544,14 @@ const WEEKLIES=[
 const weekOwners=()=>{const o=new Set();books.forEach(b=>{if(!b)return;o.add(b.id);
   if(isColl(b))(b.entries||[]).forEach(en=>o.add(b.id+"/"+en.id));});return o;};
 let weekSeen=null;   /* the last look, this session only — see WHICH, NOT HOW MANY */
+/* ---- AN IMPORT'S FILLS ARE NOT THE WEEK'S WORK ----
+   Measured: one Fill in from an export over ten books with no blurb and no
+   page count counted twenty on a "Fill twenty blanks" week, the whole goal.
+   Around an import, what you had done is banked first, then the import's
+   changes become the new starting line. The daily tasks pass imports by the
+   same way (HIST_IMPORT). */
+function weekBeforeImport(){try{if(quests&&quests.week)weekProgress();}catch(e){}}
+function weekAfterImport(){try{weekSeen=null;if(quests&&quests.week)weekProgress();}catch(e){}}
 const weeklyOf=w=>w&&WEEKLIES.find(x=>x.k===w.k)||null;
 /* ---- FINISHING A WEEK'S GOAL ON WEDNESDAY LEFT NOTHING TO DO ----
    The goal was a line you crossed once and then the card sat there saying
@@ -21224,10 +21277,11 @@ function questCheck(){
     if(!b){closeSlot("bookCh");questSave();}
     else if(statusOf(b)==="finished"&&!b.dnf){
       /* see READ SINCE IT WAS ASKED */
-      const since=finishedSince(b,quests.bookCh.at);
-      closeSlot("bookCh");
-      if(since)questAward(100,"The dare, seen through: “"+(b.title||"Untitled")+"”","d:"+nm);
-      else{saidReadBefore("dare",b.title);questSave();}
+      /* paid for a reading since the draw; let go for one dated before it; and
+         left standing for one with no date, which "Finished today" may date */
+      if(finishedSince(b,quests.bookCh.at)){closeSlot("bookCh");
+        questAward(100,"The dare, seen through: “"+(b.title||"Untitled")+"”","d:"+nm);}
+      else if(readBefore(b,quests.bookCh.at)){closeSlot("bookCh");saidReadBefore("dare",b.title);questSave();}
     }else if(b.dnf){
       /* their OH-NO rule: a hated dare counts once TWO of notes / dislikes /
          stood-out / quotes are honestly filled — counted by ohNoFilled */
@@ -23720,7 +23774,9 @@ function refreshImport(light){
        it — and if it reports a fraction of a second while the app still feels
        stuck, then the wait is something happening after this, not in it. */
     const tA=performance.now();
+    weekBeforeImport();
     await importMerge(it);
+    weekAfterImport();
     const tB=performance.now();
     saveImportQueue();
     /* no flush here: filing the book already queued the upload, and queueing
@@ -23758,7 +23814,9 @@ function refreshImport(light){
     b.disabled=true;b.textContent="Filling in…";
     const msg=q("#busyMsg");if(msg)msg.textContent=`Filling in ${batch.length}…`;
     const steps=[];
+    weekBeforeImport();
     await runBatch(batch,it=>importMerge(it,steps),"Filling in");
+    weekAfterImport();
     if(steps.length){const was=histSrc;histSrc=HIST_IMPORT;try{pushOp({t:"bulk",items:steps});}finally{histSrc=was;}}
     saveImportQueue();
     if(SYNC.on)flushQueue();
@@ -37402,7 +37460,8 @@ function parseDatesRead(s){
 /* Fold what an export knows into the readings a book already has, without ever
    contradicting one. A reading is recognised by the day it finished, so an
    export can hand a start date to a reading that only had an end. The app's own
-   stand-in dated today, and any blank left to make up a re-read count, are the
+   stand-in (`auto` — undated now, dated today before that), and any blank left
+   to make up a re-read count, are the
    only readings allowed to be written over — they say "read, date unknown", so
    a real date is not a contradiction but an answer. Anything the export knows
    about that has no counterpart here is added; nothing here is ever removed,
@@ -38575,6 +38634,10 @@ async function importOne(it,extra){
    the book before makeCollection touches it and hand that in, and a single ↶
    Undo puts the standalone book back rather than leaving an empty collection. */
 async function importIntoCollection(items,coll,wasBefore){
+  weekBeforeImport();
+  try{return await importIntoCollectionInner(items,coll,wasBefore);}finally{weekAfterImport();}
+}
+async function importIntoCollectionInner(items,coll,wasBefore){
   const before=JSON.parse(JSON.stringify(wasBefore||coll));
   coll.entries=coll.entries||[];
   const collSt=statusOf(coll);
@@ -38612,6 +38675,10 @@ async function importIntoCollection(items,coll,wasBefore){
    where it differs from the collection's, so a series you have simply finished
    stays one entry instead of scattering its books back across the shelf. */
 async function importCollection(items,name){
+  weekBeforeImport();
+  try{return await importCollectionInner(items,name);}finally{weekAfterImport();}
+}
+async function importCollectionInner(items,name){
   /* a given-up book is still a book you are done with, not one still waiting —
      a series of nothing but DNFs used to land as "Want to read" because the
      first test insisted on !dnf and the fallback was the pile. Done-with means
