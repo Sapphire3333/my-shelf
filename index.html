@@ -5853,18 +5853,29 @@ const pagesReached=(b,total)=>{
   const pc=pctOf(b);
   return (pc&&total)?Math.round(total*pc/100):0;
 };
+/* ---- WHEN A COLLECTION IS COUNTED AS ITS STORIES ----
+   Once a whole story has FINISHED a reading of its own. It was any reading at
+   all, so pressing 📖 on one story of a collection you had finished — an open
+   reading, nothing finished — switched the collection to its stories, and its
+   own finish, which no story carries, vanished: "finished this year" 1 → 0.
+   A split piece never switches it either; it folds into its volume. */
+const collByStories=b=>isColl(b)&&((b.entries)||[]).some(en=>!entIsPart(b,en)&&doneReads(en).length);
 function readUnits(){
   const out=[];
   for(const b of books){
     const ens=isColl(b)?((b.entries)||[]):[];
-    if(ens.some(en=>readsOf(en).length)){
+    if(collByStories(b)){
       for(const en of ens){
         if(!entIsOwnUnit(b,en))continue;   /* its volume answers for it */
+        const pg=(parseInt(en.pages)||0)+entFoldedPages(b,en);
         out.push({title:en.title||b.title,book:b,en,
           reads:doneReads(en),times:entTimesRead(b,en),
-          /* a story keeps no page of its own, so there is no part-way to count */
-          part:0,
-          pages:(parseInt(en.pages)||0)+entFoldedPages(b,en)});
+          /* a story keeps its own bookmark (setProgress takes one), so the
+             part-way through one being read or given up on counts the way a
+             book's does — it counted nothing, where the same book standing
+             alone counted its 120 pages */
+          part:(entDnfOf(b,en)||entStatusOf(b,en)==="reading")?pagesReached(en,pg):0,
+          pages:pg});
       }
     }else{
       const pg=isColl(b)?(ens.reduce((s,en)=>s+(parseInt(en.pages)||0),0)||(parseInt(b.pages)||0)):(parseInt(b.pages)||0);
@@ -5913,19 +5924,59 @@ function rateUnits(){
    collection's word; one where no story speaks is counted as itself. Search's
    buttons, the header's DNF and Insights all quote this one list, so the
    screens stop giving two answers about one shelf. */
+/* ┌─ ONE BOOK BEING READ, NOT THE WHOLE COLLECTION ─────────────────────────┐
+   │ A collection is counted as its stories once a whole story has a stage   │
+   │ or a flag of its own — a split piece never counts, it folds into its    │
+   │ volume, so ticking one tale Finished no longer turns a Want-to-read set │
+   │ of three volumes into three Want-to-reads.                              │
+   │ Stories that say nothing take the collection's word — except 📖. A      │
+   │ collection marked 📖 means you are somewhere in it, not in all of it at  │
+   │ once: with one of its stories marked 📖, Today said "Reading now (3)"   │
+   │ and the Library's pill said 2, for one book being read. The answer is   │
+   │ 1: the story you marked. The silent ones are not started as far as the  │
+   │ shelf knows, so they count as want-to-read, and when no story in it is  │
+   │ marked 📖 the collection itself is the one thing being read, once.      │
+   │ collYieldsReading says the same to the Library's pills and rows.        │
+   └─────────────────────────────────────────────────────────────────────────┘ */
+const collSpeaks=b=>isColl(b)&&((b.entries)||[]).some(en=>!entIsPart(b,en)&&(String(en.status||"").trim()||en.dnf||en.hold));
+const collYieldsReading=b=>isColl(b)&&statusOf(b)==="reading"
+  &&((b.entries)||[]).some(en=>!entIsPart(b,en)&&String(en.status||"").trim()==="reading");
 function stageUnits(){
   const out=[];
   for(const b of books){
     const ens=isColl(b)?((b.entries)||[]):[];
-    if(ens.some(en=>String(en.status||"").trim()||en.dnf||en.hold)){
+    if(collSpeaks(b)){
+      const coll=statusOf(b)==="reading"&&!b.dnf&&!holdOf(b);
+      let reading=false;
       for(const en of ens){
         if(!entIsOwnUnit(b,en))continue;   /* its volume answers for it */
-        out.push({book:b,en,
-          status:entStatusOf(b,en),dnf:entDnfOf(b,en),hold:entHoldOf(b,en)});
+        let st=entStatusOf(b,en);
+        const own=String(en.status||"").trim();
+        if(coll&&!own&&st==="reading"&&!entWholeOf(b,en))st="want";
+        if(st==="reading")reading=true;
+        out.push({book:b,en,status:st,dnf:entDnfOf(b,en),hold:entHoldOf(b,en)});
       }
+      if(coll&&!reading)out.push({book:b,en:null,status:"reading",dnf:false,hold:false});
     }else out.push({book:b,en:null,status:statusOf(b),dnf:!!b.dnf,hold:!!holdOf(b)});
   }
   return out;
+}
+/* ---- WHO YOU HAVE READ MOST ----
+   Search's Stats corner counted every book by an author at any stage, so four
+   on Want-to-read beat two actually read; Insights credited a collection's
+   author with the collection once, however many of its stories you had read.
+   One count for both, off the same units every reading count uses: each
+   unit's times through, credited to whoever wrote THAT unit — a story's own
+   author, or its collection's. A re-read counts again. */
+function authorReads(keep){
+  const a={};
+  readUnits().forEach(u=>{
+    if(keep&&!keep(u.book))return;
+    const n=u.times||0;if(!n)return;
+    const who=String(u.en?entAuthorOf(u.book,u.en):(u.book.author||"")).trim();
+    if(who)a[who]=(a[who]||0)+n;
+  });
+  return Object.entries(a).sort((x,y)=>y[1]-x[1]);
 }
 /* ---- pages a day, out of the bookmark's own trail ----
    setProgress writes {d,p} into progLog every time a page is said — one entry
@@ -6037,7 +6088,7 @@ const collStrays=b=>!isColl(b)?[]:((b.entries)||[]).filter(en=>entGenresDiffer(b
 /* What the shelf actually holds. A collection is a container: its stories are
    the things on the shelf, not the collection itself. One with nothing in it
    still counts as one, so nothing visible goes untallied. */
-const shelfUnits=()=>books.reduce((n,b)=>n+(isColl(b)?Math.max(1,((b.entries)||[]).length):1),0);
+const shelfUnits=()=>books.reduce((n,b)=>n+(isColl(b)?Math.max(1,entWholes(b).length):1),0);
 /* every favourite, the stories inside collections included */
 const favUnits=()=>books.reduce((n,b)=>n+(isColl(b)
   ?((b.entries)||[]).filter(en=>en.favorite).length+(b.favorite?1:0)
@@ -9521,6 +9572,13 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.7",lines:[
+    "<b>📖 A collection you are reading counts as one book being read.</b> With a collection marked 📖 and one of its stories marked 📖, Today said <i>Reading now (3)</i> and the Library's pill said 2. It is 1 on both now: the story you marked. The stories you haven't said anything about count as not started yet, and when no story is marked 📖 the collection itself is the one thing being read.",
+    "<b>Starting a story no longer erases the collection's finish.</b> Pressing 📖 on one story of a collection you had finished took that finish out of the year's count — <i>finished this year</i> went from 1 to 0. A collection is counted as its stories only once a story has finished a reading of its own.",
+    "<b>A split volume counts as one everywhere.</b> Ticking one of its tales changed the whole set's stage count, and a set of three volumes with one split said <i>3 of 5 read, 60%</i> and <i>5 on the shelf</i>. It says <i>1 of 3</i> now, and 🗡 Series Slayer counts it the same way.",
+    "<b>⏸ On hold is not finished.</b> Insights and three medals counted a series waiting for its next book as a finished one, while the band at the top said it wasn't.",
+    "<b>Most-read author means read.</b> Search's Stats corner counted every book by an author at any stage, so four on Want to read beat two you had read. Search and Insights now count the same thing — readings — and a collection's stories each count for its author.",
+    "<b>A story you are part-way through counts its pages</b> toward pages read, as a book does. 🎄 Fireside Read counts books only, as its place on the wall says. ⭐ Judge and Jury no longer counts a collection's automatic average as one more rating. 🧱 Doorstopper counts a split volume's whole length, and a collection with no genres of its own answers with the ones its stories share, for the year's twelve and 🧭 Genre Wanderer."]},
   {v:"2026-09-27.6",lines:[
     "<b>XP is kept as a list of what earned it now, not as one number.</b> Each device kept its own total, and when they met the higher of the two was taken. That is only right while both have earned the same things, and often they had not: a dare finished on the computer was paid a second time on the phone — 200 XP and “Dared and Done” counting 2 for one book — the all-three bonus was paid on each, and two tasks ticked one on each device before they met kept only one of the ten.",
     "Every payment is now written down under the deed that earned it — this day's rating task, the dare on that book, Fantasy in this twelve — and your two devices join their lists by that name. The same deed on both is paid once; different deeds on either are all kept. Your level and the medals for dares, OH-NOs, AI stories, the twelve, errands and weeks count off the same list. Everything you had before this carries over untouched as the starting balance.",
@@ -13080,10 +13138,11 @@ const rateCell=b=>b.rating!=null&&b.rating!==""
    in book five matters far less than the fact that it is book five. So a
    collection measures itself in stories finished, and each story keeps its own
    pages. Anything that isn't a collection is unchanged. */
-const collDone=b=>(b.entries||[]).filter(en=>!entDnfOf(b,en)&&entStatusOf(b,en)==="finished").length;
+/* the volumes, not the tales split out of them — see entWholes */
+const collDone=b=>entWholes(b).filter(en=>!entDnfOf(b,en)&&entStatusOf(b,en)==="finished").length;
 const pctOf=b=>{
   if(isColl(b)&&(b.entries||[]).length){
-    const t=(b.entries||[]).length,d=collDone(b);
+    const t=entWholes(b).length,d=collDone(b);
     return d?Math.max(0,Math.min(100,Math.round(d/t*100))):null;
   }
   const t=parseInt(b.pages)||0,a=parseInt(b.progress)||0;
@@ -13249,8 +13308,8 @@ const paceLine=b=>{
    progress. A collection you have finished, or not started, still says nothing. */
 const collPartWay=b=>{
   if(!isColl(b)||!(b.entries||[]).length)return false;
-  const done=collDone(b);
-  return done<(b.entries||[]).length&&(done>0||(b.entries||[]).some(en=>String(en.status||"")==="reading"));
+  const done=collDone(b),wh=entWholes(b);
+  return done<wh.length&&(done>0||wh.some(en=>String(en.status||"")==="reading"));
 };
 /* `edit` — "bookId|entryId", entryId blank for a book — puts a ✎ on the line
    and a folded strip under it (pgStripHtml), so the page you are on can be
@@ -13279,7 +13338,7 @@ const progHtml=(b,edit)=>{
     <button class="pgedit" data-pgedit="${esc(edit)}" title="Say where you are — the page, or how far through">✎</button></div>${pgStripHtml(b,edit)}`;
   /* a collection counts in stories, everything else in pages */
   const said=isColl(b)&&(b.entries||[]).length
-    ? `${collDone(b)} of ${(b.entries||[]).length} read`
+    ? `${collDone(b)} of ${entWholes(b).length} read`
     /* a book kept in percent has no page to name — the percent is the whole
        of what is known about where you are, and "p. of" with two blanks in it
        reads like something failed to load */
@@ -16063,7 +16122,9 @@ function renderLibrary(){
     ?((b.entries)||[]).filter(en=>String(en.status||"").trim()||en.dnf||en.hold||en.unowned)
        .map(en=>storyProxy(b,en))
     :[])];
-  const plainSt=k=>countShelf.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
+  /* a 📖 collection whose story says which one is being read is not counted
+     as being read a second time — see ONE BOOK BEING READ */
+  const plainSt=k=>countShelf.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)&&!(k==="reading"&&collYieldsReading(b))).length;
   /* "don't have it yet" is a LENS, not a stage: these books are still counted
      under Want to read, because wanting them is still true. Its own pill only
      narrows the list to them — which is the "so i can keep an eye out" half of
@@ -16106,7 +16167,7 @@ function renderLibrary(){
     :statusFilter==="hold"?holdOf(b)
     :statusFilter==="dnf"?!!b.dnf
     :statusFilter==="unowned"?(unownedOf(b)&&!b.dnf)
-    :(statusOf(b)===statusFilter&&!b.dnf&&!holdOf(b));
+    :(statusOf(b)===statusFilter&&!b.dnf&&!holdOf(b)&&!(statusFilter==="reading"&&collYieldsReading(b)));
   const list=shelf.filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
     &&(!onlyRaw||isRaw(b))&&findHit(b)).sort(sortCmp);
   /* with something typed, the rows that carry the letters as typed stand
@@ -16890,7 +16951,7 @@ function renderLibrary(){
           <div style="max-height:260px;overflow-y:auto;margin-bottom:2px">
           ${pool.map(c=>`<div class="snap" style="padding:6px 10px">
             <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${esc(c.title)||"Untitled"}</div>
-              <div class="meta">${esc(c.author)||"Unknown author"} · ${(c.entries||[]).length} inside</div></div>
+              <div class="meta">${esc(c.author)||"Unknown author"} · ${entWholes(c).length} inside</div></div>
             <button class="btn" data-into2="${c.id}" style="padding:3px 9px">Put them in</button></div>`).join("")
             ||'<div class="none">No collection matches that.</div>'}
           </div>
@@ -17396,7 +17457,7 @@ const ACHS=[
   ["shelf","📚","Shelf Builder","books brought onto the shelf","book",[25,100,300,700,1500,3000,4500,6000,8000,10000,13000,16000,20000,25000,30000],
     c=>c.byKind("book").length],
   ["genres","🧭","Genre Wanderer","genres with at least one finished book","book",[3,6,10,14,18,22,26,30,35,40,45,50,60,70,85],
-    c=>new Set(c.finB.flatMap(u=>u.en?entGenresOf(u.book,u.en):(u.book.genres||[]))).size],
+    c=>new Set(c.finB.flatMap(u=>u.en?entGenresOf(u.book,u.en):ownGenres(u.book))).size],
   ["wish","🌠","Wishes Granted","finished books you started a day or more after adding them — a wish that sat on the shelf before coming true","book",[3,10,25,50,100,175,275,400,600,850,1150,1500,2000,2600,3300],
     c=>c.byKind("book").filter(b=>{
       if(statusOf(b)!=="finished"||b.dnf)return false;
@@ -17408,7 +17469,7 @@ const ACHS=[
       const gr={};
       c.byKind("book").filter(b=>!isColl(b)&&String(b.series||"").trim()).forEach(b=>{(gr[b.series.trim()]=gr[b.series.trim()]||[]).push(b);});
       const s1=Object.values(gr).filter(g=>g.length>=2&&g.every(b=>statusOf(b)==="finished"&&!b.dnf)).length;
-      const s2=c.byKind("book").filter(b=>isColl(b)&&(b.entries||[]).length>=2&&statusOf(b)==="finished"&&!b.dnf).length;
+      const s2=c.byKind("book").filter(b=>isColl(b)&&entWholes(b).length>=2&&statusOf(b)==="finished"&&!b.dnf).length;
       return s1+s2;
     }],
   ["months","📅","Steady Months","calendar months with three or more finishes","book",[1,3,6,12,24,36,48,72,100,130,160,200,240,300,360],
@@ -17420,9 +17481,10 @@ const ACHS=[
   ["dnf","🙃","At Least You Tried","honest give-ups — set down and said so","all",[1,3,6,10,18,30,45,65,90,120,160,210,270,350,450],
     c=>c.stU.filter(u=>u.dnf).length],
   ["pages","🧱","Doorstopper","finished books of 500 pages or more","book",[1,3,8,15,30,50,80,120,175,240,320,420,550,700,900],
-    c=>c.finB.filter(u=>parseInt(u.en?u.en.pages:u.book.pages)>=500).length],
+    /* a volume's length is spread over the tales split out of it */
+    c=>c.finB.filter(u=>(u.en?(parseInt(u.en.pages)||0)+entFoldedPages(u.book,u.en):(parseInt(u.book.pages)||0))>=500).length],
   ["holiday","🎄","Fireside Read","books finished in the deep of December","book",[1,2,3,5,7,10,13,16,20,24,28,32,36,40,45],
-    c=>c.ends.filter(e=>{const md=e.end.slice(5,10);return md>="12-18"&&md<="12-31";}).length],
+    c=>c.ends.filter(e=>{const md=e.end.slice(5,10);return kindOf(e.u.book)==="book"&&md>="12-18"&&md<="12-31";}).length],
   /* fanfics */
   ["ficShelf","📱","Fic Stacker","fanfics on the shelf","fanfic",[3,8,20,40,80,150,250,400,600,850,1200,1600,2200,3000,4000],c=>c.byKind("fanfic").length],
   ["ficWorlds","🐇","Fandom Hopper","different fandoms among your fics","fanfic",[2,4,7,10,14,18,22,27,33,40,48,57,67,80,95],
@@ -17494,7 +17556,9 @@ const ACHS=[
     c=>new Set(books.flatMap(allKeywordsOf).map(k=>String(k).toLowerCase())).size],
   ["rated","⭐","Judge and Jury","books and stories you have put a rating on","all",
     [10,50,150,400,1000,2000,3000,4500,6000,8000,10000,13000,16000,20000,25000],
-    c=>books.filter(b=>b.rating!=null).length
+    /* a collection's mark that is only its stories' average is not one more
+       rating — you gave the stories theirs; one you set yourself still counts */
+    c=>books.filter(b=>b.rating!=null&&!(isColl(b)&&!b.ratingOwn&&(b.entries||[]).some(e=>e.rating!=null))).length
       +books.flatMap(b=>b.entries||[]).filter(e=>e.rating!=null).length],
   ["yearsRead","🕰","Still Here","different calendar years you finished something in","all",
     [1,2,3,5,7,10,13,16,20,24,28,32,36,40,45],
@@ -17723,7 +17787,10 @@ function achLadderHtml(r){
 const ACH_KIND_NAMES={all:"Everywhere",book:"Books",fanfic:"Fanfics",ai:"AI stories",quest:"Challenges"};
 function achCtx(){
   const stU=stageUnits();
-  const finB=stU.filter(u=>u.status==="finished"&&!u.dnf&&kindOf(u.book)==="book");
+  /* ⏸ on hold is not finished — the header band and the Library already
+     said so; the medals and Insights counted a series waiting for its next
+     book as done */
+  const finB=stU.filter(u=>u.status==="finished"&&!u.dnf&&!u.hold&&kindOf(u.book)==="book");
   /* readUnits was being walked once for `ends` and would have been walked again
      by each of the three medals below that need it. It is the most expensive
      thing here on a four-thousand-book shelf, so it is walked once and handed
@@ -20914,7 +20981,7 @@ function questCheck(){
       if(from){const d=String(r.end).slice(0,10);
         if(d<from.day||(d===from.day&&skip.has(readKey12(u,r))))return;}
       const b=u.book;
-      (u.en?entGenresOf(b,u.en):(b.genres||[])).forEach(g=>{
+      (u.en?entGenresOf(b,u.en):ownGenres(b)).forEach(g=>{
         const k=String(g).trim().toLowerCase();
         /* EVERY reading that could complete this genre, not only the first.
            It kept one, which was fine while a tick was permanent — and wrong
@@ -22491,7 +22558,7 @@ async function renderHub(part){
     const past=nxt?(b.entries||[]).indexOf(nxt)+1:0;
     const laterOwned=nxt&&unownedOf(nxt)
       ?(b.entries||[]).slice(past).filter(en=>!unownedOf(en)&&entStatusOf(b,en)!=="finished"&&!entDnfOf(b,en)).length:0;
-    return `<div class="hint" style="margin:3px 0 0">${collDone(b)} of ${(b.entries||[]).length} read${nxt?` · ${on?"on":"next"}: ${esc(nxt.title||"one of them")}`:""}${
+    return `<div class="hint" style="margin:3px 0 0">${collDone(b)} of ${entWholes(b).length} read${nxt?` · ${on?"on":"next"}: ${esc(nxt.title||"one of them")}`:""}${
         nxt&&unownedOf(nxt)?` <span class="bst wait" title="You have marked this one ⌛ Don't have it yet">⌛ not yours yet</span>`:""}</div>${
         laterOwned?`<div class="hint" style="margin:1px 0 0">${laterOwned} further on you do have.</div>`:""}
       <span class="prog" style="display:block;height:8px;margin-top:4px;max-width:260px"><i style="width:${pctOf(b)||0}%"></i></span>`;
@@ -23034,7 +23101,7 @@ function intoPanelHtml(){
     <div style="max-height:230px;overflow:auto">
       ${list.map(b=>`<button class="snap" data-into="${b.id}" style="width:100%;cursor:pointer;text-align:left">
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px">${esc(b.title)||"Untitled"}</span>
-        <span class="none" style="font-size:12px;flex:none">${((b.entries)||[]).length} inside</span>
+        <span class="none" style="font-size:12px;flex:none">${entWholes(b).length} inside</span>
       </button>`).join("")||(q2?'<span class="none">Nothing matches that.</span>'
         :(fresh.length?"":'<span class="none">No collections on your shelf yet.</span>'))}
     </div>
@@ -26161,7 +26228,9 @@ function renderSearchBody(){
   const authors={};pool.forEach(b=>{const a=(b.author||"").trim();if(a)authors[a]=(authors[a]||0)+1;
     if(isColl(b))(b.entries||[]).forEach(en=>{const ea=String(en.author||"").trim();if(ea&&ea!==a)authors[ea]=(authors[ea]||0)+1;});});
   const authorList=Object.entries(authors).sort((x,y)=>surnameOf(x[0]).localeCompare(surnameOf(y[0]))||x[0].localeCompare(y[0]));
-  const topAuthor=Object.entries(authors).sort((x,y)=>y[1]-x[1])[0]||null;
+  /* most-READ, from the readings — see authorReads; `authors` above is the
+     list of names, which counts what is on the shelf at any stage */
+  const topAuthor=authorReads(sKindOk)[0]||null;
   /* Genres, counted and answered the way the tags already are: a book's OWN
      genres, and a story's OWN genres as their own row. A collection's genres
      belong to the collection — its page says so in as many words, "these are on
@@ -27086,7 +27155,7 @@ function renderInsights(){
      "on the shelf" in adjacent tiles finally speak the same language */
   const stU=stageUnits();
   const stRow=u=>u.en?storyProxy(u.book,u.en):u.book;
-  const fin=stU.filter(u=>u.status==="finished"&&!u.dnf);
+  const fin=stU.filter(u=>u.status==="finished"&&!u.dnf&&!u.hold);
   const dnf=stU.filter(u=>u.dnf);
   /* set down is not given up on, so it is counted apart and kept out of the
      finishing rate — a series waiting for its next book has not been abandoned */
@@ -27119,13 +27188,7 @@ function renderInsights(){
      author had 38 finished to that one's thirty-odd. It says "most-read", so
      it counts what has been read: timesRead for a book, entTimesRead for a
      story, which is also what makes a re-read count twice. */
-  const aCount={};books.forEach(b=>{const a=(b.author||"").trim();
-    const n=timesRead(b);
-    if(a&&n)aCount[a]=(aCount[a]||0)+n;
-    if(isColl(b))(b.entries||[]).forEach(en=>{const ea=String(en.author||"").trim();
-      const en2=entTimesRead(b,en);
-      if(ea&&ea!==a&&en2)aCount[ea]=(aCount[ea]||0)+en2;});});
-  const topA=Object.entries(aCount).sort((a,b)=>b[1]-a[1]);
+  const topA=authorReads();
   /* A collection is a shelf entry, not a book: counting its combined page count as
      one title made every "how long a book do you read" number nonsense. Its stories
      count one by one instead — while total pages read still adds up the same. */
@@ -27225,7 +27288,7 @@ function renderInsights(){
     }else say.push(`This year so far: <b>${doneY}</b> finished.`);
   }
   /* what the page-by-page records say about the last month */
-  const cut=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
+  const cut=shelfDayOf(Date.now()-30*864e5);   /* the shelf's day, not Greenwich's */
   let recentPages=0;const activeDays=new Set();
   /* a story's own page-by-page log counts too — the book being read is often
      one inside a collection, and its pages were counting for nothing */
@@ -29094,7 +29157,7 @@ function kinCollHtml(b){
   return `<div class="vline2 kincoll">
     <span class="kinlbl">${k.by==="series"?`Others in <b>${esc(k.name)}</b>`:`Other collections by <b>${esc(k.name)}</b>`}</span>
     ${k.list.map(c=>{
-      const n=((c.entries)||[]).length,done=collDone(c);
+      const n=entWholes(c).length,done=collDone(c);
       return `<button class="kinbtn" data-kincoll="${esc(c.id)}" title="${esc(c.title||"Untitled")} — ${n} inside${n?`, ${done} read`:""}">${esc(c.title||"Untitled")}<span class="kinn">${n}</span></button>`;}).join("")}
   </div>`;
 }
@@ -29494,7 +29557,7 @@ function renderBookView(){
         ${sugHtml(b,"")}
         ${collPartWay(b)?`<div class="vprog">
           <span class="prog" style="flex:1"><i style="width:${pct||0}%"></i></span>
-          <span class="rr">${collDone(b)} of ${(b.entries||[]).length} read${(()=>{
+          <span class="rr">${collDone(b)} of ${entWholes(b).length} read${(()=>{
             /* and which one you are actually in, since that is the other half of
                "where am I" and the list below is long */
             const on=(b.entries||[]).find(en=>String(en.status||"")==="reading");
