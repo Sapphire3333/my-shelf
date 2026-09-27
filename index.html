@@ -6324,6 +6324,34 @@ async function backfillCollRatings(){
   }
   return touchedIds;
 }
+/* ---- THE OLD GUESSES, UNDATED ----
+   Before READ, AND WHEN IS NOT KNOWN, a book with no dates marked Finished
+   was given that day's date as a guess (`auto`), and every one of those went
+   on counting as reading done that day — towards its year, the streak, the
+   twelve. Once per device, every guess still standing loses its date and
+   becomes "read, no date", as a new one is now. A guess you have since dated
+   yourself is no longer `auto` (typing a date takes the mark off) and is left
+   alone, and so is one an export has dated. What was paid for them stays
+   paid. It says how many it undated, once, in the corner. */
+async function undateOldGuesses(){
+  try{const f=await dbGet("meta","guessesUndated");if(f&&f.v)return [];}catch(e){}
+  const touchedIds=[];let n=0;
+  for(const b of books){
+    let touched=false;
+    for(const y of [b,...(isColl(b)?(b.entries||[]):[])]){
+      let here=false;
+      (y.readings||[]).forEach(r=>{if(r&&r.auto&&r.end){r.end="";here=true;n++;}});
+      if(here){syncReads(y);touched=true;}
+    }
+    if(!touched)continue;
+    b.modified=nextMod(b);
+    try{await dbPut("books",b);touchedIds.push(b.id);}catch(e){}
+  }
+  try{await dbPut("meta",{k:"guessesUndated",v:Date.now()});}catch(e){}
+  if(n)setTimeout(()=>{try{achToast({icon:"📅",name:n+" guessed date"+(n===1?"":"s")+" taken off",
+    plain:"Books marked Finished with no dates had been given that day's date. They are read with no date now — What's missing → Read, but no date lists them.",tiers:[]},0,false);}catch(e){}},4000);
+  return touchedIds;
+}
 /* The braces to collVoice's belt. A collection whose stories ALL carry the
    same genre list, while its own is blank or a subset of it, takes that list
    as its own and the copies come off the stories — the shape "a story carries
@@ -8370,6 +8398,7 @@ async function initSync(){
   try{const sm0=await dbGet("meta","seenMod");SYNC.seen=(sm0&&sm0.v)||{};}catch(e){}
   const backfilled=await backfillCollRatings();   /* before the first paint, so the rows show it straight away */
   backfilled.push(...await liftUnanimousGenres());  /* same reason, same send */
+  backfilled.push(...await undateOldGuesses());     /* once, and sent the same way */
   const g=await dbGet("meta","genres");genres=g?g.v:{};
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
@@ -9704,6 +9733,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.17",lines:[
+    "<b>The old guessed dates are gone.</b> Before the last builds, a book with no dates marked ✓ Finished was given that day's date as a guess, and it went on counting as read that day. Every guess still standing is now <i>read, no date</i>, like a new one — the note in the corner says how many, once, and <b>What's missing → Read, but no date</b> lists them to be dated. A date you typed yourself, or one an import brought, is left exactly as it is. What they paid stays paid.",
+    "<b>OH-NO counts what you write after the dare.</b> A dare you give up on pays once two of notes, dislikes, stood-out words and quotes are filled — and it counted what the book already had, so one you'd written about long ago paid the moment you gave it up. It now counts only what's added after the dare is drawn, and a kept dare and <i>The forgotten one</i> the same way.",
+    "And <b>tomorrow's three</b>, opened or shut on one screen, stays that way on the other — shutting it didn't hold before."]},
   {v:"2026-09-27.15",lines:[
     "<b>What an import fills in counts again — for the week's goals and for the day's three.</b> The last builds stopped counting it: a blurb or a page count filled in from an export ticked neither <i>Fill in a blurb</i> nor <i>Give a book its length</i>, and didn't count toward the week's <i>Fill twenty blanks</i>. Both count it again — filling a book in is filling it in, whoever typed the words. Its lines in Recently edited still say <i>an import</i>, so you can see where they came from."]},
   {v:"2026-09-27.14",lines:[
@@ -18712,7 +18745,8 @@ function wireQuestCards(m){
      quests.picks=quests.picks||[];
      const d=quests.bookCh;
      if(d&&!quests.picks.some(p=>p.id===d.id)&&quests.picks.filter(p=>!p.done).length<keptCap())
-       quests.picks.unshift({id:d.id,title:d.title,at:Date.now(),xp:100,dare:true,wasDone:false});
+       quests.picks.unshift({id:d.id,title:d.title,at:Date.now(),xp:100,dare:true,wasDone:false,
+         oh:d.oh||ohNoBase(books.find(x=>x.id===d.id))});
      if(quests.picks.length>40)quests.picks.length=40;
      quests.bookCh=null;questDrawBook();pickOpen=true;questSave();renderChallenges();
    };
@@ -18930,7 +18964,10 @@ function mergeQuests(rv){
       if(rv.daily.bonus)l.daily.bonus=Math.max(l.daily.bonus||0,rv.daily.bonus);
       if(rv.daily.gotAt){const a=l.daily.gotAt=l.daily.gotAt||{};
         Object.keys(rv.daily.gotAt).forEach(k=>{a[k]=a[k]?Math.min(a[k],rv.daily.gotAt[k]):rv.daily.gotAt[k];});}
-      if(rv.daily.peek)l.daily.peek=true;
+      /* open or shut, whichever screen said it LAST — joined as "open on
+         either", a fold shut on one screen was opened again by the other */
+      if((rv.daily.peekAt||0)>(l.daily.peekAt||0)){l.daily.peek=!!rv.daily.peek;l.daily.peekAt=rv.daily.peekAt;}
+      else if(!rv.daily.peekAt&&!l.daily.peekAt&&rv.daily.peek)l.daily.peek=true;
       /* the day's game wins, taken the FURTHER of the two rather than added —
          the same rule every other count here keeps. Two screens adding up would
          pay the task off on five wins that were really three seen twice. */
@@ -19587,7 +19624,7 @@ const keptCap=()=>10+5*Math.min(2,buysOf("room").length);
    both visits agree; nothing is charged for setting it */
 const peekBought=()=>!!(quests&&quests.daily&&quests.daily.peek);
 function togglePeek(){if(!quests||!quests.daily)return;
-  quests.daily.peek=!quests.daily.peek;questSave();}
+  quests.daily.peek=!quests.daily.peek;quests.daily.peekAt=Date.now();questSave();}
 /* ---- a day done before its day ----
    Bought once, for one day: tomorrow's three become answerable with today's
    reading. quests.ahead is {day, got} — the day it is FOR, and which of that
@@ -20312,7 +20349,7 @@ function questDrawBook(){
   const back=earlierToRead(b);
   const from=back?(seriesShown(b)&&b.seriesNum?`${seriesShown(b)} #${b.seriesNum}`:(b.title||"Untitled")):"";
   if(back)b=back;
-  quests.bookCh={id:b.id,title:b.title||"Untitled",at:Date.now(),from};
+  quests.bookCh={id:b.id,title:b.title||"Untitled",at:Date.now(),from,oh:ohNoBase(b)};
   questSave();return b;
 }
 /* The kept list. It began as the Pick card's — draw with your eyes open,
@@ -20342,6 +20379,27 @@ function questNewPrompt(){
 const ohNoFilled=b=>[stripHtml((b&&b.canvasText)||"").trim(),((b&&b.cons)||[]).length,
   b&&b.aspects&&Object.keys(b.aspects).some(k=>(b.aspects[k]||[]).length),((b&&b.quotes)||[]).length]
   .filter(Boolean).length;
+/* ---- AND WRITTEN SINCE THE CARD WAS DRAWN ----
+   The count above took whatever paperwork the book already had, so a dare on
+   a book you had written about long ago paid its 100 the moment you gave it
+   up — the same fault READ SINCE IT WAS ASKED mended for finishing. A dare, a
+   kept dare and "The forgotten one" now keep what the book held when they
+   were drawn (ohNoBase), and count only what is new since: notes written or
+   changed, a dislike, a stood-out word or a quote that was not there. A card
+   drawn before this was kept has no base and counts as it always did. */
+const ohNoBase=b=>({n:strHash(stripHtml((b&&b.canvasText)||"").trim()),
+  c:((b&&b.cons)||[]).map(x=>strHash(String(x))),
+  a:Object.keys((b&&b.aspects)||{}).flatMap(k=>((b.aspects[k])||[]).map(w=>k+":"+w)),
+  q:((b&&b.quotes)||[]).map(x=>strHash(String(x)))});
+function ohNoDone(b,base){
+  if(!base)return ohNoFilled(b)>=2;
+  const now=ohNoBase(b);let n=0;
+  if(stripHtml((b&&b.canvasText)||"").trim()&&now.n!==base.n)n++;
+  if(now.c.some(h=>!(base.c||[]).includes(h)))n++;
+  if(now.a.some(w=>!(base.a||[]).includes(w)))n++;
+  if(now.q.some(h=>!(base.q||[]).includes(h)))n++;
+  return n>=2;
+}
 /* ┌─ THE ERRANDS — small jobs the shelf asks for, one at a time ─────────────┐
    │ All five of their 3, built as ONE machine, because that is what the five  │
    │ of them are: draw a TARGET off the shelf, name a small ACT on it, notice  │
@@ -20434,7 +20492,7 @@ const ERRANDS=[
    ask:b=>`It has waited on Want-to-read since ${esc(fmtEdited(b.created||Date.now()))} — longer than anything else on the shelf. Read it, or give up on it honestly.`,
    /* the same two ways out the dare has, and for the same reason: deciding you
       do not want it, and saying why, is a real answer and pays like one */
-   done:(b,e)=>finishedSince(b,e.at)||(b.dnf&&ohNoFilled(b)>=2),stale:(b,e)=>readBefore(b,e.at)},
+   done:(b,e)=>finishedSince(b,e.at)||(b.dnf&&ohNoDone(b,e.oh)),stale:(b,e)=>readBefore(b,e.at)},
   /* 🔁 and not ↻: ↻ is already the wording of the Another button an inch below
      it, and two of the same glyph on one card meaning two different things */
   {k:"reread",icon:"🔁",name:"An old favourite",xp:60,
@@ -21207,7 +21265,7 @@ function errandDraw(avoid){
   if(!live.length)return null;
   const other=live.filter(x=>x.e.k!==avoid),from=other.length?other:live;
   const got=from[Math.floor(Math.random()*from.length)];
-  quests.errand={k:got.e.k,id:got.t.id,title:got.t.title||"Untitled",at:Date.now(),
+  quests.errand={k:got.e.k,id:got.t.id,title:got.t.title||"Untitled",at:Date.now(),oh:ohNoBase(got.t),
     xp:got.e.xp,need:got.e.need?got.e.need(got.t):0};
   questSave();return quests.errand;
 }
@@ -21279,8 +21337,9 @@ function questCheck(){
       else if(readBefore(b,quests.bookCh.at)){closeSlot("bookCh");saidReadBefore("dare",b.title);questSave();}
     }else if(b.dnf){
       /* their OH-NO rule: a hated dare counts once TWO of notes / dislikes /
-         stood-out / quotes are honestly filled — counted by ohNoFilled */
-      if(ohNoFilled(b)>=2){
+         stood-out / quotes are honestly filled — counted by ohNoDone, and only
+         what was written since the dare was drawn */
+      if(ohNoDone(b,quests.bookCh.oh)){
         closeSlot("bookCh");
         questAward(100,"OH-NO — hated, and the paperwork filled: “"+(b.title||"Untitled")+"”","o:"+nm);
       }
@@ -21305,7 +21364,7 @@ function questCheck(){
         /* kept to be read, and turned out to have been read already */
         p.done=Date.now();p.how="before";questSave();
       }else if(b.dnf){
-        if(ohNoFilled(b)>=2){
+        if(ohNoDone(b,p.oh)){
           p.done=Date.now();p.how="oh";
           questAward(p.xp||50,(p.dare?"OH-NO on a kept dare, paperwork filled: “":"A kept pick, hated honestly: “")+p.title+"”",
             (p.dare?"o:":"p:")+p.id+":"+(p.at||0));
