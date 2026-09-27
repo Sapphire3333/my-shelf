@@ -4700,7 +4700,9 @@ const stripHtml=s=>String(s||"").replace(/<[^>]*>/g," ")
   .replace(/&nbsp;/gi," ").replace(/&lt;/gi,"<").replace(/&gt;/gi,">")
   .replace(/&quot;/gi,'"').replace(/&#39;/gi,"'").replace(/&amp;/gi,"&")
   .replace(/\s+/g," ").trim();
-const statusOf=b=>b.status||"finished";
+/* a collection's stage is worked out from its books — see A COLLECTION IS
+   ITS BOOKS, beside entStatusOf. Everything else keeps its own. */
+const statusOf=b=>(b&&isColl(b)&&(b.entries||[]).length)?collStage(b):(b.status||"finished");
 /* ---- on hold, which is not the same as giving up ----
    One flag was carrying three unrelated meanings. "I didn't like it" and "I got
    tired of a good series and will come back" and "the next book isn't out yet"
@@ -5455,6 +5457,15 @@ async function guessIsToday(rid){
    other press says plainly what it means, and a first reading is never
    questioned. Returns false if you say no, so the caller leaves it be. */
 function markStatus(b,what){
+  /* A COLLECTION IS ITS BOOKS: its stage is theirs, so a choice made on the
+     collection sets what an unmarked book means, or the series' own hold and
+     give-up — and never opens, closes or dates a reading on the collection */
+  if(collRow(b)){
+    if(what==="finished"||what==="want"||what==="reading"){b.status=what==="finished"?"finished":"want";return true;}
+    if(what==="dnf"){b.dnf=!b.dnf;if(b.dnf)b.hold=false;return true;}
+    if(what==="hold"){b.hold=!b.hold;if(b.hold)b.dnf=false;return true;}
+    if(what==="unowned"){b.unowned=!b.unowned;return true;}
+  }
   if(what==="reading"&&!b.dnf&&statusOf(b)!=="reading"&&!openRead(b)){
     const done=readsOf(b).filter(r=>!r.open).length;
     if(done){
@@ -5744,11 +5755,52 @@ const entAuthorOf=(coll,en)=>String((en&&en.author)||"").trim()||String((coll&&c
    └──────────────────────────────────────────────────────────────────────────┘ */
 const entWholeOf=(coll,en)=>entIsPart(coll,en)
   ?(((coll&&coll.entries)||[]).find(x=>x.id===en.partOf)||null):null;
+/* ┌─ A COLLECTION IS ITS BOOKS ───────────────────────────────────────────────┐
+   │ One field was doing two jobs. A collection's stage was both "what a book  │
+   │ I haven't marked means" and "where I am in the series", and neither came │
+   │ out right: set to ✓ so an imported series counted as read, every book    │
+   │ not yet marked read as read too; set to ✕, every unopened book became a  │
+   │ give-up; set to 📖, the shelf had to guess which book was meant. And the │
+   │ series was counted as one book in some places and twenty in others.      │
+   │ So the jobs are split. `status` on a collection now only says what a     │
+   │ book you haven't marked means — "finished" (read) or "want" (not read    │
+   │ yet); collDefault reads it, and an old "reading" means not read yet. Its │
+   │ STAGE is worked out from its books by collStage: 📖 while one of them is │
+   │ being read, ✓ once every one not given up is read, 🔖 otherwise — and a │
+   │ collection is never 📖, ✓ or 🔖 by hand. ⏸ and ✕ stay on the collection,│
+   │ with their reasons, because they are about the SERIES: an unmarked book  │
+   │ that is not read yet waits under the series' ⏸, and stays merely unread │
+   │ under its ✕ — only a book you gave up on yourself is a give-up.         │
+   │ Every whole book counts as itself (readUnits, stageUnits); an unmarked  │
+   │ book that counts as read takes the collection's own dates, if it has any.│
+   │ collSummary says where you are in words, where the stage used to be.    │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+const collWholes=b=>isColl(b)?((b.entries)||[]).filter(en=>!entIsPart(b,en)):[];
+const collDefault=b=>{const t=String((b&&b.status)||"").trim();return (t===""||t==="finished")?"finished":"want";};
+function collStage(b){
+  const ws=collWholes(b);if(!ws.length)return collDefault(b);
+  const live=ws.filter(en=>!entDnfOf(b,en));
+  if(live.some(en=>entStatusOf(b,en)==="reading"&&!entHoldOf(b,en)))return "reading";
+  if(!live.length)return collDefault(b);
+  return live.every(en=>entStatusOf(b,en)==="finished")?"finished":"want";
+}
+function collSummary(b,long){
+  const ws=collWholes(b);
+  const st=ws.map(en=>({en,s:entStatusOf(b,en),d:entDnfOf(b,en),h:entHoldOf(b,en)}));
+  let t=st.filter(x=>!x.d&&x.s==="finished").length+" of "+ws.length+" read";
+  if(!long)return t;
+  const rd=st.filter(x=>!x.d&&!x.h&&x.s==="reading").map(x=>x.en.title||"one of them");
+  if(rd.length)t+=" · reading "+rd.join(", ");
+  const gu=st.filter(x=>x.d).length;if(gu)t+=" · "+gu+" given up";
+  const oh=st.filter(x=>!x.d&&x.h&&x.s!=="finished").length;if(oh)t+=" · "+oh+" on hold";
+  const nr=st.filter(x=>!x.d&&!x.h&&x.s==="want").length;if(nr)t+=" · "+nr+" not read yet";
+  return t;
+}
 const entStatusOf=(coll,en)=>{
   const own=String((en&&en.status)||"").trim();
   if(own)return own;
   const w=entWholeOf(coll,en);
-  return String((w&&w.status)||"").trim()||statusOf(coll||{});
+  return String((w&&w.status)||"").trim()||collDefault(coll||{});
 };
 /* Setting aside is its own flag rather than a status, here as it is for a book.
    A story you set aside is set aside; one you have given any status of its own
@@ -5759,7 +5811,8 @@ const entDnfOf=(coll,en)=>{
   if(en&&String(en.status||"").trim())return false;
   const w=entWholeOf(coll,en);
   if(w){if(w.dnf)return true;if(String(w.status||"").trim())return false;}
-  return !!(coll&&coll.dnf);
+  /* the series given up on does not make its unopened books give-ups */
+  return false;
 };
 /* on hold passes down the same way giving up does — a story of its own saying
    something else is left alone */
@@ -5768,7 +5821,8 @@ const entHoldOf=(coll,en)=>{
   if(en&&(String(en.status||"").trim()||en.dnf))return false;
   const w=entWholeOf(coll,en);
   if(w){if(w.hold)return true;if(String(w.status||"").trim()||w.dnf)return false;}
-  return !!(coll&&coll.hold);
+  /* the series on hold holds the books not read yet, not the ones read */
+  return !!(coll&&coll.hold)&&collDefault(coll)!=="finished";
 };
 /* A story finished on the same day as the collection around it need not say so
    twice. But one you are still reading, or have not started, or set aside, has
@@ -5903,30 +5957,33 @@ const pagesReached=(b,total)=>{
   const pc=pctOf(b);
   return (pc&&total)?Math.round(total*pc/100):0;
 };
-/* ---- WHEN A COLLECTION IS COUNTED AS ITS STORIES ----
-   Once a whole story has FINISHED a reading of its own. It was any reading at
-   all, so pressing 📖 on one story of a collection you had finished — an open
-   reading, nothing finished — switched the collection to its stories, and its
-   own finish, which no story carries, vanished: "finished this year" 1 → 0.
-   A split piece never switches it either; it folds into its volume. */
-const collByStories=b=>isColl(b)&&((b.entries)||[]).some(en=>!entIsPart(b,en)&&doneReads(en).length);
 function readUnits(){
   const out=[];
   for(const b of books){
     const ens=isColl(b)?((b.entries)||[]):[];
-    if(collByStories(b)){
-      for(const en of ens){
-        if(!entIsOwnUnit(b,en))continue;   /* its volume answers for it */
-        const pg=(parseInt(en.pages)||0)+entFoldedPages(b,en);
+    /* every whole book of a collection counts as itself — see A COLLECTION IS
+       ITS BOOKS. One you haven't marked, that counts as read, takes the
+       collection's own dates where it has them; a length kept only on the
+       collection is shared out among its books */
+    const ws=collWholes(b);
+    if(ws.length){
+      const cr=doneReads(b);
+      const own=ws.map(en=>(parseInt(en.pages)||0)+entFoldedPages(b,en));
+      const tot=own.reduce((a,n)=>a+n,0),cp=parseInt(b.pages)||0;
+      ws.forEach((en,i)=>{
+        const pg=tot?own[i]:(cp?Math.round(cp/ws.length):0);
+        const mine=doneReads(en);
+        const inherits=!mine.length&&!String(en.status||"").trim()&&!en.dnf&&entStatusOf(b,en)==="finished"&&!entDnfOf(b,en);
         out.push({title:en.title||b.title,book:b,en,
-          reads:doneReads(en),times:entTimesRead(b,en),
+          reads:mine.length?mine:(inherits?cr:[]),
+          times:(inherits&&cr.length)?cr.length:entTimesRead(b,en),
           /* a story keeps its own bookmark (setProgress takes one), so the
              part-way through one being read or given up on counts the way a
              book's does — it counted nothing, where the same book standing
              alone counted its 120 pages */
           part:(entDnfOf(b,en)||entStatusOf(b,en)==="reading")?pagesReached(en,pg):0,
           pages:pg});
-      }
+      });
     }else{
       const pg=isColl(b)?(ens.reduce((s,en)=>s+(parseInt(en.pages)||0),0)||(parseInt(b.pages)||0)):(parseInt(b.pages)||0);
       out.push({title:b.title,book:b,en:null,reads:doneReads(b),times:timesRead(b),
@@ -5974,40 +6031,14 @@ function rateUnits(){
    collection's word; one where no story speaks is counted as itself. Search's
    buttons, the header's DNF and Insights all quote this one list, so the
    screens stop giving two answers about one shelf. */
-/* ┌─ ONE BOOK BEING READ, NOT THE WHOLE COLLECTION ─────────────────────────┐
-   │ A collection is counted as its stories once a whole story has a stage   │
-   │ or a flag of its own — a split piece never counts, it folds into its    │
-   │ volume, so ticking one tale Finished no longer turns a Want-to-read set │
-   │ of three volumes into three Want-to-reads.                              │
-   │ Stories that say nothing take the collection's word — except 📖. A      │
-   │ collection marked 📖 means you are somewhere in it, not in all of it at  │
-   │ once: with one of its stories marked 📖, Today said "Reading now (3)"   │
-   │ and the Library's pill said 2, for one book being read. The answer is   │
-   │ 1: the story you marked. The silent ones are not started as far as the  │
-   │ shelf knows, so they count as want-to-read, and when no story in it is  │
-   │ marked 📖 the collection itself is the one thing being read, once.      │
-   │ collYieldsReading says the same to the Library's pills and rows.        │
-   └─────────────────────────────────────────────────────────────────────────┘ */
-const collSpeaks=b=>isColl(b)&&((b.entries)||[]).some(en=>!entIsPart(b,en)&&(String(en.status||"").trim()||en.dnf||en.hold));
-const collYieldsReading=b=>isColl(b)&&statusOf(b)==="reading"
-  &&((b.entries)||[]).some(en=>!entIsPart(b,en)&&String(en.status||"").trim()==="reading");
+/* every whole book of a collection, at the stage it answers to — see A
+   COLLECTION IS ITS BOOKS. A collection with nothing in it is still a book. */
 function stageUnits(){
   const out=[];
   for(const b of books){
-    const ens=isColl(b)?((b.entries)||[]):[];
-    if(collSpeaks(b)){
-      const coll=statusOf(b)==="reading"&&!b.dnf&&!holdOf(b);
-      let reading=false;
-      for(const en of ens){
-        if(!entIsOwnUnit(b,en))continue;   /* its volume answers for it */
-        let st=entStatusOf(b,en);
-        const own=String(en.status||"").trim();
-        if(coll&&!own&&st==="reading"&&!entWholeOf(b,en))st="want";
-        if(st==="reading")reading=true;
-        out.push({book:b,en,status:st,dnf:entDnfOf(b,en),hold:entHoldOf(b,en)});
-      }
-      if(coll&&!reading)out.push({book:b,en:null,status:"reading",dnf:false,hold:false});
-    }else out.push({book:b,en:null,status:statusOf(b),dnf:!!b.dnf,hold:!!holdOf(b)});
+    const ws=collWholes(b);
+    if(ws.length)ws.forEach(en=>out.push({book:b,en,status:entStatusOf(b,en),dnf:entDnfOf(b,en),hold:entHoldOf(b,en)}));
+    else out.push({book:b,en:null,status:statusOf(b),dnf:!!b.dnf,hold:!!holdOf(b)});
   }
   return out;
 }
@@ -6320,6 +6351,19 @@ async function backfillCollRatings(){
        has to outrank anything the cloud has already shown us, which is the whole
        of what nextMod is for — see the note beside it */
     b.modified=nextMod(b);
+    try{await dbPut("books",b);touchedIds.push(b.id);}catch(e){}
+  }
+  return touchedIds;
+}
+/* A collection marked 📖 said "somewhere in it" — under A COLLECTION IS ITS
+   BOOKS its own status says only what an unmarked book means, and 📖 is not
+   one of the answers. collDefault already reads it as "not read yet"; this
+   writes it down, once, so the collection's own record says so too. */
+async function collReadingToDefault(){
+  const touchedIds=[];
+  for(const b of books){
+    if(!isColl(b)||!(b.entries||[]).length||String(b.status||"")!=="reading")continue;
+    b.status="want";b.modified=nextMod(b);
     try{await dbPut("books",b);touchedIds.push(b.id);}catch(e){}
   }
   return touchedIds;
@@ -8399,6 +8443,7 @@ async function initSync(){
   const backfilled=await backfillCollRatings();   /* before the first paint, so the rows show it straight away */
   backfilled.push(...await liftUnanimousGenres());  /* same reason, same send */
   backfilled.push(...await undateOldGuesses());     /* once, and sent the same way */
+  backfilled.push(...await collReadingToDefault());  /* likewise */
   const g=await dbGet("meta","genres");genres=g?g.v:{};
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
@@ -9733,6 +9778,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.18",lines:[
+    "<b>A collection is its books now.</b> You no longer set 📖, ✓ or 🔖 on a collection — where it stands comes from the books inside it: 📖 while you're reading one of them, ✓ once every one you haven't given up on is read. Its row and its page say it in words: <i>4 of 6 read · reading one · 1 given up</i>.",
+    "What you set on a collection instead is <b>what the books you haven't marked are</b> — <i>✓ Read</i> or <i>🔖 Not read yet</i> — and the series' own <b>⏸ On hold</b> and <b>✕ Given up</b>, with their reasons. A series on hold holds the books you haven't read yet; a series given up leaves the ones you never opened unread, not given up. A collection you had on 📖 is now <i>not read yet</i> for its unmarked books.",
+    "<b>Every book in a collection counts as a book</b> — in the Library's stages, on Today, in the year's totals and in the medals. It was one book in some places and all of them in others. A book you haven't marked that counts as read takes the collection's own finish date, if it has one — so year totals and book-counting medals can go up where a whole series was counted as one."]},
   {v:"2026-09-27.17",lines:[
     "<b>The old guessed dates are gone.</b> Before the last builds, a book with no dates marked ✓ Finished was given that day's date as a guess, and it went on counting as read that day. Every guess still standing is now <i>read, no date</i>, like a new one — the note in the corner says how many, once, and <b>What's missing → Read, but no date</b> lists them to be dated. A date you typed yourself, or one an import brought, is left exactly as it is. What they paid stays paid.",
     "<b>OH-NO counts what you write after the dare.</b> A dare you give up on pays once two of notes, dislikes, stood-out words and quotes are filled — and it counted what the book already had, so one you'd written about long ago paid the moment you gave it up. It now counts only what's added after the dare is drawn, and a kept dare and <i>The forgotten one</i> the same way.",
@@ -13689,8 +13738,19 @@ const pgStripSync=(strip,from)=>{
   }
 };
 /* every stage gets a mark, finished included */
-const stSym=b=>b.dnf?"✕":holdOf(b)?"⏸":unownedOf(b)?"⌛":statusOf(b)==="finished"?"✓":statusOf(b)==="reading"?"📖":"★";
-const stName=b=>b.dnf?"Did not finish":holdOf(b)?"On hold":unownedOf(b)?"Don't have it yet":statusOf(b)==="finished"?"Finished":statusOf(b)==="reading"?"Reading now":"Want to read";
+const collRow=b=>!!b&&!b._story&&collWholes(b).length>0;
+const stSym=b=>collRow(b)?(b.dnf?"✕":holdOf(b)?"⏸":"📚"):b.dnf?"✕":holdOf(b)?"⏸":unownedOf(b)?"⌛":statusOf(b)==="finished"?"✓":statusOf(b)==="reading"?"📖":"★";
+const stName=b=>collRow(b)?collSummary(b)+(b.dnf?" · series given up":holdOf(b)?" · series on hold":"")
+  :b.dnf?"Did not finish":holdOf(b)?"On hold":unownedOf(b)?"Don't have it yet":statusOf(b)==="finished"?"Finished":statusOf(b)==="reading"?"Reading now":"Want to read";
+/* A collection's chooser: what an unmarked book means, and the series' own
+   hold and give-up — never a stage, which its books decide. The same
+   data-* the book chooser uses, so the wiring is shared. */
+const collPickBtns=(b,attr)=>`<span class="lbl" style="flex-basis:100%">Books you haven't marked are</span>
+      <button ${attr("finished")} class="${collDefault(b)==="finished"?"on":""}">✓ Read</button>
+      <button ${attr("want")} class="${collDefault(b)==="want"?"on":""}">🔖 Not read yet</button>
+      <span class="lbl" style="flex-basis:100%">The series</span>
+      <button ${attr("hold")} class="${holdOf(b)?"on":""}" title="Waiting, or set down for now — its books not read yet wait with it">⏸ On hold</button>
+      <button ${attr("dnf")} class="${b.dnf?"on":""}" title="Given up on the series — books you never opened stay unread, not given up">✕ Given up</button>`;
 let stPickFor=null;   /* which row has its stage chooser open */
 /* ---- Up next: a short queue you order yourself ----
    `b.upnext` is a position number on the book — a collection counts as one
@@ -13767,9 +13827,9 @@ function offerUpNext(finishedId){
   },60);
 }
 const stPickHtml=b=>`<div class="stpick">
-      ${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
+      ${collRow(b)?collPickBtns(b,k=>`data-setst="${b.id}|${k}"`):`${STATUSES.map(([k,l])=>`<button data-setst="${b.id}|${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
       <button data-setst="${b.id}|hold" class="${holdOf(b)?"on":""}">⏸ On hold</button>
-      <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>
+      <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>`}
       <button data-setst="${b.id}|unowned" class="${unownedOf(b)?"on":""}" title="You want it and haven't got it — not published yet, not bought yet, waiting on the library">${unownedOf(b)?"✓ ":""}⌛ Don't have it yet</button>
       <button data-upnext="${b.id}" class="${inUpNext(b)?"on":""}" title="Your Up next queue on 🏠 Today — five at most, in the order you choose">${inUpNext(b)?"✓ ":""}⏭ Up next</button>
     </div>`;
@@ -14474,7 +14534,10 @@ async function bookToEntry(b,collId,collStatus,collAuthor,collDnf,collKeywords){
      stage and so inherited "did not finish" from the collection — turning a
      book you read into one you abandoned. It only stays quiet where the stage
      and the setting-aside both agree. */
-  en.status=(statusOf(b)===(collStatus||"finished")&&!!b.dnf===!!collDnf)?"":statusOf(b);
+  /* quiet only where the book's stage IS what an unmarked book means there
+     — see A COLLECTION IS ITS BOOKS; a series' ✕ no longer passes down */
+  const def=(collStatus===""||collStatus==null||collStatus==="finished")?"finished":"want";
+  en.status=(statusOf(b)===def&&!b.dnf)?"":statusOf(b);
   en.dnf=!!b.dnf;
   /* ⏸ and the reasons for it and for ✕, what stood out, whether you have
      it, and its own genres — a story keeps every one of these, and entryToBook
@@ -14931,7 +14994,6 @@ async function foldIntoCollection(ids,coll){
   const before=JSON.parse(JSON.stringify(coll));
   const items=[];
   coll.entries=coll.entries||[];
-  const st=statusOf(coll);
   /* a collection with no author of its own takes the one its new books agree
      on, rather than leaving every one of them saying "same as the collection"
      and the collection saying nothing */
@@ -14944,7 +15006,7 @@ async function foldIntoCollection(ids,coll){
     const b=books.find(x=>x.id===id);
     if(!b||isColl(b)||b.id===coll.id)continue;
     const was=JSON.parse(JSON.stringify(b));
-    const {en}=await bookToEntry(b,coll.id,st,coll.author,coll.dnf,coll.keywords);
+    const {en}=await bookToEntry(b,coll.id,collDefault(coll),coll.author,coll.dnf,coll.keywords);
     coll.entries.push(en);
     await retireBook(b);
     await noteFold(b,coll.id,en);
@@ -14976,7 +15038,9 @@ async function makeCollectionFrom(ids,name,author){
   nb.genres=[...new Set(sel.flatMap(b=>b.genres||[]))];
   nb.keywords=[...new Set(sel.flatMap(b=>b.keywords||[]))].slice(0,20);
   nb.favorite=sel.some(b=>b.favorite);
-  nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":sel.some(b=>statusOf(b)==="reading")?"reading":"want";
+  /* what a book left unmarked here means — all of them read makes it "read",
+     anything else "not read yet"; see A COLLECTION IS ITS BOOKS */
+  nb.status=sel.every(b=>statusOf(b)==="finished")?"finished":"want";
   nb.dateFinished=sel.map(b=>b.dateFinished||"").sort().pop()||"";
   nb.entries=[];
   /* the copies are taken BEFORE anything is retired, since retireBook takes the
@@ -16450,13 +16514,12 @@ function renderLibrary(){
      which is exactly the set a press surfaces — so the number on a pill really
      is the number of rows it opens. "All" keeps counting the shelf as it
      stands, because that is the one pill that changes nothing. */
-  const countShelf=[...books,...books.flatMap(b=>isColl(b)
-    ?((b.entries)||[]).filter(en=>String(en.status||"").trim()||en.dnf||en.hold||en.unowned)
-       .map(en=>storyProxy(b,en))
-    :[])];
-  /* a 📖 collection whose story says which one is being read is not counted
-     as being read a second time — see ONE BOOK BEING READ */
-  const plainSt=k=>countShelf.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)&&!(k==="reading"&&collYieldsReading(b))).length;
+  /* A COLLECTION IS ITS BOOKS: asked about stages, the shelf is every book —
+     each whole book of a collection as its own row, the collection's own row
+     left out, since its stage is only theirs added up */
+  const countShelf=[...books.filter(b=>!collWholes(b).length),
+    ...books.flatMap(b=>collWholes(b).map(en=>storyProxy(b,en)))];
+  const plainSt=k=>countShelf.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
   /* "don't have it yet" is a LENS, not a stage: these books are still counted
      under Want to read, because wanting them is still true. Its own pill only
      narrows the list to them — which is the "so i can keep an eye out" half of
@@ -16499,8 +16562,8 @@ function renderLibrary(){
     :statusFilter==="hold"?holdOf(b)
     :statusFilter==="dnf"?!!b.dnf
     :statusFilter==="unowned"?(unownedOf(b)&&!b.dnf)
-    :(statusOf(b)===statusFilter&&!b.dnf&&!holdOf(b)&&!(statusFilter==="reading"&&collYieldsReading(b)));
-  const list=shelf.filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
+    :(statusOf(b)===statusFilter&&!b.dnf&&!holdOf(b));
+  const list=((statusFilter!=="all"||groupBy==="status")?countShelf:shelf).filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
     &&(!onlyRaw||isRaw(b))&&findHit(b)).sort(sortCmp);
   /* with something typed, the rows that carry the letters as typed stand
      first, folded matches next, typo matches last — each set in the sort's
@@ -23567,7 +23630,7 @@ function intoPanelHtml(){
         <span class="none" style="font-size:12px;flex:none">${impSel.size} go inside</span>
       </button>`).join("")}
       <div class="hint" style="margin:6px 0 0">It keeps its own rating, dates, tags and writing — those stay the collection's own. The ticked rows go inside it.</div>`:""}
-    <div class="hint" style="margin:7px 0 0">Each one goes inside it, keeping its own rating, pages, dates and writing. A stage that matches the collection's is left unsaid, so the collection stays one row on your shelf.</div>
+    <div class="hint" style="margin:7px 0 0">Each one goes inside it, keeping its own rating, pages, dates and writing. A stage that matches what the collection's unmarked books are is left unsaid.</div>
   </div>`;
 }
 /* `light` redraws skip the duplicate scan. Typing in the search box, ticking a
@@ -29976,9 +30039,9 @@ function renderBookView(){
         <div class="vbadges">
           <button class="vst ${b.dnf?"dnf":statusOf(b)}" id="vStatus" title="Change what stage it's at">${stSym(b)} ${esc(stName(b))} ▾</button>
           ${vStatusOpen?`<div class="stpick vpick">
-            ${STATUSES.map(([k,l])=>`<button data-vst="${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
+            ${collRow(b)?collPickBtns(b,k=>`data-vst="${k}"`):`${STATUSES.map(([k,l])=>`<button data-vst="${k}" class="${!b.dnf&&!holdOf(b)&&statusOf(b)===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${l}</button>`).join("")}
             <button data-vst="hold" class="${holdOf(b)?"on":""}" title="Set down for now — you mean to come back to it">⏸ On hold</button>
-            <button data-vst="dnf" class="${b.dnf?"on":""}" title="Given up on">✕ Did not finish</button>
+            <button data-vst="dnf" class="${b.dnf?"on":""}" title="Given up on">✕ Did not finish</button>`}
             <button data-vst="upnext" class="${inUpNext(b)?"on":""}" title="Your Up next queue on 🏠 Today — five at most, in the order you choose">${inUpNext(b)?"✓ ":""}⏭ Up next</button>
             <button data-vst="unowned" class="${unownedOf(b)?"on":""}" title="You want it and haven't got it — not published yet, not bought yet, waiting on the library">${unownedOf(b)?"✓ ":""}⌛ Don't have it yet</button>
           </div>`:""}
@@ -29991,6 +30054,8 @@ function renderBookView(){
                It rides data-vst, so the wiring the list already has picks it
                up with no second road to markStatus. */
             if(b.dnf)return "";
+            /* a collection is read book by book — its own line says where you are */
+            if(collRow(b))return `<span class="vline2" style="flex-basis:100%;margin:2px 0 0">${esc(collSummary(b,true))}</span>`;
             const s=statusOf(b);
             /* A COLLECTION IS NOT RE-READ; THE STORIES INSIDE IT ARE.
                On a finished set this offered "📖 Read it again", and taking it
@@ -30322,7 +30387,7 @@ function renderBookView(){
     /* the queue is a shelf-side change: written to the shelf's copy, then the
        page rebases itself onto it — cur is a COPY, see rebaseOpenBook */
     if(what==="upnext"){upNextToggle(cur.id,true).then(()=>rebaseOpenBook(cur.id));return;}
-    const wasDone=statusOf(cur)==="finished"&&!cur.dnf;
+    const wasDone=statusOf(cur)==="finished"&&!cur.dnf||collRow(cur);
     quickEdit(bk=>markStatus(bk,what)).then(()=>{
       /* said here, where it happened — left for the next press to say, it
          turned up later on something unrelated */
@@ -34112,8 +34177,8 @@ function renderEditor(){
           </div>
           <div class="inrow" style="gap:6px">
             <button class="entfav${en.favorite?" on":""}" data-efav="${en.id}" title="${en.favorite?"One of your favourite stories":"Mark this story as a favourite"}">${en.favorite?"♥":"♡"}</button>
-            <span class="boxbtn entsub" style="cursor:default">Status <select class="entsel" data-est="${en.id}" title="Where this story is up to, if it differs from the collection">
-              <option value=""${(!en.dnf&&!en.hold&&!en.status)?" selected":""}>same</option>
+            <span class="boxbtn entsub" style="cursor:default">Status <select class="entsel" data-est="${en.id}" title="Where this story is up to — left unmarked, it is what the collection says its unmarked books are">
+              <option value=""${(!en.dnf&&!en.hold&&!en.status)?" selected":""}>unmarked — ${collDefault(cur)==="finished"?"read":"not read yet"}</option>
               ${STATUSES.map(([k,l])=>`<option value="${k}"${(!en.dnf&&!en.hold&&en.status===k)?" selected":""}>${esc(l)}</option>`).join("")}
               <!-- Setting a story aside clears its stage — so with no entry of
                    its own here, an on-hold story fell through to "same" and
@@ -34695,7 +34760,7 @@ function renderEditor(){
         clearTimeout(saveTimer);await commitCur();
         const was=JSON.parse(JSON.stringify(b));
         if(!String(cur.author||"").trim()&&String(b.author||"").trim())cur.author=String(b.author).trim();
-        const {en,coverData}=await bookToEntry(b,cur.id,statusOf(cur),cur.author,cur.dnf,cur.keywords);
+        const {en,coverData}=await bookToEntry(b,cur.id,collDefault(cur),cur.author,cur.dnf,cur.keywords);
         cur.entries.push(en);
         if(coverData)curEnt[en.id]=coverData;
         await retireBook(b);
@@ -34718,7 +34783,13 @@ function renderEditor(){
 
   /* status segmented */
   function renderStatus(){
-    q("#statusSeg").innerHTML=STATUSES.map(([id,l])=>{
+    /* a collection says what its unmarked books mean — see A COLLECTION IS ITS BOOKS */
+    q("#statusSeg").innerHTML=collRow(cur)
+      ?`<span class="lbl" style="align-self:center;margin-right:6px">Books you haven't marked are</span>`
+        +[["finished","✓ Read","fin"],["want","🔖 Not read yet","wan"]].map(([id,l,c])=>
+          `<button class="${collDefault(cur)===id?c:""}" data-st="${id}">${l}</button>`).join("")
+        +`<span class="hint" style="flex-basis:100%;margin:4px 0 0">${esc(collSummary(cur,true))}</span>`
+      :STATUSES.map(([id,l])=>{
       const on=statusOf(cur)===id;
       const cls=on?(id==="finished"?"fin":id==="reading"?"rea":"wan"):"";
       return `<button class="${cls}" data-st="${id}">${l}</button>`;}).join("");
@@ -34759,7 +34830,7 @@ function renderEditor(){
       const gone=rs.splice(i,1)[0];
       /* strike off the reading you were in the middle of and you are no longer in
          the middle of it — otherwise the shelf would still say READING */
-      if(gone&&gone.open&&statusOf(cur)==="reading"&&!cur.dnf){
+      if(gone&&gone.open&&statusOf(cur)==="reading"&&!cur.dnf&&!collRow(cur)){
         cur.status=doneReads(cur).length?"finished":"want";renderStatus();renderProgress();
       }
       syncReads(cur);renderReads();scheduleSave();
@@ -34780,7 +34851,8 @@ function renderEditor(){
   }
   function renderProgress(){
     const w=q("#progWrap");
-    if(statusOf(cur)!=="reading"){w.innerHTML="";return;}
+    /* a collection is read book by book, and each keeps its own page */
+    if(statusOf(cur)!=="reading"||collRow(cur)){w.innerHTML="";return;}
     const total=parseInt(cur.pages)||0;
     const shownPct=total?(pctOf(cur)==null?"":pctOf(cur)):(cur.pct||"");
     w.innerHTML=`<div class="inrow">
@@ -38685,16 +38757,15 @@ async function importOne(it,extra){
 async function importIntoCollection(items,coll,wasBefore){
   const before=JSON.parse(JSON.stringify(wasBefore||coll));
   coll.entries=coll.entries||[];
-  const collSt=statusOf(coll);
+  const collSt=collDefault(coll);
   for(const it of items){
     const en=Object.assign(blankEntry(),{
       title:it.title,rating:it.rating,pages:it.pages,
       dateFinished:it.dateFinished||"",
       readings:readingsFromRow(it),
-      /* the stage AND the setting-aside must both agree before a story goes
-         quiet, or a book you read lands inside a series you gave up on and
-         inherits "did not finish" from it */
-      status:(it.status===collSt&&!!it.dnf===!!coll.dnf)?"":(it.status||""),dnf:!!it.dnf,
+      /* quiet only where its stage is what an unmarked book there means, and
+         never given up — see A COLLECTION IS ITS BOOKS */
+      status:(it.status===collSt&&!it.dnf)?"":(it.status||""),dnf:!!it.dnf,
       summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):""});
     syncReads(en);
     coll.entries.push(en);
