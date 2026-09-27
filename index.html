@@ -5779,10 +5779,18 @@ const entTimesRead=(coll,en)=>Math.max(doneReads(en).length,
    It leaves its mark on the day's page-by-page trail exactly as moving the
    bookmark by hand does, which is what makes the day you finish a book count
    for the reading streak. That was asked too, and the answer was: it counts. */
+/* ---- BUT ONLY WHEN THE FINISH IS TODAY ----
+   Finished pressed on something whose readings all ended long ago — a story
+   an import filed under the wrong stage, read in another year — is putting
+   the record right, not reading. It wrote a full book's pages onto TODAY's
+   trail all the same, which ticked the reading streak and "Move a bookmark
+   forward" and added the whole length to this month's pages and the pace.
+   With a finished reading and none open, the bookmark just goes to the end. */
 function finishProgress(x){
   if(!x||isColl(x))return false;
   const total=parseInt(x.pages)||0;
   if(!total||(parseInt(x.progress)||0)>=total)return false;
+  if(!openRead(x)&&doneReads(x).length){x.progress=total;if(x.pct)x.pct="";return true;}
   setProgress(x,total);
   return true;
 }
@@ -9665,6 +9673,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.11",lines:[
+    "<b>Putting a stage right is not reading today.</b> Pressing ✓ Finished on a story that came in with the wrong stage — its readings already dated in another year — moved its bookmark to the last page on today's trail. That ticked 📖 the reading streak and <i>Move a bookmark forward</i>, and added the whole story's pages to this month's pages and your pace. Now a change counts as reading only if it leaves something dated today: a reading started or finished today, or the bookmark moved today. Finishing what you are reading, and moving your page, count exactly as before. An import bringing in readings from other years doesn't count any more either.",
+    "Days that were already ticked this way can't be told apart from real ones, so the streak keeps them."]},
   {v:"2026-09-27.10",lines:[
     "<b>Putting back a book you folded into a collection no longer counts it twice.</b> It came back beside the story it had become, so it was on the shelf twice — twice in the year's count, twice in what you have read. Put back now takes that story out of the collection again, in the same step. If you have changed the story since folding it in, it asks first, because those changes go with it. And ↶ Undo after putting one back returns it to Recently deleted and its story to the collection, where before there was nothing to undo at all.",
     "<b>🎴 Well Guessed counts every guess you win, on either device.</b> Each device kept its own count and the higher of the two was taken, so guesses won on both before they met were partly lost. It counts off the same list your XP now keeps."]},
@@ -11930,9 +11941,33 @@ function saveHistLog(){
   histLogTimer=setTimeout(()=>{dbPut("meta",{k:"histLog",v:histLog})
     .then(()=>{if(SYNC.on){enqueue({kind:"meta",key:"histLog"});flushQueue();}}).catch(()=>{});},400);
 }
+/* ┌─ READING TODAY MEANS SOMETHING DATED TODAY ──────────────────────────────┐
+   │ The 📖 streak and "Move a bookmark forward" ticked on any change that    │
+   │ touched progress, readings or a finish date, whatever day it was about,  │
+   │ so putting right the stage of a story read in another year counted as a  │
+   │ day of reading. A change counts as reading now only if it leaves behind  │
+   │ something dated today that was not there before: a reading started or    │
+   │ finished today, or a move on the bookmark's trail today — in the book,   │
+   │ or in any story inside it. `rd` on the receipt carries the answer to     │
+   │ the task; receipts written before it have none and count as they did.    │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function todayMarks(x){
+  const out=new Set();if(!x)return out;
+  const d=todayStr();
+  const walk=y=>{if(!y)return;
+    (y.readings||[]).forEach(r=>{if(r&&(r.start===d||r.end===d))
+      out.add("r|"+(r.id||"")+"|"+(r.start||"")+"|"+(r.end||"")+"|"+(r.open?1:0));});
+    (y.progLog||[]).forEach(l=>{if(l&&l.d===d)out.add("p|"+(y.id||"")+"|"+(l.p||0)+(l.pc?"%":""));});};
+  walk(x);(x.entries||[]).forEach(walk);
+  return out;
+}
+const readToday=(before,after)=>{const was=todayMarks(before);
+  for(const k of todayMarks(after))if(!was.has(k))return true;return false;};
 function histNote(id,before,after,forced){
   const what=forced||diffWords(before,after);
   if(!what.length)return;
+  const readish=what.some(w=>w==="progress"||w==="readings"||w==="finish date");
+  const rd=readish&&!forced&&readToday(before,after);
   const src=after||before||{};
   /* ---- how many words one receipt may carry ----
      Eight, and a receipt is the only evidence a daily task has: a word cut off
@@ -11946,7 +11981,8 @@ function histNote(id,before,after,forced){
      them twenty words long is 64,601 bytes against 38,201 at eight, and the
      ordinary receipt carries one word or two, so the row this uploads on every
      edit does not move in practice. */
-  histLog.unshift({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,HIST_WORDS_MAX),src:histSrc||"you",dev:histDev()});
+  histLog.unshift(Object.assign({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,HIST_WORDS_MAX),src:histSrc||"you",dev:histDev()},
+    readish?{rd}:{}));
   if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;
   saveHistLog();
   /* a real change is a day touched; moving through a book keeps its own
@@ -11959,7 +11995,7 @@ function histNote(id,before,after,forced){
          as two days of a run and a late night counted as none */
       const day=todayStr();
       bumpStreak(streaks.touch,day);
-      if(what.some(w=>w==="progress"||w==="readings"||w==="finish date"))bumpStreak(streaks.read,day);
+      if(rd)bumpStreak(streaks.read,day);   /* see READING TODAY */
     }
   }catch(e){}
   clearTimeout(achTimer);
@@ -18999,7 +19035,7 @@ const QTASKS=[
     "The Summary field on any book or story getting words — typed, or applied from a lookup."],
   ["stood","Give a book its stood-out words",w=>w.includes("what stood out"),
     "Tick at least one aspect word — Characters, Plot, Readability or Art — on any book."],
-  ["prog","Move a bookmark forward",w=>w.includes("progress")||w.includes("readings"),
+  ["prog","Move a bookmark forward",(w,e)=>(w.includes("progress")||w.includes("readings"))&&!(e&&e.rd===false),
     "Change the page you're on — the page box or the progress bar — on any book or story, or add to its readings."],
   ["deco","Decorate any page",w=>w.includes("pictures")||w.includes("page notes")||w.includes("drawing")||w.includes("background"),
     "Add a picture, a note, some drawing, or give a book's page its own background."],
@@ -19232,7 +19268,7 @@ function taskDoneToday(t,forDay,since){
   /* both sides of this comparison have to be measured by the same clock: the
      day being asked about is the shelf's, so the receipt's day must be too.
      `since` narrows it to receipts from a moment on — see ONE EDIT, ONE TASK */
-  return histLog.some(e=>shelfDayOf(e.t)===day&&(!since||(e.t||0)>=since)&&t[2](e.what||[]));
+  return histLog.some(e=>shelfDayOf(e.t)===day&&(!since||(e.t||0)>=since)&&t[2](e.what||[],e));
 }
 /* ---- the run of clear days, and what it is worth ----
    A third streak beside the two that already exist, and the only one that
