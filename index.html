@@ -7146,6 +7146,8 @@ let kwColors={};               /* keyword -> colour; plain grey when unset */
    was deleted. Without these the merge only ever adds, so anything you deleted on
    one device came straight back from the other. */
 let metaDel={};
+/* when each name was ADDED BACK — see ADDING BACK IS A DATE TOO, at markMetaDel */
+let metaAlive={};
 /* When each shared list was last changed here. Merging them by adding whatever's
    missing can only ever introduce new entries — a colour *changed* on one device
    was invisible on the other forever. With a time against each list, the newer
@@ -7214,9 +7216,23 @@ function touchMeta(){
    │ shared list has repeated it, because nothing in the code said so at the   │
    │ moment of writing. Now it does.                                           │
    └───────────────────────────────────────────────────────────────────────────┘ */
+/* ┌─ ADDING BACK IS A DATE TOO ──────────────────────────────────────────────┐
+   │ unmarkMetaDel used to take the mark off, and only on this device. The    │
+   │ other device still held it, joined it back in on the next pull and       │
+   │ uploaded it again — so a genre, tag or fandom deleted and then added     │
+   │ back was deleted again by the other device, over and over, and a reused  │
+   │ word lost its colour and family each time.                               │
+   │ Now nothing is taken off. Adding back writes its own date in `metaAlive`,│
+   │ and a name counts as removed only while its removal is the newer of the  │
+   │ two (metaGone). Both maps only ever grow and are joined by the higher    │
+   │ date, so the two devices reach the same answer in any order.             │
+   │ Read metaGone, never metaDel[k] on its own.                              │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const metaGone=k=>(metaDel[k]||0)>(metaAlive[k]||0);
+function saveMetaAlive(){saveSharedMap("metaAlive",metaAlive);enqueue({kind:"meta",key:"metaAlive"});}
 function saveMetaDel(){saveSharedMap("metaDel",metaDel);enqueue({kind:"meta",key:"metaDel"});}
 function markMetaDel(k){
-  metaDel[k]=Date.now();saveMetaDel();
+  metaDel[k]=Math.max(Date.now(),(metaAlive[k]||0)+1);saveMetaDel();
   /* A retired tag has to leave the list you own as well, and there are five
      places that retire one — a merge, a capitalise sweep, the duplicate panel,
      turning a tag into a genre, and a family rename. Doing it here rather than
@@ -7225,7 +7241,7 @@ function markMetaDel(k){
      round would call itself for ever. */
   if(typeof forgetKw==="function"&&String(k||"").slice(0,3)==="kw:")forgetKw(String(k).slice(3));
 }
-function unmarkMetaDel(k){if(metaDel[k]){delete metaDel[k];mapGone.metaDel.add(k);saveMetaDel();}}
+function unmarkMetaDel(k){if(metaGone(k)){metaAlive[k]=Math.max(Date.now(),(metaDel[k]||0)+1);saveMetaAlive();}}
 let kwCats={};                 /* keyword -> which family it belongs to */
 let catColors={};              /* family -> its colour, which its keywords inherit */
 /* ---- your tags, as a list you own ----
@@ -7441,6 +7457,14 @@ const SYNC={supa:null,user:null,on:false,queue:[],
 /* the floor a fresh `modified` stamp must clear — everything this device has
    seen from the cloud, absorbed or not */
 const seenFloor=id=>Math.max(SYNC.seen[id]||0,SYNC.held[id]||0);
+/* ---- A DELETE IS NEWER THAN WHAT IT DELETES ----
+   The other device weighs a deletion against the book's `modified`, and both
+   are clock readings from different devices. Stamped with the plain clock, a
+   delete made within a few seconds of an edit on a device whose clock runs
+   ahead lost to that edit: ignored there, and the book sent back up. It is
+   stamped past the newest version this device knows of, so it beats the book
+   it was actually looking at. A restore is lifted past the delete the same way. */
+const delStamp=(id,b)=>Math.max(Date.now(),((b&&b.modified)||0)+1,seenFloor(id)+1);
 /* the stamp any bulk rewrite of an EXISTING book must use: a bare Date.now()
    loses the last-write race against a cloud copy this device has already seen,
    and the change quietly un-happens at the next pull */
@@ -7672,10 +7696,23 @@ async function runOp(op){
        the book and this upload is about to erase the other one's work. Newest
        still wins — but the losing version goes to Recently deleted first, so
        nothing written on either device is ever simply gone. */
+    /* ---- NEWEST WINS, ON THE WAY UP TOO ----
+       An edit made offline and sent late went up over a NEWER one from the
+       other device: the newer copy was binned here and the cloud's stamp went
+       backwards, so the other device, holding a newer stamp than the cloud,
+       never took this one — and the two showed different books from then on.
+       When the cloud's copy is the newer, this device's older edit goes to
+       Recently deleted instead, nothing is sent, and the pull that follows
+       every flush brings the newer copy here. */
+    let older=false;
     try{
       const seen=SYNC.seen[op.id]||0;
       const {data:cr}=await s.from("books").select("modified").eq("user_id",uid).eq("id",op.id).maybeSingle();
-      if(cr&&(cr.modified||0)>seen&&(cr.modified||0)!==(b.modified||0)){
+      if(cr&&(cr.modified||0)>(b.modified||0)){
+        await dbPut("trash",{id:op.id+"~late"+(b.modified||0),at:Date.now(),
+          conflict:true,book:JSON.parse(JSON.stringify(b)),cover:null,images:{}});
+        older=true;
+      }else if(cr&&(cr.modified||0)>seen&&(cr.modified||0)!==(b.modified||0)){
         const {data:full}=await s.from("books").select("data,modified").eq("user_id",uid).eq("id",op.id).maybeSingle();
         if(full&&full.data){
           const cb=full.data;cb.id=op.id;cb.modified=full.modified||cb.modified||0;
@@ -7686,6 +7723,7 @@ async function runOp(op){
         }
       }
     }catch(e){/* the safety net must never block the save itself */}
+    if(older){delete SYNC.held[op.id];return;}
     const {error}=await s.from("books").upsert({user_id:uid,id:b.id,data:b,modified:b.modified||b.created||0});
     if(error)throw error;
     /* our own upload is now the cloud's version — remember it, or the next save
@@ -7698,8 +7736,24 @@ async function runOp(op){
     const {error}=await s.from("books").delete().eq("user_id",uid).eq("id",op.id);
     if(error)throw error;
   }else if(op.kind==="meta"){
-    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="trashCloud"?trashCloud:op.key==="libArt"?libArt:op.key==="kwCats"?kwCats:op.key==="catColors"?catColors:op.key==="metaTimes"?metaTimes:op.key==="goal"?(settings.goal||""):null;
+    let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="metaAlive"?metaAlive:op.key==="trashCloud"?trashCloud:op.key==="libArt"?libArt:op.key==="kwCats"?kwCats:op.key==="catColors"?catColors:op.key==="metaTimes"?metaTimes:op.key==="goal"?(settings.goal||""):null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
+    /* ---- NEWER, NAME BY NAME ----
+       These three are a date per name, joined by the higher date — but the
+       upload replaced the cloud's row with this device's whole map. A device
+       that had not pulled since the other one changed a tag's colour sent up
+       its OWN older date for the colours along with some unrelated change,
+       and its next pull then saw nothing newer, kept the old colours, and its
+       next colour edit overwrote the other device's. So the cloud's row is
+       read and each name keeps the later of the two dates. Only what goes UP
+       is joined: this device's own record still says what IT has taken. */
+    if((op.key==="metaTimes"||op.key==="metaDel"||op.key==="metaAlive")&&value&&typeof value==="object"){
+      const {data:row,error:re}=await s.from("meta").select("value").eq("user_id",uid).eq("key",op.key).maybeSingle();
+      if(re)throw re;
+      const cv=(row&&row.value&&typeof row.value==="object")?row.value:{},joined=Object.assign({},cv);
+      for(const k in value)joined[k]=Math.max(+cv[k]||0,+value[k]||0);
+      value=joined;
+    }
     const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
     if(error)throw error;
   }else if(op.kind==="cover"){
@@ -7772,6 +7826,14 @@ async function runBookBatch(ops){
   try{
     const {data:crs}=await s.from("books").select("id,modified").eq("user_id",uid).in("id",ids);
     const cloud=new Map((crs||[]).map(r=>[r.id,r.modified||0]));
+    /* the batch keeps NEWEST WINS, ON THE WAY UP TOO — see runOp */
+    for(const x of live.slice()){
+      if((cloud.get(x.op.id)||0)>(x.b.modified||0)){
+        await dbPut("trash",{id:x.op.id+"~late"+(x.b.modified||0),at:Date.now(),
+          conflict:true,book:JSON.parse(JSON.stringify(x.b)),cover:null,images:{}});
+        live.splice(live.indexOf(x),1);delete SYNC.held[x.op.id];
+      }
+    }
     const conflicted=live.filter(({op,b})=>{
       const cm=cloud.get(op.id)||0;
       return cm>(SYNC.seen[op.id]||0)&&cm!==(b.modified||0);
@@ -7788,6 +7850,7 @@ async function runBookBatch(ops){
       }
     }
   }catch(e){/* the safety net must never block the save itself */}
+  if(!live.length)return;
   const {error}=await s.from("books").upsert(live.map(({b})=>({user_id:uid,id:b.id,data:b,modified:b.modified||b.created||0})));
   if(error)throw error;
   for(const {op,b} of live){
@@ -7820,7 +7883,9 @@ async function pullAll(){
         /* take the deletion record first, so nothing deleted elsewhere is re-added below */
         const mdRow=metaRows.find(r=>r.key==="metaDel");
         if(mdRow&&mdRow.value)for(const k in mdRow.value)metaDel[k]=Math.max(metaDel[k]||0,mdRow.value[k]);
-        const gone=k=>!!metaDel[k];
+        const maRow=metaRows.find(r=>r.key==="metaAlive");
+        if(maRow&&maRow.value)for(const k in maRow.value)metaAlive[k]=Math.max(metaAlive[k]||0,maRow.value[k]);
+        const gone=metaGone;
         /* when the cloud's copy of a list is the newer one, take it whole rather
            than only borrowing the entries we happen to be missing — otherwise a
            colour changed elsewhere never arrives */
@@ -7829,11 +7894,12 @@ async function pullAll(){
         const cloudNewer=k=>(rTimes[k]||0)>(metaTimes[k]||0);
         /* did the game or the tidying-up rulings actually move? */
         let gameChanged=false;
+        const goneThere=[];   /* bin entries deleted for good on the other device */
         /* keep anything only this device knows about, and honour deletions */
         const takeWhole=(remote,local,delPrefix)=>{
           const out=Object.assign({},remote||{});
-          for(const k in local)if(!(k in out)&&!metaDel[delPrefix+k])out[k]=local[k];
-          for(const k in out)if(metaDel[delPrefix+k])delete out[k];
+          for(const k in local)if(!(k in out)&&!metaGone(delPrefix+k))out[k]=local[k];
+          for(const k in out)if(metaGone(delPrefix+k))delete out[k];
           return out;
         };
         for(const row of metaRows){
@@ -7864,10 +7930,18 @@ async function pullAll(){
             if(cloudNewer("kwColors"))kwColors=takeWhole(row.value,kwColors,"kw:");
             else{const rv=row.value||{};for(const k in rv)if(!kwColors[k]&&!gone("kw:"+k))kwColors[k]=rv[k];}}
           else if(row.key==="trashCloud"){const rv=row.value||{};
-            /* skip entries for books alive here and edited since that deletion —
-               they were restored, and the bin entry is another device's leftover */
-            for(const k in rv)if(!trashCloud[k]&&!(deletions[k]&&!rv[k])
-              &&!books.some(b=>b.id===k&&(b.modified||0)>((rv[k]&&rv[k].at)||0)))trashCloud[k]=rv[k];}
+            for(const k in rv){const r=rv[k],l=trashCloud[k];
+              /* deleted for good over there: the same here, this device's own
+                 copy included — unless it has binned the book again since.
+                 See DELETED FOR GOOD */
+              if(r&&r.gone){if(!l||(l.at||0)<=(r.at||0)){trashCloud[k]=r;goneThere.push(k);}continue;}
+              /* deleted for good here, after this entry was made */
+              if(l&&l.gone&&(l.at||0)>=((r&&r.at)||0))continue;
+              /* skip entries for books alive here and edited since that deletion —
+                 they were restored, and the bin entry is another device's leftover */
+              if((!l||l.gone)&&!(deletions[k]&&!r)
+                &&!books.some(b=>b.id===k&&(b.modified||0)>((r&&r.at)||0)))trashCloud[k]=r;
+            }}
           /* one number, so there is nothing to merge — the newer of the two wins,
              and a goal cleared on the other device is a real answer, not a gap */
           else if(row.key==="goal"){
@@ -7915,8 +7989,14 @@ async function pullAll(){
              and a daily task can tick off a change made over there */
           else if(row.key==="histLog"){if(mergeHistLog(row.value))gameChanged=true;}
         }
+        for(const k of goneThere){
+          try{const t=await dbGet("trash",k);
+            if(t&&(t.at||0)<=((trashCloud[k]&&trashCloud[k].at)||0))await dbDel("trash",k);}catch(e){}
+        }
+        if(goneThere.length)countTrash();
         /* anything deleted here must go from the merged copies too */
         for(const k in metaDel){
+          if(!metaGone(k))continue;   /* added back since — see ADDING BACK IS A DATE TOO */
           const [kind,...rest]=k.split(":");const nm=rest.join(":");
           if(kind==="genre")delete genres[nm];
           /* one prefix covers both maps — the second kw branch this used to have
@@ -7956,7 +8036,7 @@ async function pullAll(){
         dbPut("meta",{k:"kwCats",v:kwCats});dbPut("meta",{k:"catColors",v:catColors});
         for(const k in rTimes)metaTimes[k]=Math.max(metaTimes[k]||0,rTimes[k]);
         dbPut("meta",{k:"metaTimes",v:metaTimes});
-        dbPut("meta",{k:"metaDel",v:metaDel});dbPut("meta",{k:"kwColors",v:kwColors});dbPut("meta",{k:"trashCloud",v:trashCloud});
+        dbPut("meta",{k:"metaDel",v:metaDel});dbPut("meta",{k:"metaAlive",v:metaAlive});dbPut("meta",{k:"kwColors",v:kwColors});dbPut("meta",{k:"trashCloud",v:trashCloud});
         /* Our side of the four newcomers goes up whenever it says something
            the cloud's copy doesn't — including the very first time, when there
            is no cloud copy at all. Written to disk BEFORE it is queued: the
@@ -8061,7 +8141,7 @@ async function pullAll(){
     {let binStale=false;
      for(const k of Object.keys(trashCloud)){
        const lb=books.find(b=>b.id===k);
-       if(lb&&(lb.modified||0)>((trashCloud[k]&&trashCloud[k].at)||0)){delete trashCloud[k];binStale=true;}
+       if(lb&&binLive(k)&&(lb.modified||0)>((trashCloud[k]&&trashCloud[k].at)||0)){delete trashCloud[k];binStale=true;}
      }
      if(binStale)saveTrashCloud();}
     // push up any local-only books the cloud hasn't seen yet (e.g. made offline or before first sync)
@@ -8315,6 +8395,7 @@ async function initSync(){
   const kc=await dbGet("meta","kwColors");kwColors=kc&&kc.v?kc.v:{};
   repairGroupArt();
   const md=await dbGet("meta","metaDel");metaDel=md&&md.v?md.v:{};
+  const ma=await dbGet("meta","metaAlive");metaAlive=ma&&ma.v?ma.v:{};
   const mt=await dbGet("meta","metaTimes");metaTimes=mt&&mt.v?mt.v:{};
   const tc=await dbGet("meta","trashCloud");trashCloud=tc&&tc.v?tc.v:{};
   const la=await dbGet("meta","libArt");libArt=la&&Array.isArray(la.v)?la.v:[];
@@ -8327,7 +8408,7 @@ async function initSync(){
    for(const which in TIDY_LISTS){
      const p=TIDY_LISTS[which];
      settings[which]=[...new Set([...(rv[which]||[]),...(settings[which]||[])])]
-       .filter(x=>!metaDel[p+x]);
+       .filter(x=>!metaGone(p+x));
    }}
   const kct=await dbGet("meta","kwCats");kwCats=kct&&kct.v?kct.v:{};
   /* the tag list, and its one-time seeding. A shelf that predates this record
@@ -8341,7 +8422,7 @@ async function initSync(){
      const seen=new Set(Object.keys(kwList).map(k=>k.toLowerCase()));
      [...books.flatMap(allKeywordsOf),...Object.keys(kwColors),...Object.keys(kwCats)]
        .forEach(k=>{const w=String(k||"").trim();
-         if(!w||metaDel["kw:"+w]||seen.has(w.toLowerCase()))return;
+         if(!w||metaGone("kw:"+w)||seen.has(w.toLowerCase()))return;
          seen.add(w.toLowerCase());kwList[w]=Date.now();});
      if(Object.keys(kwList).length)saveKwList();
    }}
@@ -8429,6 +8510,7 @@ const META_INTO={
   groupArt:v=>{groupArt=v||{};},
   libArt:v=>{libArt=Array.isArray(v)?v:[];},
   metaDel:v=>{metaDel=v||{};},
+  metaAlive:v=>{metaAlive=v||{};},
   metaTimes:v=>{metaTimes=v||{};},
   trashCloud:v=>{trashCloud=v||{};},
   deletions:v=>{deletions=v||{};},
@@ -9583,6 +9665,13 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.9",lines:[
+    "<b>Five ways your two devices could undo each other, closed.</b> These only show with two devices, so they were tested here by playing the second one.",
+    "<b>A genre, tag or fandom you delete and then add back stays added.</b> Adding it back cleared the deletion on the device you were holding, and the other device, which still remembered the deletion, sent it back and deleted it again — every time. Adding back is now written down with its own date, and whichever of the two happened last is what both devices keep.",
+    "<b>🗑 Delete for good and Empty the bin now reach the other device.</b> It kept listing the books, sent them back into the bin here, and putting one back then gave a book with no cover, because the pictures really had gone. A book deleted for good now leaves a note behind that the other device acts on — its own copy in its bin included — unless you have binned that book again there since.",
+    "<b>A colour or genre change on one device can no longer be hidden from the other by some unrelated edit there</b>, and then overwritten. Each device's list of when things last changed is now joined with the cloud's, date by date, instead of replacing it.",
+    "<b>An edit sent late from a device that was offline no longer wins over a newer one.</b> It replaced the newer edit from your other device, and from then on the two showed different versions of the book. The newer one wins now, and the older edit waits in Recently deleted in case you want it.",
+    "<b>And a delete made seconds after an edit on the other device sticks,</b> even if that device's clock runs ahead; a book put back beats the delete it undoes the same way."]},
   {v:"2026-09-27.8",lines:[
     "<b>Taking ✕ or ⏸ off no longer says you finished the book today.</b> On a finished book with no dates, putting either on and taking it off again wrote a reading dated today — a book on the year's goal, a tick on the twelve and a day on the streak, from a mis-tap. A flag says nothing about when you read something, so now it records nothing. Pressing ✓ Finished on a book with no dates still records today, and now the book's own page and the editor say so when they do it, instead of the note turning up later on something else.",
     "<b>On a story, taking ✕ back off keeps the reading you were in the middle of</b> — it went back to saying nothing and took the reading, start date and all, with it. A book always kept both.",
@@ -12224,7 +12313,7 @@ async function applyOp(op,inv,quiet){
       await dbDel("books",id);
       books=books.filter(x=>x.id!==id);
       countTrash();
-      if(SYNC.on){deletions[id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id});
+      if(SYNC.on){deletions[id]=delStamp(id,gone);saveDeletions();enqueue({kind:"bookDel",id});
         /* redoing a delete used to destroy the cloud cover and pictures on the
            spot — this delete now banks them in the shared bin for its 30 days,
            exactly like the delete it is redoing */
@@ -12261,7 +12350,7 @@ async function applyOp(op,inv,quiet){
         if(it.before&&it.after===null)await toTrash(it.before);
         await dbDel("books",it.id);
         books=books.filter(x=>x.id!==it.id);
-        if(SYNC.on){deletions[it.id]=Date.now();saveDeletions();enqueue({kind:"bookDel",id:it.id});
+        if(SYNC.on){deletions[it.id]=delStamp(it.id,it.before);saveDeletions();enqueue({kind:"bookDel",id:it.id});
           if(it.before&&it.after===null){trashCloud[it.id]={at:Date.now(),book:JSON.parse(JSON.stringify(it.before))};saveTrashCloud();}
           /* the picture went up with the book, so it comes down with it. Only the
              cloud's copy: this device keeps its own, so redoing gets it back */
@@ -14644,7 +14733,7 @@ async function retireBook(b){
   await toTrash(b);
   await dbDel("books",b.id);
   books=books.filter(x=>x.id!==b.id);
-  if(SYNC.on){deletions[b.id]=Date.now();saveDeletions();
+  if(SYNC.on){deletions[b.id]=delStamp(b.id,b);saveDeletions();
     enqueue({kind:"bookDel",id:b.id});
     /* like any other delete: the cover and pictures wait out the bin's 30 days
        in the cloud instead of being destroyed on the spot, so a phone can still
@@ -17338,6 +17427,9 @@ async function purgeTrash(){
     /* a null or half-written entry can never satisfy the test below, so it was
        skipped by every purge there will ever be — drop it instead */
     if(!e){delete trashCloud[id];changed=true;continue;}
+    /* a note that it was deleted for good has done its work once both devices
+       have had two months to hear it */
+    if(e.gone){if((e.at||0)<Date.now()-60*864e5){delete trashCloud[id];changed=true;}continue;}
     if((e.at||0)>=cutoff)continue;
     /* restored on another device? This device still carries the stale bin entry —
        deleting the cloud pictures now would strip them off the living book */
@@ -17382,6 +17474,8 @@ async function restoreTrash(tid){
      newer than the book's last edit, so an unstamped restore would lose to it on
      every other device — and be quietly deleted again here at the next pull */
   touchBook(b);
+  /* and past the delete itself — see A DELETE IS NEWER THAN WHAT IT DELETES */
+  if(deletions[b.id]&&(b.modified||0)<=deletions[b.id])b.modified=deletions[b.id]+1;
   await dbPut("books",b);
   if(t.cover){await dbPut("covers",{id:b.id,data:t.cover});coverCache.delete(b.id);SYNC.triedCover.delete(b.id);}
   for(const[k,d]of Object.entries(t.images||{}))await dbPut("images",{key:k,data:d});
@@ -17412,7 +17506,7 @@ async function removeBook(b){
   await dbDel("books",id);
   books=books.filter(x=>x.id!==id);
   if(SYNC.on){
-    deletions[id]=Date.now();saveDeletions();
+    deletions[id]=delStamp(id,b);saveDeletions();
     enqueue({kind:"bookDel",id});
     /* the cover and pictures are left where they are — they're what makes putting
        it back possible from another device. purgeTrash clears them at 30 days. */
@@ -24786,7 +24880,7 @@ function mergeTidy(rv){
     const p=TIDY_LISTS[which];
     const was=(settings[which]||[]).join(" ");
     const merged=[...new Set([...(rv[which]||[]),...(settings[which]||[])])]
-      .filter(x=>!metaDel[p+x]);
+      .filter(x=>!metaGone(p+x));
     if(merged.join(" ")!==was){settings[which]=merged;changed=true;}
   }
   if(changed){saveSettings();dbPut("meta",{k:"tidyKeep",v:tidyRulings()});}
@@ -25622,7 +25716,7 @@ let trashCount=0;
 async function binIds(){
   const local=await dbAll("trash");
   const have=new Set(local.map(t=>t.id));
-  return [...local.map(t=>t.id),...Object.keys(trashCloud).filter(id=>!have.has(id))];
+  return [...local.map(t=>t.id),...Object.keys(trashCloud).filter(id=>!have.has(id)&&binLive(id))];
 }
 async function countTrash(){
   try{trashCount=(await binIds()).length;}catch(e){}
@@ -25632,9 +25726,21 @@ async function countTrash(){
 /* One place that knows how to make a binned book go for good, so the ✕ on a row
    and Empty the bin cannot come apart. It does NOT save or flush — the caller
    does that once, rather than once per book. */
+/* ┌─ DELETED FOR GOOD IS A FACT THE OTHER DEVICE HAS TO HEAR ────────────────┐
+   │ The shared bin joins by keeping whatever either device has, so an entry  │
+   │ simply removed here was handed straight back by the other device: Empty  │
+   │ the bin promised "on every one of your devices", the other device kept   │
+   │ listing them, sent them back up, and a book put back after that came     │
+   │ back without its cover, because the pictures really had gone.            │
+   │ So a purge leaves {at, gone:true} in its place. The pull treats that as  │
+   │ the end of the entry — and of the other device's own copy of it — unless │
+   │ that device has binned the same book again since. Nothing that lists or  │
+   │ restores the bin shows one; they are cleared after sixty days.           │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const binLive=id=>{const e=trashCloud[id];return !!(e&&!e.gone);};
 async function purgeOneTrash(id){
   await dbDel("trash",id);
-  if(trashCloud[id]){
+  if(binLive(id)){
     /* its pictures were being kept only so it could come back — let them go.
        Unless the book is alive again (restored elsewhere): then this entry is
        stale and the pictures belong to the living book. */
@@ -25644,6 +25750,8 @@ async function purgeOneTrash(id){
     }
     delete trashCloud[id];
   }
+  /* a conflict copy ("id~sync…") lives on this device only */
+  if(SYNC.on&&!String(id).includes("~"))trashCloud[id]={at:Date.now(),gone:true};
 }
 async function emptyBin(){
   const ids=await binIds();
@@ -25663,7 +25771,7 @@ async function refreshTrash(){
   const local=await dbAll("trash");
   const have=new Set(local.map(t=>t.id));
   /* books binned on another device show up here too */
-  const remote=Object.keys(trashCloud).filter(id=>!have.has(id))
+  const remote=Object.keys(trashCloud).filter(id=>!have.has(id)&&binLive(id))
     .map(id=>({id,at:trashCloud[id].at,book:trashCloud[id].book,elsewhere:true}));
   const list=[...local,...remote].sort((a,b)=>b.at-a.at);
   if(!q("#trashList"))return;
@@ -25682,7 +25790,7 @@ async function refreshTrash(){
   qa("[data-tr]",box).forEach(b=>b.onclick=async()=>{await restoreTrash(b.dataset.tr);});
   qa("[data-tx]",box).forEach(b=>b.onclick=async()=>{
     const id=b.dataset.tx;
-    const t=(await dbGet("trash",id))||(trashCloud[id]?{id,book:trashCloud[id].book}:null);
+    const t=(await dbGet("trash",id))||(binLive(id)?{id,book:trashCloud[id].book}:null);
     if(!t)return;
     if(!confirm(`Delete “${(t.book&&t.book.title)||"Untitled"}” for good? This can't be undone.`))return;
     await purgeOneTrash(id);
@@ -36778,7 +36886,7 @@ async function applyBackup(data){
      sweep — "restore complete", then part of it evaporates. unmarkMetaDel's
      own body, batched: one metaDel save at the end instead of hundreds. */
   let revived=false;
-  const revive=k=>{if(metaDel[k]){delete metaDel[k];mapGone.metaDel.add(k);revived=true;}};
+  const revive=k=>{if(metaGone(k)){metaAlive[k]=Math.max(Date.now(),(metaDel[k]||0)+1);revived=true;}};
   genres=Object.assign({},data.genres||{},genres);
   Object.keys(data.genres||{}).forEach(g=>revive("genre:"+g));
   dnfCustom=[...new Set([...dnfCustom,...(data.dnfReasons||[])])];
@@ -36800,7 +36908,7 @@ async function applyBackup(data){
   const ccIn=data.catColors||{};
   for(const c in ccIn){if(!catColors[c])catColors[c]=ccIn[c];revive("cat:"+c);}
   (data.libArt||[]).forEach(a=>{if(a&&a.id)revive("libart:"+a.id);});
-  if(revived)saveMetaDel();
+  if(revived)saveMetaAlive();
   saveKwCats();
   const haveLa=new Set(libArt.map(a=>a.id));
   (data.libArt||[]).forEach(a=>{if(a&&a.id&&!haveLa.has(a.id))libArt.push(a);});
