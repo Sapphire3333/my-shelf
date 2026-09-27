@@ -9673,6 +9673,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.12",lines:[
+    "<b>The day's three tick for doing what they ask — not for undoing it.</b> Every task ticked off the name of the field that changed, whichever way it changed: clearing a blurb ticked <i>Fill in a blurb</i>, deleting a quote ticked <i>Keep a quote</i>, taking a heart off ticked <i>Give something a heart</i>, removing a tag ticked <i>Tag or genre any book</i> — fifteen of them, measured one by one. The change log now also notes what was <i>added</i>, and the tasks read that. Changing a rating still counts; moving a picture that was already there doesn't count as adding one.",
+    "<b>An import doesn't do your tasks for you.</b> Filling books in from an export, or bringing rows into a collection, was ticking tasks as if you had typed it all today. Its lines in Recently edited are now signed <i>an import</i>, and the tasks pass them by. Auto-fill's lookups still count, as the task text says.",
+    "<b>Move a bookmark forward</b> says what it counts now: moving your page forward, or starting or finishing a reading today."]},
   {v:"2026-09-27.11",lines:[
     "<b>Putting a stage right is not reading today.</b> Pressing ✓ Finished on a story that came in with the wrong stage — its readings already dated in another year — moved its bookmark to the last page on today's trail. That ticked 📖 the reading streak and <i>Move a bookmark forward</i>, and added the whole story's pages to this month's pages and your pace. Now a change counts as reading only if it leaves something dated today: a reading started or finished today, or the bookmark moved today. Finishing what you are reading, and moving your page, count exactly as before. An import bringing in readings from other years doesn't count any more either.",
     "Days that were already ticked this way can't be told apart from real ones, so the streak keeps them."]},
@@ -11758,6 +11762,8 @@ const HIST={undo:[],redo:[]};
    a record of what THIS device did, and sync's own writes don't pass here. */
 let histLog=[];
 let histSrc="";   /* set around bulk flows; empty means "you, editing" */
+/* what an import's receipts are signed with — the daily tasks skip them */
+const HIST_IMPORT="an import";
 /* Two hundred, and no longer this device's alone. It was fifty and per
    device, which made What changed blind to the other screen; the list now
    rides sync as the meta key "histLog" — each device uploads its own after
@@ -11933,6 +11939,64 @@ function diffWords(before,after){
   });
   return [...out];
 }
+/* ┌─ WHAT WAS ADDED, NOT ONLY WHAT CHANGED ──────────────────────────────────┐
+   │ diffWords names every field that moved, in either direction — right for  │
+   │ a change log, wrong for the daily tasks, which ticked off those words.   │
+   │ Measured, all fifteen: clearing a blurb ticked "Fill in a blurb",        │
+   │ deleting a quote "Keep a quote", taking a heart off "Give something a    │
+   │ heart", removing a tag "Tag or genre any book", and so on down the list. │
+   │ gainedWords walks the same fields and keeps only the ones that GAINED:   │
+   │ nothing became something; a list got an item it did not have (by id      │
+   │ where its items carry one, so moving a picture is not adding one); a     │
+   │ flag came on; the bookmark moved forward; a value was changed to         │
+   │ another value, which is what "set or change a rating" asks for. The      │
+   │ receipt keeps it as `add`, and the tasks read that. Receipts from before │
+   │ it existed have no `add` and are read as they always were.               │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const histLeaves=o=>{const out=new Set();
+  const walk=(v,p)=>{if(Array.isArray(v))v.forEach(x=>walk(x,p));
+    else if(v&&typeof v==="object")Object.keys(v).forEach(k=>walk(v[k],p+"."+k));
+    else out.add(p+"="+JSON.stringify(v));};
+  walk(o,"");return out;};
+function histGained(k,av,bv){
+  if(histNothing(k,bv))return false;
+  if(histNothing(k,av))return true;
+  if(k==="progress")return (parseInt(bv)||0)>(parseInt(av)||0);
+  if(typeof bv==="boolean")return bv&&!av;
+  if(Array.isArray(bv)){
+    const was=Array.isArray(av)?av:[];
+    const key=x=>(x&&typeof x==="object"&&x.id)?"#"+x.id:JSON.stringify(x);
+    const had=new Set(was.map(key));
+    return bv.some(x=>!had.has(key(x)));
+  }
+  if(bv&&typeof bv==="object"){const had=histLeaves(av);for(const x of histLeaves(bv))if(!had.has(x))return true;return false;}
+  return JSON.stringify(av)!==JSON.stringify(bv);
+}
+function gainedWords(before,after){
+  const out=new Set();
+  new Set([...Object.keys(before||{}),...Object.keys(after||{})]).forEach(k=>{
+    const av=(before||{})[k],bv=(after||{})[k];
+    if(k==="readings"&&readsGrown(av,bv,before))return;
+    if(k==="entries"){
+      const ea=Array.isArray(av)?av:[],eb=Array.isArray(bv)?bv:[];
+      const byId={};ea.forEach(e=>{if(e&&e.id)byId[e.id]=e;});
+      eb.forEach(e=>{if(!e)return;
+        /* a story that was not there before brings whatever it arrives with */
+        const o=byId[e.id]||{};
+        new Set([...Object.keys(o),...Object.keys(e)]).forEach(f=>{
+          if(f==="readings"&&readsGrown(o[f],e[f],o))return;
+          if(!histGained(f,o[f],e[f]))return;
+          const w=histWordForEnt(f);if(w)out.add(w);
+        });
+      });
+      return;
+    }
+    if(!histGained(k,av,bv))return;
+    if(histHasWord(k)){const w=histWordFor(k);if(w)out.add(w);}
+    else out.add(k);
+  });
+  return [...out];
+}
 let histLogTimer=0;
 function saveHistLog(){
   clearTimeout(histLogTimer);
@@ -11981,7 +12045,9 @@ function histNote(id,before,after,forced){
      them twenty words long is 64,601 bytes against 38,201 at eight, and the
      ordinary receipt carries one word or two, so the row this uploads on every
      edit does not move in practice. */
-  histLog.unshift(Object.assign({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,HIST_WORDS_MAX),src:histSrc||"you",dev:histDev()},
+  /* what was ADDED, for the daily tasks — see WHAT WAS ADDED */
+  const add=forced?[]:gainedWords(before,after).slice(0,HIST_WORDS_MAX);
+  histLog.unshift(Object.assign({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,HIST_WORDS_MAX),add,src:histSrc||"you",dev:histDev()},
     readish?{rd}:{}));
   if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;
   saveHistLog();
@@ -19036,7 +19102,7 @@ const QTASKS=[
   ["stood","Give a book its stood-out words",w=>w.includes("what stood out"),
     "Tick at least one aspect word — Characters, Plot, Readability or Art — on any book."],
   ["prog","Move a bookmark forward",(w,e)=>(w.includes("progress")||w.includes("readings"))&&!(e&&e.rd===false),
-    "Change the page you're on — the page box or the progress bar — on any book or story, or add to its readings."],
+    "Move the page you're on forward — the page box or the progress bar — on any book or story, or start or finish a reading today."],
   ["deco","Decorate any page",w=>w.includes("pictures")||w.includes("page notes")||w.includes("drawing")||w.includes("background"),
     "Add a picture, a note, some drawing, or give a book's page its own background."],
   ["rate","Put a rating on something",w=>w.includes("rating"),
@@ -19268,7 +19334,10 @@ function taskDoneToday(t,forDay,since){
   /* both sides of this comparison have to be measured by the same clock: the
      day being asked about is the shelf's, so the receipt's day must be too.
      `since` narrows it to receipts from a moment on — see ONE EDIT, ONE TASK */
-  return histLog.some(e=>shelfDayOf(e.t)===day&&(!since||(e.t||0)>=since)&&t[2](e.what||[],e));
+  /* what was ADDED where the receipt says (see WHAT WAS ADDED), and never an
+     import: what an export brings in was done before today, by the file */
+  return histLog.some(e=>shelfDayOf(e.t)===day&&(!since||(e.t||0)>=since)&&e.src!==HIST_IMPORT
+    &&t[2](Array.isArray(e.add)?e.add:(e.what||[]),e));
 }
 /* ---- the run of clear days, and what it is worth ----
    A third streak beside the two that already exist, and the only one that
@@ -23653,7 +23722,7 @@ function refreshImport(light){
     const msg=q("#busyMsg");if(msg)msg.textContent=`Filling in ${batch.length}…`;
     const steps=[];
     await runBatch(batch,it=>importMerge(it,steps),"Filling in");
-    if(steps.length)pushOp({t:"bulk",items:steps});
+    if(steps.length){const was=histSrc;histSrc=HIST_IMPORT;try{pushOp({t:"bulk",items:steps});}finally{histSrc=was;}}
     saveImportQueue();
     if(SYNC.on)flushQueue();
     if(q("#busyMsg"))q("#busyMsg").textContent="";
@@ -38172,7 +38241,10 @@ async function importMerge(it,into){
       touchBook(t.b);
       try{await dbPut("books",t.b);}catch(e){return false;}
       const step={id:t.b.id,before,after:JSON.parse(JSON.stringify(t.b))};
-      if(into)into.push(step);else pushOp(Object.assign({t:"book"},step));
+      /* signed as the import's, so it is a line in Recently edited and a step
+         of undo but not a daily task done by you — see HIST_IMPORT */
+      const was=histSrc;histSrc=HIST_IMPORT;
+      try{if(into)into.push(step);else pushOp(Object.assign({t:"book"},step));}finally{histSrc=was;}
       if(SYNC.on)enqueue({kind:"book",id:t.b.id});
     }
   }
@@ -38492,7 +38564,8 @@ async function importIntoCollection(items,coll,wasBefore){
   const took=importQueue.filter(x=>ids.has(x.id)).map(r=>JSON.parse(JSON.stringify(r)));
   importQueue=importQueue.filter(x=>!ids.has(x.id));
   saveImportQueue();
-  pushOp({t:"book",id:coll.id,before,after:JSON.parse(JSON.stringify(coll)),impq:took});
+  /* the import's, not yours — see HIST_IMPORT */
+  {const was=histSrc;histSrc=HIST_IMPORT;try{pushOp({t:"book",id:coll.id,before,after:JSON.parse(JSON.stringify(coll)),impq:took});}finally{histSrc=was;}}
 }
 /* several staged entries -> ONE collection book, each as a story inside it */
 /* Each story keeps the day it was read and the stage it was at. Goodreads and
@@ -38529,7 +38602,7 @@ async function importCollection(items,name){
   saveImportQueue();
   /* before:null — the collection did not exist until this press, so undoing it
      is un-creating it, and the rows it swallowed go back on the list */
-  pushOp({t:"bulk",items:[{id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))}],impq:took});
+  {const was=histSrc;histSrc=HIST_IMPORT;try{pushOp({t:"bulk",items:[{id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))}],impq:took});}finally{histSrc=was;}}
 }
 
 /* =============== look a book up online (Google Books + Open Library) =============== */
