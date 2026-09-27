@@ -9673,6 +9673,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.13",lines:[
+    "<b>A dare pays for reading it, not for a reading from years ago.</b> The dare, a kept pick, <i>The next in line</i> and <i>The forgotten one</i> all paid the moment their book said Finished — and a book that came in on the wrong stage says Finished for a reading from another year the moment you put it right. They now pay only for a reading that ended on or after the day they were drawn or kept. A book with no dates that you mark Finished still gets today's reading and still counts.",
+    "One that turns out to have been read before is let go rather than left on the card with nothing that could ever finish it — it says so in the corner, and a kept pick is marked <i>read before it was kept</i>. A pick kept for a re-read waits for the re-read, as before."]},
   {v:"2026-09-27.12",lines:[
     "<b>The day's three tick for doing what they ask — not for undoing it.</b> Every task ticked off the name of the field that changed, whichever way it changed: clearing a blurb ticked <i>Fill in a blurb</i>, deleting a quote ticked <i>Keep a quote</i>, taking a heart off ticked <i>Give something a heart</i>, removing a tag ticked <i>Tag or genre any book</i> — fifteen of them, measured one by one. The change log now also notes what was <i>added</i>, and the tasks read that. Changing a rating still counts; moving a picture that was already there doesn't count as adding one.",
     "<b>An import doesn't do your tasks for you.</b> Filling books in from an export, or bringing rows into a collection, was ticking tasks as if you had typed it all today. Its lines in Recently edited are now signed <i>an import</i>, and the tasks pass them by. Auto-fill's lookups still count, as the task text says.",
@@ -20193,6 +20196,31 @@ function questEarned(){
    back both ask it, so they cannot drift apart and start disagreeing about
    what counts as readable */
 const dareOk=b=>b&&kindOf(b)==="book"&&statusOf(b)==="want"&&!b.dnf&&!b.hold&&!unownedOf(b);
+/* ┌─ READ SINCE IT WAS ASKED ────────────────────────────────────────────────┐
+   │ A dare, a kept pick, "The next in line" and "The forgotten one" all paid │
+   │ the moment their book said Finished — and a book can say Finished for a  │
+   │ reading years old: one that came in on the wrong stage, put right with   │
+   │ one press. Measured: a dare on a book whose only reading ended in 2019   │
+   │ paid its 100 when marked Finished, and both errands counted as done.     │
+   │ Kept picks checked the date only for a book already finished when it     │
+   │ was kept, so a wrongly staged one slipped through there too.             │
+   │ They pay now only for a reading that ENDED on or after the day they were │
+   │ drawn or kept — for a collection, one on any of its stories. "An old     │
+   │ favourite" has always asked exactly this. An undated book marked         │
+   │ Finished gets today's reading and still counts. One that was read before │
+   │ is let go without paying, and says so, rather than sitting on the card   │
+   │ for ever with nothing left that could finish it.                         │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const finishedSince=(b,at)=>{
+  if(!b||statusOf(b)!=="finished"||b.dnf)return false;
+  const day=shelfDayOf(at||0);
+  const ended=x=>readsOf(x).some(r=>r&&!r.open&&r.end&&String(r.end)>=day);
+  return ended(b)||(isColl(b)&&(b.entries||[]).some(en=>!entIsPart(b,en)&&ended(en)));
+};
+const readBefore=(b,at)=>!!b&&statusOf(b)==="finished"&&!b.dnf&&!finishedSince(b,at);
+const saidReadBefore=(what,title)=>{try{achToast({icon:"🗓",name:"Read before it was drawn",
+  plain:"“"+(title||"Untitled")+"” has no reading that ended after the "+what+" was drawn, so it pays nothing — marking an old read Finished puts the record right, it isn't reading it. Draw another.",
+  tiers:[]},0,false);}catch(e){}};
 /* the ones standing before this one in its own series, earliest first. Empty
    for a standalone; empty too for a collection held AS a series, since the
    collection is the whole thing and nothing on the shelf stands before it. */
@@ -20352,13 +20380,13 @@ const ERRANDS=[
      });
      return out.length?out[Math.floor(Math.random()*out.length)]:null;},
    ask:b=>`You are partway through ${esc(seriesShown(b))} and this is the next one waiting. Finish it.`,
-   done:b=>statusOf(b)==="finished"&&!b.dnf},
+   done:(b,e)=>finishedSince(b,e.at),stale:(b,e)=>readBefore(b,e.at)},
   {k:"forgot",icon:"🕸",name:"The forgotten one",xp:60,
    find:()=>books.filter(dareOk).sort((a,b)=>(a.created||0)-(b.created||0))[0]||null,
    ask:b=>`It has waited on Want-to-read since ${esc(fmtEdited(b.created||Date.now()))} — longer than anything else on the shelf. Read it, or give up on it honestly.`,
    /* the same two ways out the dare has, and for the same reason: deciding you
       do not want it, and saying why, is a real answer and pays like one */
-   done:b=>(statusOf(b)==="finished"&&!b.dnf)||(b.dnf&&ohNoFilled(b)>=2)},
+   done:(b,e)=>finishedSince(b,e.at)||(b.dnf&&ohNoFilled(b)>=2),stale:(b,e)=>readBefore(b,e.at)},
   /* 🔁 and not ↻: ↻ is already the wording of the Another button an inch below
      it, and two of the same glyph on one card meaning two different things */
   {k:"reread",icon:"🔁",name:"An old favourite",xp:60,
@@ -21195,8 +21223,11 @@ function questCheck(){
     const nm=b&&(b.id+":"+(quests.bookCh.at||0));
     if(!b){closeSlot("bookCh");questSave();}
     else if(statusOf(b)==="finished"&&!b.dnf){
+      /* see READ SINCE IT WAS ASKED */
+      const since=finishedSince(b,quests.bookCh.at);
       closeSlot("bookCh");
-      questAward(100,"The dare, seen through: “"+(b.title||"Untitled")+"”","d:"+nm);
+      if(since)questAward(100,"The dare, seen through: “"+(b.title||"Untitled")+"”","d:"+nm);
+      else{saidReadBefore("dare",b.title);questSave();}
     }else if(b.dnf){
       /* their OH-NO rule: a hated dare counts once TWO of notes / dislikes /
          stood-out / quotes are honestly filled — counted by ohNoFilled */
@@ -21213,13 +21244,17 @@ function questCheck(){
       if(!b)return;
       /* the reading carries a DAY and the keep a millisecond — compared raw,
          a re-read finished the same day it was kept lost to the afternoon */
-      if(statusOf(b)==="finished"&&!b.dnf
-        &&(!p.wasDone||readsOf(b).some(r=>r&&r.end&&String(r.end)>=shelfDayOf(p.at||0)))){
+      /* a reading that ended since it was kept, whether or not the book was
+         already finished then — see READ SINCE IT WAS ASKED */
+      if(finishedSince(b,p.at)){
         p.done=Date.now();p.how="read";
         /* a kept DARE is still a dare: it grows the same medal it would have
            grown on the card, at the same price */
         questAward(p.xp||50,(p.dare?"A kept dare, seen through: “":"A kept pick, read: “")+p.title+"”",
           (p.dare?"d:":"p:")+p.id+":"+(p.at||0));
+      }else if(!p.wasDone&&readBefore(b,p.at)){
+        /* kept to be read, and turned out to have been read already */
+        p.done=Date.now();p.how="before";questSave();
       }else if(b.dnf){
         if(ohNoFilled(b)>=2){
           p.done=Date.now();p.how="oh";
@@ -21262,6 +21297,8 @@ function questCheck(){
       closeSlot("errand");
       questAward(pay,er.name+", done: “"+(b.title||"Untitled")+"”",nm);
     }
+    /* finished, but by a reading from before it was drawn — let go, and said */
+    else if(er.stale&&er.stale(b,quests.errand)){closeSlot("errand");saidReadBefore("errand",b.title);questSave();}
   }
   if(quests.aiPrompt&&books.some(b=>kindOf(b)==="ai"&&(b.created||0)>quests.aiPrompt.at)){
     const nm="a:"+(quests.aiPrompt.at||0);
@@ -21519,7 +21556,7 @@ function questHtml(){
       ${pickOpen?quests.picks.map((p,i)=>`<div class="qpickrow">
         <button class="btn smallbtn" data-qgo="${esc(p.id)}" style="padding:2px 9px">Open</button>
         <span style="min-width:0;overflow-wrap:anywhere">${esc(p.title)}</span>
-        <span class="st">${p.done?(p.how==="oh"?"🙈 hated honestly":"✓ read")+" · +"+(p.xp||50):"waiting · +"+(p.xp||50)}</span>
+        <span class="st">${p.done?(p.how==="before"?"✓ read before it was kept · nothing paid":(p.how==="oh"?"🙈 hated honestly":"✓ read")+" · +"+(p.xp||50)):"waiting · +"+(p.xp||50)}</span>
         ${p.done?"":`<button class="btn smallbtn" data-qpdrop="${i}" title="Off the list — nothing lost">✕</button>`}
       </div>`).join(""):""}
       <div class="hint" style="margin-top:6px">A kept dare pays the full 100 when you finish it, or give up on it honestly, and counts for the medal the same. ${keptCap()} can wait at once; taking one off costs nothing.
