@@ -9665,6 +9665,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-27.10",lines:[
+    "<b>Putting back a book you folded into a collection no longer counts it twice.</b> It came back beside the story it had become, so it was on the shelf twice — twice in the year's count, twice in what you have read. Put back now takes that story out of the collection again, in the same step. If you have changed the story since folding it in, it asks first, because those changes go with it. And ↶ Undo after putting one back returns it to Recently deleted and its story to the collection, where before there was nothing to undo at all.",
+    "<b>🎴 Well Guessed counts every guess you win, on either device.</b> Each device kept its own count and the higher of the two was taken, so guesses won on both before they met were partly lost. It counts off the same list your XP now keeps."]},
   {v:"2026-09-27.9",lines:[
     "<b>Five ways your two devices could undo each other, closed.</b> These only show with two devices, so they were tested here by playing the second one.",
     "<b>A genre, tag or fandom you delete and then add back stays added.</b> Adding it back cleared the deletion on the device you were holding, and the other device, which still remembered the deletion, sent it back and deleted it again — every time. Adding back is now written down with its own date, and whichever of the two happened last is what both devices keep.",
@@ -12348,10 +12351,15 @@ async function applyOp(op,inv,quiet){
            destroyed the collection outright and Undo could still have brought
            it back but the bin could not. */
         if(it.before&&it.after===null)await toTrash(it.before);
+        /* a book PUT BACK from the bin: undoing that is binning it again, with
+           what it knew about the story it had been folded into */
+        else if(it.binned&&it.after){await toTrash(it.after);
+          if(it.fold)try{const tb=await dbGet("trash",it.id);if(tb){tb.foldedInto=it.fold;await dbPut("trash",tb);}}catch(e){}}
         await dbDel("books",it.id);
         books=books.filter(x=>x.id!==it.id);
         if(SYNC.on){deletions[it.id]=delStamp(it.id,it.before);saveDeletions();enqueue({kind:"bookDel",id:it.id});
           if(it.before&&it.after===null){trashCloud[it.id]={at:Date.now(),book:JSON.parse(JSON.stringify(it.before))};saveTrashCloud();}
+          else if(it.binned&&it.after){trashCloud[it.id]={at:Date.now(),book:JSON.parse(JSON.stringify(it.after)),...(it.fold?{foldedInto:it.fold}:{})};saveTrashCloud();}
           /* the picture went up with the book, so it comes down with it. Only the
              cloud's copy: this device keeps its own, so redoing gets it back */
           enqueue({kind:"coverDel",id:it.id});
@@ -14764,6 +14772,7 @@ async function foldIntoCollection(ids,coll){
     const {en}=await bookToEntry(b,coll.id,st,coll.author,coll.dnf,coll.keywords);
     coll.entries.push(en);
     await retireBook(b);
+    await noteFold(b,coll.id,en);
     /* after:null — retired to the bin by this press, the same shape ⤴ Unfold
        uses for the collection it empties, so the bulk branch puts each book
        back on the shelf and out of Recently deleted on undo, and back into it
@@ -14797,16 +14806,17 @@ async function makeCollectionFrom(ids,name,author){
   nb.entries=[];
   /* the copies are taken BEFORE anything is retired, since retireBook takes the
      book off `books` and out of the store */
-  const items=[];
+  const items=[],folded=new Map();
   for(const b of sel){
     items.push({id:b.id,before:JSON.parse(JSON.stringify(b)),after:null});
-    nb.entries.push((await bookToEntry(b,nb.id,nb.status,nb.author,nb.dnf,nb.keywords)).en);
+    const en=(await bookToEntry(b,nb.id,nb.status,nb.author,nb.dnf,nb.keywords)).en;
+    nb.entries.push(en);folded.set(b.id,en);
   }
   nb.modified=Date.now();
   await dbPut("books",nb);
   books.unshift(nb);
   if(SYNC.on)enqueue({kind:"book",id:nb.id});
-  for(const b of sel)await retireBook(b);
+  for(const b of sel){await retireBook(b);await noteFold(b,nb.id,folded.get(b.id));}
   /* ┌─ THIS IS AN OP LIKE ANY OTHER ───────────────────────────────────────────┐
      │ It was the one folding road with no pushOp, while its neighbour           │
      │ foldIntoCollection has always had one — so "📚 As one collection…" left    │
@@ -17443,6 +17453,21 @@ async function purgeTrash(){
   /* so the History tab can say how many are in there without opening it */
   countTrash();
 }
+/* ┌─ WHERE A FOLDED BOOK WENT ───────────────────────────────────────────────┐
+   │ A book folded into a collection goes to Recently deleted and lives on as │
+   │ a story there. Put back, it returned BESIDE that story, so one book was  │
+   │ counted twice — measured, "finished this year" went 2 → 3 and the title  │
+   │ was listed twice. The bin entry now remembers which collection and which │
+   │ story it became, as they stood at the fold, and restoreTrash takes that  │
+   │ story out again in the same step of undo — asking first if the story has │
+   │ been changed since, because those changes go with it.                    │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+async function noteFold(b,collId,en){
+  if(!b||!en)return;
+  const note={coll:collId,en:JSON.parse(JSON.stringify(en))};
+  try{const t=await dbGet("trash",b.id);if(t){t.foldedInto=note;await dbPut("trash",t);}}catch(e){}
+  if(binLive(b.id)){trashCloud[b.id].foldedInto=note;saveTrashCloud();}
+}
 async function toTrash(b){
   if(!b)return;
   try{
@@ -17464,9 +17489,16 @@ async function restoreTrash(tid){
     fromCloud=true;
   }
   const b=t.book;
+  /* see WHERE A FOLDED BOOK WENT — decided before anything is put back */
+  const fi=t.foldedInto||((trashCloud[tid]||{}).foldedInto)||null;
+  const fColl=fi?books.find(x=>x.id===fi.coll)||null:null;
+  const fEn=fColl?((fColl.entries||[]).find(e=>fi.en&&e.id===fi.en.id)||null):null;
+  if(fEn&&JSON.stringify(fEn)!==JSON.stringify(fi.en)
+    &&!confirm(`“${b.title||"Untitled"}” was folded into “${fColl.title||"a collection"}”, and its story there has changed since.\n\nPutting the book back takes that story out of “${fColl.title||"the collection"}” again, so the changes made to the story go with it. Put it back anyway?`))return;
   /* putting back a version that lost a sync race: the copy it beats out is binned
      in its turn, so the two can be swapped freely until one is truly chosen */
   const live=books.find(x=>x.id===b.id);
+  const liveBefore=live?JSON.parse(JSON.stringify(live)):null;
   if(t.conflict&&live)
     await dbPut("trash",{id:b.id+"~sync"+(live.modified||0),at:Date.now(),
       conflict:true,book:JSON.parse(JSON.stringify(live)),cover:null,images:{}});
@@ -17490,6 +17522,24 @@ async function restoreTrash(tid){
   }
   await dbDel("trash",tid);
   if(trashCloud[tid]){delete trashCloud[tid];saveTrashCloud();}
+  /* ONE STEP OF UNDO for the whole put-back — it had none. `binned` tells the
+     undo that this book came out of the bin, so undoing puts it back there
+     rather than deleting it outright; `fold` is carried so it still knows its
+     story if it is put back a second time. */
+  const items=[{id:b.id,before:liveBefore,after:JSON.parse(JSON.stringify(b)),binned:!liveBefore,fold:fi||undefined}];
+  if(fEn){
+    const before=JSON.parse(JSON.stringify(fColl));
+    fColl.entries=(fColl.entries||[]).filter(e=>e.id!==fEn.id);
+    touchBook(fColl);
+    await dbPut("books",fColl);
+    const key=fColl.id+"|"+fEn.id;
+    try{await dbDel("images",key);}catch(e){}
+    coverCache.delete(key);
+    if(SYNC.on){enqueue({kind:"book",id:fColl.id});if(fEn.cover)enqueue({kind:"imgDel",key});}
+    items.push({id:fColl.id,before,after:JSON.parse(JSON.stringify(fColl))});
+    if(cur&&cur.id===fColl.id)await rebaseOpenBook(fColl.id);
+  }
+  pushOp({t:"bulk",items});
   render();
 }
 
@@ -17746,7 +17796,7 @@ const ACHS=[
   /* the fastest ladder on the wall, and rightly: a guess costs one press, and
      one of every four is right by luck alone */
   ["guessDone","🎴","Well Guessed","books named from one of their own lines","quest",[1,3,6,10,16,24,34,46,60,76,95,116,140,170,205],
-    c=>(quests&&quests.guessDone)||0],
+    c=>questCount("guessDone")],
 ];
 /* rung → metal and stage: 1..3 Bronze I..III, 4..6 Silver, 7..9 Gold */
 /* ---- five metals, fifteen rungs ----
@@ -19090,7 +19140,8 @@ const gameWonToday=k=>{
 };
 function bumpGame(k){
   const row=GAMES.find(g=>g[0]===k);
-  if(row)quests[row[1]]=(quests[row[1]]||0)+1;
+  /* a count kept on the list of what earned XP is counted there, not here */
+  if(row&&!LED_COUNTS[row[1]])quests[row[1]]=(quests[row[1]]||0)+1;
   try{
     questInit();
     const w=quests.daily.won=quests.daily.won||{};
@@ -19530,7 +19581,10 @@ function questAward(n,label,key){
   return true;
 }
 /* which names each challenge count is kept under — see XP IS A LIST */
-const LED_COUNTS={chDone:"d:",ohDone:"o:",aiDone:"a:",twelveDone:"g:",errDone:"e:",weekDone:"w:"};
+/* guessDone too: each guess won is already written down as "q:<card>", so
+   wins on both devices before they meet are all counted — the higher of two
+   totals kept only one device's */
+const LED_COUNTS={chDone:"d:",ohDone:"o:",aiDone:"a:",twelveDone:"g:",errDone:"e:",weekDone:"w:",guessDone:"q:"};
 function questCount(k){
   let n=(quests&&quests[k])||0;
   const pre=LED_COUNTS[k],led=quests&&quests.led;
@@ -34395,6 +34449,7 @@ function renderEditor(){
         cur.entries.push(en);
         if(coverData)curEnt[en.id]=coverData;
         await retireBook(b);
+        await noteFold(b,cur.id,en);
         await commitCur();
         const last=HIST.undo[HIST.undo.length-1];
         if(last&&last.t==="book"&&last.id===cur.id)
