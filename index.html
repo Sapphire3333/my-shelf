@@ -10346,6 +10346,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-28.7",go:["set:look:#picsExport"],lines:[
+    "<b>⬇ Save all your pictures to a file.</b> ⚙ Settings → How it looks → Your own pictures has a new button at the bottom: every picture you have given a medal, a game, a card, a task or an errand, the pet's pictures and your own creature go into one file in your downloads — your badge picture stays out. It is a copy of them outside the browser, and it is what the app's own default pictures will be made from."]},
   {v:"2026-09-28.6",go:["el:challenges:.qsliv","arc:io","arc:st"],lines:[
     "<b>🕹 Five more games use their whole window.</b> <i>A sliver of cover</i> shows its strip half as tall again, and it still widens by the same share of the cover at each step. <i>When was that?</i> puts the book large in the middle over four big years. <i>In order</i> and <i>Series in order</i> lay all their covers out in one row, with the number you gave each on its corner. <i>Settle it</i> puts the two books side by side, large.",
     "Each asks its question in large type, on its tile's colour, like the first five. Ten of the nineteen are done; the rest follow."]},
@@ -26272,10 +26274,50 @@ function ownPicsHtml(){
       <div class="hint" style="margin:0 0 8px">A picture of yours for any game, card, task, errand or medal — it takes the emoji's place, or stands beside a name that had none. Yours on both devices; a plain background is cut away. ✕ puts back what was there.</div>
       ${gs.map(g=>{const n=g[2].filter(x=>ownIconHas(x.k)).length;
         return `<details class="opgroup" data-opg="${g[0]}"><summary><b>${g[1]}</b> <span class="hint" style="margin:0">· ${g[2].length}${n?`, ${n} your own`:""}</span></summary><div class="opbody"></div></details>`;}).join("")}
+      <div class="hrow2" style="margin-top:10px;flex-wrap:wrap;gap:8px"><button class="btn" id="picsExport">⬇ Save all my pictures to a file</button>
+        <span class="hint" style="margin:0" id="picsExportSay">Every picture above that is yours, the pet's pictures and your own creature, in one file — not your badge picture.</span></div>
     </div></div>`;
+}
+/* ---- ⬇ every picture of yours, in one file ----
+   The pictures given to the shelf's own things (ownIcons: medals, games,
+   cards, tasks, errands), the pet's moods (meta petPics, with the creature
+   they were drawn for) and your own creature (shopPics.creature), as one
+   JSON of data URLs. It is what the app's own default pictures are made
+   from, and a copy of them outside the browser besides: the backup holds
+   the images store but not petPics or shopPics. The badge picture is left
+   out on purpose — it may be a face. A picture not yet fetched to this
+   device is fetched (loadImgData asks the cloud); one that cannot be is
+   counted and said, not silently dropped. */
+async function exportPictures(){
+  if(!ownIcons)await ownIconsLoad();
+  if(!petPics)await petLoad();
+  if(!shopPics)await shopPicsLoad();
+  const icons={},missing=[];
+  for(const k of Object.keys(ownIcons||{})){
+    if(!ownIconHas(k))continue;
+    let d=ownIconData.get(k);
+    if(!d){try{d=await loadImgData(ownIconKey(k));}catch(e){d=null;}}
+    if(d&&/^data:image\//.test(d))icons[k]=d;else missing.push(k);
+  }
+  const pics={};
+  Object.keys(petPics||{}).forEach(m=>{const p=petPics[m];if(p&&typeof p.d==="string"&&/^data:image\//.test(p.d))pics[m]=p.d;});
+  const creature=shopPic("creature")||"";
+  const n=Object.keys(icons).length+Object.keys(pics).length+(creature?1:0);
+  if(!n)return {n:0,missing};
+  const json=JSON.stringify({app:"my-shelf-pictures",version:1,exported:new Date().toISOString(),
+    icons,pet:{kind:(petCfg()&&petCfg().kind)||"",pics},creature});
+  downloadJson(json,`my-shelf-pictures-${todayStr()}.json`);
+  return {n,missing,mb:json.length/1048576};
 }
 function wireOwnPics(m){
   const box=q("#ownPics",m);if(!box)return;
+  {const ex=q("#picsExport",box);if(ex)ex.onclick=async()=>{
+    const say=q("#picsExportSay",box);ex.disabled=true;if(say)say.textContent="Gathering them…";
+    let r=null;try{r=await exportPictures();}catch(e){r=null;}
+    ex.disabled=false;if(!say)return;
+    say.textContent=!r?"That couldn't be saved — try again."
+      :!r.n?"There are no pictures of your own to save yet."
+      :`Saved ${r.n} picture${r.n===1?"":"s"} (${r.mb.toFixed(1)} MB) to your downloads.${r.missing.length?` ${r.missing.length} couldn't be fetched to this device and are not in it.`:""}`;};}
   const gs=ownPicGroups();
   const fill=d=>{const g=gs.find(x=>x[0]===d.dataset.opg);const b=q(".opbody",d);if(g&&b)b.innerHTML=ownPicRows(g);};
   box.addEventListener("toggle",e=>{const d=e.target;if(d.matches&&d.matches("details.opgroup")&&d.open)fill(d);},true);
