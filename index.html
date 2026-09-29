@@ -6716,18 +6716,26 @@ function authorReads(keep){
    there is nothing behind it to compare against — the earliest days can
    therefore read high. Nothing here is guessed: a day with no page said on it
    is a day with no pages, which is why the card says what it is counting. */
+/* One bookmark's trail as [day, pages moved forward that day]. An entry said in
+   PERCENT (setPct writes `pc` on a book with no page count) is left out and
+   does not move `prev`: forty percent is not forty pages, and the card has
+   always said a book kept in percent cannot paint — the walk used to count
+   them all the same. petPages reads the same steps. */
+function trailSteps(o){
+  const out=[],lg=o&&o.progLog;
+  if(!Array.isArray(lg))return out;
+  let prev=0;
+  for(const e of lg){
+    if(!e||e.pc)continue;
+    const p=parseInt(e.p)||0,d=String(e.d||"");
+    if(d.length===10&&p>prev)out.push([d,p-prev]);
+    prev=p;
+  }
+  return out;
+}
 function pagesPerDay(){
   const day={};
-  const walk=o=>{
-    const lg=o&&o.progLog;
-    if(!Array.isArray(lg))return;
-    let prev=0;
-    for(const e of lg){
-      const p=parseInt(e&&e.p)||0,d=String((e&&e.d)||"");
-      if(d.length===10&&p>prev)day[d]=(day[d]||0)+(p-prev);
-      prev=p;
-    }
-  };
+  const walk=o=>trailSteps(o).forEach(([d,n])=>{day[d]=(day[d]||0)+n;});
   for(const b of books){walk(b);if(isColl(b))for(const en of (b.entries||[]))walk(en);}
   return day;
 }
@@ -10465,6 +10473,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-09-29.3",go:["tab:today","tab:insights"],lines:[
+    "<b>🐾 Your pet counts the pages you mark.</b> It used to count a book only once it was finished — and a book you were already reading when it came counted nothing at all, however far you got. Now every page your bookmark moves after it came counts, on the day you say it: the same pages Insights' <i>Pages a day</i> shows. A book finished with no page ever said still counts, less whatever you had read before it came.",
+    "<b>📈 Pages a day</b> no longer counts a book kept in percent as pages. Its own note always said a percent is not a page; forty percent had been counting as forty pages."]},
   {v:"2026-09-29.2",go:["el:challenges:.qrainbow"],lines:[
     "<b>🌈 A colour of the rainbow finds its books the first time you press it.</b> Straight after opening the app, a colour listed nothing — the cover colours were still being read back — and only going back and pressing again found them. The list now fills in by itself as the colours arrive, and says <i>⏳ Reading the cover colours</i> until it has them all."]},
   {v:"2026-09-29.1",go:["tab:library"],lines:[
@@ -26639,15 +26650,49 @@ function petAdopt(kind){
   quests.pet=Object.assign({},was||{},{kind,born:(was&&was.born)||questToday(),at:Date.now()});
   questSave();
 }
-/* pages eaten: the pages of every reading finished since it came, and what
-   the books being read now have got through since then */
+/* ┌─ PAGES EATEN: THE PAGES READ SINCE IT CAME ─────────────────────────────┐
+   │ It counted a book only once it was finished, and a book being read only │
+   │ if that reading had STARTED after the pet came — so every page said on a │
+   │ book already open that day counted nothing, and a pet adopted mid-book   │
+   │ sat at 0 while the pages went by. Now, for each book and story:          │
+   │  · the bookmark's moves since the day it came, day by day — the same     │
+   │    steps Insights' Pages a day paints (trailSteps);                      │
+   │  · a reading finished since then, its length less where the bookmark     │
+   │    stood when the pet came (nothing, if that reading began after) — so a │
+   │    book finished with no page ever said still counts, and the pages read │
+   │    BEFORE the pet came never do.                                         │
+   │ The larger of the two, never both: finishing a book today writes the     │
+   │ last pages onto the trail as well (finishProgress), and adding the two   │
+   │ would count those pages twice. Pages of 300, at 100 when it came, 150    │
+   │ said the next day, finished the day after: 200.                         │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+function petTrail(o,born){
+  let before=0,moved=0;
+  const lg=(o&&Array.isArray(o.progLog))?o.progLog:[];
+  for(const e of lg){if(e&&!e.pc&&String(e.d||"")<born)before=parseInt(e.p)||0;}
+  trailSteps(o).forEach(([d,n])=>{if(d>=born)moved+=n;});
+  return {before,moved};
+}
 function petPages(){
   const c=petCfg();if(!c||!c.born)return 0;
+  const born=String(c.born).slice(0,10),seen=new Set();
   let n=0;
   readUnits().forEach(u=>{
-    u.reads.forEach(r=>{const e=String(r.end||"").slice(0,10);if(e&&e>=c.born)n+=u.pages||0;});
-    if(u.part&&!u.en){const or=openRead(u.book);if(or&&or.start&&String(or.start)>=c.born)n+=u.part;}
+    const o=u.en||u.book;seen.add(o);
+    const t=petTrail(o,born);
+    let fin=0;
+    u.reads.forEach(r=>{
+      const e=String(r.end||"").slice(0,10);if(!e||e<born)return;
+      const s=String(r.start||"").slice(0,10);
+      fin+=Math.max(0,(u.pages||0)-((s&&s>=born)?0:t.before));
+    });
+    n+=Math.max(t.moved,fin);
   });
+  /* a split piece is not a unit of its own, but its bookmark still moved */
+  for(const b of books){
+    if(!seen.has(b))n+=petTrail(b,born).moved;
+    if(isColl(b))for(const en of (b.entries||[]))if(!seen.has(en))n+=petTrail(en,born).moved;
+  }
   return n;
 }
 function petStage(p){let i=0;PET_STAGES.forEach(([n],j)=>{if(p>=n)i=j;});return i;}
