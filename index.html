@@ -9110,6 +9110,9 @@ async function pullAll(){
        pulls, and on a phone that is every few minutes — each one used to rebuild
        the page whether or not a single word had changed anywhere. */
     if((changed.length||touched||shape()!==wasShape)&&view!=="book")render();
+    /* the pet's face is cheap to ask about and is not redrawn on a book's page
+       otherwise — see THE FACE KEEPS UP WITHOUT A RELOAD */
+    else if(changed.length||touched)petNudge();
   }catch(e){
     console.warn("[shelf] pull failed",e);setSync(navigator.onLine?"error":"offline");
   }finally{SYNC.pulling=false;}
@@ -9526,6 +9529,7 @@ async function tabCatchUp(){
      before there is anything to say */
   tabClashNote();
   if(!touched)return;
+  petNudge();
   bumpCovers();
   /* not while you are typing, and not over the book you have open */
   const a=document.activeElement;
@@ -10645,6 +10649,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-01.1",lines:[
+    "<b>Your pet's face keeps up without a reload.</b> The one in the corner kept the mood it had when a screen was last drawn, and on a book's page that was never redrawn at all — tick off today's three in Edit and its card said Happy while the corner still looked peckish. It changes face as things happen now: a task ticked, a page read, news from your other device, and the clock (peckish in the afternoon, asleep late at night). On a pet card on Today, Challenges or Medals the face and its line change in place too.",
+    "It stays in its corner on a book's own page as well — it had been showing there anyway, just never updated."]},
   {v:"2026-09-29.13",go:["tab:library"],lines:[
     "<b>✎ Edit is laid out to be read.</b> Each fold is a card now, and every field in it sits on its own line with its name down the left — read the left edge and you have read the page.",
     "<b>Beside the cover</b>, which is a small frame in Edit (the reading page keeps its big one): the stage, the page you're on, your mark, the page count, what your notes lean to, and the dates you read it — what you change on a book just finished, without opening a fold.",
@@ -19822,6 +19829,7 @@ function streakFromDays(s){
   return {cur,best,last:prev||""};
 }
 function saveStreaks(){
+  petNudge();
   clearTimeout(streaksTimer);
   streaksTimer=setTimeout(()=>{
     dbPut("meta",{k:"streaks",v:streaks}).then(()=>enqueue({kind:"meta",key:"streaks"})).catch(()=>{});
@@ -20498,6 +20506,7 @@ let quests=null,questsTimer=0;
    hold one, the newer draw is the one that stands. */
 function questSave(){
   if(quests)quests.at=Date.now();
+  petNudge();   /* a task ticked may change the pet's face — see THE FACE KEEPS UP */
   clearTimeout(questsTimer);
   questsTimer=setTimeout(()=>{
     dbPut("meta",{k:"quests",v:quests}).then(()=>enqueue({kind:"meta",key:"quests"})).catch(()=>{});
@@ -27220,7 +27229,7 @@ function petCardHtml(where){
   const next=PET_STAGES[st+1],from=PET_STAGES[st][0];
   const pct=next?Math.round((p-from)/(next[0]-from)*100):100;
   const nm=c.name||("Your "+k[1].toLowerCase());
-  return `<div class="sec petsec"><div class="hcard petcard" role="button" tabindex="0" id="petCard" title="Press for more">
+  return `<div class="sec petsec"><div class="hcard petcard" role="button" tabindex="0" id="petCard" data-mood="${mood}" title="Press for more">
     <div class="petbox pst-${st}">${petFace(mood)}</div>
     <div class="petwho"><b>${esc(nm)}</b> <span class="hint">· a ${esc(PET_STAGES[st][1])} ${esc(k[1].toLowerCase())}</span><br>
       <span class="petsay">${esc(nm)} ${esc(petLine(mood))}</span>
@@ -27233,16 +27242,58 @@ function petCardHtml(where){
    wears the pet's face, see owlSay) */
 function petCorner(){
   let el=document.getElementById("petCorner");
-  const want=!!petCfg()&&petWhere()==="corner"&&view!=="book";
+  const want=!!petCfg()&&petWhere()==="corner";
   if(!want){if(el)el.remove();return;}
   if(!el){el=document.createElement("button");el.id="petCorner";el.className="petcorner";
     document.body.appendChild(el);petDragWire(el);}
-  const mood=petMood();
-  el.innerHTML=petFace(mood,"psm");
+  const mood=petMood(),face=petFaceKey(mood);
+  /* the same face is not drawn again — every screen calls this, and a
+     picture put back into the button is a picture loaded again */
+  if(el.dataset.face!==face){el.innerHTML=petFace(mood,"psm");el.dataset.face=face;}
   el.style.setProperty("--petk",String(petSizePct()/100));
   petPlace(el);
   el.title=(petCfg().name||petKind()[1])+" "+petLine(mood);
 }
+/* what the face is drawn from: the mood, the creature, and when that mood's
+   own picture last changed */
+function petFaceKey(mood){
+  const p=petPics&&petPics[mood];
+  return mood+"|"+petKind()[0]+"|"+((p&&p.at)||0)+"|"+((petPics&&petPics.awake&&petPics.awake.at)||0);
+}
+/* ┌─ THE FACE KEEPS UP WITHOUT A RELOAD ────────────────────────────────────┐
+   │ The corner pet was drawn by render() and by nothing else, so it wore   │
+   │ the mood it had when a screen was last drawn. A book's page never      │
+   │ passes through render() (openBook → renderBook), so the pet carried in │
+   │ from the last screen stood there unchanged: three tasks cleared in the │
+   │ editor, its card pressed open said Happy, and the corner still wore    │
+   │ Peckish until the page was reloaded. It lives on a book's page too now │
+   │ — PET_WHERE has always said "a corner of every screen".                │
+   │ petNudge asks again whenever something its mood is made of moves: a    │
+   │ task ticked or a game played (questSave), a run counted (saveStreaks), │
+   │ the other device's news (pullAll, tabCatchUp), and once a minute, since │
+   │ the clock moves it too — peckish at two, asleep at eleven. Only a face │
+   │ that actually changed is redrawn; a pet card on Today, Challenges or   │
+   │ Medals has its face and its line changed in place.                     │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function petNudge(){
+  clearTimeout(petNudge.t);
+  petNudge.t=setTimeout(()=>{try{petFresh();}catch(e){}},400);
+}
+function petFresh(){
+  if(!petCfg())return;
+  const mood=petMood();
+  const el=document.getElementById("petCorner");
+  if(petWhere()==="corner"&&(!el||el.dataset.face!==petFaceKey(mood)))petCorner();
+  const card=document.getElementById("petCard");
+  if(card&&card.dataset.mood!==mood){
+    const box=card.querySelector(".petbox"),say=card.querySelector(".petsay");
+    if(box)box.innerHTML=petFace(mood);
+    if(say)say.textContent=(petCfg().name||("Your "+petKind()[1].toLowerCase()))+" "+petLine(mood);
+    card.dataset.mood=mood;
+  }
+}
+setInterval(petNudge,60000);
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible")petNudge();});
 /* ---- what the day has had so far, on the pet's own card ----
    The size and the place were the whole of what pressing it showed, and they
    are set once and then left; what is worth a look each day is whether today
@@ -34856,7 +34907,8 @@ function tidySaid(cut){
 /* "view" shows only what's filled in; "edit" is the form. A book you've never
    touched opens in the form, since it's waiting to be filled in. */
 let bookMode="view";
-function renderBook(){useTick(view);hideTabBar();bookMode==="edit"?renderEditor():renderBookView();syncHistory();}
+function renderBook(){useTick(view);hideTabBar();bookMode==="edit"?renderEditor():renderBookView();syncHistory();
+  setTimeout(()=>{try{petCorner();}catch(e){}},0);}
 /* Putting the book down and picking it up the other way round puts the pen down
    too. `mode` — arranging, drawing, tagging — is a tool you have in your hand,
    and it used to be carried between the two faces: leaving the form while
