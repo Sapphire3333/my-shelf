@@ -10672,6 +10672,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.2",go:["el:challenges:.gtiles"],lines:[
+    "<b>🎮 Nothing comes round again for ten deals.</b> Every game used to keep only the last thing it dealt out of the next one, so a cover or a book could be back two deals later. Now each game remembers its last ten deals — the cover, the book, the quote, the name, the series or the characters — and deals from what none of them used. Where your shelf hasn't enough for that, the oldest is let back first, so the newest are always last to return.",
+    "It is the same on both devices: the phone and the computer share what each game has dealt. Games that lay out several books at once (Pairs, Higher or lower, Odd one out, Settle it, Connect…) keep the last ten boards' books out as far as your shelf has others."]},
   {v:"2026-10-02.1",go:["set:look:#petSetBox"],lines:[
     "<b>No more grey-and-white squares behind your pet.</b> A picture saved from a page that shows see-through parts as a checkerboard often has the squares painted into it, and the app only knew how to take away a plain one-colour background. It recognises the painted squares now and takes them away too — on the pet's pictures you already have (once, by itself; your other device gets the clean copy), and on anything you add from now on: the pet, your creature, medals and game pictures, and the dragon."]},
   {v:"2026-10-01.3",go:["arc:pz","arc:pz","arc:pz","arc:pz"],lines:[
@@ -20715,6 +20718,8 @@ function mergeQuests(rv){
   /* the arcade's games and the month's cards, each a slot of its own inside
      one record — joined by the same rule, game by game */
   mergeArcade(l,rv);
+  /* what each game's last ten deals used — see NOTHING DEALT AGAIN */
+  if(rv.fresh&&typeof rv.fresh==="object")l.fresh=freshJoin(l.fresh,rv.fresh);
   /* two devices each playing up to the day's arcade ceiling before they met
      would have earned it twice; the excess is taken back, per day */
   arcCapHeal(l);
@@ -23040,9 +23045,10 @@ function guessDraw(lv){
   lv=lv||guessLv();
   const pool=guessPool(lv);
   if(!pool.length)return null;
-  /* never the same book twice running, while another can be asked */
+  /* no book asked about in the last ten deals, while another can be — see
+     NOTHING DEALT AGAIN FOR TEN DEALS */
   const was=(quests.guess&&quests.guess.id)||"";
-  const fresh=pool.filter(c=>c.id!==was),from=fresh.length?fresh:pool;
+  const from=freshFrom("guess",pool,c=>c.id,null,was);
   const c=from[Math.floor(Math.random()*from.length)];
   let decoys;
   if(lv===2){
@@ -23058,6 +23064,7 @@ function guessDraw(lv){
     decoys=shuffled(field.filter(b=>b.id!==c.id)).slice(0,3).map(b=>b.id);
   }
   quests.guess={k:c.k,lv,id:c.id,text:c.text,opts:shuffled([c.id,...decoys]),picked:"",at:Date.now()};
+  freshNote("guess",[c.id]);
   questSave();return quests.guess;
 }
 /* The choices show a cover and NOT the drawn stand-in, which prints the book's
@@ -23109,8 +23116,7 @@ function sliverDraw(){
   const field=coverField();
   if(field.length<4)return null;
   const was=(quests.sliver&&quests.sliver.id)||"";
-  const from=field.filter(b=>b.id!==was);
-  const c=(from.length?from:field)[Math.floor(Math.random()*(from.length?from.length:field.length))];
+  const c=pick1(freshFrom("sliver",field,b=>b.id,null,was));
   /* the harder half of their note, got cheaply: where the answer belongs to a
      series that has four covers of its own, the decoys come from it — four
      books that look alike is a real question, four at random is a lottery */
@@ -23120,6 +23126,7 @@ function sliverDraw(){
   const decoys=shuffled(pool).slice(0,3).map(b=>b.id);
   quests.sliver={id:c.id,p:12+Math.floor(Math.random()*76),step:0,
     opts:shuffled([c.id,...decoys]),picked:"",kin:kin.length>=3,at:Date.now()};
+  freshNote("sliver",[c.id]);
   questSave();return quests.sliver;
 }
 function sliverWiden(){
@@ -23212,11 +23219,13 @@ function fillDraw(){
     .sort((a,c)=>c.miss.length-a.miss.length);
   if(!scored.length)return null;
   const was=(quests.fill&&quests.fill.id)||"";
-  const top=scored.slice(0,12).filter(x=>x.b.id!==was);
-  const pick=(top.length?top:scored.slice(0,12))[Math.floor(Math.random()*(top.length||Math.min(12,scored.length)))];
+  /* the emptiest twelve of those the last ten deals left alone */
+  const top=freshFrom("fill",scored,x=>x.b.id,null,was).slice(0,12);
+  const pick=pick1(top);
   if(!pick)return null;
   quests.fill={id:pick.b.id,title:pick.b.title||"Untitled",want:pick.miss.slice(0,4),
     got:[],until:Date.now()+FILL_MINS*60000,over:false,at:Date.now()};
+  freshNote("fill",[pick.b.id]);
   questSave();return quests.fill;
 }
 /* Called from questCheck, so it answers the moment anything on any book is
@@ -23289,8 +23298,9 @@ function linkDraw(n){
   const all=Object.values(byBook);
   if(all.length<4)return null;
   const take=Math.min(n,all.length);
-  const pairs=shuffled(all).slice(0,take).map(c=>({id:c.id,k:c.k,text:c.text.slice(0,260)}));
+  const pairs=shuffled(freshFrom("link",all,c=>c.id,l=>l.length>=take)).slice(0,take).map(c=>({id:c.id,k:c.k,text:c.text.slice(0,260)}));
   quests.link={pairs,order:shuffled(pairs.map(p=>p.id)),got:[],wrong:0,done:false,at:Date.now()};
+  freshNote("link",pairs.map(p=>p.id));
   linkSel="";questSave();return quests.link;
 }
 function linkJoin(clueId,bookId){
@@ -23372,11 +23382,15 @@ const decoField=()=>books.filter(b=>!b.apart&&String(b.title||"").trim()
   &&statusOf(b)==="finished"&&!b.dnf&&decoCount(b)===0);
 function decoDraw(){
   const was=(quests.deco&&quests.deco.id)||"";
-  const from=decoField().filter(b=>b.id!==was);
+  const field=decoField();
+  /* it never dealt the book on the table again, even when that was the
+     only one — kept */
+  const from=freshFrom("deco",field,b=>b.id,null,was).filter(b=>b.id!==was);
   if(!from.length)return null;
-  const b=from[Math.floor(Math.random()*from.length)];
+  const b=pick1(from);
   quests.deco={id:b.id,title:b.title||"Untitled",base:decoCount(b),got:0,
     until:Date.now()+DECO_MINS*60000,over:false,at:Date.now()};
+  freshNote("deco",[b.id]);
   questSave();return quests.deco;
 }
 function decoWatch(){
@@ -24627,6 +24641,53 @@ const arcFinished=()=>arcBooks().filter(b=>statusOf(b)==="finished"&&!b.dnf);
 /* a book, or a story inside a collection as "coll|entry" (see guessRowOf) */
 const arcTitle=id=>{const r=guessRowOf(id);return (r&&r.b.title)||"Untitled";};
 const pick1=a=>a[Math.floor(Math.random()*a.length)];
+/* ┌─ NOTHING DEALT AGAIN FOR TEN DEALS ─────────────────────────────────────┐
+   │ Each game kept at most the one thing it dealt last out of the next deal │
+   │ (a `was`), and Series in order three, on one device — so a cover could  │
+   │ come round again two deals later. Now every game's last FRESH_N deals   │
+   │ are remembered in quests.fresh, as what each was made of: book ids,    │
+   │ story ids, or a key for a quote, a name or a trait (up to FRESH_PER a  │
+   │ deal). A deal draws from what none of them used. Where the shelf has   │
+   │ too little left for that, the OLDEST deal is                            │
+   │ let back first, then the next, so the newest are always the last to    │
+   │ come round again. It travels with the game state, joined deal by deal   │
+   │ (freshJoin, in mergeQuests), so the phone and the computer don't hand   │
+   │ each other the same thing. `was` — what is on the table now — counts as │
+   │ the newest deal, which covers the first deal after this was added.      │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const FRESH_N=10,FRESH_PER=20;
+function freshHist(g){const f=quests&&quests.fresh;return (f&&f[g]&&Array.isArray(f[g]))?f[g]:[];}
+function freshFrom(g,pool,key,enough,was){
+  const ok=enough||(l=>l.length>0);
+  const deals=freshHist(g).map(d=>d.k||[]);
+  if(was!=null&&was!==""){const w=String(was);if(!deals.length||deals[deals.length-1].indexOf(w)<0)deals.push([w]);}
+  for(let back=deals.length;back>0;back--){
+    const ban=new Set();
+    for(const d of deals.slice(deals.length-back))for(const k of d)ban.add(k);
+    const left=pool.filter(x=>!ban.has(String(key(x))));
+    if(ok(left))return left;
+  }
+  return pool;
+}
+function freshNote(g,keys){
+  if(!quests)return;
+  const f=quests.fresh=(quests.fresh&&typeof quests.fresh==="object")?quests.fresh:{};
+  const h=Array.isArray(f[g])?f[g]:[];
+  h.push({a:Date.now(),k:[...new Set((keys||[]).map(String))].slice(0,FRESH_PER)});
+  while(h.length>FRESH_N)h.shift();
+  f[g]=h;
+}
+/* two devices' memories of one game: every deal either made, by when it was
+   made, the newest FRESH_N kept */
+function freshJoin(a,b){
+  const out={};
+  new Set([...Object.keys(a||{}),...Object.keys(b||{})]).forEach(g=>{
+    const by={};
+    [...((a&&a[g])||[]),...((b&&b[g])||[])].forEach(d=>{if(d&&d.a&&Array.isArray(d.k))by[d.a+"|"+d.k.join(",")]=d;});
+    out[g]=Object.values(by).sort((x,y)=>x.a-y.a).slice(-FRESH_N);
+  });
+  return out;
+}
 /* a cover the way Guess draws one, which hydrateCovers then fills in */
 const arcCov=(id,cls)=>{
   const sid=String(id),bar=sid.indexOf("|");
@@ -24708,8 +24769,11 @@ const hlMeasure=()=>{const m=settings&&settings.hlMeasure;return HL_MEASURES[m]?
 function hlPool(m){const f=HL_MEASURES[m];return arcBooks().filter(b=>f.val(b)!=null);}
 function hlCan(){return Object.keys(HL_MEASURES).some(m=>{const p=hlPool(m);return p.length>=6&&new Set(p.map(HL_MEASURES[m].val)).size>=3;});}
 function hlDeal(){
-  const m=hlMeasure(),f=HL_MEASURES[m],pool=hlPool(m);
-  if(pool.length<6||new Set(pool.map(f.val)).size<3)return null;
+  const m=hlMeasure(),f=HL_MEASURES[m],all=hlPool(m);
+  if(all.length<6||new Set(all.map(f.val)).size<3)return null;
+  /* a run out of books the last ten runs left alone, while that still makes
+     a full run with three different numbers in it */
+  const pool=freshFrom("hl",all,b=>b.id,l=>l.length>=HL_RUN&&new Set(l.map(f.val)).size>=3);
   const seq=[pick1(pool)],used=new Set([seq[0].id]);
   for(let n=0;n<400&&seq.length<HL_RUN;n++){
     const prev=f.val(seq[seq.length-1]),c=pick1(pool);
@@ -24717,6 +24781,7 @@ function hlDeal(){
     seq.push(c);used.add(c.id);
   }
   if(seq.length<HL_WIN+1)return null;
+  freshNote("hl",seq.map(b=>b.id));
   return arcPut("hl",{m,ids:seq.map(b=>b.id),vals:seq.map(f.val),i:0,streak:0,over:false,at:Date.now()});
 }
 function hlAnswer(up){
@@ -24772,9 +24837,16 @@ const ioPool=()=>arcFinished().filter(b=>/^\d{4}-\d{2}-\d{2}/.test(lastEnd(b)));
 function ioCan(){return new Set(ioPool().map(lastEnd)).size>=4;}
 function ioDeal(){
   const n=arcSize("ioSize",IO_SIZES,4),byDay={};
-  ioPool().forEach(b=>{const d=lastEnd(b).slice(0,10);(byDay[d]=byDay[d]||[]).push(b);});
-  const days=Object.keys(byDay);if(days.length<4)return null;
+  const all=ioPool(),dayOf=b=>lastEnd(b).slice(0,10);
+  const allDays=new Set(all.map(dayOf)).size;
+  if(allDays<4)return null;
+  /* books the last ten deals left alone, while they still fall on as many
+     different days as the board wants */
+  freshFrom("io",all,b=>b.id,l=>new Set(l.map(dayOf)).size>=Math.min(n,allDays))
+    .forEach(b=>{const d=dayOf(b);(byDay[d]=byDay[d]||[]).push(b);});
+  const days=Object.keys(byDay);
   const take=shuffled(days).slice(0,Math.min(n,days.length)).map(d=>pick1(byDay[d]));
+  freshNote("io",take.map(b=>b.id));
   const ans=take.slice().sort((a,b)=>lastEnd(a).localeCompare(lastEnd(b))).map(b=>b.id);
   return arcPut("io",{ids:shuffled(take.map(b=>b.id)),ans,dates:Object.fromEntries(take.map(b=>[b.id,lastEnd(b).slice(0,10)])),taps:[],over:false,at:Date.now()});
 }
@@ -24834,17 +24906,25 @@ function ooWhy(ids,odd){
 const ooSay=t=>{const i=t.indexOf("|");return (OO_WORD[t.slice(0,i)]||"")+" "+t.slice(i+1);};
 function ooCan(){return arcBooks().length>=8;}
 function ooDeal(){
-  const pool=arcBooks(),by={};
-  pool.forEach(b=>ooTraits(b).forEach(t=>{(by[t]=by[t]||[]).push(b);}));
-  const cand=Object.keys(by).filter(t=>by[t].length>=3&&by[t].length<=pool.length-1);
-  for(let n=0;n<60&&cand.length;n++){
-    const t=pick1(cand),three=shuffled(by[t]).slice(0,3);
-    const out=pool.filter(b=>!ooTraits(b).has(t));
-    if(!out.length)continue;
-    const odd=pick1(out),ids=shuffled([...three.map(b=>b.id),odd.id]);
-    return arcPut("oo",{ids,odd:odd.id,t,picked:"",at:Date.now()});
-  }
-  return null;
+  const all=arcBooks();
+  /* the books and the trait the last ten boards left alone, as far as the
+     shelf still makes a board without them — tried fresh first, then whole */
+  const tryWith=(pool,fresh)=>{
+    const by={};
+    pool.forEach(b=>ooTraits(b).forEach(t=>{(by[t]=by[t]||[]).push(b);}));
+    let cand=Object.keys(by).filter(t=>by[t].length>=3&&by[t].length<=pool.length-1);
+    if(fresh){const left=freshFrom("oo",cand,t=>"t:"+t);if(left.length)cand=left;}
+    for(let n=0;n<60&&cand.length;n++){
+      const t=pick1(cand),three=shuffled(by[t]).slice(0,3);
+      const out=pool.filter(b=>!ooTraits(b).has(t));
+      if(!out.length)continue;
+      const odd=pick1(out),ids=shuffled([...three.map(b=>b.id),odd.id]);
+      freshNote("oo",["t:"+t,...ids]);
+      return arcPut("oo",{ids,odd:odd.id,t,picked:"",at:Date.now()});
+    }
+    return null;
+  };
+  return tryWith(freshFrom("oo",all,b=>b.id,l=>l.length>=8),true)||tryWith(all,false);
 }
 function ooPick(id){
   const s=arcSlot("oo");if(!s||s.picked)return;
@@ -24886,7 +24966,10 @@ function flPool(){
 function flCan(){const p=flPool();return p.length>=3;}
 function flDeal(){
   const pool=flPool();if(pool.length<3)return null;
-  const c=pick1(pool),w=pick1(flWords(c.t));
+  /* a quote is known by its words — one book holds several */
+  const qk=x=>"q"+strHash(x.t);
+  const c=pick1(freshFrom("fl",pool,qk)),w=pick1(flWords(c.t));
+  freshNote("fl",[qk(c)]);
   const others=[...new Set(pool.filter(x=>x!==c).flatMap(x=>flWords(x.t)))]
     .filter(x=>x.toLowerCase()!==w.toLowerCase());
   const near=others.filter(x=>Math.abs(x.length-w.length)<=2);
@@ -24932,8 +25015,8 @@ const rgPool=()=>arcBooks().filter(b=>b.rating!=null&&+b.rating>=0.5);
 function rgCan(){return rgPool().length>=5;}
 function rgDeal(){
   const p=rgPool();if(p.length<5)return null;
-  const was=(arcSlot("rg")||{}).id,from=p.filter(b=>b.id!==was);
-  const b=pick1(from.length?from:p);
+  const b=pick1(freshFrom("rg",p,x=>x.id,null,(arcSlot("rg")||{}).id));
+  freshNote("rg",[b.id]);
   return arcPut("rg",{id:b.id,r:+b.rating,picked:null,at:Date.now()});
 }
 function rgPick(n){
@@ -24975,7 +25058,8 @@ const wyPool=()=>arcBooks().filter(b=>wyYears(b).length);
 function wyCan(){const p=wyPool();return p.length>=4&&new Set(p.flatMap(wyYears)).size>=2;}
 function wyDeal(){
   const p=wyPool();if(p.length<4)return null;
-  const b=pick1(p),ys=wyYears(b),y=+ys.slice().sort().pop();
+  const b=pick1(freshFrom("wy",p,x=>x.id,null,(arcSlot("wy")||{}).id)),ys=wyYears(b),y=+ys.slice().sort().pop();
+  freshNote("wy",[b.id]);
   const now=+todayStr().slice(0,4),opts=new Set([y]);
   for(let n=0;n<60&&opts.size<4;n++){const c=y+Math.round((Math.random()*2-1)*4);
     if(c<=now&&c!==y&&ys.indexOf(String(c))<0)opts.add(c);}
@@ -25053,14 +25137,12 @@ const soMask=t=>String(t||"")
 const SO_EACH=2,SO_ALL=15;
 function soDeal(){
   const all=soSeries();if(!all.length)return null;
-  /* the last few series dealt on this device sit out, so putting a card
-     down and dealing again doesn't bring the same one straight back — the
-     finished card was the only memory of it before */
-  const ws=arcSlot("so")||{},was=ws.k||ws.s,recent=((settings&&settings.soRecent)||[]).concat(was?[was]:[]);
-  let from=all.filter(x=>recent.indexOf(x.k)<0);
-  if(!from.length)from=all.filter(x=>x.k!==was);
-  const c=pick1(from.length?from:all);
-  settings.soRecent=[c.k,...((settings.soRecent)||[]).filter(x=>x!==c.k)].slice(0,Math.min(3,all.length-1));saveSettings();
+  /* the series the last ten deals used sit out — on both devices now; it
+     kept three, on this device only, in settings.soRecent */
+  const ws=arcSlot("so")||{},was=ws.k||ws.s;
+  const c=pick1(freshFrom("so",all,x=>x.k,null,was));
+  freshNote("so",[c.k]);
+  if(settings&&settings.soRecent){delete settings.soRecent;saveSettings();}
   const byNum={};c.items.forEach(x=>{if(!byNum[x.n])byNum[x.n]=x;});
   const take=shuffled(Object.values(byNum)).slice(0,6);
   const ans=take.slice().sort((a,b)=>a.n-b.n).map(x=>x.id);
@@ -25123,7 +25205,10 @@ function wiCan(){return ficsOn()&&Object.keys(wiMap()).length>=3;}
 function wiDeal(){
   const byF=wiMap(),fs=shuffled(Object.keys(byF)).slice(0,5);
   if(fs.length<3)return null;
-  const pairs=fs.map(f=>({c:pick1(byF[f]),f}));
+  /* the fandoms are few and all of them play; the characters are many, and
+     the last ten boards' sit out wherever a fandom has others */
+  const pairs=fs.map(f=>({c:pick1(freshFrom("wi",byF[f],c=>"c:"+c)),f}));
+  freshNote("wi",pairs.map(p=>"c:"+p.c));
   return arcPut("wi",{pairs,order:shuffled(fs),got:[],wrong:0,done:false,at:Date.now()});
 }
 let wiSel="";
@@ -25168,7 +25253,9 @@ function prCan(){return arcCovered().length>=6;}
 function prDeal(){
   const n=arcSize("prSize",PR_SIZES,6),f=arcCovered();
   if(f.length<6)return null;
-  const take=shuffled(f).slice(0,Math.min(n,f.length)).map(b=>b.id);
+  const want=Math.min(n,f.length);
+  const take=shuffled(freshFrom("pr",f,b=>b.id,l=>l.length>=want)).slice(0,want).map(b=>b.id);
+  freshNote("pr",take);
   return arcPut("pr",{tiles:shuffled([...take,...take]),up:[],got:[],moves:0,over:false,at:Date.now()});
 }
 function prTap(i){
@@ -25336,7 +25423,9 @@ function pzDeal(keep){
   if(!f.length)return null;
   const old=arcSlot("pz"),full=!!(old&&pzFull&&pzFull===old.at);
   let id=keep&&coverRow(keep)?keep:"";
-  if(!id){const was=(old||{}).id,from=f.filter(b=>b.id!==was);id=pick1(from.length?from:f).id;}
+  /* a new cover: none of the last ten — a re-cut keeps its own and is not
+     noted again */
+  if(!id){id=pick1(freshFrom("pz",f,b=>b.id,null,(old||{}).id)).id;freshNote("pz",[id]);}
   const N=c*r,base={id,c,r,cut,moves:0,over:false,at:Date.now()};
   let s;
   if(cut!=="sq"){
@@ -25722,9 +25811,9 @@ function hmCan(){return hmPool().length>=5;}
 /* never the one just played */
 function hmDeal(){
   const pool=hmPool();if(pool.length<5)return null;
-  const was=arcSlot("sw"),last=was&&was.t;
-  const from=pool.filter(p=>p.t!==last);
-  const p=pick1(from.length?from:pool);
+  const was=arcSlot("sw"),hk=x=>"t:"+swNorm(x.t);
+  const p=pick1(freshFrom("sw",pool,hk,null,was&&was.t?hk(was):null));
+  freshNote("sw",[hk(p)]);
   return arcPut("sw",{t:p.t,kind:p.kind,id:p.id,clue:p.clue,got:[],wrong:0,hint:false,over:false,won:false,at:Date.now()});
 }
 /* a deal from before hangman — Shelfle's word of the day — is not a deal here */
@@ -25877,7 +25966,8 @@ function tqYes(b,k){
 function tqCan(){return arcFinished().length>=12;}
 function tqDeal(){
   const pool=arcFinished();if(pool.length<12)return null;
-  const secret=pick1(pool);
+  const secret=pick1(freshFrom("tq",pool,b=>b.id,null,(arcSlot("tq")||{}).id));
+  freshNote("tq",[secret.id]);
   tqFind="";
   return arcPut("tq",{id:secret.id,asked:[],guesses:[],over:false,won:false,at:Date.now()});
 }
@@ -26049,7 +26139,9 @@ function earDeal(){
   const p=earPool();if(p.length<8)return null;
   const by={};p.forEach(x=>{const k=earSig(x.b).join("|");(by[k]=by[k]||[]).push(x);});
   const keys=Object.keys(by);if(keys.length<4)return null;
-  const tk=pick1(keys),t=pick1(by[tk]),T=tk.split("|");
+  /* the book to hear: one the last ten rounds didn't play */
+  const t=pick1(freshFrom("ear",p,x=>x.id,null,(arcSlot("ear")||{}).id)),tk=earSig(t.b).join("|"),T=tk.split("|");
+  freshNote("ear",[t.id]);
   const diff=k=>k.split("|").filter((v,i)=>v!==T[i]).length;
   const others=shuffled(keys.filter(k=>k!==tk));
   const near=others.filter(k=>diff(k)===1).slice(0,2);
@@ -26175,7 +26267,9 @@ const ST_PAIRS=10;
 const stPool=()=>arcFinished().filter(b=>b.rating!=null);
 function stCan(){const p=stPool();return p.length>=6&&new Set(p.map(b=>+b.rating)).size>=2;}
 function stDeal(){
-  const p=stPool();if(p.length<6)return null;
+  const all=stPool();if(all.length<6)return null;
+  /* books the last ten boards didn't weigh, while enough are left to pair */
+  const p=freshFrom("st",all,b=>b.id,l=>l.length>=Math.min(all.length,2*ST_PAIRS)&&new Set(l.map(b=>+b.rating)).size>=2);
   const pairs=[],seen=new Set();
   for(let n=0;n<500&&pairs.length<ST_PAIRS;n++){
     const a=pick1(p),b=pick1(p);
@@ -26184,6 +26278,7 @@ function stDeal(){
     pairs.push([a.id,b.id]);
   }
   if(pairs.length<3)return null;
+  freshNote("st",pairs.flat());
   return arcPut("st",{pairs,picks:[],settled:{},done:false,at:Date.now()});
 }
 const stRate=id=>{const b=books.find(x=>x.id===id);return b&&b.rating!=null?+b.rating:null;};
@@ -26259,7 +26354,8 @@ const thTags=b=>new Set((b.keywords||[]).map(t=>String(t).toLowerCase()));
 function thCan(){return thField().length>0;}
 function thDeal(){
   const f=thField();if(!f.length)return null;
-  const was=(arcSlot("th")||{}).id,from=f.filter(b=>b.id!==was),b=pick1(from.length?from:f);
+  const b=pick1(freshFrom("th",f,x=>x.id,null,(arcSlot("th")||{}).id));
+  freshNote("th",[b.id]);
   return arcPut("th",{id:b.id,base:[...thTags(b)],got:0,until:Date.now()+TH_MINS*60000,over:false,at:Date.now()});
 }
 const thLeft=()=>{const s=arcSlot("th");return s?Math.max(0,(s.until||0)-Date.now()):0;};
@@ -26316,7 +26412,8 @@ function dmLoad(){
 function dmSave(){try{localStorage.setItem("shelfDmPad",JSON.stringify(dmLoad()));}catch(e){}}
 function dmDeal(){
   const f=dmField();if(!f.length)return null;
-  const was=(arcSlot("dm")||{}).id,from=f.filter(b=>b.id!==was),b=pick1(from.length?from:f);
+  const b=pick1(freshFrom("dm",f,x=>x.id,null,(arcSlot("dm")||{}).id));
+  freshNote("dm",[b.id]);
   const s=arcPut("dm",{id:b.id,until:Date.now()+DM_SECS*1000,over:false,won:false,at:Date.now()});
   const p=dmLoad();dmPad={at:s.at,strokes:[],col:p.col||"",w:p.w||DM_W[0],png:"",pinned:false};dmSave();
   return s;
