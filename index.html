@@ -7989,8 +7989,10 @@ function compressImage(file,maxDim=1000,quality=.82){
 
 /* Magic wand: flood the background inward from the edges, clear it, then trim to
    what's left. Great on a flat/plain backdrop, poor on a busy photo. Returns PNG
-   because JPEG can't hold transparency. */
-function cutOutImage(dataURL,tol,trim){
+   because JPEG can't hold transparency. `refs`, when given, are the colours the
+   flood takes — a painted-in checkerboard is two (see checkerOf); without it,
+   the commonest colour round the border. */
+function cutOutImage(dataURL,tol,trim,refs){
   return new Promise((res,rej)=>{
     const img=new Image();
     img.onload=()=>{
@@ -8014,9 +8016,11 @@ function cutOutImage(dataURL,tol,trim){
       for(let x=0;x<w;x++){edge(x,0);edge(x,h-1);}
       for(let y=0;y<h;y++){edge(0,y);edge(w-1,y);}
       let top=null;tally.forEach(e=>{if(!top||e.n>top.n)top=e;});
-      const ref=[top.r/top.n,top.g/top.n,top.b/top.n];
+      const cols=Array.isArray(refs)&&refs.length?refs:[[top.r/top.n,top.g/top.n,top.b/top.n]];
       const T=tol*tol*3;
-      const near=i=>{const p=i*4,a=d[p]-ref[0],b=d[p+1]-ref[1],g=d[p+2]-ref[2];return a*a+b*b+g*g<=T;};
+      const near=i=>{const p=i*4;
+        for(const ref of cols){const a=d[p]-ref[0],b=d[p+1]-ref[1],g=d[p+2]-ref[2];if(a*a+b*b+g*g<=T)return true;}
+        return false;};
       const seen=new Uint8Array(n),clear=new Uint8Array(n),st=[];
       const seed=(x,y)=>{const i=y*w+x;if(seen[i])return;seen[i]=1;if(near(i)){clear[i]=1;st.push(i);}};
       for(let x=0;x<w;x++){seed(x,0);seed(x,h-1);}
@@ -9331,6 +9335,7 @@ async function initSync(){
   if(streaks&&!streaks.sweep)streaks.sweep={};
   try{const qv=await dbGet("meta","quests");quests=(qv&&qv.v)||null;}catch(e){quests=null;}
   await petLoad();
+  setTimeout(()=>{petCheckerSweep().catch(()=>{});},2500);   /* see petCheckerSweep */
   await shopPicsLoad();
   await ownIconsLoad();
   {const fresh=!Object.keys(achSeen).some(k=>k!=="__v");
@@ -10667,6 +10672,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.1",go:["set:look:#petSetBox"],lines:[
+    "<b>No more grey-and-white squares behind your pet.</b> A picture saved from a page that shows see-through parts as a checkerboard often has the squares painted into it, and the app only knew how to take away a plain one-colour background. It recognises the painted squares now and takes them away too — on the pet's pictures you already have (once, by itself; your other device gets the clean copy), and on anything you add from now on: the pet, your creature, medals and game pictures, and the dragon."]},
   {v:"2026-10-01.3",go:["arc:pz","arc:pz","arc:pz","arc:pz"],lines:[
     "<b>🧩 Bigger puzzles, with square pieces.</b> The boards are cut to the cover's shape now, so a piece is about as wide as it is tall, and they run from 12 pieces to 150: 12, 24, 35, 54, 96 and 150, paying +15 up to +190. A board you already have on the table plays out as it was dealt.",
     "<b>Room for them.</b> On a wide screen the pieces lie left and right of the board, so the board stands much bigger — on a computer at 135% text it went from 205 to about 300 pixels wide. <b>⛶ Whole window</b>, under the puzzle, lays it over the whole screen; ✕, Esc or Back brings you back with the pieces where you left them. On a phone the page looks as it did, and ⛶ is the way to a bigger board there.",
@@ -21893,8 +21900,74 @@ function edgeProfile(dataURL){
     img.onerror=rej;img.src=dataURL;
   });
 }
+/* ┌─ A CHECKERBOARD THAT WAS NEVER SEE-THROUGH ────────────────────────────┐
+   │ A picture saved off a page that SHOWS see-through parts as grey and     │
+   │ white squares often has the squares painted into it — every pixel      │
+   │ solid. The flat-background cut reads one colour round the edge and its  │
+   │ flood stops at the first square of the other, so a pet came out on a   │
+   │ chequered tile. checkerOf asks whether the edge is such a board: two    │
+   │ pale greys (white counts), each a fair share of the edge, together      │
+   │ nearly all of it, alternating along it in runs of a steady length.     │
+   │ It answers the two colours, and cutOutImage floods with both.          │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const CHECK_TOL=26;
+function checkerOf(dataURL){
+  return new Promise(res=>{
+    const img=new Image();
+    img.onload=()=>{
+      const w=img.naturalWidth,h=img.naturalHeight;
+      if(w<16||h<16){res(null);return;}
+      const c=document.createElement("canvas");c.width=w;c.height=h;
+      const ctx=c.getContext("2d",{willReadFrequently:true});ctx.drawImage(img,0,0);
+      let d;try{d=ctx.getImageData(0,0,w,h).data;}catch(e){res(null);return;}
+      const px=(x,y)=>{const p=(y*w+x)*4;return [d[p],d[p+1],d[p+2],d[p+3]];};
+      const ring=[];
+      for(let x=0;x<w;x++){ring.push(px(x,0),px(x,h-1));}
+      for(let y=1;y<h-1;y++){ring.push(px(0,y),px(w-1,y));}
+      const solid=ring.filter(p=>p[3]>250);
+      if(solid.length<ring.length*0.9){res(null);return;}
+      const tally=new Map();
+      solid.forEach(p=>{const k=((p[0]>>3)<<10)|((p[1]>>3)<<5)|(p[2]>>3);
+        const e=tally.get(k)||{n:0,r:0,g:0,b:0};e.n++;e.r+=p[0];e.g+=p[1];e.b+=p[2];tally.set(k,e);});
+      const top=[...tally.values()].sort((a,b)=>b.n-a.n).slice(0,2).map(e=>({n:e.n,c:[e.r/e.n,e.g/e.n,e.b/e.n]}));
+      if(top.length<2){res(null);return;}
+      const pale=c=>Math.max(...c)-Math.min(...c)<=18&&(c[0]+c[1]+c[2])/3>=140;
+      const [A,B]=top;
+      const apart=Math.abs((A.c[0]+A.c[1]+A.c[2])-(B.c[0]+B.c[1]+B.c[2]))/3;
+      const T=CHECK_TOL*CHECK_TOL*3,dist=(p,c)=>(p[0]-c[0])**2+(p[1]-c[1])**2+(p[2]-c[2])**2;
+      const near=solid.filter(p=>dist(p,A.c)<=T||dist(p,B.c)<=T).length/solid.length;
+      if(!pale(A.c)||!pale(B.c)||apart<10||A.n<solid.length*0.2||B.n<solid.length*0.2||near<0.75){res(null);return;}
+      /* squares, not stripes or noise: along the top and left edges the two
+         colours take turns in runs of a steady length */
+      const runs=line=>{const out=[];let cur=-1,len=0;
+        line.forEach(p=>{const k=dist(p,A.c)<=dist(p,B.c)?0:1;if(k===cur)len++;else{if(cur>=0)out.push(len);cur=k;len=1;}});
+        return out;};
+      const top1=[],left1=[];for(let x=0;x<w;x++)top1.push(px(x,0));for(let y=0;y<h;y++)left1.push(px(0,y));
+      const rs=[...runs(top1),...runs(left1)].filter(n=>n>=2);
+      if(rs.length<6){res(null);return;}
+      const sorted=rs.slice().sort((a,b)=>a-b),med=sorted[sorted.length>>1];
+      const steady=rs.filter(n=>Math.abs(n-med)<=Math.max(2,med*0.25)).length/rs.length;
+      res(med>=3&&med<=96&&steady>=0.6?[A.c,B.c]:null);
+    };
+    img.onerror=()=>res(null);img.src=dataURL;
+  });
+}
+/* the background of a picture of yours, cut away on the way in: a painted
+   checkerboard first (the flat test can mistake a pale one for flat and then
+   flood only half of it), else a plain flat colour. Untouched otherwise. */
+async function bgCut(data){
+  try{
+    const ck=await checkerOf(data);
+    if(ck){const r=await cutOutImage(data,CHECK_TOL,true,ck);if((r.pct||0)>=2)return r.data;}
+    const e=await edgeProfile(data);
+    if(e.solid>=0.5&&e.flat>=0.9){const r=await cutOutImage(data,DRAGON_TOL,true);if((r.pct||0)>=2)return r.data;}
+  }catch(e){}
+  return data;
+}
 async function dragonPrepare(file){
   const png=await pngResize(file,DRAGON_MAX);
+  {const ck=await checkerOf(png);
+   if(ck)try{const r=await cutOutImage(png,CHECK_TOL,true,ck);if((r.pct||0)>=2)return {data:r.data,cut:r.pct,clear:false};}catch(e){}}
   const e=await edgeProfile(png);
   if(e.solid<0.5)return {data:png,cut:0,clear:true};
   if(e.flat<0.9)return {data:png,cut:0,clear:false};
@@ -27548,7 +27621,8 @@ function mergePetPics(rv){
   let ch=false;
   Object.keys(rv).forEach(k=>{const r=rv[k];if(!r)return;const m=petPics[k];
     if(!m||(r.at||0)>(m.at||0)){petPics[k]=r;ch=true;}});
-  if(ch){dbPut("meta",{k:"petPics",v:petPics}).catch(()=>{});petRefresh();}
+  if(ch){dbPut("meta",{k:"petPics",v:petPics}).catch(()=>{});petRefresh();
+    setTimeout(()=>{petCheckerSweep().catch(()=>{});},500);}
   return ch;
 }
 /* a picture made ready the way the dragon's is: resized as PNG so it keeps
@@ -27556,9 +27630,9 @@ function mergePetPics(rv){
    as WebP where the browser can, because these travel between devices and
    a quarter of the size is a quarter of the wait */
 async function petPrepare(file,max){
-  let data=await pngResize(file,max||PET_MAX);
-  try{const e=await edgeProfile(data);
-    if(e.solid>=0.5&&e.flat>=0.9){const r=await cutOutImage(data,DRAGON_TOL,true);if((r.pct||0)>=2)data=r.data;}}catch(e){}
+  return petEncode(await bgCut(await pngResize(file,max||PET_MAX)));
+}
+async function petEncode(data){
   try{
     const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=data;});
     const cv=document.createElement("canvas");cv.width=im.width;cv.height=im.height;cv.getContext("2d").drawImage(im,0,0);
@@ -27566,6 +27640,25 @@ async function petPrepare(file,max){
     if(w.indexOf("data:image/webp")===0&&w.length<data.length)data=w;
   }catch(e){}
   return data;
+}
+/* The pictures given before checkerOf existed still carry their squares, so
+   each is asked once (marked `ck`, this device's note — it never changes the
+   picture's stamp). One that turns out to be a painted board is cut and saved
+   with a new stamp, so the other device takes the clean one too. */
+async function petCheckerSweep(){
+  if(!petPics)return;
+  let changed=false,marked=false;
+  for(const mood of Object.keys(petPics)){
+    const p=petPics[mood];
+    if(!p||!p.d||p.ck||!/^data:image\//.test(p.d))continue;
+    let next=null;
+    try{const ck=await checkerOf(p.d);
+      if(ck){const r=await cutOutImage(p.d,CHECK_TOL,true,ck);if((r.pct||0)>=2)next=await petEncode(r.data);}}catch(e){}
+    if(next){petPics[mood]={d:next,at:Date.now(),ck:1};changed=true;}
+    else{p.ck=1;marked=true;}
+  }
+  if(changed){petSavePics();petRefresh();}
+  else if(marked)dbPut("meta",{k:"petPics",v:petPics}).catch(()=>{});
 }
 let petSlot="";
 async function petSetPic(mood,file){
@@ -28081,8 +28174,7 @@ const OWN_ICON_MAX=640;
    pixels across before the cut, and every medal made that way was blurred. */
 async function ownIconPrepare(file){
   let data=await pngResize(file,1800);
-  try{const e=await edgeProfile(data);
-    if(e.solid>=0.5&&e.flat>=0.9){const r=await cutOutImage(data,DRAGON_TOL,true);if((r.pct||0)>=2)data=r.data;}}catch(e){}
+  data=await bgCut(data);
   const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=data;});
   const k=Math.min(1,OWN_ICON_MAX/Math.max(im.width,im.height));
   const cv=document.createElement("canvas");cv.width=Math.max(1,Math.round(im.width*k));cv.height=Math.max(1,Math.round(im.height*k));
