@@ -3978,8 +3978,12 @@ body:has(#owlBox) .petcorner{display:none}
 .owlme .petemo{font-size:38px}
 .petslots{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:8px;width:100%;margin-top:4px}
 .petslot{border:1px solid var(--line);border-radius:10px;padding:7px;display:flex;flex-direction:column;align-items:center;gap:3px;text-align:center;font-size:12.5px;min-width:0}
+/* a plain tint behind the picture, not the see-through checkerboard it had:
+   a clean picture on the app's own faint squares looked exactly like the
+   painted-in squares it was meant to be rid of (see checkerOf) */
 .petslotimg{width:64px;height:64px;display:flex;align-items:center;justify-content:center;
-  background:repeating-conic-gradient(#0000 0 25%,#8881 0 50%) 0 0/12px 12px;border-radius:8px}
+  background:color-mix(in srgb,var(--line) 45%,transparent);border-radius:8px}
+.petslot .petbgcut{font-size:11.5px;color:var(--teal-d,#115e59);margin:0}
 .petslotimg img{max-width:100%;max-height:100%;object-fit:contain}
 .petslotimg .petemo{font-size:36px}
 .qcard.qroad{max-width:760px}
@@ -7991,8 +7995,10 @@ function compressImage(file,maxDim=1000,quality=.82){
    what's left. Great on a flat/plain backdrop, poor on a busy photo. Returns PNG
    because JPEG can't hold transparency. `refs`, when given, are the colours the
    flood takes — a painted-in checkerboard is two (see checkerOf); without it,
-   the commonest colour round the border. */
-function cutOutImage(dataURL,tol,trim,refs){
+   the commonest colour round the border. `seeThru` lets the flood cross
+   pixels that are already see-through, to reach squares that no longer
+   touch the edge. */
+function cutOutImage(dataURL,tol,trim,refs,seeThru){
   return new Promise((res,rej)=>{
     const img=new Image();
     img.onload=()=>{
@@ -8019,6 +8025,7 @@ function cutOutImage(dataURL,tol,trim,refs){
       const cols=Array.isArray(refs)&&refs.length?refs:[[top.r/top.n,top.g/top.n,top.b/top.n]];
       const T=tol*tol*3;
       const near=i=>{const p=i*4;
+        if(seeThru&&d[p+3]<40)return true;
         for(const ref of cols){const a=d[p]-ref[0],b=d[p+1]-ref[1],g=d[p+2]-ref[2];if(a*a+b*b+g*g<=T)return true;}
         return false;};
       const seen=new Uint8Array(n),clear=new Uint8Array(n),st=[];
@@ -10672,6 +10679,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.3",go:["set:look:#petSetBox"],lines:[
+    "<b>The squares behind your pet, properly this time.</b> The last build's fix missed exactly your kind of picture: the old cutter had already taken the white squares away and left the grey ones standing with holes between them, and a nest reaching the bottom and both sides hid most of the board from the new one. It now looks for squares wherever they show along the edge — two greys taking turns, or one grey and see-through — and cleans both kinds. Your pet's saved pictures are looked at again by themselves; one you add now is cleaned at full size before it is shrunk, so the squares are still sharp enough to find.",
+    "Under each picture in Settings a line says what was taken away. The little box behind it is plain now: it used to draw its own faint checkerboard to show what is see-through, and on a clean picture that looked like the problem had never gone."]},
   {v:"2026-10-02.2",go:["el:challenges:.gtiles"],lines:[
     "<b>🎮 Nothing comes round again for ten deals.</b> Every game used to keep only the last thing it dealt out of the next one, so a cover or a book could be back two deals later. Now each game remembers its last ten deals — the cover, the book, the quote, the name, the series or the characters — and deals from what none of them used. Where your shelf hasn't enough for that, the oldest is let back first, so the newest are always last to return.",
     "It is the same on both devices: the phone and the computer share what each game has dealt. Games that lay out several books at once (Pairs, Higher or lower, Odd one out, Settle it, Connect…) keep the last ten boards' books out as far as your shelf has others."]},
@@ -21907,13 +21917,21 @@ function edgeProfile(dataURL){
 }
 /* ┌─ A CHECKERBOARD THAT WAS NEVER SEE-THROUGH ────────────────────────────┐
    │ A picture saved off a page that SHOWS see-through parts as grey and     │
-   │ white squares often has the squares painted into it — every pixel      │
-   │ solid. The flat-background cut reads one colour round the edge and its  │
-   │ flood stops at the first square of the other, so a pet came out on a   │
-   │ chequered tile. checkerOf asks whether the edge is such a board: two    │
-   │ pale greys (white counts), each a fair share of the edge, together      │
-   │ nearly all of it, alternating along it in runs of a steady length.     │
-   │ It answers the two colours, and cutOutImage floods with both.          │
+   │ white squares often has the squares painted into it. The flat-          │
+   │ background cut reads ONE colour round the edge: on such a board it took │
+   │ the white squares and left the grey ones standing, with holes between  │
+   │ them — a pet that sat on grey squares with the page showing through.   │
+   │ checkerOf looks for the board where it actually shows: along each edge, │
+   │ stretches where two things take turns in runs of a steady length — two │
+   │ pale greys (white counts), or one pale grey and see-through, which is   │
+   │ what the old cut left behind. A subject reaching the edges (a nest      │
+   │ across the bottom and both sides) only shortens the stretches. Runs of │
+   │ one or two pixels are the soft edge between squares and are dropped. It│
+   │ answers {refs, see}: the grey or greys to flood, and whether the flood │
+   │ may cross see-through pixels to reach squares that no longer touch the │
+   │ edge. The first version wanted three quarters of the edge to be board, │
+   │ every edge pixel solid, and a subject that never reached the edge; the │
+   │ picture it was written for failed all three.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const CHECK_TOL=26;
 function checkerOf(dataURL){
@@ -21925,54 +21943,79 @@ function checkerOf(dataURL){
       const c=document.createElement("canvas");c.width=w;c.height=h;
       const ctx=c.getContext("2d",{willReadFrequently:true});ctx.drawImage(img,0,0);
       let d;try{d=ctx.getImageData(0,0,w,h).data;}catch(e){res(null);return;}
-      const px=(x,y)=>{const p=(y*w+x)*4;return [d[p],d[p+1],d[p+2],d[p+3]];};
-      const ring=[];
-      for(let x=0;x<w;x++){ring.push(px(x,0),px(x,h-1));}
-      for(let y=1;y<h-1;y++){ring.push(px(0,y),px(w-1,y));}
-      const solid=ring.filter(p=>p[3]>250);
-      if(solid.length<ring.length*0.9){res(null);return;}
-      const tally=new Map();
-      solid.forEach(p=>{const k=((p[0]>>3)<<10)|((p[1]>>3)<<5)|(p[2]>>3);
-        const e=tally.get(k)||{n:0,r:0,g:0,b:0};e.n++;e.r+=p[0];e.g+=p[1];e.b+=p[2];tally.set(k,e);});
-      const top=[...tally.values()].sort((a,b)=>b.n-a.n).slice(0,2).map(e=>({n:e.n,c:[e.r/e.n,e.g/e.n,e.b/e.n]}));
-      if(top.length<2){res(null);return;}
-      const pale=c=>Math.max(...c)-Math.min(...c)<=18&&(c[0]+c[1]+c[2])/3>=140;
-      const [A,B]=top;
-      const apart=Math.abs((A.c[0]+A.c[1]+A.c[2])-(B.c[0]+B.c[1]+B.c[2]))/3;
-      const T=CHECK_TOL*CHECK_TOL*3,dist=(p,c)=>(p[0]-c[0])**2+(p[1]-c[1])**2+(p[2]-c[2])**2;
-      const near=solid.filter(p=>dist(p,A.c)<=T||dist(p,B.c)<=T).length/solid.length;
-      if(!pale(A.c)||!pale(B.c)||apart<10||A.n<solid.length*0.2||B.n<solid.length*0.2||near<0.75){res(null);return;}
-      /* squares, not stripes or noise: along the top and left edges the two
-         colours take turns in runs of a steady length */
-      const runs=line=>{const out=[];let cur=-1,len=0;
-        line.forEach(p=>{const k=dist(p,A.c)<=dist(p,B.c)?0:1;if(k===cur)len++;else{if(cur>=0)out.push(len);cur=k;len=1;}});
-        return out;};
-      const top1=[],left1=[];for(let x=0;x<w;x++)top1.push(px(x,0));for(let y=0;y<h;y++)left1.push(px(0,y));
-      const rs=[...runs(top1),...runs(left1)].filter(n=>n>=2);
-      if(rs.length<6){res(null);return;}
-      const sorted=rs.slice().sort((a,b)=>a-b),med=sorted[sorted.length>>1];
-      const steady=rs.filter(n=>Math.abs(n-med)<=Math.max(2,med*0.25)).length/rs.length;
-      res(med>=3&&med<=96&&steady>=0.6?[A.c,B.c]:null);
+      const P=(x,y)=>(y*w+x)*4;
+      const lines=[[],[],[],[]];
+      for(let x=0;x<w;x++){lines[0].push(P(x,0));lines[1].push(P(x,h-1));}
+      for(let y=0;y<h;y++){lines[2].push(P(0,y));lines[3].push(P(w-1,y));}
+      const all=lines.flat();
+      const see=p=>d[p+3]<40;
+      const lum=p=>(d[p]+d[p+1]+d[p+2])/3;
+      const pale=p=>d[p+3]>200&&Math.max(d[p],d[p+1],d[p+2])-Math.min(d[p],d[p+1],d[p+2])<=22&&lum(p)>=140;
+      /* the pale levels round the edge: the commonest, and a second at least
+         twelve apart if there is one worth the name */
+      const hist=new Array(256).fill(0);
+      all.forEach(p=>{if(pale(p))hist[Math.round(lum(p))]++;});
+      const sm=hist.map((_,i)=>{let s=0;for(let k=-3;k<=3;k++)s+=hist[i+k]||0;return s;});
+      let p1=140;for(let i=140;i<256;i++)if(sm[i]>sm[p1])p1=i;
+      if(!sm[p1]){res(null);return;}
+      let p2=-1;for(let i=140;i<256;i++)if(Math.abs(i-p1)>=12&&(p2<0||sm[i]>sm[p2]))p2=i;
+      const levels=[p1];if(p2>=0&&sm[p2]>=sm[p1]*0.12)levels.push(p2);
+      const cls=p=>{if(see(p))return "T";if(!pale(p))return "X";
+        const L=lum(p);let bi=0;levels.forEach((v,i)=>{if(Math.abs(L-v)<Math.abs(L-levels[bi]))bi=i;});
+        return Math.abs(L-levels[bi])<=14?"L"+bi:"X";};
+      const score={};
+      lines.forEach(line=>{
+        let raw=[],cur=null,len=0;
+        line.forEach(p=>{const k=cls(p);if(k===cur)len++;else{if(cur!==null)raw.push([cur,len]);cur=k;len=1;}});
+        raw.push([cur,len]);
+        const m=[];
+        raw.filter(r=>r[1]>=3).forEach(r=>{if(m.length&&m[m.length-1][0]===r[0])m[m.length-1][1]+=r[1];else m.push(r.slice());});
+        /* stretches where two keys (not "X") take turns */
+        let i=0;
+        while(i<m.length-1){
+          const a=m[i][0],b=m[i+1][0];
+          if(a==="X"||b==="X"||a===b){i++;continue;}
+          let j=i;const seg=[];
+          while(j<m.length&&m[j][0]===(seg.length%2?b:a)){seg.push(m[j][1]);j++;}
+          /* the first and last runs may be cut short by the corner or the
+             subject, so only the inside of a stretch is weighed */
+          const inner=seg.slice(1,-1);
+          if(inner.length>=3){
+            const s=inner.slice().sort((x,y)=>x-y),med=s[s.length>>1];
+            const ok=inner.filter(n=>Math.abs(n-med)<=Math.max(2,med*0.35)).length/inner.length;
+            if(med>=3&&ok>=0.7){const k=[a,b].sort().join("|");score[k]=(score[k]||0)+inner.length;}
+          }
+          i=Math.max(i+1,j-1);
+        }
+      });
+      const best=Object.entries(score).sort((x,y)=>y[1]-x[1])[0];
+      if(!best||best[1]<5){res(null);return;}
+      const keys=best[0].split("|");
+      const refs=keys.filter(k=>k!=="T").map(k=>{let r=0,g=0,b=0,n=0;
+        all.forEach(p=>{if(cls(p)===k){r+=d[p];g+=d[p+1];b+=d[p+2];n++;}});return [r/n,g/n,b/n];});
+      res({refs,see:keys.indexOf("T")>=0,runs:best[1]});
     };
     img.onerror=()=>res(null);img.src=dataURL;
   });
 }
 /* the background of a picture of yours, cut away on the way in: a painted
    checkerboard first (the flat test can mistake a pale one for flat and then
-   flood only half of it), else a plain flat colour. Untouched otherwise. */
-async function bgCut(data){
+   flood only half of it), else a plain flat colour. Untouched otherwise.
+   `how` says which, for the line under a pet's picture in Settings. */
+async function bgCutInfo(data){
   try{
     const ck=await checkerOf(data);
-    if(ck){const r=await cutOutImage(data,CHECK_TOL,true,ck);if((r.pct||0)>=2)return r.data;}
+    if(ck){const r=await cutOutImage(data,CHECK_TOL,true,ck.refs,ck.see);if((r.pct||0)>=2)return {data:r.data,how:"squares"};}
     const e=await edgeProfile(data);
-    if(e.solid>=0.5&&e.flat>=0.9){const r=await cutOutImage(data,DRAGON_TOL,true);if((r.pct||0)>=2)return r.data;}
+    if(e.solid>=0.5&&e.flat>=0.9){const r=await cutOutImage(data,DRAGON_TOL,true);if((r.pct||0)>=2)return {data:r.data,how:"plain"};}
   }catch(e){}
-  return data;
+  return {data,how:""};
 }
+async function bgCut(data){return (await bgCutInfo(data)).data;}
 async function dragonPrepare(file){
   const png=await pngResize(file,DRAGON_MAX);
   {const ck=await checkerOf(png);
-   if(ck)try{const r=await cutOutImage(png,CHECK_TOL,true,ck);if((r.pct||0)>=2)return {data:r.data,cut:r.pct,clear:false};}catch(e){}}
+   if(ck)try{const r=await cutOutImage(png,CHECK_TOL,true,ck.refs,ck.see);if((r.pct||0)>=2)return {data:r.data,cut:r.pct,clear:false};}catch(e){}}
   const e=await edgeProfile(png);
   if(e.solid<0.5)return {data:png,cut:0,clear:true};
   if(e.flat<0.9)return {data:png,cut:0,clear:false};
@@ -27726,8 +27769,23 @@ function mergePetPics(rv){
    its see-through parts, and a plain flat background cut away — then written
    as WebP where the browser can, because these travel between devices and
    a quarter of the size is a quarter of the wait */
-async function petPrepare(file,max){
-  return petEncode(await bgCut(await pngResize(file,max||PET_MAX)));
+async function petPrepare(file,max){return (await petPrepareInfo(file,max)).d;}
+/* The background is cut at up to 1024 pixels and the picture shrunk after:
+   cut at 256, a painted square is a few pixels of blur and no longer reads
+   as a square. `how` is what was taken away, shown under the slot. */
+async function petPrepareInfo(file,max){
+  const r=await bgCutInfo(await pngResize(file,1024));
+  return {d:await petEncode(await shrinkData(r.data,max||PET_MAX)),how:r.how};
+}
+function shrinkData(data,maxDim){
+  return new Promise(res=>{const im=new Image();
+    im.onload=()=>{let w=im.width,h=im.height;
+      if(w<=maxDim&&h<=maxDim){res(data);return;}
+      const k=maxDim/Math.max(w,h);w=Math.max(1,Math.round(w*k));h=Math.max(1,Math.round(h*k));
+      const cv=document.createElement("canvas");cv.width=w;cv.height=h;
+      const x=cv.getContext("2d");x.imageSmoothingQuality="high";x.drawImage(im,0,0,w,h);
+      res(cv.toDataURL("image/png"));};
+    im.onerror=()=>res(data);im.src=data;});
 }
 async function petEncode(data){
   try{
@@ -27738,21 +27796,23 @@ async function petEncode(data){
   }catch(e){}
   return data;
 }
-/* The pictures given before checkerOf existed still carry their squares, so
-   each is asked once (marked `ck`, this device's note — it never changes the
-   picture's stamp). One that turns out to be a painted board is cut and saved
-   with a new stamp, so the other device takes the clean one too. */
+/* The pictures already given are asked once each (marked `ck` with the
+   detector's version — 2 since it learned to find a board that reaches the
+   subject and one already half see-through; this device's note, which never
+   changes the picture's stamp). One that turns out to be a painted board is
+   cut and saved with a new stamp, so the other device takes the clean one. */
+const PET_CK=2;
 async function petCheckerSweep(){
   if(!petPics)return;
   let changed=false,marked=false;
   for(const mood of Object.keys(petPics)){
     const p=petPics[mood];
-    if(!p||!p.d||p.ck||!/^data:image\//.test(p.d))continue;
+    if(!p||!p.d||p.ck===PET_CK||!/^data:image\//.test(p.d))continue;
     let next=null;
     try{const ck=await checkerOf(p.d);
-      if(ck){const r=await cutOutImage(p.d,CHECK_TOL,true,ck);if((r.pct||0)>=2)next=await petEncode(r.data);}}catch(e){}
-    if(next){petPics[mood]={d:next,at:Date.now(),ck:1};changed=true;}
-    else{p.ck=1;marked=true;}
+      if(ck){const r=await cutOutImage(p.d,CHECK_TOL,true,ck.refs,ck.see);if((r.pct||0)>=2)next=await petEncode(r.data);}}catch(e){}
+    if(next){petPics[mood]={d:next,at:Date.now(),ck:PET_CK,bg:"squares"};changed=true;}
+    else{p.ck=PET_CK;marked=true;}
   }
   if(changed){petSavePics();petRefresh();}
   else if(marked)dbPut("meta",{k:"petPics",v:petPics}).catch(()=>{});
@@ -27760,8 +27820,8 @@ async function petCheckerSweep(){
 let petSlot="";
 async function petSetPic(mood,file){
   if(!petPics)await petLoad();
-  if(file){let d="";try{d=await petPrepare(file);}catch(e){alert("That picture couldn't be read.");return;}
-    petPics[mood]={d,at:Date.now()};}
+  if(file){let r=null;try{r=await petPrepareInfo(file);}catch(e){alert("That picture couldn't be read.");return;}
+    petPics[mood]={d:r.d,at:Date.now(),ck:PET_CK,bg:r.how};}
   else petPics[mood]={d:"",at:Date.now()};
   petSavePics();petRefresh();
 }
@@ -27788,8 +27848,9 @@ function petSettingsHtml(){
         <span class="lbl" style="margin:8px 0 0">Its pictures</span>
         <span class="none" style="font-size:12px">One for each mood — until you give one, it wears ${k[2]} (or your <i>Awake</i> picture, if that one is set). A picture on a plain background has the background cut away, like the dragon's.</span>
         <div class="petslots">${PET_MOODS.map(([mood,l,why])=>{const has=petPics&&petPics[mood]&&petPics[mood].d;
+          const cut=has&&petPics[mood].bg;
           return `<div class="petslot"><div class="petslotimg">${has?`<img src="${esc(petPics[mood].d)}" alt="">`:`<span class="petemo${mood==="asleep"?" zz":""}">${k[2]}</span>`}</div>
-            <b>${esc(l)}</b><span class="hint" style="margin:0">${esc(why)}</span>
+            <b>${esc(l)}</b>${cut?`<span class="petbgcut">✂ ${cut==="squares"?"checkerboard":"plain background"} taken away</span>`:""}<span class="hint" style="margin:0">${esc(why)}</span>
             <div class="hrow2" style="gap:4px;justify-content:center"><button class="btn smallbtn" data-petpic="${mood}">${has?"Change…":"Add…"}</button>${has?`<button class="btn smallbtn" data-petclr="${mood}" title="Back to ${k[2]}">✕</button>`:""}</div></div>`;}).join("")}</div>
         <button class="btn smallbtn" id="petBye" style="margin-top:6px">Say goodbye — no pet</button>`
       :`<span class="none" style="font-size:12px">Pick one above and it comes to live on 🏠 Today; you can move it after.</span>`}
