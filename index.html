@@ -10807,6 +10807,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.18",go:["set:trouble:#diagCopy"],lines:[
+    "<b>⏱ The cover timings are kept now.</b> The list under ⚙ Settings → If something looks wrong printed nothing about covers unless you had walked there straight from a screen full of them, without a reload in between. It now keeps the last eight on this device — which screen, how long the covers already in the page took, and how long the ones fetched took — so it has something to say whenever you look."]},
   {v:"2026-10-02.17",go:["tab:library"],lines:[
     "<b>🔤 Fewer text sizes, and nothing tiny.</b> The app wrote its words in sizes half a pixel apart — 12, 12½, 13, 13½ — which read as nearly-but-not-quite the same. Every half size is rounded up to the whole one, and the smallest words you read (the page line on a shelf row, the little stage and tag labels, the numbers under the charts) are raised to 11.",
     "<b>The small buttons are one height</b> on a computer: the stage dot, the heart, the page line, its ✎ and the rating on a shelf row, the small pills on 🔍 Search, <b>→ Show me</b> and <b>✕ Got it</b> on Today, and ↶ ↷ 🔎 in the corner. A phone's buttons are as they were."]},
@@ -15598,20 +15600,42 @@ function resetCoverStats(){
    hydrateCovers after it, so a pass that was not a fresh draw times nothing.
    Only covers inside the window are waited on — asking all four hundred to
    decode would be the very cost being measured. */
+/* THE TIMINGS ARE KEPT, eight of them, on the device. The first version held
+   them in memory and printed only "this screen" and "the screen before" —
+   and the screen the readout lives on has no covers, so a reload followed by
+   a walk straight to it printed nothing at all, on two devices. covLog is in
+   localStorage (the reading is about this device and no other) and each entry
+   carries both halves of a draw: `d`, when the covers that were already in
+   the markup had decoded, and `f`, when the ones fetched off the device or
+   the cloud had too. The throwaway smoke page keeps none. */
 let covT0=0,covSlow=null;
-function covTimed(root,t0){
+const COV_LOG_KEY="shelfCovLog";
+function covLogRead(){
+  try{const a=JSON.parse(localStorage.getItem(COV_LOG_KEY)||"[]");return Array.isArray(a)?a:[];}catch(e){return [];}
+}
+function covTimed(root,t0,filled){
   const st=coverStats,vh=window.innerHeight||0;
   const imgs=qa("[data-cover] img",root).filter(im=>{
     const r=im.getBoundingClientRect();return r.bottom>0&&r.top<vh;}).slice(0,60);
-  if(!imgs.length)return;
+  if(!imgs.length&&!filled)return;
   Promise.all(imgs.map(im=>im.decode?im.decode().catch(()=>{}):null)).then(()=>{
     const ms=Math.round(performance.now()-t0);
-    st.ms=Math.max(st.ms,ms);st.seen+=imgs.length;
+    st.ms=Math.max(st.ms,ms);st.seen=Math.max(st.seen,imgs.length);
+    if(!filled){st.d=[ms,imgs.length];return;}
+    if(!imgs.length)return;
     if(!covSlow||ms>covSlow.ms)covSlow={ms,seen:imgs.length,view:st.view||"?"};
+    if(SMOKE_DB)return;
+    try{
+      const a=covLogRead();
+      a.unshift({t:Date.now(),v:st.view||"?",d:st.d||null,f:[ms,imgs.length],
+        w:st.wanted,m:st.memory,l:st.local,c:st.cloud});
+      localStorage.setItem(COV_LOG_KEY,JSON.stringify(a.slice(0,8)));
+    }catch(e){}
   });
 }
 async function hydrateCovers(root){
   const t0=covT0;covT0=0;
+  if(t0)covTimed(root,t0,false);
   const els=qa("[data-cover]",root);
   coverStats.at=Date.now();
   coverStats.wanted+=els.length;
@@ -15688,7 +15712,7 @@ async function hydrateCovers(root){
   for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
 
   reapplyScroll();   /* the page only has its real height now */
-  if(t0)covTimed(root,t0);
+  if(t0)covTimed(root,t0,true);
 }
 /* pick the stage from a list — a single click was too easy to do by accident */
 async function setStatus(id,what){
@@ -29915,7 +29939,16 @@ function tuneDiagnostics(){
     }),
     covOne(prev,"The screen before"),
     covOne(cs,"This screen"),
-    covSlow?`Slowest pictures since the app was opened: ${covSlow.ms} ms for ${covSlow.seen} in the window (${covSlow.view}).`:""
+    covSlow?`Slowest pictures since the app was opened: ${covSlow.ms} ms for ${covSlow.seen} in the window (${covSlow.view}).`:"",
+    /* see THE TIMINGS ARE KEPT */
+    ...(()=>{const a=covLogRead();
+      if(!a.length)return ["Cover timings: none kept yet — open 📚 Library, go to another tab and come back, then look here again."];
+      return ["Cover timings, newest first — "+a.length+" kept (ms from the screen starting to draw):",
+        ...a.map(e=>"   · "+new Date(e.t).toLocaleTimeString()+" "+e.v+" — "
+          +(e.d?e.d[1]+" already in the page ready at "+e.d[0]+" ms; ":"none already in the page; ")
+          +e.f[1]+" in the window ready at "+e.f[0]+" ms"
+          +" ("+e.w+" wanted: "+e.m+" from memory, "+e.l+" off this device, "+e.c+" from the cloud)")];
+    })()
   ].filter(Boolean);
   return lines;
 }
