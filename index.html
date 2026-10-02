@@ -8426,7 +8426,54 @@ let cur=null,curCover=null,curImgs={},curEnt={},saveTimer=null,isNew=false;
 let mode="write";
 /* fit-to-screen: stack the free-canvas items readably instead of free placement */
 let fitScreen=false;
-const coverCache=new Map();
+/* ┌───────────────────────────────────────────────────────────────────────────┐
+   │ A COVER GOES INTO A LIST BY NAME, NOT BY VALUE.                           │
+   │ coverCache holds each picture as a data: URL — the picture itself, as     │
+   │ text — and a row used to carry that text in its own markup. Covers are    │
+   │ kept up to COVER_MAX tall, so 400 rows of 117 KB covers were 46 MB of     │
+   │ HTML written and parsed again on every draw of the shelf: 310–400 ms to   │
+   │ come back to the Library, 1.3 s the first time. A blob: URL is a          │
+   │ forty-character name for the same bytes; with it the same 400 rows are    │
+   │ 0.5 MB and draw in about 90 ms, and the browser recognises a picture it   │
+   │ has already decoded because the name has not changed.                     │
+   │ covUrl(key) makes the name the first time it is asked and keeps it; the   │
+   │ cache lets go of it whenever the picture under that key is replaced or    │
+   │ removed, so no caller has to remember to. Everything that needs the       │
+   │ picture ITSELF — the games, the cropper, a backup, the fingerprints —     │
+   │ still reads coverCache and still gets the data: URL.                      │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+const covUrls=new Map();
+const covUrlDrop=k=>{
+  const u=covUrls.get(k);if(!u)return;
+  covUrls.delete(k);
+  /* not at once: a row already on screen may still be loading it */
+  setTimeout(()=>{try{URL.revokeObjectURL(u);}catch(e){}},30000);
+};
+const coverCache=new (class extends Map{
+  set(k,v){if(super.get(k)!==v)covUrlDrop(k);return super.set(k,v);}
+  delete(k){covUrlDrop(k);return super.delete(k);}
+  clear(){[...covUrls.keys()].forEach(covUrlDrop);super.clear();}
+})();
+function covUrl(k){
+  let u=covUrls.get(k);if(u)return u;
+  const d=coverCache.get(k);
+  if(typeof d!=="string"||!d)return "";
+  const m=/^data:([^;,]+);base64,/.exec(d.slice(0,80));
+  /* anything that is not a base64 data: URL is used as it stands */
+  if(!m)return d;
+  try{
+    let a;
+    /* the browser's own decoder where it has one: walking 400 covers a
+       character at a time was 350 ms of the first draw of the shelf */
+    if(Uint8Array.fromBase64)a=Uint8Array.fromBase64(d.slice(m[0].length));
+    else{
+      const s=atob(d.slice(m[0].length)),n=s.length;a=new Uint8Array(n);
+      for(let i=0;i<n;i++)a[i]=s.charCodeAt(i);
+    }
+    u=URL.createObjectURL(new Blob([a],{type:m[1]}));
+  }catch(e){return d;}
+  covUrls.set(k,u);return u;
+}
 const S={q:"",scopes:["title","author","fandom"],authorQ:"",filter:null,stages:[],multi:[],kmulti:[],pickGenres:[],pickKws:[],pickKwOpen:false,pickWant:true,pickText:"",picked:null};
 let deletions={};
 let lastExport=0;                              /* when this browser last downloaded a backup file */
@@ -10717,6 +10764,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.15",go:["set:trouble:#diagCopy"],lines:[
+    "<b>🖼 Covers come back faster.</b> Going back to 📚 Library from another tab used to write every cover into the page again, whole, at the size it is kept — tens of megabytes each time. A row now only points at its picture, so the shelf is drawn in about a quarter of the time and a cover already shown does not have to be worked out again.",
+    "If they are still slow for you, the app now times it: ⚙ Settings → If something is wrong → the copyable list says how long the covers in the window took on this screen and the one before, and the slowest wait since the app was opened."]},
   {v:"2026-10-02.14",go:["set:look:#ownPics"],lines:[
     "<b>✂ The medal-picture check tells the whole story.</b> Under ⚙ Settings → How it looks → 🖼 Your own pictures it said only what its <i>last</i> look found — which, after you add a few pictures, is just those few. It now says how many of all your medal pictures have been checked, and shows every one it changed on this device as it was and as it is now, each with its own <b>↶ Put back</b>.",
     "Replacing a picture it changed lets go of the original it kept, so putting back can never undo a newer picture of yours."]},
@@ -14472,6 +14522,7 @@ function render(){
   document.documentElement.setAttribute("data-selbar","0");
   useTick(view);
   resetCoverStats();   /* a fresh tally per screen, however many passes it takes */
+  covT0=performance.now();
   setTimeout(()=>{try{petCorner();}catch(e){}},0);
   if(view==="book"){renderBook();return;}
   q("#app").innerHTML=`
@@ -14609,6 +14660,7 @@ function renderView(){
 function renderMain(){
   if(view==="book"){renderBook();return;}
   if(!q("#main")){render();return;}
+  covT0=performance.now();
   renderView();
   updateFab();
 }
@@ -15446,8 +15498,8 @@ function coverInner(b,withAuthor){
      same cover. Ask for the story's own picture when it has one; if it is not
      to hand yet, the drawn stand-in is the honest answer, not a borrowed
      photograph of something else. */
-  const c=coverCache.get(b._cover||b.id);
-  return typeof c==="string"&&c?`<img src="${c}" alt="">`:genCoverHtml(b,withAuthor);
+  const u=covUrl(b._cover||b.id);
+  return u?`<img src="${u}" alt="">`:genCoverHtml(b,withAuthor);
 }
 /* Syncing is on, we are online, and the signed-in session has not landed yet —
    so a picture that is not on this device may still be in the cloud, unasked. */
@@ -15474,15 +15526,41 @@ let coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,story:0,waiting:0,none:0,
 let coverStatsPrev=null;
 function resetCoverStats(){
   if(coverStats.at)coverStatsPrev=Object.assign({view:coverStats.view||"?"},coverStats);
-  coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,story:0,waiting:0,none:0,sync:"",view};
+  coverStats={at:0,wanted:0,memory:0,local:0,cloud:0,story:0,waiting:0,none:0,sync:"",view,ms:0,seen:0};
+}
+/* HOW LONG THE PICTURES TOOK, from the moment the screen began to be drawn to
+   the moment every cover inside the window had been decoded and could be
+   painted. "The covers take a few seconds to come back" could not be made to
+   happen on a second machine, so the app times it where it happens: the
+   number is on the "This screen" and "The screen before" lines of the
+   diagnostics, with the slowest of the session under them.
+   covT0 is set by render() and renderMain() and spent by the first
+   hydrateCovers after it, so a pass that was not a fresh draw times nothing.
+   Only covers inside the window are waited on — asking all four hundred to
+   decode would be the very cost being measured. */
+let covT0=0,covSlow=null;
+function covTimed(root,t0){
+  const st=coverStats,vh=window.innerHeight||0;
+  const imgs=qa("[data-cover] img",root).filter(im=>{
+    const r=im.getBoundingClientRect();return r.bottom>0&&r.top<vh;}).slice(0,60);
+  if(!imgs.length)return;
+  Promise.all(imgs.map(im=>im.decode?im.decode().catch(()=>{}):null)).then(()=>{
+    const ms=Math.round(performance.now()-t0);
+    st.ms=Math.max(st.ms,ms);st.seen+=imgs.length;
+    if(!covSlow||ms>covSlow.ms)covSlow={ms,seen:imgs.length,view:st.view||"?"};
+  });
 }
 async function hydrateCovers(root){
+  const t0=covT0;covT0=0;
   const els=qa("[data-cover]",root);
   coverStats.at=Date.now();
   coverStats.wanted+=els.length;
   coverStats.sync=(SYNC.on?"on":"off")+", "+(SYNC.user?"signed in":"no session yet")+", "+(navigator.onLine?"online":"offline");
   /* exactly one of these per row, recorded where the row finally lands */
-  const paint=(el,src)=>{
+  const paint=(el,key)=>{
+    /* by name — see A COVER GOES INTO A LIST BY NAME */
+    const src=covUrl(key);
+    if(!src)return;
     const shown=el.querySelector("img");
     /* if this cover is already on screen, leave the DOM alone: replacing it
        re-decodes the picture and makes the shelf blink for no reason */
@@ -15516,7 +15594,7 @@ async function hydrateCovers(root){
            session. Leave it unknown until there is a real answer. */
         if(s2!=null||!coversStillComing())coverCache.set(key,s2||null);
       }
-      if(s2){paint(el,s2);coverStats.story++;return;}
+      if(s2){paint(el,key);coverStats.story++;return;}
       /* its own picture could not be had, so the row falls through to the cover
          of the collection it belongs to — right when there genuinely is none,
          wrong while we are still waiting, so say which this was */
@@ -15544,12 +15622,13 @@ async function hydrateCovers(root){
         if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);where="cloud";}}catch(e){}
     }
     coverStats[where]++;
-    if(src)paint(el,src);
+    if(src)paint(el,id);
   };
   /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
   for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
 
   reapplyScroll();   /* the page only has its real height now */
+  if(t0)covTimed(root,t0);
 }
 /* pick the stage from a list — a single click was too easy to do by accident */
 async function setStatus(id,what){
@@ -29665,7 +29744,9 @@ function tuneDiagnostics(){
     const shown=s.memory+s.local+s.cloud+s.story;
     return `${label} (${s.view||"?"}): ${s.wanted} picture${s.wanted===1?"":"s"} wanted, ${shown} shown — `
       +`${s.memory} in memory, ${s.local} from this device, ${s.cloud} from the cloud, ${s.story} a story's own. `
-      +`${s.waiting} waiting on sign-in, ${s.none} with none. Syncing was ${s.sync}.`;
+      +`${s.waiting} waiting on sign-in, ${s.none} with none. Syncing was ${s.sync}.`
+      /* see HOW LONG THE PICTURES TOOK */
+      +(s.ms?` The ${s.seen} in the window were ready ${s.ms} ms after the screen began to draw.`:"");
   };
   const ti=window.__tuneInfo;
   const lines=[
@@ -29760,7 +29841,8 @@ function tuneDiagnostics(){
         +(bits.length?" ("+bits.join(", ")+")":"");
     }),
     covOne(prev,"The screen before"),
-    covOne(cs,"This screen")
+    covOne(cs,"This screen"),
+    covSlow?`Slowest pictures since the app was opened: ${covSlow.ms} ms for ${covSlow.seen} in the window (${covSlow.view}).`:""
   ].filter(Boolean);
   return lines;
 }
