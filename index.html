@@ -5207,6 +5207,8 @@ const LINK_SITES=[
   [/(^|\.)hardcover\.app/,"📙","Hardcover"],
   [/(^|\.)openlibrary\.org/,"📗","Open Library"],
   [/(^|\.)anilist\.co/,"🅰","AniList"],
+  [/(^|\.)books\.apple\.com/,"🍎","Apple Books"],
+  [/(^|\.)kitsu\.(app|io)/,"📚","Kitsu"],
   [/(^|\.)dropbox\.com/,"📦","Dropbox"],
   [/(^|\.)onedrive\.live\.com|(^|\.)1drv\.ms/,"☁️","OneDrive"],
   [/(^|\.)notion\.so/,"📓","Notion"],
@@ -10695,6 +10697,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.5",lines:[
+    "<b>🔎 Fill in asks two more places.</b> <b>🍎 Apple Books</b> knows most published books and keeps their covers at full size — so a cover it finds comes in sharp, and <b>⤓ Sharper</b> has a big one to offer — along with the publisher's blurb and the store's genres. It allows about twenty questions a minute, so a long Fill in run lets it rest partway rather than be turned away.",
+    "<b>📚 Kitsu</b> knows web novels and light novels from Korea, Japan and China, which AniList (comics only) never did: their blurb, genres, how many chapters, the title in its own language, and whether the series is finished. That last one now feeds <i>Waiting for the next one</i> too — the ask button there tries AniList for a comic, then Kitsu for a novel.",
+    "Both are refused, like every other source, unless what they found is the book you asked for — a study guide, a single later volume or a different book with a similar name is turned away."]},
   {v:"2026-10-02.4",go:["arc:pz","arc:pz","arc:io"],lines:[
     "<b>🧩 Three helpers on the puzzle.</b> <b>💡 Put one in</b> sends a piece home — one lying on its own, if there is one. <b>👁 Show the gaps</b> outlines every place still empty for three seconds, drawn over the loose pieces so a piece lying on the board can't hide one. <b>🧺 Gather the pieces</b> lays every loose piece in tidy rows beside the board, joined ones together. They're in ⛶ Whole window too, as small icons along the top.",
     "<b>Hints cost a little.</b> Each one takes a tenth off what that game pays, and it never goes below half — the button says <i>−10%</i>, and <i>pays 80% now</i> beside it once you've used two. 👁 and 🧺 are free.",
@@ -17032,7 +17038,8 @@ async function openBulkFill(ids){
        book's own page. It rides silently on rows that found something. */
     const mineHc=String((en?en.hcSlug:b.hcSlug)||"").trim();
     if(!mineHc&&info.hcSlug)want.hcSlug=String(info.hcSlug).trim();
-    if(info.anilist)want.serial=serialOf(info.anilist);
+    if(info.anilist)want.serial=serialOf(info.anilist,"AniList");
+    else if(info.kitsu)want.serial=serialOf(info.kitsu,"Kitsu");
     /* a story's words are its own; a plain book's are its own. Genres are the
        exception and always the collection's — a genre on a story replaces
        rather than adds, and would lift that one book out from under its series. */
@@ -17503,8 +17510,8 @@ async function openBulkFill(ids){
      rather than absent. */
   function srcLine(){
     if(!S.asked)return "";
-    const names=["Google Books","Hardcover","AniList","Open Library"]
-      .filter(n=>n!=="Hardcover"||hardcoverOn()||S.srcHit[n]);
+    const names=["Google Books","Hardcover","AniList","Apple Books","Kitsu","Open Library"]
+      .filter(n=>(n!=="Hardcover"||hardcoverOn()||S.srcHit[n])&&(n!=="Kitsu"||S.srcHit[n]));
     return `<div class="hint" style="margin:6px 0 7px">${
       names.map(n=>`${n} brought something for <b>${S.srcHit[n]||0}</b> of ${S.asked}`).join(" · ")}</div>`;
   }
@@ -36890,8 +36897,8 @@ function renderBookView(){
      the next one gets the row even before it has been asked, with the ask. */
   {const waiting=holdOf(b)&&(b.holdReasons||[]).includes(HOLD_REASONS[0]);
    if(b.serial||waiting)facts.push(["Next one",
-     (b.serial?esc(serialLine(b.serial).replace(/^🅰 /,"")):"not asked yet")
-     +` <button class="btn smallbtn" id="vAskAl" style="padding:1px 8px;font-size:11px" title="Ask AniList whether the series is finished or still releasing — it knows manhwa, webtoons and manga, and says so when it doesn't know one">🅰 ${b.serial?"Ask again":"Ask AniList"}</button>`]);}
+     (b.serial?esc(serialLine(b.serial).replace(/^\S+ /,"")):"not asked yet")
+     +` <button class="btn smallbtn" id="vAskAl" style="padding:1px 8px;font-size:11px" title="Ask AniList and Kitsu whether the series is finished or still releasing — AniList knows manhwa, webtoons and manga, Kitsu the novels — and it says so when neither knows one">🅰 ${b.serial?"Ask again":"Ask AniList"}</button>`]);}
   /* seriesShown, not b.series: a collection whose series field holds its own
      title printed that title again immediately under itself */
   const sName=seriesShown(b);
@@ -39533,7 +39540,8 @@ function renderEditor(){
     {const th=en||cur;
      if(info.hcSlug&&!String(th.hcSlug||"").trim()){th.hcSlug=String(info.hcSlug).trim();scheduleSave();}
      /* and AniList's word on whether the series is still going — see serialOf */
-     if(info.anilist){th.serial=serialOf(info.anilist);scheduleSave();}}
+     if(info.anilist){th.serial=serialOf(info.anilist,"AniList");scheduleSave();}
+     else if(info.kitsu){th.serial=serialOf(info.kitsu,"Kitsu");scheduleSave();}}
     const tagSel=new Set();
     /* Looking up ONE story and the words come back about that story, so that is
        where they belong. They went on the collection until stories had anywhere
@@ -46644,35 +46652,116 @@ async function fetchAniList(title,author,isbn){
     status:st,released:st==="FINISHED"?"finished":st==="RELEASING"?"still releasing":st?st.toLowerCase().replace(/_/g," "):"",
     format:String(m.format||""),country:String(m.countryOfOrigin||""),url:String(m.siteUrl||"")};
 }
+/* ┌─ THE FIFTH VOICE: APPLE BOOKS ──────────────────────────────────────────┐
+   │ Apple's store answers a web page directly, with no key (measured        │
+   │ 2026-10-01: 277 ms, and its pictures download — 908×1400 for a          │
+   │ well-known novel, in 149 ms). What it brings that the others mostly    │
+   │ don't is a cover at full size, for ⤓ Sharper and the covers row; its   │
+   │ blurb is the publisher's, its genres the store's. Its year is the      │
+   │ e-book's, not the book's, so it never fills one. Asked by ISBN when    │
+   │ there is one, else by title and author, and refused unless the hit is  │
+   │ called what was asked for (titleSame) and names the author asked for. │
+   │ Apple allows about twenty asks a minute from one place: past that a    │
+   │ run lets it rest (appleSlot) rather than be refused for the next hour. │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const APPLE_PER_MIN=18;
+let appleAsks=[];
+function appleSlot(){
+  const now=Date.now();appleAsks=appleAsks.filter(t=>now-t<60000);
+  if(appleAsks.length>=APPLE_PER_MIN)return false;
+  appleAsks.push(now);return true;
+}
+const appleBig=u=>String(u||"").replace(/\/\d+x\d+(bb)?\.(jpg|jpeg|png|webp)$/i,"/1400x1400bb.jpg");
+/* an author is "named" when one of their longer words is in the store's
+   credit — "Sarah Weeks" in "Sarah Weeks & Gita Varadarajan" */
+const authorNear=(a,credit)=>{const c=softFold(credit),ws=String(a||"").split(/[\s,&;.]+/).map(softFold).filter(w=>w.length>=3);
+  return !ws.length||ws.some(w=>c.indexOf(w)>=0);};
+async function fetchApple(title,author,isbn){
+  const t=String(title||"").trim(),n=cleanIsbn(isbn||"");
+  if(!t&&!n)return {ok:false,why:"nothing to ask with"};
+  if(!appleSlot())return {ok:false,rested:true,why:"rested — Apple allows about twenty asks a minute, and this run asked faster"};
+  const url=n?"https://itunes.apple.com/lookup?isbn="+encodeURIComponent(n)
+    :"https://itunes.apple.com/search?media=ebook&entity=ebook&limit=6&term="+encodeURIComponent(t+(author?" "+author:""));
+  const j=await fetchJson(url,1,7000);
+  const hits=((j&&j.results)||[]).filter(x=>x&&x.trackName&&x.kind==="ebook");
+  if(!hits.length)return {ok:false,why:"but it doesn't know this one"};
+  const m=n?hits[0]:hits.find(h=>titleSame(t,h.trackName)&&(!author||authorNear(author,h.artistName)));
+  if(!m)return {ok:false,why:"only offered “"+String(hits[0].trackName).slice(0,60)+"” — a different book, refused"};
+  const blurb=stripHtml(String(m.description||"").replace(/<br\s*\/?>/gi,"\n").replace(/<\/p>/gi,"\n")).replace(/\n{3,}/g,"\n\n").trim();
+  return {ok:true,title:String(m.trackName).trim(),author:String(m.artistName||"").trim(),blurb,
+    /* the store files one book under up to twenty-one shelves — six is plenty */
+    genres:(m.genres||[]).map(g=>String(g).trim()).filter(g=>g&&g!=="Books").slice(0,6),
+    cover:appleBig(m.artworkUrl100||m.artworkUrl60),url:String(m.trackViewUrl||"").split("?")[0]};
+}
+/* ┌─ THE SIXTH VOICE: KITSU, FOR NOVELS ────────────────────────────────────┐
+   │ AniList knows the comic and never the novel it came from, so a web      │
+   │ novel came back with nothing but what Open Library had (one volume, a  │
+   │ title and an author). Kitsu lists novels as novels and answers a page  │
+   │ directly, no key (measured 2026-10-01: a Korean web novel with its     │
+   │ English, Korean and Chinese titles, finished, 551 chapters, a start    │
+   │ date and seven genres). Asked for novels only, by title, and refused   │
+   │ unless one of its names is the title asked for. Its pictures cannot be │
+   │ saved from a page (no CORS header on its image host), so it brings     │
+   │ words, never a cover. Whether the series is finished feeds Waiting for │
+   │ the next one, as AniList's does for comics (serialOf "Kitsu").          │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+async function fetchKitsu(title){
+  const t=String(title||"").trim();
+  if(!t)return {ok:false,why:"knows no ISBNs — asked by title only"};
+  const j=await fetchJson("https://kitsu.io/api/edge/manga?filter%5Btext%5D="+encodeURIComponent(t)
+    +"&filter%5Bsubtype%5D=novel&page%5Blimit%5D=5&include=categories",1,7000);
+  const hits=((j&&j.data)||[]).filter(x=>x&&x.attributes);
+  if(!hits.length)return {ok:false,why:"but it doesn't know this one — it knows novels from Japan, Korea and China"};
+  const want=softFold(t);
+  const names=a=>[a.canonicalTitle,...Object.values(a.titles||{}),...(a.abbreviatedTitles||[])].map(x=>String(x||"").trim()).filter(Boolean);
+  const m=hits.find(h=>names(h.attributes).some(nm=>softFold(nm)===want||titleSame(t,nm)));
+  if(!m)return {ok:false,why:"only offered “"+String(hits[0].attributes.canonicalTitle||"").slice(0,60)+"” — a different book, refused"};
+  const A=m.attributes,T=A.titles||{};
+  const mine=new Set(((m.relationships&&m.relationships.categories&&m.relationships.categories.data)||[]).map(r=>r.id));
+  const genres=((j.included)||[]).filter(x=>x.type==="categories"&&mine.has(x.id)).map(x=>String(x.attributes.title||"").trim()).filter(Boolean);
+  const st=String(A.status||"");
+  const status=st==="finished"?"FINISHED":st==="current"?"RELEASING":/^(tba|unreleased|upcoming)$/.test(st)?"NOT_YET_RELEASED":"";
+  return {ok:true,title:String(T.en||A.canonicalTitle||t).trim(),native:String(T.ko_kr||T.ja_jp||T.zh_cn||"").trim(),
+    blurb:String(A.synopsis||A.description||"").replace(/\s*\((source|translated by)[^)]*\)\s*$/i,"").trim(),genres,
+    chapters:parseInt(A.chapterCount)||"",volumes:parseInt(A.volumeCount)||"",year:String(A.startDate||"").slice(0,4),
+    status,released:status==="FINISHED"?"finished":status==="RELEASING"?"still releasing":st,
+    url:A.slug?"https://kitsu.app/manga/"+A.slug:""};
+}
 /* what AniList said about whether the series is still going, kept on the
    book as `serial` — stamped quietly on a lookup that matched (like hcSlug:
    a fact fetched, not a field you read), and refreshed by the ↻ on Today's
    "Waiting for the next one" card. `status` empty means AniList was asked and
    does not know the book. */
-const serialOf=a=>({src:"AniList",status:String((a&&a.status)||""),released:String((a&&a.released)||""),
+const serialOf=(a,src)=>({src:src||"AniList",status:String((a&&a.status)||""),released:String((a&&a.released)||""),
   chapters:(a&&a.chapters)||"",volumes:(a&&a.volumes)||"",at:todayStr(),url:String((a&&a.url)||"")});
+/* who said it: AniList for a comic, Kitsu for a novel, "none" when both
+   were asked and neither knew the book */
+const SERIAL_ICO={AniList:"🅰",Kitsu:"📚",none:"🅰"};
 const serialLine=s=>{
-  if(!s||s.src!=="AniList")return "";
-  const when=s.at?" · checked "+rdWhen(s.at):"";
-  if(!s.status)return "🅰 AniList doesn't know this one"+when;
+  if(!s||!SERIAL_ICO[s.src])return "";
+  const when=s.at?" · checked "+rdWhen(s.at):"",who=s.src,ico=SERIAL_ICO[who];
+  if(who==="none"||!s.status)return ico+" "+(who==="none"?"Neither AniList nor Kitsu knows this one":who+" doesn't know this one")+when;
   const cnt=[s.chapters?s.chapters+" chapters":"",s.volumes?s.volumes+" volumes":""].filter(Boolean).join(", ");
-  return "🅰 "+(s.status==="FINISHED"?"AniList says the series is finished — the next part may be out"
-    :s.status==="RELEASING"?"AniList says it is still releasing"
-    :s.status==="HIATUS"?"AniList says it is on hiatus"
-    :s.status==="CANCELLED"?"AniList says it was cancelled"
-    :s.status==="NOT_YET_RELEASED"?"AniList says it hasn't started yet"
-    :"AniList: "+String(s.released||s.status).toLowerCase())+(cnt?" · "+cnt:"")+when;
+  return ico+" "+(s.status==="FINISHED"?who+" says the series is finished — the next part may be out"
+    :s.status==="RELEASING"?who+" says it is still releasing"
+    :s.status==="HIATUS"?who+" says it is on hiatus"
+    :s.status==="CANCELLED"?who+" says it was cancelled"
+    :s.status==="NOT_YET_RELEASED"?who+" says it hasn't started yet"
+    :who+": "+String(s.released||s.status).toLowerCase())+(cnt?" · "+cnt:"")+when;
 };
-/* ask AniList about a set of books at once — the ↻ on the card — and write
-   the answers as one bulk op */
+/* ask about a set of books at once — the ↻ on the card, or the facts card's
+   button — and write the answers as one bulk op: AniList first, which knows
+   the comics, then Kitsu, which knows the novels */
 async function askSerials(ids,btn){
   const say=t=>{if(btn)btn.textContent=t;};
   if(btn)btn.disabled=true;
   const got={};let n=0;
   for(const id of ids){
     const b=books.find(x=>x.id===id);if(!b)continue;
-    say(`🅰 Asking AniList… ${++n} of ${ids.length}`);
-    try{const a=await fetchAniList(b.title,b.author,"");got[id]=serialOf(a.ok?a:null);}
+    say(`🅰 Asking AniList and Kitsu… ${++n} of ${ids.length}`);
+    try{const a=await fetchAniList(b.title,b.author,"");
+      if(a.ok)got[id]=serialOf(a,"AniList");
+      else{const k=await fetchKitsu(b.title);got[id]=k.ok?serialOf(k,"Kitsu"):serialOf(null,"none");}}
     catch(e){got[id]=null;}
   }
   const wrote=Object.keys(got).filter(id=>got[id]);
@@ -46696,7 +46785,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      by number there is nothing on screen to name the book with. */
   const out={title:"",author:"",summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
     blurbs:[],genres:[],gCovers:[],hcCover:"",alCover:"",anilist:null,series:null,per:[]};
-  let gErr=false,oErr=false,hErr=false,aErr=false;
+  let gErr=false,oErr=false,hErr=false,aErr=false,pErr=false,kErr=false;
   /* Both sites are asked at the same moment, and neither is given as long to
      answer. They used to be asked one after the other, each with three
      attempts at a nine-second wait — so a Google that simply hung meant half a
@@ -46725,9 +46814,11 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   const hP=hOn?fetchHardcover(title,author,isbn):null;
   /* the fourth, AniList — asked at the same moment, no key, comics only */
   const aP=fetchAniList(title,author,isbn);
+  /* the fifth and sixth, Apple Books and Kitsu — see THE FIFTH VOICE */
+  const pP=fetchApple(title,author,isbn),kP=fetchKitsu(title);
   /* all are awaited below; this only stops a rejection being called unhandled
      while another one is still being waited on */
-  gP.catch(()=>{});oP.catch(()=>{});if(hP)hP.catch(()=>{});aP.catch(()=>{});
+  gP.catch(()=>{});oP.catch(()=>{});if(hP)hP.catch(()=>{});aP.catch(()=>{});pP.catch(()=>{});kP.catch(()=>{});
   /* Each site's own settling moment, stamped as it happens — measuring at the
      `await` below would charge the second one waited on for the first one's
      time. This is the readout that turned "auto-fill took twenty seconds and
@@ -46738,6 +46829,8 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   oP.then(()=>stamp.o=performance.now()-t0,()=>stamp.o=performance.now()-t0);
   if(hP)hP.then(()=>stamp.h=performance.now()-t0,()=>stamp.h=performance.now()-t0);
   aP.then(()=>stamp.a=performance.now()-t0,()=>stamp.a=performance.now()-t0);
+  pP.then(()=>stamp.p=performance.now()-t0,()=>stamp.p=performance.now()-t0);
+  kP.then(()=>stamp.k=performance.now()-t0,()=>stamp.k=performance.now()-t0);
   /* `say` was taken — it feeds probe.asked further down. This one feeds the
      timings. */
   const tell=(what,ms,ok,note)=>{if(probe)(probe.times=probe.times||[]).push({what,ms:Math.round(ms||0),ok:!!ok,note:note||""});};
@@ -46827,6 +46920,30 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
       tell("AniList",stamp.a,true);
     }
   }catch(e){aErr=true;tell("AniList",stamp.a,false,String(e&&e.message||"").slice(0,90));}
+  /* ---- Kitsu, the novel beside AniList's comic ----
+     It answers only for a novel, and when it does its words come next */
+  try{
+    const k=await kP;
+    if(!k.ok)tell("Kitsu",stamp.k,true,k.why);
+    else{
+      const bits=[];
+      if(k.blurb&&k.blurb.length>40){out.blurbs.push({text:k.blurb,from:"Kitsu"});bits.push("a blurb");}
+      if(!out.summary&&k.blurb)out.summary=k.blurb;
+      if(k.genres.length){out.genres.push(...k.genres);bits.push(k.genres.length>1?k.genres.length+" genres":"a genre");}
+      if(!out.title&&k.title)out.title=k.title;
+      if(!out.year&&k.year)out.year=k.year;
+      if(k.year)bits.push("year");
+      if(k.chapters)bits.push(k.chapters+" chapters");
+      if(k.volumes)bits.push(k.volumes+" volumes");
+      if(k.released)bits.push(k.released);
+      if(k.native&&softFold(k.native)!==softFold(k.title))bits.push("native title "+k.native);
+      out.kitsu={status:k.status,released:k.released,chapters:k.chapters,volumes:k.volumes,native:k.native,url:k.url};
+      if(k.url)out.links.push({name:"Kitsu",url:k.url});
+      out.source.push("Kitsu");
+      out.per.push({src:"Kitsu",bits});
+      tell("Kitsu",stamp.k,true);
+    }
+  }catch(e){kErr=true;tell("Kitsu",stamp.k,false,String(e&&e.message||"").slice(0,90));}
   try{
     const j=await gP;
     const items=(j.items||[]).map(x=>x.volumeInfo||{});
@@ -46908,6 +47025,29 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   }catch(e){gErr=true;noteGoogleDry(e);
     tell("Google Books",stamp.g,false,
       /not asked again yet/.test(String(e&&e.message||""))?"being rested after a refusal — skipped, not slow":"");}
+  /* ---- Apple Books, after Google and before Open Library ----
+     Its blurb is the publisher's and fills only what the three before it
+     left empty; its genres join the list; its cover goes near the front of
+     the covers row, since it is the one at full size */
+  try{
+    const ap=await pP;
+    if(!ap.ok){
+      if(ap.rested)(probe?(probe.times=probe.times||[]):[]).push({what:"Apple Books",skip:true,note:ap.why});
+      else tell("Apple Books",stamp.p,true,ap.why);}
+    else{
+      const bits=[];
+      if(ap.blurb&&ap.blurb.length>40){out.blurbs.push({text:ap.blurb,from:"Apple Books"});bits.push("a blurb");}
+      if(!out.summary&&ap.blurb)out.summary=ap.blurb;
+      if(ap.genres.length){out.genres.push(...ap.genres);bits.push(ap.genres.length>1?ap.genres.length+" genres":"a genre");}
+      if(!out.author&&ap.author)out.author=ap.author;
+      if(!out.title&&ap.title)out.title=ap.title;
+      if(ap.cover){out.apCover=ap.cover;bits.push("a cover");}
+      if(ap.url)out.links.push({name:"Apple Books",url:ap.url});
+      out.source.push("Apple Books");
+      out.per.push({src:"Apple Books",bits});
+      tell("Apple Books",stamp.p,true);
+    }
+  }catch(e){pErr=true;tell("Apple Books",stamp.p,false,String(e&&e.message||"").slice(0,90));}
   try{
     /* subjects only come back when asked for explicitly via `fields` — the
        asking already started, alongside Google's, up at the top */
@@ -47017,7 +47157,9 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   /* AniList's cover goes FIRST when it answered: it is the comic's own
      cover, it downloads (measured), and on a manhwa Open Library's, when it
      has one at all, is usually a novel's */
+  /* Apple's next: it is the one at full size, and its host lets it download */
   out.covers=[out.alCover||"",
+    out.apCover||"",
     out.olCover,
     isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
     ...(out.olCovers||[]),
@@ -47030,7 +47172,7 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      thinner — no Google means no Google blurb, no tidy categories — and nothing
      anywhere said so, which is indistinguishable from the books simply being
      thin. Now the run can count it and tell you. */
-  out.gErr=gErr;out.oErr=oErr;out.hErr=hErr;out.aErr=aErr;
+  out.gErr=gErr;out.oErr=oErr;out.hErr=hErr;out.aErr=aErr;out.pErr=pErr;out.kErr=kErr;
   if(out.summary||out.tags.length||out.pages||out.covers.length||out.title||out.author){
     /* A title-only ask has nothing corroborating it, so it has to earn the
        answer. Searching "Beware of the Ghost" without an author returned
@@ -47052,6 +47194,8 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
   say(`Open Library · ${isbn?"isbn "+isbn:`title “${title}”${author?`, author “${author}”`:""}`}${oErr?" · no answer at all":" · nothing matched"}`);
   if(hOn)say(`Hardcover · ${isbn?"isbn "+isbn:`“${title}”${author?" "+author:""}`}${hErr?" · no answer at all":" · nothing matched"}`);
   say(`AniList · ${title?`“${title}”`:"nothing to ask with — it knows no ISBNs"}${aErr?" · no answer at all":" · nothing matched (it knows comics only)"}`);
+  say(`Apple Books · ${isbn?"isbn "+isbn:`“${title}”${author?" "+author:""}`}${pErr?" · no answer at all":" · nothing matched"}`);
+  say(`Kitsu · ${title?`“${title}”`:"nothing to ask with — it knows no ISBNs"}${kErr?" · no answer at all":" · nothing matched (it knows novels from Japan, Korea and China)"}`);
   /* And ask again without the author. The author is a hard constraint at both
      sites — Google's inauthor:"…" and Open Library's author= each demand a
      match — so a collection whose author is a series name, a publisher, or
