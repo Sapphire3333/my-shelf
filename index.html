@@ -8062,9 +8062,12 @@ function cutOutImage(dataURL,tol,trim,refs,seeThru){
           if(near(j)){clear[j]=1;st.push(j);}
         }
       }
-      let minX=w,minY=h,maxX=-1,maxY=-1,gone=0;
+      /* `took` counts only what was solid before — a flood that crosses
+         see-through pixels (seeThru) clears those again for nothing */
+      let minX=w,minY=h,maxX=-1,maxY=-1,gone=0,took=0,solid=0;
       for(let i=0;i<n;i++){
-        if(clear[i]){d[i*4+3]=0;gone++;}
+        if(d[i*4+3]>=40)solid++;
+        if(clear[i]){if(d[i*4+3]>=40)took++;d[i*4+3]=0;gone++;}
         else{const x=i%w,y=(i/w)|0;
           if(x<minX)minX=x;if(x>maxX)maxX=x;if(y<minY)minY=y;if(y>maxY)maxY=y;}
       }
@@ -8074,7 +8077,7 @@ function cutOutImage(dataURL,tol,trim,refs,seeThru){
       const cw=trim?maxX-minX+1:w,ch=trim?maxY-minY+1:h;
       const o=document.createElement("canvas");o.width=cw;o.height=ch;
       o.getContext("2d").drawImage(c,sx,sy,cw,ch,0,0,cw,ch);
-      res({data:o.toDataURL("image/png"),w:cw,h:ch,pct:Math.round(gone/n*100)});
+      res({data:o.toDataURL("image/png"),w:cw,h:ch,pct:Math.round(gone/n*100),took:Math.round(took/n*1000)/10,tookOfSolid:solid?took/solid:0});
     };
     img.onerror=()=>rej(new Error("That picture couldn't be read."));
     img.src=dataURL;
@@ -9363,6 +9366,7 @@ async function initSync(){
   setTimeout(()=>{petCheckerSweep().catch(()=>{});},2500);   /* see petCheckerSweep */
   await shopPicsLoad();
   await ownIconsLoad();
+  setTimeout(()=>{medalCheckerSweep().catch(()=>{});},4000);   /* see THE MEDALS' PICTURES, SWEPT */
   {const fresh=!Object.keys(achSeen).some(k=>k!=="__v");
    setTimeout(()=>{try{questCheck();achCheck(fresh);}catch(e){}},1500);
    /* a bingo card someone shared, arriving in the address */
@@ -10697,6 +10701,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.7",go:["set:look:#ownPics"],lines:[
+    "<b>🏅 Your medal pictures, checked for painted squares too.</b> Each one you've given a medal is looked at once, and grey-and-white squares painted into it are taken out — including the ones hiding inside a coin's circle, between the coin and the ring, where a picture fitted with <i>Fit your picture</i> keeps them. Your other device gets the clean copies.",
+    "It is careful with them, because they are your own work: a picture where taking the squares out would take most of it is left alone and named, and every picture it does change keeps its original on this device — ⚙ Settings → How it looks → <b>🖼 Your own pictures</b> says what it did, with <b>↶ Put them back</b> beside it."]},
   {v:"2026-10-02.6",go:["el:overview:#secNext","el:overview:#secNext"],lines:[
     "<b>📅 When the next one comes out.</b> For a book on hold waiting for the next in its series, Hardcover is asked which book comes after the last one you have, and when — and <i>Waiting for the next one</i> says it under the book: <i>#6 comes out 27 October 2026 — in 25 days</i>, or <i>some time in 2030</i> when only the year is known, or <i>it's out</i> when it already is.",
     "It keeps itself up to date: a date a week old is asked again quietly when you open Today, a few books at a time, without counting as an edit of yours. The book's own page says it beside <i>Next one</i>, and a series' panel has <b>📅 When's the next one?</b> to ask on the spot. <b>↻ Ask about these</b> on the card asks AniList, Kitsu and Hardcover together."]},
@@ -21976,56 +21983,97 @@ function checkerOf(dataURL){
       const ctx=c.getContext("2d",{willReadFrequently:true});ctx.drawImage(img,0,0);
       let d;try{d=ctx.getImageData(0,0,w,h).data;}catch(e){res(null);return;}
       const P=(x,y)=>(y*w+x)*4;
-      const lines=[[],[],[],[]];
-      for(let x=0;x<w;x++){lines[0].push(P(x,0));lines[1].push(P(x,h-1));}
-      for(let y=0;y<h;y++){lines[2].push(P(0,y));lines[3].push(P(w-1,y));}
-      const all=lines.flat();
+      /* each line with which way is ACROSS it: a row's squares are checked
+         a square's width up or down, a column's left or right */
+      const row=y=>{const px=[];for(let x=0;x<w;x++)px.push(P(x,y));return {px,vert:true};};
+      const col=x=>{const px=[];for(let y=0;y<h;y++)px.push(P(x,y));return {px,vert:false};};
+      const lines=[row(0),row(h-1),col(0),col(w-1)];
       const see=p=>d[p+3]<40;
       const lum=p=>(d[p]+d[p+1]+d[p+2])/3;
       const pale=p=>d[p+3]>200&&Math.max(d[p],d[p+1],d[p+2])-Math.min(d[p],d[p+1],d[p+2])<=22&&lum(p)>=140;
-      /* the pale levels round the edge: the commonest, and a second at least
-         twelve apart if there is one worth the name */
-      const hist=new Array(256).fill(0);
-      all.forEach(p=>{if(pale(p))hist[Math.round(lum(p))]++;});
-      const sm=hist.map((_,i)=>{let s=0;for(let k=-3;k<=3;k++)s+=hist[i+k]||0;return s;});
-      let p1=140;for(let i=140;i<256;i++)if(sm[i]>sm[p1])p1=i;
-      if(!sm[p1]){res(null);return;}
-      let p2=-1;for(let i=140;i<256;i++)if(Math.abs(i-p1)>=12&&(p2<0||sm[i]>sm[p2]))p2=i;
-      const levels=[p1];if(p2>=0&&sm[p2]>=sm[p1]*0.12)levels.push(p2);
-      const cls=p=>{if(see(p))return "T";if(!pale(p))return "X";
-        const L=lum(p);let bi=0;levels.forEach((v,i)=>{if(Math.abs(L-v)<Math.abs(L-levels[bi]))bi=i;});
-        return Math.abs(L-levels[bi])<=14?"L"+bi:"X";};
-      const score={};
-      lines.forEach(line=>{
-        let raw=[],cur=null,len=0;
-        line.forEach(p=>{const k=cls(p);if(k===cur)len++;else{if(cur!==null)raw.push([cur,len]);cur=k;len=1;}});
-        raw.push([cur,len]);
-        const m=[];
-        raw.filter(r=>r[1]>=3).forEach(r=>{if(m.length&&m[m.length-1][0]===r[0])m[m.length-1][1]+=r[1];else m.push(r.slice());});
-        /* stretches where two keys (not "X") take turns */
-        let i=0;
-        while(i<m.length-1){
-          const a=m[i][0],b=m[i+1][0];
-          if(a==="X"||b==="X"||a===b){i++;continue;}
-          let j=i;const seg=[];
-          while(j<m.length&&m[j][0]===(seg.length%2?b:a)){seg.push(m[j][1]);j++;}
-          /* the first and last runs may be cut short by the corner or the
-             subject, so only the inside of a stretch is weighed */
-          const inner=seg.slice(1,-1);
-          if(inner.length>=3){
-            const s=inner.slice().sort((x,y)=>x-y),med=s[s.length>>1];
-            const ok=inner.filter(n=>Math.abs(n-med)<=Math.max(2,med*0.35)).length/inner.length;
-            if(med>=3&&ok>=0.7){const k=[a,b].sort().join("|");score[k]=(score[k]||0)+inner.length;}
+      /* one reading of a set of lines: the pale levels on them, then the
+         stretches where two classes take turns steadily */
+      const judge=ls=>{
+        const all=ls.flatMap(l=>l.px);
+        const hist=new Array(256).fill(0);
+        all.forEach(p=>{if(pale(p))hist[Math.round(lum(p))]++;});
+        const sm=hist.map((_,i)=>{let s=0;for(let k=-3;k<=3;k++)s+=hist[i+k]||0;return s;});
+        /* the commonest pale grey, and a second at least twelve apart if
+           there is one worth the name. Two, on purpose: given four, a board
+           in a silver coin's ring was found among the coin's own greys and
+           the flood ran on into the coin — 84% of a test medal gone */
+        let p1=140;for(let i=140;i<256;i++)if(sm[i]>sm[p1])p1=i;
+        if(!sm[p1])return null;
+        let p2=-1;for(let i=140;i<256;i++)if(Math.abs(i-p1)>=12&&(p2<0||sm[i]>sm[p2]))p2=i;
+        const levels=[p1];if(p2>=0&&sm[p2]>=sm[p1]*0.12)levels.push(p2);
+        const cls=p=>{if(see(p))return "T";if(!pale(p))return "X";
+          const L=lum(p);let bi=0;levels.forEach((v,i)=>{if(Math.abs(L-v)<Math.abs(L-levels[bi]))bi=i;});
+          return Math.abs(L-levels[bi])<=14?"L"+bi:"X";};
+        const score={},samples={};
+        ls.forEach(({px,vert})=>{
+          /* runs as [class, from, to) along the line; runs under 3 pixels are
+             the soft edge between squares and are dropped, and what they
+             parted joins up again */
+          const raw=[];let cur=null,from=0;
+          px.forEach((p,i)=>{const k=cls(p);if(k!==cur){if(cur!==null)raw.push([cur,from,i]);cur=k;from=i;}});
+          raw.push([cur,from,px.length]);
+          const m=[];
+          raw.filter(r=>r[2]-r[1]>=3).forEach(r=>{if(m.length&&m[m.length-1][0]===r[0])m[m.length-1][2]=r[2];else m.push(r.slice());});
+          /* stretches where two keys (not "X") take turns */
+          let i=0;
+          while(i<m.length-1){
+            const a=m[i][0],b=m[i+1][0];
+            if(a==="X"||b==="X"||a===b){i++;continue;}
+            let j=i;const seg=[];
+            while(j<m.length&&m[j][0]===(seg.length%2?b:a)){seg.push(m[j]);j++;}
+            /* the first and last runs may be cut short by the corner or the
+               subject, so only the inside of a stretch is weighed */
+            const inner=seg.slice(1,-1);
+            if(inner.length>=3){
+              const lens=inner.map(r=>r[2]-r[1]),s2=lens.slice().sort((x,y)=>x-y),med=s2[s2.length>>1];
+              const ok=lens.filter(n=>Math.abs(n-med)<=Math.max(2,med*0.35)).length/lens.length;
+              if(med>=3&&ok>=0.7){const k=[a,b].sort().join("|");score[k]=(score[k]||0)+inner.length;
+                (samples[k]=samples[k]||[]).push(...inner.map(r=>({p:px[(r[1]+r[2])>>1],k:r[0],o:r[0]===a?b:a,m:med,vert})));}
+            }
+            i=Math.max(i+1,j-1);
           }
-          i=Math.max(i+1,j-1);
+        });
+        /* SQUARES, NOT STRIPES: a square's width across the line, a square of
+           the other colour sits on a board; on stripes — a stripy design, a
+           silver coin's ridged rim — it is the same stripe again. Each pair
+           is tried in turn, most stretches first, so a ridged rim that
+           out-counts the board beside it cannot hide it. */
+        const squares=k=>{const sq=samples[k]||[];if(!sq.length)return false;
+          const across=sq.filter(t=>{const i=t.p/4,x=i%w,y=(i/w)|0;
+            const pts=t.vert?[[x,y+t.m],[x,y-t.m]]:[[x+t.m,y],[x-t.m,y]];
+            const q2=pts.find(([X,Y])=>X>=0&&Y>=0&&X<w&&Y<h);if(!q2)return false;
+            return cls(P(q2[0],q2[1]))===t.o;}).length;
+          return across/sq.length>=0.6;};
+        const best=Object.entries(score).filter(e=>e[1]>=5).sort((x,y)=>y[1]-x[1]).find(e=>squares(e[0]));
+        if(!best)return null;
+        const keys=best[0].split("|");
+        const refs=keys.filter(k=>k!=="T").map(k=>{let r=0,g=0,b=0,n=0;
+          all.forEach(p=>{if(cls(p)===k){r+=d[p];g+=d[p+1];b+=d[p+2];n++;}});return [r/n,g/n,b/n];});
+        return {refs,see:keys.indexOf("T")>=0,runs:best[1]};
+      };
+      let found=judge(lines);
+      /* A picture whose edge is already mostly see-through — a medal fitted
+         by CUT THE COIN OUT keeps only a circle — hides any squares inside
+         it, between the coin and the ring, where no edge line passes. For
+         those, lines across the middle are read too: rows and columns at a
+         seventh of the way, two sevenths, and so on, and the flood is let
+         across the see-through outside to reach them. Only for those: on a
+         solid picture the edge is where a backdrop shows anyway. */
+      if(!found){
+        const edge=lines.flatMap(l=>l.px),clear=edge.filter(see).length/edge.length;
+        if(clear>=0.5){
+          const inner=[];
+          for(let f=1;f<7;f++)inner.push(row(Math.round(h*f/7)),col(Math.round(w*f/7)));
+          found=judge(inner);
+          if(found){found.inside=true;found.see=true;}
         }
-      });
-      const best=Object.entries(score).sort((x,y)=>y[1]-x[1])[0];
-      if(!best||best[1]<5){res(null);return;}
-      const keys=best[0].split("|");
-      const refs=keys.filter(k=>k!=="T").map(k=>{let r=0,g=0,b=0,n=0;
-        all.forEach(p=>{if(cls(p)===k){r+=d[p];g+=d[p+1];b+=d[p+2];n++;}});return [r/n,g/n,b/n];});
-      res({refs,see:keys.indexOf("T")>=0,runs:best[1]});
+      }
+      res(found);
     };
     img.onerror=()=>res(null);img.src=dataURL;
   });
@@ -28451,6 +28499,7 @@ function ownPicsHtml(){
     <div class="heading"><h2 class="serif">🖼 Your own pictures</h2></div>
     <div class="hcard">
       <div class="hint" style="margin:0 0 8px">A picture of yours for any game, card, task, errand or medal — it takes the emoji's place, or stands beside a name that had none. Yours on both devices; a plain background is cut away. ✕ puts back what was there.</div>
+      ${iconSweepSay()?`<div class="hint" id="iconSweepSay" style="margin:0 0 8px">✂ ${iconSweepSay()}</div>`:""}
       ${gs.map(g=>{const n=g[2].filter(x=>ownIconHas(x.k)).length;
         return `<details class="opgroup" data-opg="${g[0]}"><summary><b>${g[1]}</b> <span class="hint" style="margin:0">· ${g[2].length}${n?`, ${n} your own`:""}</span></summary><div class="opbody"></div></details>`;}).join("")}
       <div class="hrow2" style="margin-top:10px;flex-wrap:wrap;gap:8px"><button class="btn" id="picsExport">⬇ Save all my pictures to a file</button>
@@ -28490,6 +28539,9 @@ async function exportPictures(){
 }
 function wireOwnPics(m){
   const box=q("#ownPics",m);if(!box)return;
+  {const ub=q("#iconSweepBack",box);if(ub)ub.onclick=async()=>{ub.disabled=true;
+    const n=await medalSweepUndo();const say=q("#iconSweepSay",box);
+    if(say)say.textContent=n?`↶ Put ${n} medal picture${n===1?"":"s"} back as they were.`:"Nothing to put back on this device.";};}
   {const ex=q("#picsExport",box);if(ex)ex.onclick=async()=>{
     const say=q("#picsExportSay",box);ex.disabled=true;if(say)say.textContent="Gathering them…";
     let r=null;try{r=await exportPictures();}catch(e){r=null;}
@@ -28522,7 +28574,8 @@ function mergeOwnIcons(rv){
     if(!m||(r.at||0)>(m.at||0)){ownIcons[k]=r;ch=true;
       /* a newer picture elsewhere: this device's copy is stale, fetch afresh */
       ownIconData.delete(k);dbDel("images",ownIconKey(k)).catch(()=>{});}});
-  if(ch){dbPut("meta",{k:"ownIcons",v:ownIcons}).catch(()=>{});ownIconsWarm();}
+  if(ch){dbPut("meta",{k:"ownIcons",v:ownIcons}).catch(()=>{});ownIconsWarm();
+    setTimeout(()=>{medalCheckerSweep().catch(()=>{});},1500);}
   return ch;
 }
 let ownIconSlot="";
@@ -28566,6 +28619,87 @@ async function ownIconStore(k,d){
   }
   ownIconsSave();if(SYNC.on)flushQueue();
   ownIconsRedraw();
+}
+/* ┌─ THE MEDALS' PICTURES, SWEPT FOR PAINTED SQUARES ───────────────────────┐
+   │ The pet's pictures were swept once for a painted-in checkerboard         │
+   │ (petCheckerSweep); a medal picture added before bgCut knew squares kept │
+   │ them. medalCheckerSweep asks each medal picture once (`ck` on its index │
+   │ entry — this device's note, which never changes the stamp) and takes   │
+   │ the squares out of any that has them, WITHOUT trimming, so a coin keeps │
+   │ its place in its circle. One that changed is stored with a new stamp,  │
+   │ so the other device takes it too. A picture not on this device yet is   │
+   │ left for a later visit. What it found is kept in settings.iconSweep and │
+   │ said under 🖼 Your own pictures, so the result can be read, not trusted.│
+   │ Two guards, because a medal is your own work: a cut that would take     │
+   │ more than MEDAL_CUT_MAX of what is solid is not made (a silver coin's   │
+   │ greys can sit close to a board's), and each picture it does change     │
+   │ keeps its original on this device (ownIconKey + "~before"), which      │
+   │ ↶ Put them back restores.                                               │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const MEDAL_CUT_MAX=0.6;
+async function iconEncode(data){
+  try{const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=data;});
+    const cv=document.createElement("canvas");cv.width=im.width;cv.height=im.height;cv.getContext("2d").drawImage(im,0,0);
+    const w=cv.toDataURL("image/webp",0.9);if(w.indexOf("data:image/webp")===0)return w;}catch(e){}
+  return data;
+}
+let medalSweeping=false;
+async function medalCheckerSweep(){
+  if(!ownIcons||medalSweeping)return;
+  const keys=Object.keys(ownIcons).filter(k=>k.indexOf("medal:")===0&&ownIconHas(k)&&ownIcons[k].ck!==PET_CK);
+  if(!keys.length)return;
+  medalSweeping=true;
+  const cut=[],held=[];let looked=0;
+  try{
+    for(const k of keys){
+      let d=ownIconData.get(k);
+      if(!d){try{d=await loadImgData(ownIconKey(k));}catch(e){d=null;}}
+      if(!d||!/^data:image\//.test(d))continue;
+      looked++;
+      let next=null;
+      try{const ck=await checkerOf(d);
+        if(ck){const r=await cutOutImage(d,CHECK_TOL,false,ck.refs,ck.see);
+          if((r.took||0)>=0.5){if((r.tookOfSolid||0)>MEDAL_CUT_MAX)held.push(k);else next=await iconEncode(r.data);}}}catch(e){}
+      if(next){
+        try{await dbPut("images",{key:ownIconKey(k)+"~before",data:d});await dbPut("images",{key:ownIconKey(k),data:next});}catch(e){continue;}
+        ownIconData.set(k,next);ownIcons[k]={at:Date.now(),ck:PET_CK};
+        if(SYNC.on)enqueue({kind:"img",key:ownIconKey(k)});
+        cut.push(k);
+      }else ownIcons[k].ck=PET_CK;
+    }
+  }finally{medalSweeping=false;}
+  if(looked){settings.iconSweep={at:todayStr(),looked,cut,held};saveSettings();}
+  if(cut.length){ownIconsSave();if(SYNC.on)flushQueue();ownIconsRedraw();}
+  else dbPut("meta",{k:"ownIcons",v:ownIcons}).catch(()=>{});
+}
+/* the sweep's readout, under 🖼 Your own pictures */
+function iconSweepSay(){
+  const r=settings&&settings.iconSweep;if(!r||!r.looked)return "";
+  const nm=k=>{const a=ACHS.find(x=>"medal:"+x[0]===k);return a?a[2]:k;};
+  const held=r.held||[];
+  return `Checked your ${r.looked} medal picture${r.looked===1?"":"s"} for painted grey-and-white squares (${esc(rdWhen(r.at))}): ${
+    r.cut.length?`took them out of ${r.cut.length} — ${esc(r.cut.map(nm).join(", "))}.`:"none of them had any taken out."}${
+    held.length?` ${held.length===1?"One looked as if it had squares":held.length+" looked as if they had squares"} but cutting would have taken most of the picture, so ${held.length===1?"it was":"they were"} left alone — ${esc(held.map(nm).join(", "))}.`:""}${
+    r.cut.length?` <button class="btn smallbtn" id="iconSweepBack" title="Puts back the pictures exactly as they were before the squares were taken out">↶ Put them back</button>`:""}`;
+}
+/* the originals the sweep kept on this device, put back as they were */
+async function medalSweepUndo(){
+  const r=settings.iconSweep;if(!r||!r.cut||!r.cut.length)return 0;
+  let n=0;
+  for(const k of r.cut){
+    let rec=null;try{rec=await dbGet("images",ownIconKey(k)+"~before");}catch(e){}
+    if(!rec||!rec.data)continue;
+    /* stamped and marked as asked in one write, so the other device takes
+       the original and does not sweep it again */
+    try{await dbPut("images",{key:ownIconKey(k),data:rec.data});}catch(e){continue;}
+    ownIconData.set(k,rec.data);ownIcons[k]={at:Date.now(),ck:PET_CK};
+    if(SYNC.on)enqueue({kind:"img",key:ownIconKey(k)});
+    dbDel("images",ownIconKey(k)+"~before").catch(()=>{});
+    n++;
+  }
+  r.cut=[];r.back=n;saveSettings();
+  if(n){ownIconsSave();if(SYNC.on)flushQueue();ownIconsRedraw();}
+  return n;
 }
 /* ┌─ ⭕ CUT THE COIN OUT ─────────────────────────────────────────────────────┐
    │ Their medal art arrives as a round coin on a wide grey studio backdrop — │
