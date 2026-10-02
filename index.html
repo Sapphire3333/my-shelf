@@ -3474,6 +3474,12 @@ img.ownico.lblico{width:1.7em;height:1.7em;vertical-align:-.5em;margin-right:2px
 #ownPics .opgroup{border-top:1px solid var(--line);padding:6px 0}
 #ownPics .opgroup summary{cursor:pointer;padding:4px 0}
 .oprow{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line)}
+/* a medal the squares sweep changed: as it was, then as it is, on a dark
+   ground in both themes, where painted pale squares show and cleared ones
+   don't (see iconSweepFill) */
+.swrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0;color:var(--ink)}
+.swpair{display:inline-flex;align-items:center;gap:4px;color:var(--mut)}
+.swpair img{width:64px;height:64px;object-fit:contain;border-radius:8px;background:#2f2b28}
 .oprow .opico{width:36px;height:36px;flex:none;display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--mut)}
 .oprow .opico img.ownico{width:36px;height:36px;vertical-align:0}
 .oprow .opn{flex:1 1 auto;min-width:0;font-size:13.5px;overflow-wrap:anywhere}
@@ -10711,6 +10717,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.14",go:["set:look:#ownPics"],lines:[
+    "<b>✂ The medal-picture check tells the whole story.</b> Under ⚙ Settings → How it looks → 🖼 Your own pictures it said only what its <i>last</i> look found — which, after you add a few pictures, is just those few. It now says how many of all your medal pictures have been checked, and shows every one it changed on this device as it was and as it is now, each with its own <b>↶ Put back</b>.",
+    "Replacing a picture it changed lets go of the original it kept, so putting back can never undo a newer picture of yours."]},
   {v:"2026-10-02.12",go:["set:look:#ficChk"],lines:[
     "<b>✍️ The Fanfics switch says everything it hides.</b> Beside the box in ⚙ Settings → How it looks, the list now names the <b>Who's in it?</b> game and its medal <i>Know the Cast</i>, your fics' characters among Hangman's words and Twenty questions' fanfic question — all of which already went with it, unsaid."]},
   {v:"2026-10-02.11",go:["el:ach:.achwalls","set:look:#ownPics"],lines:[
@@ -28659,9 +28668,16 @@ async function exportPictures(){
 }
 function wireOwnPics(m){
   const box=q("#ownPics",m);if(!box)return;
-  {const ub=q("#iconSweepBack",box);if(ub)ub.onclick=async()=>{ub.disabled=true;
-    const n=await medalSweepUndo();const say=q("#iconSweepSay",box);
-    if(say)say.textContent=n?`↶ Put ${n} medal picture${n===1?"":"s"} back as they were.`:"Nothing to put back on this device.";};}
+  /* the changed medals, drawn once the store has said which they are; a
+     put-back redraws the list from the store again */
+  const sweepWire=()=>iconSweepFill(box).then(()=>{
+    const back=async(b,only)=>{b.disabled=true;const n=await medalSweepUndo(only);
+      const el=q("#iconSweepCut",box);
+      if(el)el.textContent=n?`↶ Put ${n} medal picture${n===1?"":"s"} back as ${n===1?"it was":"they were"}.`:"Nothing to put back on this device.";
+      setTimeout(sweepWire,1800);};
+    qa("[data-sweepback]",box).forEach(b=>b.onclick=()=>back(b,[b.dataset.sweepback]));
+    const ub=q("#iconSweepBack",box);if(ub)ub.onclick=()=>back(ub,null);}).catch(()=>{});
+  sweepWire();
   {const ex=q("#picsExport",box);if(ex)ex.onclick=async()=>{
     const say=q("#picsExportSay",box);ex.disabled=true;if(say)say.textContent="Gathering them…";
     let r=null;try{r=await exportPictures();}catch(e){r=null;}
@@ -28692,8 +28708,9 @@ function mergeOwnIcons(rv){
   let ch=false;
   Object.keys(rv).forEach(k=>{const r=rv[k],m=ownIcons[k];if(!r)return;
     if(!m||(r.at||0)>(m.at||0)){ownIcons[k]=r;ch=true;
-      /* a newer picture elsewhere: this device's copy is stale, fetch afresh */
-      ownIconData.delete(k);dbDel("images",ownIconKey(k)).catch(()=>{});}});
+      /* a newer picture elsewhere: this device's copy is stale, fetch afresh,
+         and an original the sweep kept here no longer belongs to it */
+      ownIconData.delete(k);dbDel("images",ownIconKey(k)).catch(()=>{});dbDel("images",ownIconKey(k)+"~before").catch(()=>{});}});
   if(ch){dbPut("meta",{k:"ownIcons",v:ownIcons}).catch(()=>{});ownIconsWarm();
     setTimeout(()=>{medalCheckerSweep().catch(()=>{});},1500);}
   return ch;
@@ -28726,6 +28743,10 @@ async function ownIconSet(k,file){
 async function ownIconStore(k,d){
   if(!ownIcons)await ownIconsLoad();
   const key=ownIconKey(k);
+  /* an original the squares sweep kept belongs to the picture it was cut
+     from; once that picture is replaced or taken away, putting it back
+     would undo your newer choice */
+  dbDel("images",key+"~before").catch(()=>{});
   if(d){
     try{await dbPut("images",{key,data:d});}catch(e){alert("That picture couldn't be saved — storage may be full.");return;}
     ownIconData.set(k,d);ownIcons[k]={at:Date.now()};
@@ -28754,7 +28775,9 @@ async function ownIconStore(k,d){
    │ more than MEDAL_CUT_MAX of what is solid is not made (a silver coin's   │
    │ greys can sit close to a board's), and each picture it does change     │
    │ keeps its original on this device (ownIconKey + "~before"), which      │
-   │ ↶ Put them back restores.                                               │
+   │ ↶ Put back restores, one or all. That original is the list of what was │
+   │ changed (medalSweepChanged), and it is dropped when the picture is     │
+   │ replaced here or from the other device (ownIconStore, mergeOwnIcons).  │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const MEDAL_CUT_MAX=0.6;
 async function iconEncode(data){
@@ -28769,13 +28792,13 @@ async function medalCheckerSweep(){
   const keys=Object.keys(ownIcons).filter(k=>k.indexOf("medal:")===0&&ownIconHas(k)&&ownIcons[k].ck!==PET_CK);
   if(!keys.length)return;
   medalSweeping=true;
-  const cut=[],held=[];let looked=0;
+  const cut=[],held=[],seen=[];
   try{
     for(const k of keys){
       let d=ownIconData.get(k);
       if(!d){try{d=await loadImgData(ownIconKey(k));}catch(e){d=null;}}
       if(!d||!/^data:image\//.test(d))continue;
-      looked++;
+      seen.push(k);
       let next=null;
       try{const ck=await checkerOf(d);
         if(ck){const r=await cutOutImage(d,CHECK_TOL,false,ck.refs,ck.see);
@@ -28788,25 +28811,68 @@ async function medalCheckerSweep(){
       }else ownIcons[k].ck=PET_CK;
     }
   }finally{medalSweeping=false;}
-  if(looked){settings.iconSweep={at:todayStr(),looked,cut,held};saveSettings();}
+  /* ---- EVERY RUN ADDS TO THE ONE BEFORE ----
+     A run only looks at the pictures not yet marked, so the first run on a
+     shelf sees them all and the next sees only the ones added since. This
+     used to keep each run's result in place of the last: ten new pictures
+     checked, and the readout said "your 10 medal pictures" of sixty-seven,
+     and a first run's cuts left the list — and ↶ Put them back with them.
+     Now only the day and the held ones are kept (a picture looked at again
+     leaves held unless it is held again); what has been checked is read off
+     the marks, and what was changed off the originals kept beside them. */
+  if(seen.length){
+    const was=(settings.iconSweep&&settings.iconSweep.held)||[];
+    settings.iconSweep={at:todayStr(),held:[...new Set([...was.filter(k=>seen.indexOf(k)<0),...held])]};
+    saveSettings();
+  }
   if(cut.length){ownIconsSave();if(SYNC.on)flushQueue();ownIconsRedraw();}
   else dbPut("meta",{k:"ownIcons",v:ownIcons}).catch(()=>{});
 }
-/* the sweep's readout, under 🖼 Your own pictures */
+const medalNameOf=k=>{const a=ACHS.find(x=>"medal:"+x[0]===k);return a?a[2]:k;};
+/* the sweep's readout, under 🖼 Your own pictures: how many of your medal
+   pictures carry the mark, and when it last ran. Which ones it changed is
+   asked of the store and drawn by iconSweepFill. */
 function iconSweepSay(){
-  const r=settings&&settings.iconSweep;if(!r||!r.looked)return "";
-  const nm=k=>{const a=ACHS.find(x=>"medal:"+x[0]===k);return a?a[2]:k;};
-  const held=r.held||[];
-  return `Checked your ${r.looked} medal picture${r.looked===1?"":"s"} for painted grey-and-white squares (${esc(rdWhen(r.at))}): ${
-    r.cut.length?`took them out of ${r.cut.length} — ${esc(r.cut.map(nm).join(", "))}.`:"none of them had any taken out."}${
-    held.length?` ${held.length===1?"One looked as if it had squares":held.length+" looked as if they had squares"} but cutting would have taken most of the picture, so ${held.length===1?"it was":"they were"} left alone — ${esc(held.map(nm).join(", "))}.`:""}${
-    r.cut.length?` <button class="btn smallbtn" id="iconSweepBack" title="Puts back the pictures exactly as they were before the squares were taken out">↶ Put them back</button>`:""}`;
+  const r=settings&&settings.iconSweep;
+  const mine=Object.keys(ownIcons||{}).filter(k=>k.indexOf("medal:")===0&&ownIconHas(k));
+  const done=mine.filter(k=>ownIcons[k].ck===PET_CK).length;
+  if(!mine.length||(!done&&!r))return "";
+  const held=((r&&r.held)||[]).filter(k=>ownIconHas(k));
+  return `${done===mine.length?`All ${mine.length} of your medal pictures have been checked`
+      :`${done} of your ${mine.length} medal pictures have been checked so far — the rest are looked at a few seconds after the app opens —`} for painted grey-and-white squares${
+    r&&r.at?` (last on ${esc(rdWhen(r.at))})`:""}.${
+    held.length?` ${held.length===1?"One looked as if it had squares":held.length+" looked as if they had squares"} but cutting would have taken most of the picture, so ${held.length===1?"it was":"they were"} left alone — ${esc(held.map(medalNameOf).join(", "))}.`:""}
+    <span id="iconSweepCut"></span>`;
 }
-/* the originals the sweep kept on this device, put back as they were */
-async function medalSweepUndo(){
-  const r=settings.iconSweep;if(!r||!r.cut||!r.cut.length)return 0;
+/* the medals whose original is kept on this device beside the cut one —
+   which is what "changed by the sweep" means, whichever run did it */
+async function medalSweepChanged(){
+  const keys=new Set(await dbAllKeys("images"));
+  return Object.keys(ownIcons||{}).filter(k=>k.indexOf("medal:")===0&&ownIconHas(k)&&keys.has(ownIconKey(k)+"~before"));
+}
+/* each changed medal as it was and as it is, side by side, with its own way
+   back — so a picture can be judged before it is put back, not after */
+async function iconSweepFill(box){
+  const el=q("#iconSweepCut",box);if(!el)return;
+  const ch=await medalSweepChanged();
+  if(!ch.length){el.textContent="None of them is changed on this device; your other device lists any it changed.";return;}
+  const rows=[];
+  for(const k of ch){
+    let was=null;try{was=await dbGet("images",ownIconKey(k)+"~before");}catch(e){}
+    let now=ownIconData.get(k);if(!now){try{now=await loadImgData(ownIconKey(k));}catch(e){now=null;}}
+    if(!was||!was.data)continue;
+    rows.push(`<div class="swrow"><span class="swpair"><img src="${esc(was.data)}" alt="Before" title="Before"><span aria-hidden="true">→</span>${now?`<img src="${esc(now)}" alt="Now" title="Now">`:""}</span>
+      <b>${esc(medalNameOf(k))}</b><button class="btn smallbtn" data-sweepback="${esc(k)}" title="Puts this one back exactly as it was before the squares were taken out">↶ Put back</button></div>`);
+  }
+  el.innerHTML=`Squares were taken out of ${rows.length} on this device — each as it was, then as it is now:${rows.join("")}${
+    rows.length>1?`<button class="btn smallbtn" id="iconSweepBack" title="Puts them all back exactly as they were before the squares were taken out">↶ Put them all back</button>`:""}`;
+}
+/* the originals the sweep kept on this device, put back as they were —
+   the ones named, or every one */
+async function medalSweepUndo(only){
+  const ks=only||await medalSweepChanged();
   let n=0;
-  for(const k of r.cut){
+  for(const k of ks){
     let rec=null;try{rec=await dbGet("images",ownIconKey(k)+"~before");}catch(e){}
     if(!rec||!rec.data)continue;
     /* stamped and marked as asked in one write, so the other device takes
@@ -28817,7 +28883,6 @@ async function medalSweepUndo(){
     dbDel("images",ownIconKey(k)+"~before").catch(()=>{});
     n++;
   }
-  r.cut=[];r.back=n;saveSettings();
   if(n){ownIconsSave();if(SYNC.on)flushQueue();ownIconsRedraw();}
   return n;
 }
