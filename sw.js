@@ -15,6 +15,12 @@ const SHELL = ["./", "./index.html", "./version.js", "./config.js", "./manifest.
    opening to collect it. Its own cache, so the build-stamped one can be thrown
    away on every update without losing a file that is mid-journey. */
 const SHARE = "my-shelf-share";
+/* The app's own pictures (art/, listed as ART in index.html). Six megabytes
+   that hardly ever change, so they are kept in a cache a new build does not
+   empty, and answered from it first. Each address carries a fingerprint of
+   the file (?v=), so a replaced picture is a new address; the old copy of the
+   same file is dropped when the new one is put away. */
+const ART_CACHE = "my-shelf-art";
 const SHARED_KEY = "shared-backup";
 /* a share with no file in it — a line selected in a reader, a link to a
    book's page — is kept here as JSON and the app is sent on with ?shared=t */
@@ -32,7 +38,7 @@ self.addEventListener("install", e => {
 self.addEventListener("activate", e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE && k !== SHARE).map(k => caches.delete(k))))
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE && k !== SHARE && k !== ART_CACHE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -135,6 +141,30 @@ self.addEventListener("fetch", e => {
   }
 
   if (url.origin !== self.location.origin) return;
+
+  // The app's own pictures: from ART_CACHE when it has this very address
+  // (file and fingerprint), else fetched and put away there, any older
+  // fingerprint of the same file thrown out.
+  if (url.pathname.indexOf("/art/") >= 0) {
+    e.respondWith((async () => {
+      const c = await caches.open(ART_CACHE);
+      const hit = await c.match(req.url);
+      if (hit) return hit;
+      const res = await fetch(req);
+      if (res && res.ok) {
+        const copy = res.clone();
+        (async () => {
+          for (const old of await c.keys()) {
+            const u = new URL(old.url);
+            if (u.pathname === url.pathname && u.search !== url.search) await c.delete(old);
+          }
+          await c.put(req.url, copy);
+        })().catch(() => {});
+      }
+      return res;
+    })());
+    return;
+  }
 
   // Our own files: network-first so updates land as soon as you're online,
   // falling back to the cached copy (and then the app shell) when you're not.

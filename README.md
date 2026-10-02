@@ -246,6 +246,7 @@ open it in a browser, done.
 | `dev-check.html` | Developer tool, not part of the app — opens every screen at a row of widths and fails loudly if anything scrolls sideways. |
 | `wash-check.html` | Developer tool — counts your covers and draws the "Your covers" background four ways side by side. Reads only. |
 | `.githooks/pre-commit` | Stamps `version.js`. Run `git config core.hooksPath .githooks` once per clone or it never fires. |
+| `art/` | The app's own pictures: medals, games, five cards and the owl's five moods, as WebP. A spot with no picture of the reader's own wears the one here. Listed with a fingerprint each as `ART` in `index.html`; the two are written together from a pictures file the app saves, so change both or neither. |
 | `manifest.json`, `icon.svg`, `icon.png`, `icon-512.png`, `icon-maskable-512.png` | Home-screen install bits. `icon-maskable-512.png` is the full square an Android phone cuts its own shape from; `icon-512.png` and `icon.svg` are rounded already; `icon.png` is the iPhone's. |
 
 *Vanilla JS, no build step, no framework, no npm. The only runtime dependencies are
