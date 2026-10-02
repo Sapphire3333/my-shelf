@@ -10807,6 +10807,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-02.19",go:["tab:library"],lines:[
+    "<b>🖼 The covers you are looking at come first.</b> The first time the shelf is drawn after the app is opened, covers were fetched in the order the books stand, six at a time — and every book with no cover stopped to ask the cloud for one, holding up the covers behind it. That was three seconds on a computer. The rows in the window are now fetched first and together, the rest after them, and the cloud is only asked once everything this device holds is on screen.",
+    "The cover timings under ⚙ Settings → If something looks wrong also say how long the page itself took to draw, apart from its pictures."]},
   {v:"2026-10-02.18",go:["set:trouble:#diagCopy"],lines:[
     "<b>⏱ The cover timings are kept now.</b> The list under ⚙ Settings → If something looks wrong printed nothing about covers unless you had walked there straight from a screen full of them, without a reload in between. It now keeps the last eight on this device — which screen, how long the covers already in the page took, and how long the ones fetched took — so it has something to say whenever you look."]},
   {v:"2026-10-02.17",go:["tab:library"],lines:[
@@ -14585,6 +14588,7 @@ function render(){
   useTick(view);
   resetCoverStats();   /* a fresh tally per screen, however many passes it takes */
   covT0=performance.now();
+  const drawT0=covT0;
   setTimeout(()=>{try{petCorner();}catch(e){}},0);
   if(view==="book"){renderBook();return;}
   q("#app").innerHTML=`
@@ -14692,6 +14696,8 @@ function render(){
   closeFabMenu();   /* a jump list from the previous page would point at nothing */
   updateFab();
   syncHistory();
+  /* how long the drawing itself took, apart from the pictures — see covLogKeep */
+  coverStats.r=Math.round(performance.now()-drawT0);
 }
 /* which screen goes under the tabs. Written out twice before, once here and
    once in renderMain, so adding a tab meant remembering both. */
@@ -15613,29 +15619,35 @@ const COV_LOG_KEY="shelfCovLog";
 function covLogRead(){
   try{const a=JSON.parse(localStorage.getItem(COV_LOG_KEY)||"[]");return Array.isArray(a)?a:[];}catch(e){return [];}
 }
-function covTimed(root,t0,filled){
-  const st=coverStats,vh=window.innerHeight||0;
+/* resolves to [ms, how many] once every cover inside the window has decoded,
+   or to null when there is none there. On a hidden page decode() never
+   settles, and neither does this — nothing is kept for a draw nobody saw. */
+function covTimed(root,t0){
+  const vh=window.innerHeight||0;
   const imgs=qa("[data-cover] img",root).filter(im=>{
     const r=im.getBoundingClientRect();return r.bottom>0&&r.top<vh;}).slice(0,60);
-  if(!imgs.length&&!filled)return;
-  Promise.all(imgs.map(im=>im.decode?im.decode().catch(()=>{}):null)).then(()=>{
-    const ms=Math.round(performance.now()-t0);
-    st.ms=Math.max(st.ms,ms);st.seen=Math.max(st.seen,imgs.length);
-    if(!filled){st.d=[ms,imgs.length];return;}
-    if(!imgs.length)return;
-    if(!covSlow||ms>covSlow.ms)covSlow={ms,seen:imgs.length,view:st.view||"?"};
-    if(SMOKE_DB)return;
-    try{
-      const a=covLogRead();
-      a.unshift({t:Date.now(),v:st.view||"?",d:st.d||null,f:[ms,imgs.length],
-        w:st.wanted,m:st.memory,l:st.local,c:st.cloud});
-      localStorage.setItem(COV_LOG_KEY,JSON.stringify(a.slice(0,8)));
-    }catch(e){}
-  });
+  if(!imgs.length)return Promise.resolve(null);
+  return Promise.all(imgs.map(im=>im.decode?im.decode().catch(()=>{}):null))
+    .then(()=>[Math.round(performance.now()-t0),imgs.length]);
+}
+/* d: the covers already in the markup · f: the window, once its own rows had
+   been fetched · r: when render() itself returned · lo / al: every row off
+   this device, then the cloud asked too · n: rows that wanted a cover */
+function covLogKeep(st,d,f,lo,al,n){
+  if(!f)return;
+  st.ms=Math.max(st.ms,f[0]);st.seen=Math.max(st.seen,f[1]);
+  if(!covSlow||f[0]>covSlow.ms)covSlow={ms:f[0],seen:f[1],view:st.view||"?"};
+  if(SMOKE_DB)return;
+  try{
+    const a=covLogRead();
+    a.unshift({t:Date.now(),v:st.view||"?",d,f,r:st.r||0,lo,al,n,
+      w:st.wanted,m:st.memory,l:st.local,c:st.cloud});
+    localStorage.setItem(COV_LOG_KEY,JSON.stringify(a.slice(0,8)));
+  }catch(e){}
 }
 async function hydrateCovers(root){
   const t0=covT0;covT0=0;
-  if(t0)covTimed(root,t0,false);
+  const st=coverStats,askCloud=[];
   const els=qa("[data-cover]",root);
   coverStats.at=Date.now();
   coverStats.wanted+=els.length;
@@ -15700,19 +15712,53 @@ async function hydrateCovers(root){
       if(src!=null||!coversStillComing())coverCache.set(id,src);
       where=src!=null?"local":(coversStillComing()?"waiting":"none");
     }
-    if(src==null&&SYNC.on&&SYNC.user&&navigator.onLine&&!SYNC.triedCover.has(id)){
-      SYNC.triedCover.add(id);
-      try{const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(id));
-        if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);where="cloud";}}catch(e){}
-    }
+    /* not here on this device: the cloud is asked LAST, after every picture
+       this device does hold has been drawn — see THE WINDOW FIRST */
+    if(src==null&&SYNC.on&&SYNC.user&&navigator.onLine&&!SYNC.triedCover.has(id)){askCloud.push([el,id,where]);return;}
     coverStats[where]++;
     if(src)paint(el,id);
   };
-  /* a few at a time — strictly one-by-one made big libraries paint covers slowly */
-  for(let i=0;i<els.length;i+=6)await Promise.all(els.slice(i,i+6).map(one));
-
+  const cloudOne=async([el,id,where])=>{
+    if(SYNC.triedCover.has(id)){coverStats[where]++;return;}
+    SYNC.triedCover.add(id);
+    let src=null;
+    try{const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(id));
+      if(!error&&data){src=await blobToDataURL(data);await dbPut("covers",{id,data:src});coverCache.set(id,src);where="cloud";}}catch(e){}
+    coverStats[where]++;
+    if(src)paint(el,id);
+  };
+  /* ┌───────────────────────────────────────────────────────────────────────┐
+     │ THE WINDOW FIRST, THIS DEVICE NEXT, THE CLOUD LAST.                   │
+     │ The rows were taken six at a time in the order they stand, and a row  │
+     │ with no cover on this device asked the cloud for one inside its six   │
+     │ — so on the first draw after opening the app every coverless book put │
+     │ a network round trip in front of the covers behind it. Measured on a  │
+     │ shelf drawing 240 rows, 62 of them coverless: 3,011 ms before the     │
+     │ covers in the window were all there, against 150–210 ms on every      │
+     │ later draw. And coming back to a place far down the list, the window  │
+     │ was the LAST thing reached.                                           │
+     │ So: the rows in or near the window are fetched together, at once;     │
+     │ then the rest off this device, twenty-four at a time; and only then   │
+     │ is the cloud asked about the ones this device has nothing for.        │
+     │ The microtask before the split is there because goTab calls           │
+     │ restoreScroll straight after render() — without it the "window" would │
+     │ be the top of the page, measured before the page was put back.        │
+     └───────────────────────────────────────────────────────────────────────┘ */
+  await null;
+  const vh=window.innerHeight||0,near=[],far=[];
+  for(const el of els){
+    const r=el.getBoundingClientRect();
+    (r.bottom>-vh&&r.top<2*vh?near:far).push(el);
+  }
+  const pd=t0?covTimed(root,t0):null;
+  await Promise.all(near.map(one));
+  const pf=t0?covTimed(root,t0):null;
+  for(let i=0;i<far.length;i+=24)await Promise.all(far.slice(i,i+24).map(one));
   reapplyScroll();   /* the page only has its real height now */
-  if(t0)covTimed(root,t0,true);
+  const local=t0?Math.round(performance.now()-t0):0;
+  for(let i=0;i<askCloud.length;i+=6)await Promise.all(askCloud.slice(i,i+6).map(cloudOne));
+  if(askCloud.length)reapplyScroll();
+  if(t0)covLogKeep(st,await pd,await pf,local,Math.round(performance.now()-t0),els.length);
 }
 /* pick the stage from a list — a single click was too easy to do by accident */
 async function setStatus(id,what){
@@ -29945,9 +29991,11 @@ function tuneDiagnostics(){
       if(!a.length)return ["Cover timings: none kept yet — open 📚 Library, go to another tab and come back, then look here again."];
       return ["Cover timings, newest first — "+a.length+" kept (ms from the screen starting to draw):",
         ...a.map(e=>"   · "+new Date(e.t).toLocaleTimeString()+" "+e.v+" — "
+          +(e.r?"page drawn in "+e.r+" ms; ":"")
           +(e.d?e.d[1]+" already in the page ready at "+e.d[0]+" ms; ":"none already in the page; ")
           +e.f[1]+" in the window ready at "+e.f[0]+" ms"
-          +" ("+e.w+" wanted: "+e.m+" from memory, "+e.l+" off this device, "+e.c+" from the cloud)")];
+          +(e.lo?"; every row off this device by "+e.lo+" ms"+(e.al>e.lo+5?", cloud asked by "+e.al+" ms":""):"")
+          +" ("+(e.n||e.w)+" rows: "+e.m+" from memory, "+e.l+" off this device, "+e.c+" from the cloud)")];
     })()
   ].filter(Boolean);
   return lines;
