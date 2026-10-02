@@ -246,7 +246,7 @@ open it in a browser, done.
 | `dev-check.html` | Developer tool, not part of the app — opens every screen at a row of widths and fails loudly if anything scrolls sideways. |
 | `wash-check.html` | Developer tool — counts your covers and draws the "Your covers" background four ways side by side. Reads only. |
 | `.githooks/pre-commit` | Stamps `version.js`. Run `git config core.hooksPath .githooks` once per clone or it never fires. |
-| `manifest.json`, `icon.svg`, `icon.png` | Home-screen install bits. |
+| `manifest.json`, `icon.svg`, `icon.png`, `icon-512.png`, `icon-maskable-512.png` | Home-screen install bits. `icon-maskable-512.png` is the full square an Android phone cuts its own shape from; `icon-512.png` and `icon.svg` are rounded already; `icon.png` is the iPhone's. |
 
 *Vanilla JS, no build step, no framework, no npm. The only runtime dependencies are
 `@supabase/supabase-js` (CDN, optional — the app runs fine without it) and

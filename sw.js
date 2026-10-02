@@ -10,7 +10,7 @@
    gets a fresh cache and the old one is deleted on activate — stale files
    can't outlive the build they belonged to. */
 const CACHE = "my-shelf-" + (new URL(self.location.href).searchParams.get("v") || "v2");
-const SHELL = ["./", "./index.html", "./version.js", "./config.js", "./manifest.json", "./icon.svg", "./icon.png", "./icon-512.png"];
+const SHELL = ["./", "./index.html", "./version.js", "./config.js", "./manifest.json", "./icon.svg", "./icon.png", "./icon-512.png", "./icon-maskable-512.png"];
 /* Where a shared file waits between the share sheet handing it over and the app
    opening to collect it. Its own cache, so the build-stamped one can be thrown
    away on every update without losing a file that is mid-journey. */
