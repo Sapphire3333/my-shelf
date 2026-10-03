@@ -10807,6 +10807,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-03.1",go:["tab:library"],lines:[
+    "<b>📚 The Library opens faster on a phone.</b> It drew every book up to four hundred each time you came back to it — on a phone that was most of a second. It now draws the first sixty, and the next sixty arrive by themselves as you scroll towards the end of them. Counts, the find box, sorting and <b>Tick all</b> still go by the whole shelf, and ‹ Back out of a book still finds your place.",
+    "Choosing the 📚 Library tab opens it at the top, so it no longer draws again the books you scrolled through last time. On a computer it still draws four hundred, with the button for more."]},
   {v:"2026-10-02.19",go:["tab:library"],lines:[
     "<b>🖼 The covers you are looking at come first.</b> The first time the shelf is drawn after the app is opened, covers were fetched in the order the books stand, six at a time — and every book with no cover stopped to ask the cloud for one, holding up the covers behind it. That was three seconds on a computer. The rows in the window are now fetched first and together, the rest after them, and the cloud is only asked once everything this device holds is on screen.",
     "The cover timings under ⚙ Settings → If something looks wrong also say how long the page itself took to draw, apart from its pictures."]},
@@ -14469,7 +14472,11 @@ async function goTab(v){
   if(gartPeek&&v!=="library")endGartPeek();
   tabMore=false;
   /* you PICKED this tab — the third argument is what tells restoreScroll that
-     this is not a return, and so not a place to be put back to */
+     this is not a return, and so not a place to be put back to. A picked
+     Library opens at the top, so it only needs its first page drawn: rows
+     loaded further down on the last visit are not drawn again for nothing.
+     ‹ Back out of a book does not come through here and keeps them. */
+  if(v==="library")libShown=libStep();
   view=v;render();restoreScroll(view,false,true);
 }
 function drawTabBar(){
@@ -17118,9 +17125,19 @@ function booksHtml(list,withDel){
    shelf, not about what fits on a screen, and a cap that changed them would be
    a lie rather than a saving. */
 const LIB_PAGE=400;
+/* ---- A PHONE DRAWS SIXTY AT A TIME ----
+   On a phone at a large text size the same work is roughly seven times
+   slower: 240 rows came back in 815–860 ms on every return to the Library,
+   with every cover already in memory, against 119 ms for the same 240 here.
+   Drawing time grows in a straight line with the rows (60 → 34 ms, 120 → 62,
+   240 → 119, measured at 277 css px and 220% text), so a phone draws sixty
+   and the next sixty arrive as the end of them comes near — see libAutoMore.
+   A computer keeps its four hundred and its button. */
+const LIB_PHONE_PAGE=60;
+const libStep=()=>document.documentElement.getAttribute("data-phone")==="1"?LIB_PHONE_PAGE:LIB_PAGE;
 /* `libSig` was taken — it is the backup's "has anything changed" stamp, far
    below. This one is "is the shelf being asked a different question". */
-let libShown=LIB_PAGE,libListSig="";
+let libShown=LIB_PAGE,libListSig="",libMoreIO=null;
 /* =============== filling in many books at once ===============
    Auto-fill asks two sites about one book, which is the right size when you are
    looking at that book and the wrong size when an import has just handed you two
@@ -18280,7 +18297,7 @@ function renderLibrary(){
   /* Narrowing the shelf a different way starts the counting again; pressing
      "show more" does not, which is the whole difference between the two. */
   {const sig=[statusFilter,sortBy,sortRev?1:0,groupBy,layout,libFind,kindFilter.join(","),gavPick,libFandomMode].join("|");
-   if(sig!==libListSig){libListSig=sig;libShown=LIB_PAGE;}}
+   if(sig!==libListSig){libListSig=sig;libShown=libStep();}}
   let budget=libShown;
   const take=arr=>{const out=arr.slice(0,Math.max(0,budget));budget-=out.length;return out;};
   /* Most people arriving at a book tracker already keep their books somewhere
@@ -18388,7 +18405,7 @@ function renderLibrary(){
      not about the page: "still on the shelf" counts everything the filters left,
      drawn or not. */
   if(list.length>libShown)html+=`<div class="hrow2" style="margin-top:12px;justify-content:center">
-    <button class="btn" id="libMore">Show ${Math.min(LIB_PAGE,list.length-libShown)} more — ${list.length-libShown} still on the shelf</button></div>`;
+    <button class="btn" id="libMore">Show ${Math.min(libStep(),list.length-libShown)} more — ${list.length-libShown} still on the shelf</button></div>`;
   /* ---- the fandom cards ----
      Only fics and AI stories can be here, because only they carry a fandom —
      books are kept out by having nothing to be filed under rather than by a
@@ -18626,9 +18643,10 @@ function renderLibrary(){
     /* the button you just pressed is at the bottom of what you have read; the
        new rows belong under it, not over you */
     const y=window.scrollY;
-    libShown+=LIB_PAGE;renderLibrary();
+    libShown+=libStep();renderLibrary();
     window.scrollTo(0,y);
   };
+  libAutoMore(lmore);
   qa("[data-gjump]",m).forEach(b=>b.onclick=()=>{
     if(gavActFor()){
       const l=b.dataset.glabel;
@@ -19137,6 +19155,24 @@ function openGartPanel(key,file){
   };
 }
 
+/* On a phone the "Show more" button presses itself once it is within a
+   screen and a half of the window — see A PHONE DRAWS SIXTY AT A TIME. It
+   holds off while you are typing in the shelf or have a row's bookmark strip
+   open, since the redraw would take either from under you; the button is
+   still there to press. One watcher at a time: each draw makes a new button
+   and the old watcher goes with the old one. */
+function libAutoMore(btn){
+  if(libMoreIO){libMoreIO.disconnect();libMoreIO=null;}
+  if(!btn||document.documentElement.getAttribute("data-phone")!=="1"||!("IntersectionObserver" in window))return;
+  libMoreIO=new IntersectionObserver(es=>{
+    if(!es.some(e=>e.isIntersecting)||view!=="library"||!document.contains(btn))return;
+    const a=document.activeElement,m=q("#main");
+    if(a&&m&&m.contains(a)&&(a.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)))return;
+    if(m&&m.querySelector(".pgstrip:not([hidden])"))return;
+    btn.click();
+  },{rootMargin:"0px 0px 150% 0px"});
+  libMoreIO.observe(btn);
+}
 /* the loose pictures, drawn over the library page */
 function renderLibArt(m){
   m.classList.toggle("artmode",libArtMode);
