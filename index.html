@@ -11029,6 +11029,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-04.3",go:["el:challenges:.qtasks"],lines:[
+    "<b>⭱ Books an import adds count like books you add.</b> Filling books in from an import and filing them into a collection already counted; adding NEW books from one went straight onto the shelf and was never written down. So it ticked no daily task, didn't count as a day for your 🔥 run, left no line under History's <b>What changed</b>, and ↶ Undo couldn't take it back. Now each book an import adds is written down as the import's — a title, an author, a blurb, tags, pages, a rating, a stage, a finish date, an ISBN all count toward the day's tasks — and each batch (Add selected, Add as a series, Add all, ReadEra's Add) is one step that one ↶ takes back. A reading the file says ended weeks ago still doesn't count as reading today."]},
   {v:"2026-10-04.2",go:["el:challenges:.qroad"],lines:[
     "<b>🌍 A sixth long road goes round the world and never ends.</b> In 🎲 Challenges → 📖 Reading → <i>This year</i>, the long road can now be <b>Around the world</b>: Riga to Riga through Warsaw, Berlin, Paris, Madrid, Lisbon, New York, Chicago, Denver, San Francisco, Honolulu, Tokyo, Beijing, Ulaanbaatar, Irkutsk, Novosibirsk, Yekaterinburg and Moscow — about 32,000 km. It goes at <b>10 km a page</b>, so a lap is around three thousand pages. Every city pays +20 each time you pass it, each lap home to Riga pays +100 more, and then the next lap begins. The five roads are still there, and still end where they always did."]},
   {v:"2026-10-04.1",go:["tab:ach"],lines:[
@@ -32099,7 +32101,9 @@ function refreshImport(light){
   if(bSel)bSel.onclick=async()=>{
     const items=selItems();if(!items.length)return;
     if(!confirm(`Add ${items.length} book${items.length===1?"":"s"} to your shelf?`))return;
-    await runBatch(items,it=>importOne(it),"Adding");
+    const steps=[];
+    await runBatch(items,it=>importOne(it,null,steps),"Adding");
+    importAddLog(steps);
     doneSel();
   };
   const bSer=q("#impSelSer",box);
@@ -32107,8 +32111,9 @@ function refreshImport(light){
     const items=selItems();if(!items.length)return;
     const nm=prompt("Series name — each book gets its own page, linked under this name:","");
     if(nm==null||!nm.trim())return;
-    let i=1;
-    await runBatch(items,it=>importOne(it,{type:"series",series:nm.trim(),seriesNum:String(i++),seriesTotal:String(items.length)}),"Adding");
+    let i=1;const steps=[];
+    await runBatch(items,it=>importOne(it,{type:"series",series:nm.trim(),seriesNum:String(i++),seriesTotal:String(items.length)},steps),"Adding");
+    importAddLog(steps);
     doneSel();
   };
   const bColl=q("#impSelColl",box);
@@ -32233,7 +32238,9 @@ function refreshImport(light){
       +(held?`\n\n${held} other${held===1?"":"s"} look like ${held===1?"an instalment":"instalments"} of something you already have — ${held===1?"it stays":"they stay"} on the list for you to decide.`:"")))return;
     b.disabled=true;b.textContent="Adding…";
     const msg=q("#busyMsg");if(msg)msg.textContent=`Adding ${batch.length}…`;
-    await runBatch(batch,it=>importOne(it),"Adding");
+    const steps=[];
+    await runBatch(batch,it=>importOne(it,null,steps),"Adding");
+    importAddLog(steps);
     saveImportQueue();
     if(SYNC.on)flushQueue();
     if(q("#busyMsg"))q("#busyMsg").textContent="";
@@ -32607,7 +32614,9 @@ function renderReadEra(){
     if(!want.length)return;
     if(!confirm("Add "+want.length+" book"+(want.length===1?"":"s")+" from “"+reOpen.title+"” to your shelf?"))return;
     addBtn.disabled=true;addBtn.textContent="Adding…";
-    const ok=await runBatch(want.map(r=>r.it),it=>importOne(it),"Adding");
+    const steps=[];
+    const ok=await runBatch(want.map(r=>r.it),it=>importOne(it,null,steps),"Adding");
+    importAddLog(steps);
     const n=want.length;
     if(ok)alert(n+" book"+(n===1?"":"s")+" added to your shelf.");
     await reAfterChange();
@@ -47364,7 +47373,7 @@ async function runBatch(items,fn,what){
   }
 }
 /* staged entry -> a real book on the shelf; `extra` lets a batch land as a series */
-async function importOne(it,extra){
+async function importOne(it,extra,steps){
   const b=Object.assign(blankBook(uid()),{
     title:it.title,author:it.author,isbn:it.isbn||"",status:it.status,dnf:!!it.dnf,rating:it.rating,
     pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
@@ -47397,6 +47406,26 @@ async function importOne(it,extra){
   books.unshift(b);
   if(SYNC.on)enqueue({kind:"book",id:b.id});
   importQueue=importQueue.filter(x=>x.id!==it.id);
+  /* the change it is — see ADDING FROM AN IMPORT IS A CHANGE LIKE ANY OTHER.
+     A batch hands in `steps` and writes them as one op when it is done */
+  const step={id:b.id,before:null,after:JSON.parse(JSON.stringify(b))};
+  if(steps)steps.push(step);else importAddLog([step]);
+}
+/* ┌─ ADDING FROM AN IMPORT IS A CHANGE LIKE ANY OTHER ───────────────────────┐
+   │ Filling a book in from an import, and filing rows into a collection,    │
+   │ went through pushOp; adding a NEW book from one (importOne) went       │
+   │ straight to the store. So the books an import added ticked no daily    │
+   │ task, lit no 🔥 day, wrote no line under What changed, and ↶ Undo could │
+   │ not take them back. Each add is now a step with no `before`, and a     │
+   │ batch — Add selected, a series, Add all, ReadEra's Add — is ONE op, so  │
+   │ one ↶ takes the whole batch back. Signed as the import's (HIST_IMPORT),│
+   │ which the daily tasks count like your own: filling a book in is filling │
+   │ it in.                                                                  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function importAddLog(steps){
+  if(!steps||!steps.length)return;
+  const was=histSrc;histSrc=HIST_IMPORT;
+  try{pushOp({t:"bulk",items:steps});}finally{histSrc=was;}
 }
 /* several staged entries -> stories inside a collection you already have. The
    companion to landing a series as one new collection: once the collection
