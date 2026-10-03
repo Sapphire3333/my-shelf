@@ -10262,12 +10262,68 @@ function covLook(s){
       const c=document.createElement("canvas");c.width=cw;c.height=ch;
       const x=c.getContext("2d",{willReadFrequently:true});x.drawImage(im,0,0,cw,ch);
       const l=picLookAt(x,cw,ch);
-      res({w,h,dark:l?l.dark:null,clear:l?l.clear:null});};
+      /* its average colour as THIS browser decodes it — two devices that hold
+         the same bytes and still read different numbers here decode them
+         differently; the same numbers clear the picture and leave the page */
+      let avg=null;
+      try{const d=x.getImageData(0,0,cw,ch).data,s=[0,0,0];
+        for(let i=0;i<d.length;i+=4){s[0]+=d[i];s[1]+=d[i+1];s[2]+=d[i+2];}
+        const n=d.length/4;avg=s.map(v=>Math.round(v/n));}catch(e){}
+      res({w,h,dark:l?l.dark:null,clear:l?l.clear:null,avg});};
     im.onerror=()=>res(null);
     im.src=s;});
 }
 const covLookTxt=l=>l===""?"":l==null?"   (it would not open as a picture)"
-  :`   ${l.w} × ${l.h} · ${pct(l.dark)} near-black · ${pct(l.clear)} see-through`;
+  :`   ${l.w} × ${l.h} · ${pct(l.dark)} near-black · ${pct(l.clear)} see-through`
+    +(l.avg?`\n   average colour, as decoded here: rgb(${l.avg.join(", ")})`:"");
+/* ┌─ 5. WHAT IS DRAWN OVER THE PICTURE, ON THIS SCREEN ──────────────────────┐
+   │ Two devices held one cover, fingerprint for fingerprint, and the phone  │
+   │ still showed it at 0.44 × the computer's brightness in all three        │
+   │ channels — measured off the two screenshots, the plain blue 101,115,183 │
+   │ against 46,46,82, the frame round it darker too. The four lines above   │
+   │ cannot see that: they compare pictures, and the picture was the same.   │
+   │ Scrapbook pictures stand above the cover (.scrap, z-index 30) where     │
+   │ they were placed, a ◐ faded one at 40%, and they ignore the pointer —   │
+   │ so asking the page what is at a point never names them. This asks with  │
+   │ the pointer rule lifted for a moment, at five points across the cover,  │
+   │ and names everything painted above the picture there, then anything     │
+   │ beneath it that fades, filters or blends it.                            │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function coverOver(img){
+  const out=[],seen=new Set();
+  const name=e=>e.classList.contains("scrap")?"a scrapbook picture"+(e.classList.contains("bh")?" (◐ faded)":"")
+    :e.classList.contains("pad")?"a page note"
+    :e.tagName.toLowerCase()+(e.id?"#"+e.id:"")+(e.classList.length?"."+[...e.classList].join("."):"");
+  const st=document.createElement("style");st.textContent="*{pointer-events:auto!important}";
+  document.head.appendChild(st);
+  const y0=window.scrollY;
+  try{
+    let r=img.getBoundingClientRect();
+    if(r.bottom<0||r.top>window.innerHeight){img.scrollIntoView({block:"center"});r=img.getBoundingClientRect();}
+    [[.5,.5],[.25,.25],[.75,.25],[.25,.75],[.75,.75]].forEach(([fx,fy])=>{
+      const els=document.elementsFromPoint(r.left+r.width*fx,r.top+r.height*fy);
+      const i=els.indexOf(img);if(i<=0)return;
+      els.slice(0,i).forEach(e=>{
+        const host=e.closest(".scrap,.pad")||e;
+        if(seen.has(host))return;seen.add(host);
+        /* the page's drawing layer covers the whole page and paints only its
+           marks — worth naming only when it has some */
+        if(host.id==="drawLayer"&&!host.querySelector("path,polyline,line,circle,rect"))return;
+        const s=getComputedStyle(host),b=host.getBoundingClientRect();
+        out.push(name(host)+" · "+Math.round(b.width)+" × "+Math.round(b.height)+" · opacity "+s.opacity
+          +(s.backgroundColor!=="rgba(0, 0, 0, 0)"?" · ground "+s.backgroundColor:"")
+          +(s.backgroundImage!=="none"?" · a picture or gradient":""));
+      });
+    });
+    for(let e=img;e&&e!==document.body;e=e.parentElement){
+      const s=getComputedStyle(e);
+      if(+s.opacity<1||s.filter!=="none"||s.mixBlendMode!=="normal")
+        out.push("under it: "+name(e)+" · opacity "+s.opacity+(s.filter!=="none"?" · filter "+s.filter:"")
+          +(s.mixBlendMode!=="normal"?" · blend "+s.mixBlendMode:""));
+    }
+  }finally{st.remove();if(window.scrollY!==y0)window.scrollTo(0,y0);}
+  return out;
+}
 async function coverDiag(){
   const b=(view==="book"&&cur)?cur:null;
   if(!b){alert("Open a book first — this looks at one book's cover.");return;}
@@ -10289,6 +10345,10 @@ async function coverDiag(){
    else if(!src)screenNote="an <img> with no source";
    else if(src.slice(0,5)!=="data:")screenNote="drawn from "+src.split(":")[0]+": — not the picture itself, nothing to compare";
    else screenSrc=src;}
+  /* asked first, before anything is awaited, while the page is still the
+     page — see WHAT IS DRAWN OVER THE PICTURE */
+  const viewImg=document.querySelector(".vcover img,#vCover img");
+  let over=null;try{over=viewImg?coverOver(viewImg):null;}catch(e){over=["(could not be asked: "+e+")"];}
   L.push("1. on the page now   "+(screenSrc==null?("— "+screenNote):covKb(screenSrc)+"  fp "+covFp(screenSrc)));
   /* 2 — this device's store */
   let local=null;
@@ -10337,6 +10397,9 @@ async function coverDiag(){
   }
   L.push("4. from the cloud now "+(cloud==null?("— "+cloudNote):covKb(cloud)+"  fp "+covFp(cloud)));
   if(cloud!=null)L.push(covLookTxt(await covLook(cloud)));
+  L.push("5. drawn over it here "+(over==null?"— the reading page is not showing its cover"
+    :over.length?"":"— nothing"));
+  (over||[]).forEach(s=>L.push("   "+s));
   L.push("");
   /* the last picture that came in on this device, by any road — see picIn */
   const pin=picInLast();
@@ -10354,6 +10417,10 @@ async function coverDiag(){
   if(mem!==undefined&&local!=null&&covFp(mem)!==fL)say.push("What is held in memory is not what is stored, which is what every list on this screen draws from.");
   if(localLook&&localLook.dark>=.95)say.push("The picture stored here is black all over, so it was black before it was ever sent anywhere — lost on its way in, not on its way across. The line about the last picture taken in says what arrived.");
   if(fC&&fL===fC&&(!screenSrc||fS===fL))say.push("So if the other device shows a different picture, it is the OTHER device that is behind — run this there and compare the fingerprints.");
+  /* the same picture can still LOOK different: something on top of it */
+  if(over&&over.some(s=>/^a scrapbook picture|^a page note/.test(s)))
+    say.push("Line 5: a scrapbook picture or note is drawn over the cover on this screen, so the cover is seen through it. They stand where they were placed, and a narrower screen can put one on the cover — 📱 Fit stacks them in a column instead.");
+  else if(over&&over.length)say.push("Line 5: something is drawn over the cover on this screen — it says what.");
   L.push("VERDICT: "+(say.length?say.join(" "):"nothing conclusive — copy this from both devices and compare the fp lines."));
   L.push("");
   L.push("Run this on BOTH devices and compare line 2 and line 4. Same fp = same picture.");
@@ -10911,6 +10978,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-03.5",lines:[
+    "<b>🖼 This cover also says what is drawn over it.</b> Two devices can hold the very same picture and still show it differently, and the readout only compared the pictures. On a book's page, <b>⚙ View → 🩺 Something looks wrong → 🖼 This cover</b> now has a line 5 naming anything painted over the cover on that screen — a scrapbook picture or a note sitting on it, a faded one included — and anything underneath that fades or filters it. It also gives the picture's average colour as that device decodes it, so the same picture can be checked to come out the same on both."]},
   {v:"2026-10-03.4",go:["tab:today"],lines:[
     "<b>📖 A book you split into tales is read tale by tale.</b> ✂ Split keeps the original entry as the first tale, so that one entry also stood for the whole volume: finishing the first tale finished the book, the tales you hadn't touched said <i>✓ Finished · same</i>, and the volume counted toward the year. A volume now follows its tales — <b>📖</b> while any of them is being read, <b>✓</b> only once all of them are, counted on the day you finish the last one. Marking the first tale is about the first tale alone.",
     "<b>The tale you're reading is on 🏠 Today</b> with its own page bar and its volume's cover, and the Library's Reading pill counts it. On the shelf a tale wears its volume's cover rather than the whole set's, and a collection's page says which tale is being read and which volumes are part-way.",
