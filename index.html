@@ -3721,6 +3721,12 @@ html[data-phone="0"] .pgedit:not([hidden]){min-height:24px;display:inline-flex;a
 html[data-phone="0"] button.rate{height:24px;box-sizing:border-box}
 html[data-phone="0"] :is(.newsgo,#newsX,.pill,.gcar,.qredraw,.gfix,#achLogTog,#gapTog),
 html[data-phone="0"] header .bkrow.corner>button{min-height:24px;box-sizing:border-box}
+/* the page numbers above and below a page of the shelf — see OR IN PAGES.
+   Pressed from the foot, the page lands with this bar under the sticky row. */
+.libpgbar{justify-content:center;margin:6px 0 10px;scroll-margin-top:calc(var(--tabsh,0px) + var(--dockh,0px) + 6px)}
+.libpgbar .pill{min-width:34px;justify-content:center;font-variant-numeric:tabular-nums}
+.libpgbar .pill:disabled{opacity:.4;cursor:default}
+.libpgbar .lbl{flex-basis:100%;text-align:center;margin:0}
 /* the Library's one row — see ONE ROW ON A WIDE SCREEN in renderLibrary */
 .libone .fclear{flex:1 1 150px;min-width:130px}
 /* the Library's folded filters */
@@ -10807,6 +10813,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-03.2",go:["tab:library"],lines:[
+    "<b>📄 The shelf can turn pages.</b> On a phone the Library now shows a hundred books at a time, with page numbers above and below them — a page turn draws only that page, where scrolling down drew everything before it again. Under ⇅ Sort, <b>The shelf goes on: Scrolling · Pages</b> switches between the two, with a slider for how many books a page holds (20 to 200). The choice is kept on each device: the computer still scrolls unless you choose pages there too.",
+    "A group that runs over the end of a page shows its heading again on the next one, marked <i>continued</i>. Pressing a heading in the row of headings goes to the page it is on. ‹ Back out of a book returns to the same page; choosing the Library tab, the find box, a filter or a new sort start again at page 1."]},
   {v:"2026-10-03.1",go:["tab:library"],lines:[
     "<b>📚 The Library opens faster on a phone.</b> It drew every book up to four hundred each time you came back to it — on a phone that was most of a second. It now draws the first sixty, and the next sixty arrive by themselves as you scroll towards the end of them. Counts, the find box, sorting and <b>Tick all</b> still go by the whole shelf, and ‹ Back out of a book still finds your place.",
     "Choosing the 📚 Library tab opens it at the top, so it no longer draws again the books you scrolled through last time. On a computer it still draws four hundred, with the button for more."]},
@@ -14476,7 +14485,7 @@ async function goTab(v){
      Library opens at the top, so it only needs its first page drawn: rows
      loaded further down on the last visit are not drawn again for nothing.
      ‹ Back out of a book does not come through here and keeps them. */
-  if(v==="library")libShown=libStep();
+  if(v==="library"){libShown=libStep();libPage=1;}
   view=v;render();restoreScroll(view,false,true);
 }
 function drawTabBar(){
@@ -17138,6 +17147,32 @@ const libStep=()=>document.documentElement.getAttribute("data-phone")==="1"?LIB_
 /* `libSig` was taken — it is the backup's "has anything changed" stamp, far
    below. This one is "is the shelf being asked a different question". */
 let libShown=LIB_PAGE,libListSig="",libMoreIO=null;
+/* ---- OR IN PAGES ----
+   Loading more as you scroll redraws everything loaded so far each time, so
+   the deeper you go the longer each wait: on the phone that measured 815–860
+   ms for 240 rows. Pages never draw more than one page. The choice is kept in
+   `settings`, which stays on the device it was made on, so a phone can turn
+   pages while a computer scrolls; left unchosen a phone turns pages and a
+   computer scrolls. libPage is the page you are on, 1 onwards: a new
+   question (a filter, the find box, a sort) and picking the Library tab go
+   back to page 1, ‹ Back out of a book does not. libGroupAt holds, per
+   heading in the row of headings, how many rows come before it, so skipping
+   to a heading can find its page. */
+const LIB_PAGE_SIZES=[20,200,100];   /* least, most, unchosen */
+const libPagesOn=()=>settings.libPages?settings.libPages==="pages"
+  :document.documentElement.getAttribute("data-phone")==="1";
+const libPageSize=()=>{const n=parseInt(settings.libPageSize);
+  return isFinite(n)?Math.max(LIB_PAGE_SIZES[0],Math.min(LIB_PAGE_SIZES[1],n)):LIB_PAGE_SIZES[2];};
+let libPage=1,libGroupAt=[];
+function libPageBar(where,n){
+  const size=libPageSize(),pages=Math.max(1,Math.ceil(n/size)),p=libPage;
+  const btn=(k,l,dis,label)=>`<button class="pill${k===p&&!label?" on":""}" data-lpage="${k}"${dis?" disabled":""}${k===p&&!label?' aria-current="page"':""}${label?` aria-label="${label}"`:""}>${l}</button>`;
+  const nums=[...new Set([1,p-1,p,p+1,pages])].filter(k=>k>=1&&k<=pages).sort((a,b)=>a-b);
+  let mid="",prev=0;
+  nums.forEach(k=>{if(k-prev>1)mid+=`<span class="lbl">…</span>`;mid+=btn(k,k);prev=k;});
+  return `<div class="pills libpgbar"${where==="top"?' id="libPgTop"':""}>${btn(p-1,"‹",p<=1,"Page before")}${mid}${btn(p+1,"›",p>=pages,"Page after")}
+    <span class="lbl">Books ${(p-1)*size+1}–${Math.min(p*size,n)} of ${n}</span></div>`;
+}
 /* =============== filling in many books at once ===============
    Auto-fill asks two sites about one book, which is the right size when you are
    looking at that book and the wrong size when an import has just handed you two
@@ -18217,6 +18252,14 @@ function renderLibrary(){
           <span class="lbl" id="libWSay" style="min-width:132px">${libWSay(now,mx)}</span>
           <span class="lbl">The room goes to the blurb under each title. Arrow keys nudge it one pixel.</span></div>`;
       }
+      /* see OR IN PAGES — on this device only */
+      {const pg=libPagesOn();
+       drawers+=`<div class="pills"><span class="lbl">The shelf goes on:</span>
+         <button class="pill ${pg?"":"on"}" data-lpmode="scroll" title="Books keep coming as you scroll down">Scrolling</button>
+         <button class="pill ${pg?"on":""}" data-lpmode="pages" title="A set number of books at a time, with page numbers above and below">Pages</button>
+         ${pg?`<input type="range" id="libPgSize" min="${LIB_PAGE_SIZES[0]}" max="${LIB_PAGE_SIZES[1]}" step="10" value="${libPageSize()}" style="flex:0 1 180px;accent-color:var(--teal)" aria-label="Books on a page">
+           <span class="lbl" id="libPgSizeSay">${libPageSize()} a page</span>`:""}
+         <span class="lbl">On this device only.</span></div>`;}
       drawers+=`<div class="pills"><span class="lbl">Sort:</span>${["newest","rating","favorites","title","author","status","genre","type"].map(s=>`<button class="pill ${sortBy===s?"on2":""}" data-sort="${s}" title="${sortBy===s?"Tap again to flip the order":""}">${s.charAt(0).toUpperCase()+s.slice(1)}${sortBy===s&&sortRev?" ↑":""}</button>`).join("")}</div>`;
       drawers+=`<div class="pills"><span class="lbl">Group under headings:</span>${GROUPS.map(([id,l])=>`<button class="pill ${groupBy===id?"on":""}" data-gb="${id}">${l.charAt(0).toUpperCase()+l.slice(1)}</button>`).join("")}</div>`;
     }
@@ -18297,9 +18340,27 @@ function renderLibrary(){
   /* Narrowing the shelf a different way starts the counting again; pressing
      "show more" does not, which is the whole difference between the two. */
   {const sig=[statusFilter,sortBy,sortRev?1:0,groupBy,layout,libFind,kindFilter.join(","),gavPick,libFandomMode].join("|");
-   if(sig!==libListSig){libListSig=sig;libShown=libStep();}}
-  let budget=libShown;
-  const take=arr=>{const out=arr.slice(0,Math.max(0,budget));budget-=out.length;return out;};
+   if(sig!==libListSig){libListSig=sig;libShown=libStep();libPage=1;}}
+  /* see OR IN PAGES: a page skips the rows of the pages before it, and
+     take.cut says a group was entered part-way, for its "continued" mark */
+  const paged=libPagesOn()&&list.length>0;
+  let skip=0,budget=paged?libPageSize():libShown,pageN=list.length;
+  /* how many rows the run holds is the layout's to say — a folded group or
+     a heading singled out draws fewer than the shelf has — so each layout
+     below calls this before it takes any rows, and gets the top bar back */
+  const startPages=n=>{
+    pageN=n;if(!paged)return "";
+    const size=libPageSize();
+    libPage=Math.max(1,Math.min(libPage,Math.ceil(n/size)||1));
+    skip=(libPage-1)*size;
+    return n>size?libPageBar("top",n):"";
+  };
+  const take=arr=>{const s=Math.min(skip,arr.length);skip-=s;
+    const out=arr.slice(s,s+Math.max(0,budget));budget-=out.length;
+    take.cut=s>0&&out.length>0;return out;};
+  /* a page's own place in the run: past the pages before it and not yet full */
+  const onThisPage=()=>skip<=0&&budget>0;
+  const cont=()=>take.cut?` <span class="lbl" style="color:var(--teal)">continued</span>`:"";
   /* Most people arriving at a book tracker already keep their books somewhere
      else, and the importer is one of the best things here — but an empty shelf
      used to mention only the long way round, one book typed in at a time. */
@@ -18328,10 +18389,11 @@ function renderLibrary(){
     const now=list.filter(onGo),rest=list.filter(b=>!onGo(b));
     if(statusFilter==="all"&&now.length&&rest.length){
       /* the headings keep the TRUE counts — what is drawn is not what you have */
-      const head=(t,n)=>`<div class="grouphead"><h2 class="serif" style="margin:0;font-size:17px">${t}</h2><span class="n">${n}</span><span class="ghline"></span></div>`;
-      html+=head("📖 Reading now",now.length)+booksHtml(take(now),true)
-           +head("Everything else",rest.length)+booksHtml(take(rest),true);
-    }else html+=booksHtml(take(list),true);
+      const head=(t,n,c)=>`<div class="grouphead"><h2 class="serif" style="margin:0;font-size:17px">${t}</h2><span class="n">${n}</span>${c}<span class="ghline"></span></div>`;
+      /* a page shows a heading only over rows of its own */
+      const part=(t,arr)=>{const rows=take(arr);return rows.length?head(t,arr.length,cont())+booksHtml(rows,true):"";};
+      html+=startPages(list.length)+part("📖 Reading now",now)+part("Everything else",rest);
+    }else html+=startPages(list.length)+booksHtml(take(list),true);
   }
   else{
     const gsAll=groupsFor(list);
@@ -18377,20 +18439,25 @@ function renderLibrary(){
             <span class="gavname">${esc(g.label)} <b>${g.items.length}</b></span></button>`;}).join("")}</div>`
       :`<div class="pills" style="margin-bottom:10px">${gsAll.map((g,i)=>
           `<button class="pill${gavPick===g.label?" on":""}" data-gjump="${i}" data-glabel="${esc(g.label)}" title="${picking?"Show only":"Skip to"} ${esc(g.label)}"${g.color&&gavPick!==g.label?` style="border-color:${g.color}"`:""}>${esc(g.label)} <b>${g.items.length}</b></button>`).join("")}</div>`;
-    html+=gs.map(g=>{
+    /* where each heading falls in the run, for skipping to one on another page */
+    {let at=0;libGroupAt=gsAll.map(g=>{const a=at;if(!collapsed.has(groupBy+"|"+g.label))at+=g.items.length;return a;});}
+    html+=startPages(gs.reduce((s,g)=>s+(collapsed.has(groupBy+"|"+g.label)?0:g.items.length),0))+gs.map(g=>{
       const key=groupBy+"|"+g.label;
       const shut=collapsed.has(key);
       const art=groupArt[key];
       /* a folded group costs a heading and nothing else, so it is always drawn;
-         an open one waits its turn once the page is full */
+         an open one waits its turn once the page is full. Turning pages, a
+         folded heading stands on the one page its place in the run falls on. */
+      if(shut&&paged&&!onThisPage())return "";
       const rows=shut?[]:take(g.items);
       if(!shut&&g.items.length&&!rows.length)return "";
+      const goesOn=shut?"":cont();
       return `<div class="ghwrap">
         <div class="grouphead" data-gh="${esc(key)}">
           <button class="gcar" title="${shut?"Open":"Close"} this group">${shut?"▸":"▾"}</button>
           ${g.color?`<span class="chip big" style="${chipStyle(g.color)}">${esc(g.label)}</span>`
             :`<h2 class="serif" style="margin:0;font-size:17px">${esc(g.label)}</h2>`}
-          <span class="n">${g.note?esc(g.note):g.items.length}</span><span class="ghline"></span>
+          <span class="n">${g.note?esc(g.note):g.items.length}</span>${goesOn}<span class="ghline"></span>
           <button class="btn smallbtn gart" data-gart="${esc(key)}" title="${art?"Change or remove this group's picture":"Give this group a picture"}">🖼${art?" ✓":""}</button>
         </div>
         ${art&&!shut&&!artShut?`<div class="gartbox" style="width:${Math.max(15,Math.min(100,art.w||100))}%">
@@ -18404,7 +18471,8 @@ function renderLibrary(){
   /* what is left, and how to have it. The number is the truth about the shelf,
      not about the page: "still on the shelf" counts everything the filters left,
      drawn or not. */
-  if(list.length>libShown)html+=`<div class="hrow2" style="margin-top:12px;justify-content:center">
+  if(paged){if(pageN>libPageSize())html+=libPageBar("bottom",pageN);}
+  else if(list.length>libShown)html+=`<div class="hrow2" style="margin-top:12px;justify-content:center">
     <button class="btn" id="libMore">Show ${Math.min(libStep(),list.length-libShown)} more — ${list.length-libShown} still on the shelf</button></div>`;
   /* ---- the fandom cards ----
      Only fics and AI stories can be here, because only they carry a fandom —
@@ -18647,6 +18715,19 @@ function renderLibrary(){
     window.scrollTo(0,y);
   };
   libAutoMore(lmore);
+  /* a page turned from the bar at the foot starts you at the top of the new
+     page, not at the foot of it — see OR IN PAGES */
+  qa("[data-lpage]",m).forEach(b=>b.onclick=()=>{
+    const n=parseInt(b.dataset.lpage);if(!n||n===libPage)return;
+    libPage=n;pendingScroll=null;renderLibrary();
+    const top=q("#libPgTop");if(top)top.scrollIntoView({block:"start"});
+  });
+  qa("[data-lpmode]",m).forEach(b=>b.onclick=()=>{
+    settings.libPages=b.dataset.lpmode;saveSettings();libPage=1;libShown=libStep();renderLibrary();});
+  {const r=q("#libPgSize",m);
+   if(r){const say=q("#libPgSizeSay",m);
+     r.oninput=()=>{if(say)say.textContent=r.value+" a page";};
+     r.onchange=()=>{settings.libPageSize=+r.value;saveSettings();libPage=1;renderLibrary();};}}
   qa("[data-gjump]",m).forEach(b=>b.onclick=()=>{
     if(gavActFor()){
       const l=b.dataset.glabel;
@@ -18656,8 +18737,12 @@ function renderLibrary(){
     }
     /* skipping to a heading that has not been drawn yet has to draw it first,
        or the row of headings would offer places the page cannot go */
-    let h=qa("[data-gh]",m)[+b.dataset.gjump];
-    if(!h){libShown=Infinity;renderLibrary();h=qa("[data-gh]",q("#main"))[+b.dataset.gjump];}
+    /* turning pages, the heading's page is worked out from where it falls */
+    const gi=+b.dataset.gjump,label=b.dataset.glabel;
+    const find=()=>qa("[data-gh]",q("#main")).find(e=>e.dataset.gh===groupBy+"|"+label);
+    let h=find();
+    if(!h&&libPagesOn()&&libGroupAt[gi]!=null){libPage=Math.floor(libGroupAt[gi]/libPageSize())+1;renderLibrary();h=find();}
+    if(!h){libShown=Infinity;renderLibrary();h=find()||qa("[data-gh]",q("#main"))[gi];}
     if(h)h.scrollIntoView({behavior:"smooth",block:"start"});
   });
   hydrateGroupArt(m);
