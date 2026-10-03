@@ -6669,23 +6669,68 @@ const entWholeOf=(coll,en)=>entIsPart(coll,en)
    └───────────────────────────────────────────────────────────────────────────┘ */
 const collWholes=b=>isColl(b)?((b.entries)||[]).filter(en=>!entIsPart(b,en)):[];
 const collDefault=b=>{const t=String((b&&b.status)||"").trim();return (t===""||t==="finished")?"finished":"want";};
+/* ┌─ A VOLUME IS ITS TALES ──────────────────────────────────────────────────┐
+   │ ✂ Split keeps the original entry as the FIRST tale, so one record was    │
+   │ both "the first tale" and "the whole volume". Its stage was the volume's │
+   │ stage everywhere the shelf counted, and the tales left silent copied it. │
+   │ Measured on a three-tale volume: first tale ✓ → the other two "✓ Finished│
+   │ · same", the volume counted finished on that day, the set "2 of 2 read"; │
+   │ third tale 📖 under a ✓ first tale → nothing on Today at all.            │
+   │ So a volume is worked out from its tales, the way a collection is worked │
+   │ out from its books (A COLLECTION IS ITS BOOKS): 📖 while any tale is     │
+   │ being read, ✓ once every tale not given up is finished, given up when    │
+   │ all of them are, and otherwise not finished. The first tale's own stage  │
+   │ is the first tale's — the button on its row still says that and nothing │
+   │ else. pinTales keeps the silent ones from following it when it moves.    │
+   │ Its counting lives in readUnits: finished on the day the LAST tale was,  │
+   │ and a pass the first tale closed alone is not a finish of the volume.    │
+   │ A tale's own stage inheritance (entStatusOf) is unchanged, so volumes    │
+   │ split before this and read whole still read as finished.                │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const volTales=(coll,en)=>entIsPart(coll,en)?[en]
+  :[en,...((coll&&coll.entries)||[]).filter(x=>x!==en&&x.partOf===en.id)];
+function volState(coll,en){
+  const ts=volTales(coll,en);
+  if(ts.length<2)return {status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),hold:entHoldOf(coll,en),on:null};
+  const st=ts.map(t=>({t,s:entStatusOf(coll,t),d:entDnfOf(coll,t),h:entHoldOf(coll,t)}));
+  const live=st.filter(x=>!x.d);
+  if(!live.length)return {status:entStatusOf(coll,en),dnf:true,hold:false,on:null};
+  const on=live.find(x=>!x.h&&x.s==="reading");
+  if(on)return {status:"reading",dnf:false,hold:false,on:on.t};
+  if(live.every(x=>!x.h&&x.s==="finished"))return {status:"finished",dnf:false,hold:false,on:null};
+  /* `begun`: some tales read and some not — a volume part-way, not unread */
+  return {status:"want",dnf:false,hold:live.some(x=>x.h),on:null,begun:live.some(x=>x.s==="finished")};
+}
+/* Before the first tale's stage moves, the tales still answering "· same"
+   are given, as their own, what they answer now — so the move is about the
+   first tale alone and a volume read whole before it was split stays read. */
+function pinTales(coll,en){
+  const ts=volTales(coll,en);if(ts.length<2||ts[0]!==en)return;
+  ts.slice(1).forEach(t=>{
+    if(String(t.status||"").trim()||t.dnf||t.hold)return;
+    if(entDnfOf(coll,t))t.dnf=true;
+    else if(entHoldOf(coll,t))t.hold=true;
+    else t.status=entStatusOf(coll,t);
+  });
+}
 function collStage(b){
   const ws=collWholes(b);if(!ws.length)return collDefault(b);
-  const live=ws.filter(en=>!entDnfOf(b,en));
-  if(live.some(en=>entStatusOf(b,en)==="reading"&&!entHoldOf(b,en)))return "reading";
-  if(!live.length)return collDefault(b);
-  return live.every(en=>entStatusOf(b,en)==="finished")?"finished":"want";
+  const vs=ws.map(en=>volState(b,en)).filter(v=>!v.dnf);
+  if(vs.some(v=>v.status==="reading"&&!v.hold))return "reading";
+  if(!vs.length)return collDefault(b);
+  return vs.every(v=>v.status==="finished")?"finished":"want";
 }
 function collSummary(b,long){
   const ws=collWholes(b);
-  const st=ws.map(en=>({en,s:entStatusOf(b,en),d:entDnfOf(b,en),h:entHoldOf(b,en)}));
+  const st=ws.map(en=>{const v=volState(b,en);return {en:v.on||en,s:v.status,d:v.dnf,h:v.hold,g:!!v.begun};});
   let t=st.filter(x=>!x.d&&x.s==="finished").length+" of "+ws.length+" read";
   if(!long)return t;
   const rd=st.filter(x=>!x.d&&!x.h&&x.s==="reading").map(x=>x.en.title||"one of them");
   if(rd.length)t+=" · reading "+rd.join(", ");
   const gu=st.filter(x=>x.d).length;if(gu)t+=" · "+gu+" given up";
   const oh=st.filter(x=>!x.d&&x.h&&x.s!=="finished").length;if(oh)t+=" · "+oh+" on hold";
-  const nr=st.filter(x=>!x.d&&!x.h&&x.s==="want").length;if(nr)t+=" · "+nr+" not read yet";
+  const pw=st.filter(x=>!x.d&&!x.h&&x.s==="want"&&x.g).length;if(pw)t+=" · "+pw+" part-way";
+  const nr=st.filter(x=>!x.d&&!x.h&&x.s==="want"&&!x.g).length;if(nr)t+=" · "+nr+" not read yet";
   return t;
 }
 const entStatusOf=(coll,en)=>{
@@ -6772,6 +6817,8 @@ function finishProgress(x){
   return true;
 }
 function markEntStatus(coll,en,what){
+  /* the first tale of a split volume is one tale — see A VOLUME IS ITS TALES */
+  if(what!=="unowned")pinTales(coll,en);
   /* setting a story aside is its own flag and clears the stage, as the list of
      stages here has always worked. Tapping it again takes it back off — the
      same toggle the identical-looking button on a book has always been. */
@@ -6866,15 +6913,46 @@ function readUnits(){
         const pg=tot?own[i]:(cp?Math.round(cp/ws.length):0);
         const mine=doneReads(en);
         const inherits=!mine.length&&!String(en.status||"").trim()&&!en.dnf&&entStatusOf(b,en)==="finished"&&!entDnfOf(b,en);
-        out.push({title:en.title||b.title,book:b,en,
-          reads:mine.length?mine:(inherits?cr:[]),
-          times:(inherits&&cr.length)?cr.length:entTimesRead(b,en),
-          /* a story keeps its own bookmark (setProgress takes one), so the
-             part-way through one being read or given up on counts the way a
-             book's does — it counted nothing, where the same book standing
-             alone counted its 120 pages */
-          part:(entDnfOf(b,en)||entStatusOf(b,en)==="reading")?pagesReached(en,pg):0,
-          pages:pg});
+        let reads=mine.length?mine:(inherits?cr:[]);
+        let times=(inherits&&cr.length)?cr.length:entTimesRead(b,en);
+        /* a story keeps its own bookmark (setProgress takes one), so the
+           part-way through one being read or given up on counts the way a
+           book's does — it counted nothing, where the same book standing
+           alone counted its 120 pages */
+        let part=(entDnfOf(b,en)||entStatusOf(b,en)==="reading")?pagesReached(en,pg):0;
+        /* a split volume counts as its tales — see A VOLUME IS ITS TALES. The
+           readings are the first tale's, since that is where they were kept;
+           what changes is which of them is a finish of the whole volume */
+        const ts=volTales(b,en);
+        if(ts.length>1){
+          const v=volState(b,en);
+          const lastAt=rs=>rs.reduce((k,r,j)=>String(r.end||"")>=String((rs[k]||{}).end||"")?j:k,0);
+          const taleEnd=t=>doneReads(t).reduce((m,r)=>{const d=String(r.end||"");return d>m?d:m;},"")||String(t.dateFinished||"").trim();
+          if(v.status==="finished"&&!v.dnf){
+            /* finished on the day the last tale was, not the first */
+            const last=ts.slice(1).reduce((m,t)=>{const d=taleEnd(t);return d>m?d:m;},"");
+            if(reads.length&&last){const k=lastAt(reads);
+              if(String(reads[k].end||"")<last){reads=reads.slice();reads[k]=Object.assign({},reads[k],{end:last});}}
+          }else if(!v.dnf){
+            /* not every tale is read: the pass the first tale closed is still
+               open for the volume, so it is not a finish — earlier ones are */
+            if(entStatusOf(b,en)==="finished"&&!entDnfOf(b,en)&&times>0){
+              times--;
+              if(reads.length>times){const k=lastAt(reads);reads=reads.filter((_,j)=>j!==k);}
+            }
+            /* and the pages so far are the tales done and the one on the go,
+               each an even share of the volume's length */
+            const share=pg/ts.length;
+            part=Math.round(ts.reduce((s,t)=>{
+              if(entDnfOf(b,t))return s;
+              const st=entStatusOf(b,t);
+              return s+(st==="finished"?share:st==="reading"?pagesReached(t,Math.round(share)):0);},0));
+          }
+        }
+        /* a volume is named as the volume — "Vol #1", not its first tale —
+           where ✂ Split put the volume's name in front of each tale */
+        const title=(ts.length>1&&entPrefix(en.title))||en.title||b.title;
+        out.push({title,book:b,en,reads,times,part,pages:pg});
       });
     }else{
       const pg=isColl(b)?(ens.reduce((s,en)=>s+(parseInt(en.pages)||0),0)||(parseInt(b.pages)||0)):(parseInt(b.pages)||0);
@@ -6929,7 +7007,10 @@ function stageUnits(){
   const out=[];
   for(const b of books){
     const ws=collWholes(b);
-    if(ws.length)ws.forEach(en=>out.push({book:b,en,status:entStatusOf(b,en),dnf:entDnfOf(b,en),hold:entHoldOf(b,en)}));
+    /* a split volume at the stage its tales add up to, and `on` the tale
+       actually being read — see A VOLUME IS ITS TALES */
+    if(ws.length)ws.forEach(en=>{const v=volState(b,en);
+      out.push({book:b,en,status:v.status,dnf:v.dnf,hold:v.hold,on:v.on});});
     else out.push({book:b,en:null,status:statusOf(b),dnf:!!b.dnf,hold:!!holdOf(b)});
   }
   return out;
@@ -7149,7 +7230,13 @@ const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
   /* its own picture if it has one — a story standing on its own deserves its
      own face. Without one it falls back to the collection's, which is still
      truer than an empty frame. */
-  _cover:en.cover?coll.id+"|"+en.id:""});
+  /* A tale ✂ Split cut out of a volume has no picture of its own and points
+     at the volume's (covFrom, see entCovSrc); the book's page drew that, the
+     shelf's rows did not, and a tale on Today or in the Library wore the
+     whole set's face. */
+  _cover:en.cover?coll.id+"|"+en.id:(()=>{
+    const f=String(en.covFrom||"").trim(),w=f&&((coll.entries)||[]).find(x=>x.id===f);
+    return w&&w.cover?coll.id+"|"+w.id:"";})()});
 /* ...but it only steps out where the difference is the thing you are looking at.
    Give one story in an anthology its own genre and it stands alone under that
    genre — and nowhere else. Group by anything else, or by nothing, and the
@@ -10824,6 +10911,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-03.4",go:["tab:today"],lines:[
+    "<b>📖 A book you split into tales is read tale by tale.</b> ✂ Split keeps the original entry as the first tale, so that one entry also stood for the whole volume: finishing the first tale finished the book, the tales you hadn't touched said <i>✓ Finished · same</i>, and the volume counted toward the year. A volume now follows its tales — <b>📖</b> while any of them is being read, <b>✓</b> only once all of them are, counted on the day you finish the last one. Marking the first tale is about the first tale alone.",
+    "<b>The tale you're reading is on 🏠 Today</b> with its own page bar and its volume's cover, and the Library's Reading pill counts it. On the shelf a tale wears its volume's cover rather than the whole set's, and a collection's page says which tale is being read and which volumes are part-way.",
+    "Tales that already say <i>✓ Finished · same</i> only because their first tale was finished can't be told from ones you did read. Press <b>★ Want to read</b> on any you haven't read, and its volume stops counting as read."]},
   {v:"2026-10-03.3",go:["set:look:#hubBg"],lines:[
     "<b>🎨 Words stay readable over a dark background — on a book's page too.</b> With a dark background up, the words standing straight on it turn light — but only the ones on a list, which held the headings and hints of Today and the other tabs. A book's page was never on it, so under a dark background of its own its title, author, series line, <i>no dates recorded</i>, Genres, Tags, Blurb, Contents and the editor's section names stayed near-black on the dark. The app now finds every word standing on the background, on every screen, instead of keeping a list.",
     "<b>And the strengths in between.</b> A deep background at around half to four-fifths strength is dark in places and pale in others, and neither light nor dark words read on all of it. The words now go whichever way reads better on the hardest patch, with a soft dark edge under light words or a pale halo round dark ones. A pale background in the dark theme turns them dark, where they used to be pale on pale."]},
@@ -15016,7 +15107,7 @@ const rateCell=b=>b.rating!=null&&b.rating!==""
    collection measures itself in stories finished, and each story keeps its own
    pages. Anything that isn't a collection is unchanged. */
 /* the volumes, not the tales split out of them — see entWholes */
-const collDone=b=>entWholes(b).filter(en=>!entDnfOf(b,en)&&entStatusOf(b,en)==="finished").length;
+const collDone=b=>entWholes(b).filter(en=>{const v=volState(b,en);return !v.dnf&&v.status==="finished";}).length;
 const pctOf=b=>{
   if(isColl(b)&&(b.entries||[]).length){
     const t=entWholes(b).length,d=collDone(b);
@@ -15186,7 +15277,7 @@ const paceLine=b=>{
 const collPartWay=b=>{
   if(!isColl(b)||!(b.entries||[]).length)return false;
   const done=collDone(b),wh=entWholes(b);
-  return done<wh.length&&(done>0||wh.some(en=>String(en.status||"")==="reading"));
+  return done<wh.length&&(done>0||wh.some(en=>{const v=volState(b,en);return v.status==="reading"||v.begun;}));
 };
 /* `edit` — "bookId|entryId", entryId blank for a book — puts a ✎ on the line
    and a folded strip under it (pgStripHtml), so the page you are on can be
@@ -18187,8 +18278,17 @@ function renderLibrary(){
   /* A COLLECTION IS ITS BOOKS: asked about stages, the shelf is every book —
      each whole book of a collection as its own row, the collection's own row
      left out, since its stage is only theirs added up */
+  /* a split volume stands as one row at the stage its tales add up to, and
+     while one of them is on the go that row IS the tale — see A VOLUME IS ITS
+     TALES; its first tale's own stage was answering for all of them */
+  const volRow=(b,en)=>{
+    if(volTales(b,en).length<2)return storyProxy(b,en);
+    const v=volState(b,en),p=storyProxy(b,v.on||en);
+    if(!v.on)p.title=entPrefix(en.title)||p.title;
+    return Object.assign(p,{status:v.status,dnf:v.dnf,hold:v.hold});
+  };
   const countShelf=[...books.filter(b=>!collWholes(b).length),
-    ...books.flatMap(b=>collWholes(b).map(en=>storyProxy(b,en)))];
+    ...books.flatMap(b=>collWholes(b).map(en=>volRow(b,en)))];
   const plainSt=k=>countShelf.filter(b=>statusOf(b)===k&&!b.dnf&&!holdOf(b)).length;
   /* "don't have it yet" is a LENS, not a stage: these books are still counted
      under Want to read, because wanting them is still true. Its own pill only
@@ -30969,8 +31069,9 @@ async function renderHub(part){
   const noPage=`<div class="hint" style="margin:3px 0 0">No page entered yet — the book's page takes one.</div>`;
   const readingNowHtml=today?`<div class="sec" id="secReading">
     <div class="heading"><h2 class="serif">Reading now</h2>${reading.length>1?`<span class="n">(${reading.length})</span>`:""}</div>
-    ${reading.length?`<div class="hcard" style="padding:6px 12px">${reading.slice(0,6).map(u=>u.en
-        ?rnRow(u.book,(progHtml(u.en,u.book.id+"|"+u.en.id)||noPage)+paceLine(u.en),u.en.id,u.en)
+    ${reading.length?`<div class="hcard" style="padding:6px 12px">${reading.slice(0,6).map(u=>(u.on||u.en)
+        /* a split volume's row is the tale on the go, not its first tale */
+        ?(t=>rnRow(u.book,(progHtml(t,u.book.id+"|"+t.id)||noPage)+paceLine(t),t.id,t))(u.on||u.en)
         :rnRow(u.book,isColl(u.book)?collBody(u.book):(progHtml(u.book,u.book.id+"|")||noPage)+paceLine(u.book))).join("")}
       ${reading.length>6?`<div class="hint" style="margin:6px 0 4px">…and ${reading.length-6} more — the Library's 📖 Reading pill has them all.</div>`:""}
     </div>`:`<div class="hcard"><div class="hint" style="margin:0">Nothing set to 📖 Reading now. The 🎲 dare draws one blind; the Library's Want-to-read pill is the other door.</div></div>`}
@@ -32733,7 +32834,8 @@ function sharedTextCard(v){
   stageUnits().filter(u=>!u.dnf&&!u.hold&&u.status==="reading")
     .forEach(u=>{const l=byBook.get(u.book)||[];l.push(u);byBook.set(u.book,l);});
   byBook.forEach((list,b)=>{
-    const own=list.filter(u=>u.en&&String(u.en.status||"").trim()==="reading");
+    /* a split volume answers with the tale on the go (`on`) */
+    const own=list.map(u=>({book:u.book,en:u.on||u.en})).filter(u=>u.en&&String(u.en.status||"").trim()==="reading");
     if(own.length)own.forEach(u=>reading.push(u));else reading.push({book:b,en:null});
   });
   reading.splice(4);
