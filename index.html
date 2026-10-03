@@ -6713,6 +6713,39 @@ function pinTales(coll,en){
     else t.status=entStatusOf(coll,t);
   });
 }
+/* ┌─ ONE BOOK, ONE BOOKMARK ─────────────────────────────────────────────────┐
+   │ A split volume is one book on the shelf in your hands: one length, one │
+   │ place you have read to. The first tale kept the volume's length when it │
+   │ was split, so finishing it filled ITS bar to the volume's last page —   │
+   │ "p.192 of 192" with two tales unread — and the other tales, with no     │
+   │ length, could only take a percent.                                       │
+   │ So every tale of a split volume reads and writes the one bookmark, kept │
+   │ on the whole (markHolder): the tale being read shows where you are in   │
+   │ the book, a page typed on any tale moves it, finishing a tale leaves it │
+   │ where it is, and only the volume's own finish takes it to the end (see  │
+   │ markEntStatus). markView is a tale as a row draws it: its own stage,     │
+   │ readings and title, the volume's length and bookmark.                    │
+   │ A bookmark standing on the last page of a volume not yet finished was    │
+   │ put there by finishing its first tale before this, and says nothing —    │
+   │ volMarkLive treats it as no page yet rather than as 100%.               │
+   │ The tales never take a length of their own: entFoldedPages adds a       │
+   │ tale's pages to its volume's, and the same 192 twice would be 384.       │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const isSplitTale=(coll,en)=>!!en&&volTales(coll,entWholeOf(coll,en)||en).length>1;
+const markHolder=(coll,en)=>entWholeOf(coll,en)||en;
+/* the entry a tale's page or percent is written to */
+const markTarget=(coll,en)=>isSplitTale(coll,en)?markHolder(coll,en):en;
+function volMarkLive(coll,h){
+  if(volState(coll,h).status==="finished")return true;
+  const t=parseInt(h.pages)||0;
+  if(t)return (parseInt(h.progress)||0)<t;
+  return (parseInt(h.pct)||0)<100;
+}
+function markView(coll,en){
+  if(!coll||!isSplitTale(coll,en))return en;
+  const h=markHolder(coll,en),live=volMarkLive(coll,h);
+  return Object.assign({},en,{pages:h.pages,progress:live?h.progress:"",pct:live?h.pct:"",progLog:h.progLog||[]});
+}
 function collStage(b){
   const ws=collWholes(b);if(!ws.length)return collDefault(b);
   const vs=ws.map(en=>volState(b,en)).filter(v=>!v.dnf);
@@ -6846,7 +6879,19 @@ function markEntStatus(coll,en,what){
   else if(what==="unowned"){en.unowned=!en.unowned;return true;}
   else{en.dnf=false;en.hold=false;en.status=what;
     if(what==="reading"||what==="finished")en.unowned=false;
-    if(what==="finished")finishProgress(en);}
+    if(what==="finished"){
+      if(!isSplitTale(coll,en))finishProgress(en);
+      /* a tale of a split volume moves no bookmark of its own — see ONE BOOK,
+         ONE BOOKMARK. The volume's goes to its end when this finish is the
+         one that completes it, onto today's trail if this tale was being
+         read today, the way finishProgress does it for a book */
+      else{const h=markHolder(coll,en);
+        if(volState(coll,h).status==="finished"){
+          const t=parseInt(h.pages)||0;
+          if(t&&(parseInt(h.progress)||0)<t){if(openRead(en))setProgress(h,t);else{h.progress=t;if(h.pct)h.pct="";}}
+          else if(!t&&(parseInt(h.pct)||0)<100){if(openRead(en))setPct(h,100);else h.pct=100;}
+        }}
+    }}
   return applyReading(en,en.status,en.dnf||en.hold,what==="dnf"||what==="hold");
 }
 /* ┌─ A PIECE OF A VOLUME IS NEVER A THING OF ITS OWN ─────────────────────────┐
@@ -6940,13 +6985,12 @@ function readUnits(){
               times--;
               if(reads.length>times){const k=lastAt(reads);reads=reads.filter((_,j)=>j!==k);}
             }
-            /* and the pages so far are the tales done and the one on the go,
-               each an even share of the volume's length */
-            const share=pg/ts.length;
-            part=Math.round(ts.reduce((s,t)=>{
-              if(entDnfOf(b,t))return s;
-              const st=entStatusOf(b,t);
-              return s+(st==="finished"?share:st==="reading"?pagesReached(t,Math.round(share)):0);},0));
+            /* and the pages so far are where the volume's one bookmark stands
+               (ONE BOOK, ONE BOOKMARK) — or, with no page said yet, the tales
+               finished, each an even share of the volume's length */
+            const done=ts.filter(t=>!entDnfOf(b,t)&&entStatusOf(b,t)==="finished").length;
+            const bm=volMarkLive(b,en)?pagesReached(en,pg):0;
+            part=Math.max(bm,Math.round(done*pg/ts.length));
           }
         }
         /* a volume is named as the volume — "Vol #1", not its first tale —
@@ -7211,8 +7255,10 @@ const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
      story in it, and a word that is only true of this one has to be here too */
   keywords:entKeywordsOf(coll,en),
   /* its page too — a story on the go earns the same progress line under its
-     row that a plain book gets, and without this the line was silently blank */
-  rating:en.rating,pages:en.pages,progress:en.progress,
+     row that a plain book gets, and without this the line was silently blank.
+     A tale of a split volume shows the volume's length and its one bookmark
+     (markView — see ONE BOOK, ONE BOOKMARK) */
+  rating:en.rating,...(m=>({pages:m.pages,progress:m.progress,pct:m.pct||"",progLog:m.progLog||[]}))(markView(coll,en)),
   /* set aside is a flag beside the stage, not a stage, so it has to be carried
      over on its own. Without it a story you had set down came to the shelf
      saying whatever it said before — usually Finished, since setting it aside
@@ -10983,6 +11029,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-03.10",lines:[
+    "<b>📖 A split book has one length and one bookmark.</b> The tales ✂ Split cuts out of a book are still that book in your hands, but the first tale kept the book's whole length, so finishing it filled its bar to the last page — <i>100%</i> with the other tales unread — and the other tales had no length at all and could only take a percent. Now every tale shares the book's length and its one bookmark: the tale you're reading shows where you are in the book (<i>p.150 of 192 · 78%</i>), a page typed on it — on the book's page, on Today, or on a Library row — moves that bookmark, and finishing a tale leaves it where it is. Only finishing the last tale takes it to the end.",
+    "The bar is drawn on the tale you're reading; a finished tale shows its dates. In the editor a tale's Pages says <i>the book's</i> instead of a box of its own. A book whose bookmark was already stuck on its last page by an earlier finish shows <i>no page yet</i> until you type where you are."]},
   {v:"2026-10-03.9",go:["el:challenges:.qtasks"],lines:[
     "<b>✅ Adding a book to a collection counts as naming it and saying who wrote it.</b> A book inside a collection has the collection's author — that is the point of keeping a series together — so its Author box stays empty. The daily task <b>Say who wrote it</b> only ever saw an author typed into that box, so it could not tick from a collection without typing the same name into every book. Now any book added to a collection that has an author ticks both <b>Name an untitled one</b> and <b>Say who wrote it</b>: added with ＋ and given its title, pasted from a list, filed from an import, or folded in. Renaming a book that already had a title counts only as naming."]},
   {v:"2026-10-03.8",go:["tab:library"],lines:[
@@ -16119,17 +16168,20 @@ async function setFav(id){
 async function rowProgress(key,v,thought){
   const [bid,eid]=String(key||"").split("|");
   const b=books.find(x=>x.id===bid);if(!b)return;
-  const x=eid?((b.entries||[]).find(e=>e.id===eid)):b;if(!x)return;
+  const tale=eid?((b.entries||[]).find(e=>e.id===eid)):b;if(!tale)return;
+  /* a tale of a split volume moves the volume's one bookmark; a thought
+     still goes on the tale's own reading — see ONE BOOK, ONE BOOKMARK */
+  const x=eid?markTarget(b,tale):tale;
   const total=parseInt(x.pages)||0;
-  const now=String(total?(x.progress||""):(x.pct||""));
+  const now=String(eid&&isSplitTale(b,tale)&&!volMarkLive(b,x)?"":total?(x.progress||""):(x.pct||""));
   const said=(v===""||v==null)?"":String(Math.max(0,parseInt(v)||0));
   const t=String(thought||"").trim().slice(0,500);
   if((said===""||said===now)&&!t)return;
   const before=JSON.parse(JSON.stringify(b));
   if(said!==""&&said!==now){if(total)setProgress(x,said);else setPct(x,said);}
   if(t){
-    let r=openRead(x);
-    if(!r){r={id:uid(),start:"",end:"",open:true};readsOf(x).push(r);}
+    let r=openRead(tale);
+    if(!r){r={id:uid(),start:"",end:"",open:true};readsOf(tale).push(r);}
     const at=total?(parseInt(x.progress)||0):(parseInt(x.pct)||0);
     (r.notes=r.notes||[]).push({d:todayStr(),p:at,pc:!total,t});
   }
@@ -31202,7 +31254,8 @@ async function renderHub(part){
     <div class="heading"><h2 class="serif">Reading now</h2>${reading.length>1?`<span class="n">(${reading.length})</span>`:""}</div>
     ${reading.length?`<div class="hcard" style="padding:6px 12px">${reading.slice(0,6).map(u=>(u.on||u.en)
         /* a split volume's row is the tale on the go, not its first tale */
-        ?(t=>rnRow(u.book,(progHtml(t,u.book.id+"|"+t.id)||noPage)+paceLine(t),t.id,t))(u.on||u.en)
+        /* …and its bar is the volume's one bookmark (markView) */
+        ?(t=>{const m=markView(u.book,t);return rnRow(u.book,(progHtml(m,u.book.id+"|"+t.id)||noPage)+paceLine(m),t.id,t);})(u.on||u.en)
         :rnRow(u.book,isColl(u.book)?collBody(u.book):(progHtml(u.book,u.book.id+"|")||noPage)+paceLine(u.book))).join("")}
       ${reading.length>6?`<div class="hint" style="margin:6px 0 4px">…and ${reading.length-6} more — the Library's 📖 Reading pill has them all.</div>`:""}
     </div>`:`<div class="hcard"><div class="hint" style="margin:0">Nothing set to 📖 Reading now. The 🎲 dare draws one blind; the Library's Want-to-read pill is the other door.</div></div>`}
@@ -38394,25 +38447,32 @@ function renderBookView(){
                  measured, that put a page box on three stories you had not
                  opened. One you have actually started says so itself, and one
                  with a page already recorded keeps its box either way. */
-              const started=String(en.status||"")==="reading"||parseInt(en.progress)>0;
+              /* A tale of a split volume shows the volume's one bookmark, and
+                 only on the tale being read: a finished tale's bar was the
+                 book's last page, 100% with two tales unread. See ONE BOOK,
+                 ONE BOOKMARK; the boxes write through markTarget. */
+              const split=isSplitTale(b,en);
+              const started=split?String(en.status||"")==="reading"
+                :(String(en.status||"")==="reading"||parseInt(en.progress)>0);
               if(entDnfOf(b,en)||!started)return "";
-              const p=pctOf(en);
-              const pgIn=`<input class="entpg nospin" type="number" inputmode="numeric" min="0"${parseInt(en.pages)?` max="${esc(String(en.pages))}"`:""} data-enpg="${en.id}"
-                  value="${esc(String(en.progress||""))}" placeholder="–" title="The page you're on in this story">`;
+              const m=split?markView(b,en):en;
+              const p=pctOf(m);
+              const pgIn=`<input class="entpg nospin" type="number" inputmode="numeric" min="0"${parseInt(m.pages)?` max="${esc(String(m.pages))}"`:""} data-enpg="${m.id}"
+                  value="${esc(String(m.progress||""))}" placeholder="–" title="${split?"The page you're on in the book":"The page you're on in this story"}">`;
               /* the same gap as the book's own bar, one level down: a story you
                  are reading with no length had no box at all, and its length
                  could only be typed in the editor */
               /* a story gets the percent box the book has, and by the same
                  rule: with a length it is the page it means, without one it
                  stands alone and draws the bar by itself */
-              const pcIn=`<input class="entpg nospin" type="number" inputmode="numeric" min="0" max="100" data-enpct="${en.id}"
-                  value="${esc(String(parseInt(en.pages)?(p==null?"":p):(en.pct||"")))}" placeholder="–"
+              const pcIn=`<input class="entpg nospin" type="number" inputmode="numeric" min="0" max="100" data-enpct="${m.id}"
+                  value="${esc(String(parseInt(m.pages)?(p==null?"":p):(m.pct||"")))}" placeholder="–"
                   title="How far through this story you are">`;
-              if(!parseInt(en.pages))return `<span class="entprog">${en.pct?`<span class="prog" style="width:56px"><i style="width:${p||0}%"></i></span>`:""}
-                <span class="rr">${pcIn}% · p.${pgIn} of <input class="entpg nospin" type="number" inputmode="numeric" min="0" data-entot="${en.id}"
+              if(!parseInt(m.pages))return `<span class="entprog">${m.pct?`<span class="prog" style="width:56px"><i style="width:${p||0}%"></i></span>`:""}
+                <span class="rr">${pcIn}% · p.${pgIn} of <input class="entpg nospin" type="number" inputmode="numeric" min="0" data-entot="${m.id}"
                   value="" placeholder="–" title="How many pages this story has — a page is a better record than a percent"></span></span>`;
               return `<span class="entprog"><span class="prog" style="width:56px"><i style="width:${p||0}%"></i></span>
-                <span class="rr">${pcIn}% · p.${pgIn} of ${esc(String(en.pages))}</span></span>`;})()}
+                <span class="rr">${pcIn}% · p.${pgIn} of ${esc(String(m.pages))}</span></span>`;})()}
             ${readsOf(en).length?`<button class="rdtog" data-enrd="${en.id}" data-nolog title="Every time you've read this story — correct a date, add one, or take a reading off">${vEntReads===en.id?"▾":"▸"} ${esc(readSummary(en,true))}</button>`:""}</div>
           ${(()=>{
             /* What this story says for itself, shown where you are looking at
@@ -38646,15 +38706,16 @@ function renderBookView(){
   qa("[data-enpg]",page).forEach(inp=>{
     inp.onclick=e=>e.stopPropagation();
     inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();inp.blur();}};
+    /* markTarget: a tale of a split volume moves the volume's bookmark */
     inp.onchange=()=>{const v=inp.value,id=inp.dataset.enpg;
-      quickEdit(bk=>{const en=findEn(bk,id);if(en)setProgress(en,v);});};
+      quickEdit(bk=>{const en=findEn(bk,id);if(en)setProgress(markTarget(bk,en),v);});};
   });
   /* the same box in percent, per story */
   qa("[data-enpct]",page).forEach(inp=>{
     inp.onclick=e=>e.stopPropagation();
     inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();inp.blur();}};
     inp.onchange=()=>{const v=inp.value,id=inp.dataset.enpct;
-      quickEdit(bk=>{const en=findEn(bk,id);if(en)setPct(en,v);});};
+      quickEdit(bk=>{const en=findEn(bk,id);if(en)setPct(markTarget(bk,en),v);});};
   });
   /* a story's total, asked where its bar would be — the same rule the editor's
      own box uses, so a length typed here and one typed there agree */
@@ -38662,7 +38723,7 @@ function renderBookView(){
     inp.onclick=e=>e.stopPropagation();
     inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();inp.blur();}};
     inp.onchange=()=>{const v=inp.value,id=inp.dataset.entot;
-      quickEdit(bk=>{const en=findEn(bk,id);if(en)en.pages=v===""?"":Math.max(1,parseInt(v)||0);});};
+      quickEdit(bk=>{const en=findEn(bk,id);if(en)markTarget(bk,en).pages=v===""?"":Math.max(1,parseInt(v)||0);});};
   });
   /* the book's own total, in the same place and by the same rule */
   {const vpp=q("#vPages",page);
@@ -42284,7 +42345,12 @@ function renderEditor(){
           <div class="inrow">
             <textarea class="field enttitle" data-et="${en.id}" rows="1" placeholder="Title" style="font-size:14px;padding:7px 10px">${esc(en.title)}</textarea>
             <span class="ratebox" style="padding:3px 9px">★ <input type="number" data-er="${en.id}" min="0" max="10" step="0.1" placeholder="–" value="${en.rating??""}" style="width:50px;font-size:14px"></span>
-            <span class="boxbtn" style="cursor:default;padding:5px 9px">Pages <input type="number" data-ep="${en.id}" min="1" placeholder="–" value="${esc(en.pages||"")}" style="border:none;width:50px;text-align:center;font-weight:600"></span>
+            ${/* a tale of a split volume has the book's length, not one of its
+                  own — see ONE BOOK, ONE BOOKMARK. One already given a length
+                  keeps its box, so it can be taken off again. */""}
+            ${entIsPart(cur,en)&&!parseInt(en.pages)
+              ?`<span class="boxbtn" style="cursor:default;padding:5px 9px" title="A tale shares its book's length and its bookmark">Pages <b>${esc(String(markHolder(cur,en).pages||"–"))}</b> · the book's</span>`
+              :`<span class="boxbtn" style="cursor:default;padding:5px 9px">Pages <input type="number" data-ep="${en.id}" min="1" placeholder="–" value="${esc(en.pages||"")}" style="border:none;width:50px;text-align:center;font-weight:600"></span>`}
           </div>
           <div class="inrow enttools">
             <!-- their 2B off the mock: the three that DO something wear their
