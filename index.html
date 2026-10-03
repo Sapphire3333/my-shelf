@@ -10978,6 +10978,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-03.6",go:["el:challenges:.qbingo"],lines:[
+    "<b>🎱 Bingo asks a book inside a collection about itself.</b> A book you read out of a collection was judged by the collection around it: <b>Tag it</b> and <b>Tagged …</b> only saw the collection's own tags, <b>A long title</b> counted the words of the collection's name, <b>Write about it</b> never saw the book's notes, and <b>In a series</b> wanted a series name — which a series kept as a collection never has, because the collection is the series. Each now looks at the book itself, and a split volume brings every one of its tales: their tags, genres, notes, hearts and marks.",
+    "One of a collection's two or more books now counts as <b>In a series</b>, and the first of them as <b>A series opener</b>. <b>📚 Books that would fit</b> lists those collections too."]},
   {v:"2026-10-03.5",lines:[
     "<b>🖼 This cover also says what is drawn over it.</b> Two devices can hold the very same picture and still show it differently, and the readout only compared the pictures. On a book's page, <b>⚙ View → 🩺 Something looks wrong → 🖼 This cover</b> now has a line 5 naming anything painted over the cover on that screen — a scrapbook picture or a note sitting on it, a faded one included — and anything underneath that fades or filters it. It also gives the picture's average colour as that device decodes it, so the same picture can be checked to come out the same on both."]},
   {v:"2026-10-03.4",go:["tab:today"],lines:[
@@ -27639,7 +27642,35 @@ const daysApart=(a,b)=>Math.round((new Date(String(b)+"T12:00")-new Date(String(
 const BINGO_LINE=40,BINGO_ALL=300;
 /* the words of a title before any subtitle, a leading The, A or An left off */
 const bgTitleWords=b=>String(b.title||"").split(/[:(]/)[0].replace(/^\s*(the|a|an)\s+/i,"").trim().split(/\s+/).filter(Boolean).length;
-const bgRating=u=>{const v=u.en&&u.en.rating!=null?u.en.rating:u.book.rating;return v==null?null:+v;};
+/* ┌─ A BOOK INSIDE A COLLECTION ANSWERS FOR ITSELF ──────────────────────────┐
+   │ The squares asked the COLLECTION about a reading out of one: "Tag it"    │
+   │ and "Tagged …" read the set's own tags and never the book's, "A long     │
+   │ title" counted the words of the set's name, "Write about it" read a      │
+   │ notes field a book inside a set does not have, and "In a series" asked   │
+   │ for a series name that a series kept as a collection never carries —     │
+   │ the collection IS the series. A unit with `en` is one whole book of a    │
+   │ collection, and a split volume brings all its tales (volTales): their    │
+   │ tags, genres, notes, hearts and marks are the volume's.                  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const bgTales=u=>u.en?volTales(u.book,u.en):[];
+const bgTags=u=>u.en?[...new Set(bgTales(u).flatMap(t=>entKeywordsOf(u.book,t)))]:(u.book.keywords||[]);
+const bgGenres=u=>u.en?[...new Set(bgTales(u).flatMap(t=>entGenresOf(u.book,t)))]:ownGenres(u.book);
+const bgTitleOf=u=>u.en?(entPrefix(u.en.title)||u.en.title||""):(u.book.title||"");
+/* one of a collection's two or more whole books is a book in a series */
+const bgInSeries=u=>!!seriesShown(u.book)||(!!u.en&&entWholes(u.book).length>1);
+const bgOpener=u=>{
+  if(!u.en)return !!seriesShown(u.book)&&parseFloat(u.book.seriesNum)===1;
+  const ws=entWholes(u.book);if(ws.length<2)return false;
+  /* the number its title gives itself, failing that its place in the set */
+  const n=titleNum(u.en.title);
+  return n!=null?n===1:ws[0]===u.en;
+};
+const bgRating=u=>{
+  if(!u.en){const v=u.book.rating;return v==null?null:+v;}
+  /* a split volume's mark is its tales' marks, averaged */
+  const rs=bgTales(u).filter(t=>t.rating!=null).map(t=>+t.rating);
+  return rs.length?rs.reduce((a,n)=>a+n,0)/rs.length:null;
+};
 const BINGO_SQ=[
   ["p500","500+ pages","A book of 500 pages or more",(c,x)=>x.u.pages>=500],
   ["p200","Under 200 pages","Something under 200 pages",(c,x)=>x.u.pages>0&&x.u.pages<200],
@@ -27654,31 +27685,32 @@ const BINGO_SQ=[
   ["newgen","New genre this year","A genre you hadn't finished yet this year",(c,x)=>c.newGenre(x)],
   ["r9","Rated 9 or 10","One you rated 9 or 10",(c,x)=>{const v=bgRating(x.u);return v!=null&&v>=9;}],
   ["r5","Rated 5 or less","One that let you down — rated 5 or lower",(c,x)=>{const v=bgRating(x.u);return v!=null&&v<=5;}],
-  ["series","In a series","A book that belongs to a series",(c,x)=>!!seriesShown(x.u.book)],
-  ["opener","A series opener","The first book of a series",(c,x)=>!!seriesShown(x.u.book)&&parseFloat(x.u.book.seriesNum)===1],
+  ["series","In a series","A book that belongs to a series, or one of a collection's books",(c,x)=>bgInSeries(x.u)],
+  ["opener","A series opener","The first book of a series",(c,x)=>bgOpener(x.u)],
   ["coll","From a collection","A story out of one of your collections",(c,x)=>!!x.u.en],
   ["quote","Keep a quote","A book you have kept a quote from",(c,x)=>(x.u.book.quotes||[]).some(q=>stripHtml(q).trim())],
   ["weekend","Weekend finish","Finished on a Saturday or a Sunday",(c,x)=>{const d=new Date(x.end+"T12:00").getDay();return d===0||d===6;}],
   ["old","Added 2+ years ago","On your shelf for two years or more when you finished it",(c,x)=>{const a=addedOf(x.u.book);return a&&(new Date(x.end+"T12:00")-a)>730*864e5;},
     ()=>books.some(b=>statusOf(b)!=="finished"&&addedOf(b)<Date.now()-730*864e5)],
-  ["fav","A favourite","One you have given a heart",(c,x)=>!!(x.u.en?x.u.en.favorite:x.u.book.favorite)],
+  ["fav","A favourite","One you have given a heart",(c,x)=>x.u.en?bgTales(x.u).some(t=>t.favorite):!!x.u.book.favorite],
   ["loyal","An old friend","By an author you have finished three or more books by",(c,x)=>c.authorN(x)>=3],
-  ["notes","Write about it","A book whose notes you have written in",(c,x)=>!!stripHtml(x.u.book.canvasText||"").trim()],
+  ["notes","Write about it","A book whose notes you have written in",
+    (c,x)=>x.u.en?bgTales(x.u).some(t=>stripHtml(t.notes||"").trim()):!!stripHtml(x.u.book.canvasText||"").trim()],
   /* six that any shelf at all can fill, so a card never has to be padded
      out with free squares — a card dealt on a thin shelf used to be, and a
      row of free squares is a line paid for nothing */
   ["p300","300+ pages","A book of 300 pages or more",(c,x)=>x.u.pages>=300],
-  ["solo","A standalone","Something that isn't part of a series",(c,x)=>!seriesShown(x.u.book)&&!x.u.en],
+  ["solo","A standalone","Something that isn't part of a series",(c,x)=>!bgInSeries(x.u)&&!x.u.en],
   ["early","First-week finish","Finished in the first seven days of the month",(c,x)=>+x.end.slice(8,10)<=7],
   ["late","Late-month finish","Finished after the 21st",(c,x)=>+x.end.slice(8,10)>21],
   ["rated","Give it a rating","Anything you have put a rating on",(c,x)=>bgRating(x.u)!=null],
-  ["tagged","Tag it","Anything wearing at least one of your tags",(c,x)=>(x.u.book.keywords||[]).length>0],
+  ["tagged","Tag it","Anything wearing at least one of your tags",(c,x)=>bgTags(x.u).length>0],
   /* four any shelf can meet, so a card is never short of squares when the
      ones above that need something — an old book, a fanfic — can't be dealt */
   ["fresh","Start to finish this month","Started and finished inside this month",(c,x)=>!!x.r.start&&String(x.r.start).slice(0,7)===x.end.slice(0,7)],
   ["mid","Mid-month finish","Finished between the 8th and the 21st",(c,x)=>{const d=+x.end.slice(8,10);return d>=8&&d<=21;}],
-  ["oneword","A one-word title","A title of a single word — a leading The or A doesn't count",(c,x)=>bgTitleWords(x.u.book)===1],
-  ["longt","A long title","A title of five words or more",(c,x)=>bgTitleWords(x.u.book)>=5],
+  ["oneword","A one-word title","A title of a single word — a leading The or A doesn't count",(c,x)=>bgTitleWords({title:bgTitleOf(x.u)})===1],
+  ["longt","A long title","A title of five words or more",(c,x)=>bgTitleWords({title:bgTitleOf(x.u)})>=5],
   /* gated on the shelf, not on the Fanfics switch: the switch is this
      device's own, and a card dealt from it differed between two devices */
   ["fic","A fanfic","Any fanfic",(c,x)=>kindOf(x.u.book)==="fanfic",()=>books.some(b=>kindOf(b)==="fanfic")],
@@ -27691,10 +27723,10 @@ function bgSquare(code){
   const f=BINGO_SQ.find(s=>s[0]===code);
   if(f)return {code,label:f[1],help:f[2],test:f[3]};
   const i=code.indexOf(":"),k=code.slice(0,i),v=code.slice(i+1);
-  if(k==="g")return {code,label:v,help:"Anything filed under "+v,test:(c,x)=>(x.u.en?entGenresOf(x.u.book,x.u.en):ownGenres(x.u.book)).some(g=>bgLow(g)===bgLow(v))};
-  if(k==="t")return {code,label:"Tagged "+v,help:"Anything tagged "+v,test:(c,x)=>(x.u.book.keywords||[]).some(t=>bgLow(t)===bgLow(v))};
+  if(k==="g")return {code,label:v,help:"Anything filed under "+v,test:(c,x)=>bgGenres(x.u).some(g=>bgLow(g)===bgLow(v))};
+  if(k==="t")return {code,label:"Tagged "+v,help:"Anything tagged "+v,test:(c,x)=>bgTags(x.u).some(t=>bgLow(t)===bgLow(v))};
   if(k==="L")return {code,label:"Title starts "+v,help:"A title beginning with "+v+" (a leading The or A doesn't count)",
-    test:(c,x)=>swNorm(String((x.u.en&&x.u.en.title)||x.u.book.title||"").replace(/^(the|a|an)\s+/i,""))[0]===v};
+    test:(c,x)=>swNorm(bgTitleOf(x.u).replace(/^(the|a|an)\s+/i,""))[0]===v};
   return null;
 }
 function bgDeal(ym){
@@ -27743,12 +27775,12 @@ function bingoTicks(s){
   const au=u=>bgLow(u.en?entAuthorOf(u.book,u.en):u.book.author);
   all.forEach(u=>u.reads.forEach(r=>{const e=String(r.end||"").slice(0,10);if(!e)return;const a=au(u);
     if(a){byAu[a]=(byAu[a]||0)+1;if(!firstAu[a]||e<firstAu[a])firstAu[a]=e;}
-    (u.en?entGenresOf(u.book,u.en):ownGenres(u.book)).forEach(g=>{const k=e.slice(0,4)+"|"+bgLow(g);if(!yrGen[k]||e<yrGen[k])yrGen[k]=e;});}));
+    bgGenres(u).forEach(g=>{const k=e.slice(0,4)+"|"+bgLow(g);if(!yrGen[k]||e<yrGen[k])yrGen[k]=e;});}));
   const c={
     firstAuthor:x=>{const a=au(x.u);return !!a&&firstAu[a]===x.end;},
     authorN:x=>byAu[au(x.u)]||0,
     reread:x=>x.u.reads.some(r=>r!==x.r&&r.end&&String(r.end).slice(0,10)<x.end),
-    newGenre:x=>(x.u.en?entGenresOf(x.u.book,x.u.en):ownGenres(x.u.book)).some(g=>yrGen[x.end.slice(0,4)+"|"+bgLow(g)]===x.end)};
+    newGenre:x=>bgGenres(x.u).some(g=>yrGen[x.end.slice(0,4)+"|"+bgLow(g)]===x.end)};
   const sq=s.codes.map(bgSquare);
   const can=sq.map(q2=>q2&&q2.code!=="free"?reads.map((x,j)=>{try{return q2.test(c,x)?j:-1;}catch(e){return -1;}}).filter(j=>j>=0):[]);
   const owner=Array(reads.length).fill(-1),at=Array(25).fill(-1);
@@ -28942,15 +28974,17 @@ const PICK_SQ={
   sitting:{note:"Any book started and finished on the same day — the shortest are listed first.",rows:()=>byPagesAsc(unreadPool())},
   week:{note:"Any book started and finished within seven days — the shortest are listed first.",rows:()=>byPagesAsc(unreadPool())},
   newgen:{note:"Filed under a genre you haven't finished a book in yet this year.",rows:()=>{const s=finishedGenresThisYear();return unreadPool().filter(b=>ownGenres(b).some(g=>!s.has(lowS(g))));}},
-  series:{note:"Books that belong to a series.",rows:()=>unreadPool().filter(b=>!!seriesShown(b))},
+  /* a collection of two or more books is a series kept as one shelf item —
+     see A BOOK INSIDE A COLLECTION ANSWERS FOR ITSELF */
+  series:{note:"Books that belong to a series, and collections of books.",rows:()=>unreadPool().filter(b=>!!seriesShown(b)||(isColl(b)&&entWholes(b).length>1))},
   opener:{note:"First books of a series.",rows:()=>unreadPool().filter(b=>!!seriesShown(b)&&parseFloat(b.seriesNum)===1)},
   coll:{note:"Collections with stories still to read.",rows:()=>books.filter(b=>isColl(b)&&(b.entries||[]).some(en=>!readsOf(en).some(r=>r&&r.end)))},
-  solo:{note:"Books that aren't part of a series.",rows:()=>unreadPool().filter(b=>!seriesShown(b))},
+  solo:{note:"Books that aren't part of a series.",rows:()=>unreadPool().filter(b=>!seriesShown(b)&&!isColl(b))},
   fav:{note:"Your favourites — a reread of one counts.",rows:()=>books.filter(b=>b.favorite)},
   loyal:{note:"By authors you have already finished two books by — a third makes them an old friend.",rows:()=>{const f=finishedAuthors();return unreadPool().filter(b=>(f[lowS(b.author)]||0)>=2);}},
   fic:{note:"Fanfics still to read.",rows:()=>unreadPool().filter(b=>kindOf(b)==="fanfic")},
   ai:{note:"AI stories.",rows:()=>books.filter(b=>kindOf(b)==="ai")},
-  tagged:{note:"Anything wearing one of your tags.",rows:()=>unreadPool().filter(b=>(b.keywords||[]).length)},
+  tagged:{note:"Anything wearing one of your tags.",rows:()=>unreadPool().filter(b=>(b.keywords||[]).length||(b.entries||[]).some(en=>(en.keywords||[]).length))},
   oneword:{note:"Titles of a single word.",rows:()=>unreadPool().filter(b=>bgTitleWords(b)===1)},
   longt:{note:"Titles of five words or more.",rows:()=>unreadPool().filter(b=>bgTitleWords(b)>=5)},
 };
