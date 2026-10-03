@@ -11029,6 +11029,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-04.1",go:["tab:ach"],lines:[
+    "<b>📚 A series kept as a collection counts as a series in four more places.</b> <b>🗂 Completionist</b> left collections out altogether, so an author whose books all sit in one collection could never count; every book of a collection now counts as its author's book. <b>🏁 The readathon</b> stepped over collections, so pages read in a book inside one counted for nothing in the forty-eight hours; they count now — a split book by its one bookmark. <b>➡️ The next in line</b> errand only knew series with a series name, so it never offered the next book of a collection; it does now, names that book, and is done only when that book is finished.",
+    "And the lists behind <b>⚔️ Series Slayer</b> and <b>The next in your series</b> name the collections still to finish — the medal already counted them, the lists didn't show them."]},
   {v:"2026-10-03.10",lines:[
     "<b>📖 A split book has one length and one bookmark.</b> The tales ✂ Split cuts out of a book are still that book in your hands, but the first tale kept the book's whole length, so finishing it filled its bar to the last page — <i>100%</i> with the other tales unread — and the other tales had no length at all and could only take a percent. Now every tale shares the book's length and its one bookmark: the tale you're reading shows where you are in the book (<i>p.150 of 192 · 78%</i>), a page typed on it — on the book's page, on Today, or on a Library row — moves that bookmark, and finishing a tale leaves it where it is. Only finishing the last tale takes it to the end.",
     "The bar is drawn on the tale you're reading; a finished tale shows its dates. In the editor a tale's Pages says <i>the book's</i> instead of a box of its own. A book whose bookmark was already stuck on its last page by an earlier finish shows <i>no page yet</i> until you type where you are."]},
@@ -20063,8 +20066,10 @@ const ACHS=[
     c=>c.rU.reduce((n,u)=>n+u.reads.filter(r=>r&&r.start&&r.end&&daysApart(String(r.start).slice(0,10),String(r.end).slice(0,10))>365).length,0)],
   ["complete","🗂","Completionist","authors with three or more books on your shelf, every one of them finished","book",
     [1,2,4,6,9,12,16,20,25,31,38,46,55,65,80],
-    c=>{const by={};c.byKind("book").filter(b=>!isColl(b)).forEach(b=>{const a=String(b.author||"").trim().toLowerCase();if(a)(by[a]=by[a]||[]).push(b);});
-      return Object.values(by).filter(g=>g.length>=3&&g.every(b=>statusOf(b)==="finished"&&!b.dnf)).length;}],
+    /* each whole book of a collection is a book by its author — a series
+       kept as one collection used to leave its author out altogether */
+    c=>{const by={};c.byKind("book").forEach(b=>authorUnits(b).forEach(u=>{if(u.a)(by[u.a]=by[u.a]||[]).push(u.done);}));
+      return Object.values(by).filter(g=>g.length>=3&&g.every(Boolean)).length;}],
   ["speed","🏎","Speed Reader","books of 300 pages or more started and finished inside a week","book",
     [1,3,6,10,18,30,45,65,90,120,160,210,270,350,450],
     c=>c.rU.filter(u=>kindOf(u.book)==="book"&&u.pages>=300
@@ -23218,6 +23223,15 @@ const finishedSince=(b,at)=>{
   const ended=x=>readsOf(x).some(r=>r&&!r.open&&r.end&&String(r.end)>=day);
   return ended(b)||(isColl(b)&&(b.entries||[]).some(en=>!entIsPart(b,en)&&ended(en)));
 };
+/* the same for one book inside a collection: finished, by a reading of its
+   own that ended on or after the day it was drawn */
+const entFinishedSince=(coll,en,at)=>{
+  if(!en||entStatusOf(coll,en)!=="finished"||entDnfOf(coll,en))return false;
+  const day=shelfDayOf(at||0);
+  return readsOf(en).some(r=>r&&!r.open&&r.end&&String(r.end)>=day);
+};
+/* the book inside a collection an errand was drawn for, if it was (e.x.en) */
+const errEnt=(b,e)=>{const id=e&&e.x&&e.x.en;return id&&b&&b.entries?(b.entries.find(x=>x.id===id)||null):null;};
 /* read before only when there is a DATE saying so — an undated reading is not
    known to be old, and "Finished today" on its note may be one press away */
 const hasDatedRead=b=>readsOf(b).some(r=>r&&!r.open&&r.end)
@@ -23450,9 +23464,29 @@ const ERRANDS=[
        if(!mates.some(x=>statusOf(x)==="finished"&&!x.dnf))return;
        const nxt=mates.find(dareOk);if(nxt)out.push(nxt);
      });
+     /* ┌─ AND A SERIES KEPT AS A COLLECTION ─────────────────────────────────┐
+        │ Only a series NAME was asked about, and a series kept as one      │
+        │ collection has none — the collection is the series — so the next  │
+        │ book of the series most read on this shelf was never the next in  │
+        │ line. A collection with one of its books read and the next waiting │
+        │ is dealt as the collection, with the book itself remembered in    │
+        │ the draw (snap → e.x.en): the ask names it, and only finishing     │
+        │ THAT book, after the draw, does the errand.                        │
+        └────────────────────────────────────────────────────────────────────┘ */
+     books.forEach(c=>{
+       if(!isColl(c)||c.apart||c.dnf||holdOf(c)||collWholes(c).length<2)return;
+       if(!collWholes(c).some(en=>{const v=volState(c,en);return v.status==="finished"&&!v.dnf;}))return;
+       const nx=(c.entries||[]).find(en=>entStatusOf(c,en)!=="finished"&&!entDnfOf(c,en)&&!entHoldOf(c,en));
+       if(nx&&entStatusOf(c,nx)==="want"&&!unownedOf(nx))out.push(Object.assign({},c,{title:nx.title||c.title,_en:nx.id}));
+     });
      return out.length?out[Math.floor(Math.random()*out.length)]:null;},
-   ask:b=>`You are partway through ${esc(seriesShown(b))} and this is the next one waiting. Finish it.`,
-   done:(b,e)=>finishedSince(b,e.at),stale:(b,e)=>readBefore(b,e.at)},
+   snap:t=>t&&t._en?{en:t._en}:undefined,
+   ask:(b,e)=>{const en=errEnt(b,e);
+     return en?`You are partway through ${esc(b.title||"a collection")} and “${esc(en.title||"Untitled")}” is the next one waiting. Finish it.`
+       :`You are partway through ${esc(seriesShown(b))} and this is the next one waiting. Finish it.`;},
+   done:(b,e)=>{const en=errEnt(b,e);return en?entFinishedSince(b,en,e.at):finishedSince(b,e.at);},
+   stale:(b,e)=>{const en=errEnt(b,e);return en?(entStatusOf(b,en)==="finished"&&!entDnfOf(b,en)&&!entFinishedSince(b,en,e.at)&&readsOf(en).some(r=>r&&r.end))
+     :readBefore(b,e.at);}},
   {k:"forgot",icon:"🕸",name:"The forgotten one",xp:60,
    find:()=>books.filter(dareOk).sort((a,b)=>addedOf(a)-addedOf(b))[0]||null,
    ask:b=>`It has waited on Want-to-read since ${esc(fmtEdited(addedOf(b)||Date.now()))} — longer than anything else on the shelf. Read it, or give up on it honestly.`,
@@ -27992,21 +28026,43 @@ const RT_HOURS=48,RT_TIERS=[[100,30],[250,60],[500,120],[1000,200]];
 function rtStart(){
   const ym=curYM(),s=monSlot("rt");
   if(s&&((s.ym===ym&&s.start)||rtLive(s)))return false;
-  const base={};books.forEach(b=>{if(!isColl(b)&&statusOf(b)==="reading"&&!b.dnf)base[b.id]=pagesReached(b,parseInt(b.pages)||0);});
+  const us=rtUnits(),base={};us.forEach(u=>{if(u.reading)base[u.k]=u.at;});
   /* and what was already finished on the day it starts: readings carry a day,
      not an hour, so a book finished this morning would otherwise count for a
      readathon started this afternoon (found by review) */
-  const sd=questToday(),skip=books.filter(b=>!isColl(b)&&!(b.id in base)&&doneReads(b).some(r=>String(r.end||"").slice(0,10)===sd)).map(b=>b.id);
-  monPut("rt",{ym,start:Date.now(),end:Date.now()+RT_HOURS*3600000,base,skip,best:0,at:Date.now()});
+  const sd=questToday(),skip=us.filter(u=>!(u.k in base)&&u.reads.some(r=>String(r.end||"").slice(0,10)===sd)).map(u=>u.k);
+  /* v:2 — this one counts the books inside collections; one started before
+     that knew no base for them, and would count their whole bookmark */
+  monPut("rt",{ym,start:Date.now(),end:Date.now()+RT_HOURS*3600000,base,skip,best:0,at:Date.now(),v:2});
   return true;
+}
+/* ┌─ EVERY BOOK THAT KEEPS A BOOKMARK ───────────────────────────────────────┐
+   │ The readathon walked the shelf's own items and stepped over collections, │
+   │ so pages read in a book of a series kept as a collection never counted  │
+   │ inside the forty-eight hours. A unit is a book, or one whole book of a   │
+   │ collection — a split volume by its one bookmark (ONE BOOK, ONE BOOKMARK),│
+   │ finished only when the volume is (volState), not when one tale is.       │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function rtUnits(){
+  const out=[];
+  books.forEach(b=>{
+    if(!isColl(b)){const pg=parseInt(b.pages)||0;
+      out.push({k:b.id,pg,at:pagesReached(b,pg),reads:doneReads(b),fin:true,reading:statusOf(b)==="reading"&&!b.dnf});return;}
+    collWholes(b).forEach(en=>{const v=volState(b,en),pg=parseInt(en.pages)||0;
+      out.push({k:b.id+"|"+en.id,pg,at:volMarkLive(b,en)?pagesReached(en,pg):0,
+        reads:volTales(b,en).flatMap(t=>doneReads(t)),fin:v.status==="finished"&&!v.dnf,
+        reading:v.status==="reading"&&!v.dnf&&!v.hold});});
+  });
+  return out;
 }
 function rtPages(s){
   const sd=shelfDayOf(s.start),ed=shelfDayOf(s.end);let n=0;
   const skip=new Set(s.skip||[]);
-  books.forEach(b=>{if(isColl(b)||skip.has(b.id))return;
-    const pg=parseInt(b.pages)||0,base=(s.base||{})[b.id]||0;
-    if(doneReads(b).some(r=>{const e=String(r.end||"").slice(0,10);return e&&e>=sd&&e<=ed;}))n+=Math.max(0,pg-base);
-    else if(statusOf(b)==="reading"&&!b.dnf)n+=Math.max(0,pagesReached(b,pg)-base);
+  rtUnits().forEach(u=>{
+    if(skip.has(u.k)||(u.k.indexOf("|")>0&&!(s.v>=2)))return;
+    const base=(s.base||{})[u.k]||0;
+    if(u.fin&&u.reads.some(r=>{const e=String(r.end||"").slice(0,10);return e&&e>=sd&&e<=ed;}))n+=Math.max(0,u.pg-base);
+    else if(u.reading)n+=Math.max(0,u.at-base);
   });
   return n;
 }
@@ -29040,7 +29096,19 @@ async function goTo(t){
 const unreadPool=()=>books.filter(b=>!b.dnf&&(statusOf(b)==="want"||statusOf(b)==="reading"));
 const byPagesAsc=a=>a.slice().sort((x,y)=>(parseInt(x.pages)||9e9)-(parseInt(y.pages)||9e9));
 const lowS=s=>String(s||"").trim().toLowerCase();
-function finishedAuthors(){const n={};books.forEach(b=>{if(statusOf(b)==="finished"&&!b.dnf){const a=lowS(b.author);if(a)n[a]=(n[a]||0)+1;}});return n;}
+/* ┌─ A COLLECTION'S BOOKS ARE ITS AUTHOR'S BOOKS ────────────────────────────┐
+   │ Counted by author, the shelf asked each shelf item for one author and   │
+   │ one stage — so a collection was one book, or (Completionist) none at    │
+   │ all, and an author whose series is kept as a collection never counted.  │
+   │ authorUnits hands back every whole book a shelf item stands for, with   │
+   │ its author (entAuthorOf) and whether it is finished (volState).          │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function authorUnits(b){
+  if(isColl(b)&&collWholes(b).length)return collWholes(b).map(en=>{const v=volState(b,en);
+    return {a:lowS(entAuthorOf(b,en)),done:v.status==="finished"&&!v.dnf,en};});
+  return [{a:lowS(b.author),done:statusOf(b)==="finished"&&!b.dnf,en:null}];
+}
+function finishedAuthors(){const n={};books.forEach(b=>authorUnits(b).forEach(u=>{if(u.done&&u.a)n[u.a]=(n[u.a]||0)+1;}));return n;}
 function finishedGenresThisYear(){const y=questToday().slice(0,4),s=new Set();
   ruNow().forEach(u=>u.reads.forEach(r=>{if(String(r.end||"").slice(0,4)===y)(u.en?entGenresOf(u.book,u.en):ownGenres(u.book)).forEach(g=>s.add(lowS(g)));}));return s;}
 const PICK_SQ={
@@ -29092,13 +29160,16 @@ const PICK_MEDAL={
   wish:["Waiting on Want-to-read","Start any of these a day or more after it was added — it counts once you finish it.",()=>unreadPool().filter(b=>statusOf(b)==="want").sort((a,b)=>addedOf(a)-addedOf(b))],
   waited:["On your shelf for over a year","Start one now and finish it, and it counts.",()=>PICK_SQ.waited.rows()],
   series:["The next in your series","Finish a whole series — every book of it — and it counts.",
-    ()=>{const seen=new Set(),out=[];books.forEach(b=>{const s=seriesShown(b);if(!s||seen.has(s))return;seen.add(s);const n=seriesMates(b).find(x=>statusOf(x)!=="finished"&&!x.dnf);if(n)out.push(n);});return out;}],
+    ()=>{const seen=new Set(),out=[];books.forEach(b=>{
+      /* a collection of books not yet read through is a series to finish */
+      if(isColl(b)){const ws=collWholes(b);if(!b.dnf&&ws.length>=2&&collDone(b)<ws.length)out.push(b);return;}
+      const s=seriesShown(b);if(!s||seen.has(s))return;seen.add(s);const n=seriesMates(b).find(x=>statusOf(x)!=="finished"&&!x.dnf);if(n)out.push(n);});return out;}],
   pages:["500 pages or more, waiting","Finish any of these and it counts.",()=>PICK_SQ.p500.rows()],
   sitting:["Short enough for one sitting","Start and finish one on the same day.",()=>PICK_SQ.p200.rows()],
   speed:["300 pages or more, waiting","Start and finish one inside a week.",()=>byPagesAsc(PICK_SQ.p300.rows())],
   authors:["By authors you haven't read yet","Finish one and a new author counts.",()=>PICK_SQ.newau.rows()],
   complete:["Unfinished, by authors you've read two or more of","Finish every book by an author on your shelf (three at least) and they count.",
-    ()=>{const f=finishedAuthors();return books.filter(b=>!isColl(b)&&statusOf(b)!=="finished"&&!b.dnf&&(f[lowS(b.author)]||0)>=2);}],
+    ()=>{const f=finishedAuthors();return books.filter(b=>!b.dnf&&authorUnits(b).some(u=>!u.done&&(f[u.a]||0)>=2));}],
   quotes:["Finished, with no quote kept","Add a line from any of them.",()=>books.filter(b=>statusOf(b)==="finished"&&!b.dnf&&!isColl(b)&&!(b.quotes||[]).some(x=>stripHtml(x).trim()))],
   written:["Finished, with no notes","Every word you write counts — a blurb, notes, likes, dislikes, quotes.",()=>PICK_MEDAL.deep[2]()],
   tagsUsed:["Without a single tag","A tag of your own on any of them counts.",()=>books.filter(b=>!isColl(b)&&!(b.keywords||[]).length)],
@@ -29159,11 +29230,16 @@ function pickExtra(key){
   if(key==="medal:genres"){const done=new Set();stageUnits().forEach(u=>{if(u.status==="finished"&&!u.dnf)ownGenres(u.book).forEach(g=>done.add(lowS(g)));});
     return say("Genres you've never finished a book in — with how many books are waiting in each",tally(unreadPool(),b=>ownGenres(b).filter(g=>!done.has(lowS(g)))));}
   if(key==="medal:complete"){const by=new Map();
-    books.filter(b=>!isColl(b)&&lowS(b.author)&&kindOf(b)==="book").forEach(b=>{const K=lowS(b.author),e=by.get(K)||{t:b.author,n:0,d:0};e.n++;if(statusOf(b)==="finished"&&!b.dnf)e.d++;by.set(K,e);});
+    books.filter(b=>kindOf(b)==="book").forEach(b=>authorUnits(b).forEach(u=>{if(!u.a)return;
+      const e=by.get(u.a)||{t:u.en?entAuthorOf(b,u.en):b.author,n:0,d:0};e.n++;if(u.done)e.d++;by.set(u.a,e);}));
     const near=[...by.values()].filter(e=>e.n>=3&&e.d<e.n).sort((a,b)=>(b.d/b.n)-(a.d/a.n)||b.n-a.n);
     return say("Authors with three or more books here, not all read yet (read of all)",near.map(e=>e.t+" ("+e.d+" of "+e.n+")"),10);}
   if(key==="medal:series"){const by=new Map();
-    books.forEach(b=>{const sr=seriesShown(b);if(!sr)return;const e=by.get(sr)||{t:sr,n:0,d:0};e.n++;if(statusOf(b)==="finished"&&!b.dnf)e.d++;by.set(sr,e);});
+    books.forEach(b=>{const sr=seriesShown(b);if(!sr||isColl(b))return;const e=by.get(sr)||{t:sr,n:0,d:0};e.n++;if(statusOf(b)==="finished"&&!b.dnf)e.d++;by.set(sr,e);});
+    /* a collection of books is a series of its own, read book by book — the
+       medal counts it (Series Slayer, s2), so the list of what is left must */
+    books.forEach(b=>{if(!isColl(b)||b.dnf)return;const ws=collWholes(b);if(ws.length<2)return;
+      by.set("c|"+b.id,{t:String(b.title||"").trim()||"A collection",n:ws.length,d:collDone(b)});});
     const open=[...by.values()].filter(e=>e.n>=2&&e.d<e.n).sort((a,b)=>(b.d/b.n)-(a.d/a.n));
     return say("Series still to finish (read of all)",open.map(e=>e.t+" ("+e.d+" of "+e.n+")"),10);}
   return "";
