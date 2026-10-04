@@ -85,8 +85,12 @@ build without a line looks, from outside, exactly like nothing changed.
   where it lives. Never quote the shelf's contents back — no titles, authors or
   numbers off it — because the file is public.
 - A commit that touches no app behaviour (dev-check, `.claude/`, `.github/`)
-  needs no line. The hook only refuses when a build that already shipped has
-  none, and the next real entry, stamped higher, covers the gap.
+  needs no line, but it still becomes a build: the hook stamps every commit.
+  The next app commit's entry, stamped higher, covers the gap. Two tooling
+  commits in a row are the exception — the hook refuses the second, since the
+  build before it shipped with no line; commit that one as
+  `SKIP_NEWS=1 git commit -F <file>`, which is the hook's own way of saying
+  "needs none" (it still stamps the build).
 
 ## 5. Commit
 
