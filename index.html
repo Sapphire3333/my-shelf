@@ -7923,8 +7923,8 @@ function openFamiliesPanel(){
        saveKwCats();if(SYNC.on)flushQueue();
        draw();
      };}
-    /* the meanings are notes to yourself, so they save as you type and live
-       with the text size rather than with the shelf */
+    /* the meanings are notes to yourself, so they save as you type, and they
+       follow you to your other device — see SETTINGS THAT FOLLOW YOU */
     qa(".bandin",wrap).forEach(inp=>{
       inp.onchange=()=>{
         settings.bandNames=settings.bandNames||{};
@@ -9014,7 +9014,7 @@ async function runOp(op){
       value=joined;
     }
     /* ┌─ THE GAME GOES UP JOINED, NOT WHOLE ─────────────────────────────────┐
-       │ These eight are joined on the way DOWN — pullAll runs each through  │
+       │ These records are joined on the way DOWN — pullAll runs each through│
        │ its own merge — but went UP whole: the upsert replaced the cloud's  │
        │ row with this device's copy. A device that saved before it had      │
        │ pulled wiped from the cloud whatever the other device had added     │
@@ -9031,7 +9031,8 @@ async function runOp(op){
     const UP_JOIN={quests:[mergeQuests,()=>quests],achSeen:[mergeAchSeen,()=>achSeen],
       streaks:[mergeStreaks,()=>streaks],tidyKeep:[mergeTidy,()=>tidyRulings()],
       histLog:[mergeHistLog,()=>histLog],petPics:[mergePetPics,()=>petPics],
-      shopPics:[mergeShopPics,()=>shopPics],ownIcons:[mergeOwnIcons,()=>ownIcons]};
+      shopPics:[mergeShopPics,()=>shopPics],ownIcons:[mergeOwnIcons,()=>ownIcons],
+      prefs:[mergePrefs,()=>sharedPrefs]};
     const uj=UP_JOIN[op.key];
     if(uj){
       const {data:row,error:re}=await s.from("meta").select("value").eq("user_id",uid).eq("key",op.key).maybeSingle();
@@ -9266,6 +9267,7 @@ async function pullAll(){
              rule and each says whether it actually changed anything, so a pull
              that brought nothing new still leaves the screen alone. */
           else if(row.key==="quests"){if(mergeQuests(row.value))gameChanged=true;}
+          else if(row.key==="prefs"){if(mergePrefs(row.value))gameChanged=true;}
           else if(row.key==="achSeen"){if(mergeAchSeen(row.value))gameChanged=true;}
           else if(row.key==="streaks"){if(mergeStreaks(row.value))gameChanged=true;}
           else if(row.key==="tidyKeep"){if(mergeTidy(row.value))gameChanged=true;}
@@ -9656,6 +9658,10 @@ async function initSync(){
      three — made here rather than guarded at every use */
   if(streaks&&!streaks.sweep)streaks.sweep={};
   try{const qv=await dbGet("meta","quests");quests=(qv&&qv.v)||null;}catch(e){quests=null;}
+  /* the settings that follow you, and a first stamp for any not seen yet —
+     see SETTINGS THAT FOLLOW YOU */
+  try{const pv=await dbGet("meta","prefs");sharedPrefs=(pv&&pv.v&&typeof pv.v==="object")?pv.v:{};}catch(e){sharedPrefs={};}
+  prefsNote();
   await petLoad();
   setTimeout(()=>{petCheckerSweep().catch(()=>{});},2500);   /* see petCheckerSweep */
   await shopPicsLoad();
@@ -11062,6 +11068,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-05.4",go:["tab:settings"],lines:[
+    "<b>⚙ Seven of your choices now follow you between your phone and your computer</b> — fanfics on or off, how often the owl talks, which medal walls fold away the medals not yet earned and the corner note's answers, Guess the book's level, the puzzle's size and cut, what you've written for the keyword families, and the ink you wear from the shop. Change one on either device and the other follows. Until you change one, each device keeps what it has now.",
+    "Text size, the theme, where the pet sits, backgrounds and the dragon, the folds you leave open and your Goodreads shelves stay as each device has them."]},
   {v:"2026-10-05.3",go:["el:challenges:.qrainbow"],lines:[
     "<b>🌈 Books inside a collection count for the rainbow.</b> A book kept inside a collection never ticked a colour, and each colour's list of waiting books left collections out. A book inside a collection that has a picture of its own now counts by that picture, and a colour's list shows the collection when one of its waiting books is that colour. A book without a picture of its own still takes no colour — it doesn't borrow the collection's cover."]},
   {v:"2026-10-05.2",go:["el:challenges:.qroad"],lines:[
@@ -26334,7 +26343,7 @@ function prWire(m){qa("[data-pr]",m).forEach(b=>b.onclick=()=>{prTap(+b.dataset.
    ┌─ THREE CUTS, AND PIECES THAT CLICK IN ──────────────────────────────────┐
    │ Their second ask: pieces cut the way a real puzzle is, dragged rather   │
    │ than swapped, and a piece that reaches its place clicking into it. So   │
-   │ the cut is a choice (settings.pzCut, this device's): ▦ Squares is the   │
+   │ the cut is a choice (settings.pzCut, it follows you): ▦ Squares is the │
    │ swap board above, and a square that lands home locks there now; 〰 Wavy │
    │ and 🧩 Jigsaw are loose pieces scattered round an empty board, each     │
    │ dropped within a third of a piece of its place snapping home.           │
@@ -45765,7 +45774,61 @@ async function storageHunt(){
   }catch(e){}
   return out;
 }
-function saveSettings(){dbPut("meta",{k:"settings",v:settings});}
+/* ┌─ SETTINGS THAT FOLLOW YOU ───────────────────────────────────────────────┐
+   │ Everything in `settings` stays on the device it was set on — right for   │
+   │ the text size, the theme or where the pet sits, wrong for the choices    │
+   │ that are about you rather than the screen. These nine follow you:        │
+   │ fanfics on or off, how often the owl talks, which medal walls fold their │
+   │ unearned medals and the corner note's three answers, Guess the book's    │
+   │ level, the puzzle's size and cut, what the keyword families mean, and    │
+   │ the ink worn from the shop. The Goodreads shelves added for the feed     │
+   │ import stay on their device.                                             │
+   │ Each carries the time it was last changed, in sharedPrefs (meta "prefs", │
+   │ synced, joined on the way up as well — see THE GAME GOES UP JOINED), and │
+   │ of two devices the later change wins, key by key. saveSettings notices  │
+   │ the change (prefsNote); a pull applies the other side's (mergePrefs)    │
+   │ straight into `settings`, saving it WITHOUT noticing, or the arriving   │
+   │ value would be stamped as this device's own change.                      │
+   │ A value first seen by this build is stamped 0, not now: two devices that │
+   │ differ keep their own until one of them is changed, rather than the     │
+   │ second to load quietly overruling the first.                            │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","bandNames","inkSet"];
+/* `var` with no value on purpose: init starts at line ~9600, long before this
+   line runs, and a saveSettings reaching prefsNote that early must find it
+   merely unloaded — a `let` read there is a ReferenceError that stops the
+   whole script, and `var x=null` here would wipe what init had loaded */
+var sharedPrefs;
+const prefClone=v=>v===undefined?null:JSON.parse(JSON.stringify(v));
+const prefSig=v=>JSON.stringify(v===undefined?null:v);
+function prefsNote(){
+  if(!sharedPrefs)return false;   /* not loaded yet — the first save after boot catches up */
+  let ch=false;
+  for(const k of SHARED_PREFS){
+    const p=sharedPrefs[k];
+    if(!p){sharedPrefs[k]={v:prefClone(settings[k]),at:0};ch=true;continue;}
+    if(prefSig(p.v)!==prefSig(settings[k])){sharedPrefs[k]={v:prefClone(settings[k]),at:Date.now()};ch=true;}
+  }
+  if(ch)dbPut("meta",{k:"prefs",v:sharedPrefs}).then(()=>enqueue({kind:"meta",key:"prefs"})).catch(()=>{});
+  return ch;
+}
+function mergePrefs(rv){
+  if(!rv||typeof rv!=="object"||!sharedPrefs)return false;
+  let shown=false,kept=false;
+  for(const k of SHARED_PREFS){
+    const r=rv[k],m=sharedPrefs[k];
+    if(!r||typeof r!=="object"||(m&&(r.at||0)<=(m.at||0)))continue;
+    sharedPrefs[k]={v:prefClone(r.v),at:r.at||0};kept=true;
+    if(prefSig(settings[k])!==prefSig(r.v)){
+      if(r.v==null)delete settings[k];else settings[k]=prefClone(r.v);
+      shown=true;
+    }
+  }
+  if(kept)dbPut("meta",{k:"prefs",v:sharedPrefs}).catch(()=>{});
+  if(shown)dbPut("meta",{k:"settings",v:settings}).catch(()=>{});
+  return shown;
+}
+function saveSettings(){dbPut("meta",{k:"settings",v:settings});prefsNote();}
 
 /* one shared shape for export, snapshots and import — keeps the old file compatible */
 async function buildBackup(){
