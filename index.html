@@ -6801,6 +6801,21 @@ const entHoldOf=(coll,en)=>{
   /* the series on hold holds the books not read yet, not the ones read */
   return !!(coll&&coll.hold)&&collDefault(coll)!=="finished";
 };
+/* ⌛ Don't have it yet passes down as well: a collection marked so covers
+   every story in it you are not reading and have not finished, and a volume
+   its tales. A story's own mark always stands — the series owned but for its
+   fourth book, not out yet, is marked on the fourth alone and the collection
+   says nothing. unownedOf(en) is still the story's OWN mark, for the button
+   that sets it and for whether a story steps out on the shelf. */
+const entUnownedOf=(coll,en)=>{
+  if(!en)return false;
+  if(en.unowned)return true;
+  const st=entStatusOf(coll,en);
+  if(st==="reading"||st==="finished")return false;
+  const w=entWholeOf(coll,en);
+  if(w&&w.unowned)return true;
+  return !!(coll&&coll.unowned);
+};
 /* A story finished on the same day as the collection around it need not say so
    twice. But one you are still reading, or have not started, or set aside, has
    no finish date to borrow — that date was the collection's, and handing it over
@@ -6877,10 +6892,10 @@ function markEntStatus(coll,en,what){
      reading it again, so that is what it goes back to saying. */
   else if(what==="hold"){if(en.hold){en.hold=false;if(openRead(en))en.status="reading";}
     else{en.hold=true;en.dnf=false;en.status="";}}
-  /* A story's own, and it does NOT pass down from the collection the way giving
-     up and setting aside do. The case it exists for is the opposite one: a
-     series kept as a collection, three books read and the fourth not published
-     yet — the collection is owned, one story inside it is not. Returns before
+  /* A story's own. The case it exists for: a series kept as a collection,
+     three books read and the fourth not published yet — the collection is
+     owned, one story inside it is not. A mark on the collection itself passes
+     down to its unread stories (entUnownedOf); this one never goes up. Returns before
      applyReading for the same reason the book's does: whether you have a thing
      says nothing about your readings of it. */
   else if(what==="unowned"){en.unowned=!en.unowned;return true;}
@@ -7271,8 +7286,9 @@ const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
      saying whatever it said before — usually Finished, since setting it aside
      clears the stage — and the On hold filter never found it. */
   /* and the same for "haven't got it yet", or the Library's own pill for it
-     could never find a story — only the collection around it */
-  status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),hold:entHoldOf(coll,en),unowned:!!en.unowned,
+     could never find a story — only the collection around it. Passed down
+     from the collection the way on hold is (entUnownedOf) */
+  status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),hold:entHoldOf(coll,en),unowned:entUnownedOf(coll,en),
   dateFinished:entDateOf(coll,en),favorite:!!en.favorite,summary:en.summary||"",
   /* its own readings travel with it, so a story read three times says so on the
      shelf rather than borrowing the collection's count */
@@ -11075,6 +11091,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-05.10",go:["tab:challenges"],lines:[
+    "<b>⌛ Bingo and medal lists leave out the books you haven't got.</b> Press a bingo square, or a medal's ➡ Take me there, and the books marked ⌛ <i>Don't have it yet</i> are no longer offered — a line under the heading says so. Two medal lists still show them, because there the missing book is the point: <i>every book by an author</i> and <i>the next in your series</i>. Getting and finishing a ⌛ book still counts like any other.",
+    "<b>📚 ⌛ on a whole collection now covers its stories.</b> Mark a collection <i>Don't have it yet</i> and every story in it you aren't reading and haven't finished is too — its page shows them as “· same”, the Library's ⌛ pill counts them, and on Today a part-way set marked that way moves to <i>Waiting to get hold of</i>. A story marked on its own is unchanged."]},
   {v:"2026-10-05.9",go:["el:challenges:.qrainbow"],lines:[
     "<b>🌈 A colour's list leaves out the books you haven't got.</b> Anything marked ⌛ <i>Don't have it yet</i> — a book, a story inside a collection, or a whole collection — no longer shows up when you press a colour on the rainbow, since it isn't one you can pick up this month. A story you're already reading stays, even in a collection marked that way."]},
   {v:"2026-10-05.8",go:["tab:challenges"],lines:[
@@ -23551,7 +23570,7 @@ const ERRANDS=[
        if(!isColl(c)||c.apart||c.dnf||holdOf(c)||collWholes(c).length<2)return;
        if(!collWholes(c).some(en=>{const v=volState(c,en);return v.status==="finished"&&!v.dnf;}))return;
        const nx=(c.entries||[]).find(en=>entStatusOf(c,en)!=="finished"&&!entDnfOf(c,en)&&!entHoldOf(c,en));
-       if(nx&&entStatusOf(c,nx)==="want"&&!unownedOf(nx))out.push(Object.assign({},c,{title:nx.title||c.title,_en:nx.id}));
+       if(nx&&entStatusOf(c,nx)==="want"&&!entUnownedOf(c,nx))out.push(Object.assign({},c,{title:nx.title||c.title,_en:nx.id}));
      });
      return out.length?out[Math.floor(Math.random()*out.length)]:null;},
    snap:t=>t&&t._en?{en:t._en}:undefined,
@@ -29468,7 +29487,28 @@ async function goTo(t){
    list is worked out again every time Search draws it, so a book you finish
    leaves it by itself. Books still to be read come first where it matters;
    a condition only a finished book can meet lists finished ones. */
-const unreadPool=()=>books.filter(b=>!b.dnf&&(statusOf(b)==="want"||statusOf(b)==="reading"));
+/* ---- WAITING, AND YOURS TO PICK UP ----
+   Every list drawn from unreadPool offers a book to start and finish — a
+   bingo square this month, a medal's next step — so a book marked ⌛ Don't
+   have it yet is not on them: a book of its own by its mark, a collection
+   once every story in it still to read is ⌛, its own or passed down
+   (entUnownedOf). Reading a thing answers "have you got it" by itself.
+   Only the lists: a ⌛ book you get and finish counts like any other. The
+   two medal lists where the missing book IS the point — every book by an
+   author, the next in a series — do not draw from here. */
+const canPickUp=b=>{
+  if(isColl(b)&&collWholes(b).length)return collWholes(b).some(en=>!entDnfOf(b,en)
+    &&(entStatusOf(b,en)==="reading"||(entStatusOf(b,en)!=="finished"&&!entUnownedOf(b,en))));
+  return statusOf(b)==="reading"||!unownedOf(b);
+};
+/* pickFromPool: set when a list was drawn from here, so Search's heading can
+   say the ⌛ ones are left out — and only under the lists that leave them */
+let pickFromPool=false,sPickPool=false;
+const unreadPool=()=>{pickFromPool=true;
+  return books.filter(b=>!b.dnf&&(statusOf(b)==="want"||statusOf(b)==="reading")&&canPickUp(b));};
+/* whether the shelf has any waiting book that the pool leaves out */
+const pickLeftOut=()=>books.some(b=>!b.dnf&&(statusOf(b)==="want"||statusOf(b)==="reading")&&!canPickUp(b))
+  ||books.some(b=>isColl(b)&&canPickUp(b)&&collWholes(b).some(en=>entStatusOf(b,en)==="want"&&!entDnfOf(b,en)&&entUnownedOf(b,en)));
 const byPagesAsc=a=>a.slice().sort((x,y)=>(parseInt(x.pages)||9e9)-(parseInt(y.pages)||9e9));
 const lowS=s=>String(s||"").trim().toLowerCase();
 /* ┌─ A COLLECTION'S BOOKS ARE ITS AUTHOR'S BOOKS ────────────────────────────┐
@@ -29501,7 +29541,8 @@ const PICK_SQ={
      see A BOOK INSIDE A COLLECTION ANSWERS FOR ITSELF */
   series:{note:"Books that belong to a series, and collections of books.",rows:()=>unreadPool().filter(b=>!!seriesShown(b)||(isColl(b)&&entWholes(b).length>1))},
   opener:{note:"First books of a series.",rows:()=>unreadPool().filter(b=>!!seriesShown(b)&&parseFloat(b.seriesNum)===1)},
-  coll:{note:"Collections with stories still to read.",rows:()=>books.filter(b=>isColl(b)&&(b.entries||[]).some(en=>!readsOf(en).some(r=>r&&r.end)))},
+  coll:{note:"Collections with stories still to read.",rows:()=>books.filter(b=>isColl(b)&&(b.entries||[]).some(en=>!readsOf(en).some(r=>r&&r.end)
+    &&(entStatusOf(b,en)==="reading"||!entUnownedOf(b,en))))},
   solo:{note:"Books that aren't part of a series.",rows:()=>unreadPool().filter(b=>!seriesShown(b)&&!isColl(b))},
   fav:{note:"Your favourites — a reread of one counts.",rows:()=>books.filter(b=>b.favorite)},
   loyal:{note:"By authors you have already finished two books by — a third makes them an old friend.",rows:()=>{const f=finishedAuthors();return unreadPool().filter(b=>(f[lowS(b.author)]||0)>=2);}},
@@ -29572,18 +29613,17 @@ function pickDef(key){
   if(k==="bingo"){const sq=bgSquare(v),d=pickBingo(v);return {label:"Bingo — "+((sq&&sq.label)||v),note:d.note,rows:d.rows};}
   if(k==="rainbow"){const c=RAINBOW.find(r=>r[0]===v)||["",v];
     return {label:"The rainbow — "+c[1].toLowerCase()+" covers",
-      note:"Waiting books whose covers are mostly "+c[1].toLowerCase()+". Finish one this month and it ticks the colour. Books marked ⌛ Don't have it yet are left out.",
+      note:"Waiting books whose covers are mostly "+c[1].toLowerCase()+". Finish one this month and it ticks the colour.",
       rows:()=>{
         /* a collection with books inside is listed ONCE, when a waiting book
            in it with a picture of its own is this colour (the way bingo lists
            one); a collection with none inside is a book like any other, by its
            own cover — see A BOOK INSIDE A COLLECTION, BY ITS OWN PICTURE.
-           A book you haven't got is not one to pick up this month: ⌛ on the
-           book, on the story, or on its whole collection leaves it out — unless
-           the story is being read, which answers "have you got it" by itself
-           (as markStatus does) */
-        const all=unreadPool().filter(b=>(!isColl(b)||!collWholes(b).length)&&!unownedOf(b));
-        const had=(c,en)=>entStatusOf(c,en)==="reading"||!(unownedOf(en)||unownedOf(c));
+           A book you haven't got is not one to pick up this month — see
+           WAITING, AND YOURS TO PICK UP; unreadPool leaves out the single ones,
+           had() the stories */
+        const all=unreadPool().filter(b=>!isColl(b)||!collWholes(b).length);
+        const had=(c,en)=>entStatusOf(c,en)==="reading"||!entUnownedOf(c,en);
         const colls=books.filter(b=>isColl(b)&&!b.dnf).map(c=>({c,subs:collWholes(c)
           .filter(en=>en.cover&&!entDnfOf(c,en)&&/^(want|reading)$/.test(entStatusOf(c,en))&&had(c,en)).map(en=>hueStory(c,en))}))
           .filter(x=>x.subs.length);
@@ -31699,21 +31739,21 @@ async function renderHub(part){
     return {on,nxt:on||(b.entries||[]).find(en=>entStatusOf(b,en)!=="finished"&&!entDnfOf(b,en))};
   };
   /* ---- and whether the next one is a book you have ----
-     Their report: Continue with? was offering sets whose next story is marked
-     ⌛ Don't have it yet, which is not a thing you can continue with — it is a
-     thing to watch for. unownedOf reads the entry's own mark; it is never
-     inherited, so a set marked ⌛ as a whole does not make all its stories ⌛. */
-  const collWaiting=b=>{const {nxt}=collNext(b);return !!(nxt&&unownedOf(nxt));};
+     A set whose next story is marked ⌛ Don't have it yet is not a thing you
+     can continue with — it is a thing to watch for. entUnownedOf reads the
+     story's own mark or, failing one, the collection's: a set marked ⌛ as a
+     whole waits on every story in it not yet read. */
+  const collWaiting=b=>{const {nxt}=collNext(b);return !!(nxt&&entUnownedOf(b,nxt));};
   const collBody=b=>{
     const {on,nxt}=collNext(b);
     /* on the waiting card: is there anything further down the set you HAVE
        got? A set stalled at #4 with #5 and #6 on the shelf is worth saying so
        about, or the card looks like a dead end */
     const past=nxt?(b.entries||[]).indexOf(nxt)+1:0;
-    const laterOwned=nxt&&unownedOf(nxt)
-      ?(b.entries||[]).slice(past).filter(en=>!unownedOf(en)&&entStatusOf(b,en)!=="finished"&&!entDnfOf(b,en)).length:0;
+    const laterOwned=nxt&&entUnownedOf(b,nxt)
+      ?(b.entries||[]).slice(past).filter(en=>!entUnownedOf(b,en)&&entStatusOf(b,en)!=="finished"&&!entDnfOf(b,en)).length:0;
     return `<div class="hint" style="margin:3px 0 0">${collDone(b)} of ${entWholes(b).length} read${nxt?` · ${on?"on":"next"}: ${esc(nxt.title||"one of them")}`:""}${
-        nxt&&unownedOf(nxt)?` <span class="bst wait" title="You have marked this one ⌛ Don't have it yet">⌛ not yours yet</span>`:""}</div>${
+        nxt&&entUnownedOf(b,nxt)?` <span class="bst wait" title="${unownedOf(nxt)?"You have marked this one":"The collection is marked"} ⌛ Don't have it yet">⌛ not yours yet</span>`:""}</div>${
         laterOwned?`<div class="hint" style="margin:1px 0 0">${laterOwned} further on you do have.</div>`:""}
       <span class="prog" style="display:block;height:8px;margin-top:4px;max-width:260px"><i style="width:${pctOf(b)||0}%"></i></span>`;
   };
@@ -31742,9 +31782,8 @@ async function renderHub(part){
      you have not got yet cannot answer that, and nineteen rows where seven of
      them are out of reach is a list you have to check each time. The seven are
      a different question — has it come out, is it worth the price yet — so
-     they get a card of their own directly underneath, which is the shape the
-     ask described. The mark is never inherited, so nothing lands here by
-     accident; a story has to have been marked ⌛ itself. */
+     they get a card of their own directly underneath. A set lands here when
+     its next story is marked ⌛ itself, or the whole set is (entUnownedOf). */
   const partway=allPartway.filter(b=>!collWaiting(b));
   const waitColl=allPartway.filter(collWaiting);
   /* one builder, two cards: they differ only in their words. Six at a time
@@ -31765,7 +31804,7 @@ async function renderHub(part){
     "Collections you are part-way through without having set them to Reading now. A row opens at the next story."):"";
   const waitCollHtml=today&&waitColl.length?partwayCard("secWaitColl","⌛ Waiting to get hold of",waitColl,"wcx","wcMore",
     "more waiting",
-    "Part-way through, and the next story is one you have marked ⌛ Don't have it yet. Worth a glance now and then — take the mark off and the set goes straight back to Continue with?."):"";
+    "Part-way through, and the next story is ⌛ Don't have it yet — marked on its own, or with the whole collection. Worth a glance now and then — take the mark off and the set goes straight back to Continue with?."):"";
   /* ---- Next in line ----
      Every series you are part-way through, and the next one you could start
      today — the same rule the errand of that name draws one of. All of them
@@ -35588,7 +35627,7 @@ function renderSearchBody(){
     if(f.type==="gap"){const g=GAPS.find(x=>x[0]===f.value);results=g?g[2]().filter(sKindOk):[];}
     if(f.type==="dgap"){const g=DEEP_GAPS.find(x=>x[0]===f.value);results=g?g[2]().filter(sKindOk):[];}
     /* a condition's own list — a bingo square, a colour, a medal; see PICKS */
-    if(f.type==="pick"){try{results=pickDef(f.value).rows().filter(sKindOk);}catch(e){results=[];}}
+    if(f.type==="pick"){pickFromPool=false;try{results=pickDef(f.value).rows().filter(sKindOk);}catch(e){results=[];}sPickPool=pickFromPool;}
     heading=esc(f.label);
   }else if(S.multi.length){
     results=sUnits.filter(u=>S.multi.every(g=>(u.genres||[]).includes(g))).map(unitRow);
@@ -35753,6 +35792,8 @@ function renderSearchBody(){
     }).join("");
     html+=`<div class="sec" id="sHits"><div class="heading"><h2 class="serif">${heading}</h2><span class="n">(${results.length})</span>${S.filter&&S.filter.type==="author"?`<button class="btn smallbtn" id="sgrp" title="Link as a series, fold into a collection, or merge duplicate spellings">📚 Group / tidy…</button>`:""}<button class="clearbtn" id="sclear">✕ Clear</button></div>
       ${S.filter&&S.filter.type==="pick"&&S.filter.note?`<div class="hint" style="margin:-4px 0 10px">${esc(S.filter.note)}${(x=>x?"<br>"+x:"")(pickExtraSafe(S.filter.value))}${
+        /* see WAITING, AND YOURS TO PICK UP */
+        sPickPool&&pickLeftOut()?"<br>⌛ Books you've marked <i>Don't have it yet</i> are left out.":""}${
         huePickShowing()&&hueWaitN?`<br><b>⏳ ${hueWaitN>0?`Still looking at ${hueWaitN.toLocaleString()} cover${hueWaitN===1?"":"s"}`:"Reading the cover colours"}</b> kept in this browser — the list fills in as they are read.`:""}</div>`:""}
       ${show.length?rowsHtml:'<div class="none" style="text-align:center;padding:30px 0">Nothing here yet.</div>'}
       ${results.length>show.length?`<div class="hrow2" style="margin-top:10px;justify-content:center">
@@ -38896,11 +38937,12 @@ function renderBookView(){
         <div class="entmain">
           <div class="hrow2"><b class="enth">${esc(en.title)||"Untitled"}</b>
             ${lookupChip(b,en)}
-            ${(()=>{const dnf=entDnfOf(b,en),stk=entStatusOf(b,en),una=unownedOf(en);
+            ${(()=>{const dnf=entDnfOf(b,en),stk=entStatusOf(b,en),una=entUnownedOf(b,en);
               /* the mark counts as the story having said something of its own,
                  or a story you had marked went on claiming to be "· same" as a
-                 collection that says nothing of the sort */
-              const own=!!(en.dnf||una||String(en.status||"").trim());
+                 collection that says nothing of the sort. Its OWN mark — one
+                 passed down from a collection marked ⌛ is "· same" */
+              const own=!!(en.dnf||unownedOf(en)||String(en.status||"").trim());
               const stl=dnf?"Did not finish":una?"Don't have it yet":(STATUSES.find(([k])=>k===stk)||["","—"])[1];
               const sym=dnf?"✕":una?"⌛":stk==="finished"?"✓":stk==="reading"?"📖":"★";
               /* and SAME AS WHAT: a piece of a volume takes the volume's word
@@ -38910,7 +38952,7 @@ function renderBookView(){
               /* "speaks" is the same three fields the inheritance reads, not
                  the status alone — a volume marked only Did not finish is
                  still where its piece's word came from */
-              const from=(whole&&(String(whole.status||"").trim()||whole.dnf||whole.hold))
+              const from=(whole&&(String(whole.status||"").trim()||whole.dnf||whole.hold||whole.unowned))
                 ?"The same as “"+(whole.title||"Untitled")+"”"
                 :"The same as the collection";
               return `<button class="vst ${dnf?"dnf":stk}" data-enst="${en.id}" title="${own?"This story's own":esc(from)} — tap to change">${sym} ${esc(stl)}${own?"":" · same"} ▾</button>`;})()}
