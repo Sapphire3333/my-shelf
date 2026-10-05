@@ -3900,10 +3900,17 @@ html[data-phone="1"] .arcchips .pill.arcchip{font-size:13px;padding:6px 10px}
 .pzsvg{display:block;width:min(100%,560px);margin:0 auto;user-select:none;-webkit-user-select:none;overflow:hidden;touch-action:none}
 .pzsvg.done{touch-action:auto}
 .pzsvg .pzbed{fill:color-mix(in srgb,var(--card) 70%,var(--line));stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
-.pzsvg .pzghost{opacity:.16;pointer-events:none}
+/* fill-opacity, not opacity: the same faint picture, but a fill is painted
+   straight onto the board where an opacity sends the whole layer through a
+   buffer of its own, again under every frame a piece moves over it */
+.pzsvg .pzghost{fill-opacity:.16;pointer-events:none}
 .pzsvg .pzp path{fill:url(#pzPat);stroke:rgba(0,0,0,.5);stroke-width:1;vector-effect:non-scaling-stroke;stroke-linejoin:round}
 .pzsvg .pzp{cursor:grab;touch-action:none}
-.pzsvg .pzp.lift{cursor:grabbing;filter:drop-shadow(0 4px 6px rgba(0,0,0,.4))}
+/* the piece in hand casts a hard shadow of its own shape (.pzsh, added by
+   pzLooseWire) — a filter:drop-shadow re-blurred the picture-filled piece on
+   every move, which is the dearest thing a moving piece can ask for */
+.pzsvg .pzp.lift{cursor:grabbing}
+.pzsvg .pzp .pzsh{fill:rgba(0,0,0,.3);stroke:none;pointer-events:none}
 .pzsvg .pzp.locked{cursor:default;pointer-events:none}
 .pzsvg .pzp.locked path{stroke:rgba(0,0,0,.14)}
 .pzsvg.done .pzp.locked path{stroke:transparent}
@@ -11068,6 +11075,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-05.6",go:["tab:challenges"],lines:[
+    "<b>🧩 Puzzle pieces move more smoothly.</b> Dragging a wavy or jigsaw piece made the browser redraw far more than it needed to on every move: a soft shadow under the piece in hand, the faint picture under the board, and your cover at its full stored size inside every piece. The shadow is now a plain one of the piece's own shape, the faint picture is drawn straight onto the board, and the cover is cut once to the size the board is shown at.",
+    "If it still drags badly, ⚙ Settings → <i>If something is wrong</i> → Copy now includes how many frames a second your last few drags managed — send that along."]},
   {v:"2026-10-05.5",go:["el:challenges:.qroad"],lines:[
     "<b>🛤 The long road walks only what you read.</b> It counted everything your shelf's pages added up to since you set off — so marking an old book finished with no dates walked you along with it, and so would a finish typed in with an old date or a page count filled in on a book read years ago. It walks now the way your pet counts: the pages you move your bookmark on since you set off, and the books you finish since then.",
     "A book marked finished with no dates walks nothing — unless you press <b>Finished today</b> on its note. Towns you have already reached stay paid. A road you set off on before this build counts the whole of the day you set off."]},
@@ -26666,11 +26676,69 @@ function pzDrop(i,x,y){
   gameSfx(joined?"snap":"drop");questSave();
   return {home:false,mates,ox,oy,joined};
 }
+/* ┌─ A PIECE IN HAND COSTS ONE PICTURE, NOT A FILTER ───────────────────────┐
+   │ Dragging was laggy on a computer. What a move asks of the script is     │
+   │ nothing — measured, 0.06 ms a move on a 96-piece board, the two rect     │
+   │ reads included — so the cost is all in the painting. Three things made   │
+   │ it dear, and all three are gone:                                         │
+   │  · a filter:drop-shadow on the piece in hand, re-blurring a picture-     │
+   │    filled shape every move; it is now a hard copy of the piece's own     │
+   │    outline, a little down and right (.pzsh);                             │
+   │  · the faint picture under the board at `opacity`, a layer of its own    │
+   │    repainted under the piece each frame; now `fill-opacity` (the CSS);   │
+   │  · the cover drawn into every piece at its full stored size, 1,000 px or │
+   │    more, resampled on every frame; now cut once to the size the board is │
+   │    actually shown at (pzPictureFor), kept per size in pzPicKeep.         │
+   │ And a move now lands once a frame (requestAnimationFrame) rather than    │
+   │ once per pointer event.                                                  │
+   │ The drag also times its own frames and keeps the last few in            │
+   │ localStorage (pzDragNote); ⚙ Settings → If something is wrong prints     │
+   │ them, so "still laggy" can be answered with that device's numbers.       │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+const pzPicKeep=new Map();
+function pzPictureFor(svg,id,d){
+  return new Promise(res=>{
+    const r=svg.getBoundingClientRect(),v=svg.viewBox.baseVal;
+    /* a board not laid out (a hidden tab) has no size to cut to */
+    if(!r.width||r.width<50||!v||!v.width)return res(d);
+    const per=Math.max(v.width/r.width,v.height/Math.max(1,r.height)),dpr=window.devicePixelRatio||1;
+    const w=Math.ceil(PZ_W/per*dpr),h=Math.ceil(PZ_H/per*dpr),key=id+"@"+w+"x"+h;
+    if(pzPicKeep.has(key))return res(pzPicKeep.get(key));
+    const im=new Image();
+    im.onload=()=>{try{
+      /* already about the size it is shown at — nothing to gain */
+      if(im.naturalWidth<=w*1.15&&im.naturalHeight<=h*1.15){pzPicKeep.set(key,d);return res(d);}
+      const cv=document.createElement("canvas");cv.width=w;cv.height=h;
+      const x=cv.getContext("2d");x.imageSmoothingQuality="high";
+      /* the same crop the pattern's xMidYMid slice makes */
+      const k=Math.max(w/im.naturalWidth,h/im.naturalHeight),dw=im.naturalWidth*k,dh=im.naturalHeight*k;
+      x.drawImage(im,(w-dw)/2,(h-dh)/2,dw,dh);
+      const out=cv.toDataURL("image/jpeg",0.9);pzPicKeep.set(key,out);res(out);
+    }catch(e){res(d);}};
+    im.onerror=()=>res(d);
+    im.src=d;
+  });
+}
+/* the last few drags' frames, for the readout — see A PIECE IN HAND */
+const PZ_DRAG_KEY="shelfPzDrag";
+function pzDragNote(o){
+  try{const a=JSON.parse(localStorage.getItem(PZ_DRAG_KEY)||"[]");a.unshift(o);
+    localStorage.setItem(PZ_DRAG_KEY,JSON.stringify(a.slice(0,5)));}catch(e){}
+}
+function pzDragLines(){
+  let a=[];try{a=JSON.parse(localStorage.getItem(PZ_DRAG_KEY)||"[]");}catch(e){}
+  if(!a.length)return ["Puzzle drags: none timed yet — drag a piece of a wavy or jigsaw cover puzzle, then look here again."];
+  return ["Puzzle drags, newest first — frames a second while a piece was in hand:",
+    ...a.map(e=>"   · "+new Date(e.t).toLocaleTimeString()+" "+e.v+" — "+e.fps+" a second over "+e.ms+" ms ("+e.frames+" frames, "
+      +e.slow+" slower than 50 ms, slowest "+e.worst+" ms); "+e.moves+" pointer moves; "+e.n+" piece"+(e.n===1?"":"s")+" in hand of "
+      +e.of+", "+e.cut+"; picture "+e.pic)];
+}
 function pzLooseWire(m,svg){
   const s0=arcSlot("pz");
-  /* the cover itself, once, into the pattern */
+  /* the cover itself, once, into the pattern — cut to the size it is shown at */
   const img=q("image[data-pzimg]",svg),id=svg.dataset.pzimgid;
-  if(img&&id)arcPicture(id).then(d=>{if(d){img.setAttribute("href",d);try{img.setAttributeNS("http://www.w3.org/1999/xlink","href",d);}catch(e){}}});
+  if(img&&id)arcPicture(id).then(d=>d?pzPictureFor(svg,id,d):d).then(d=>{if(d){img.setAttribute("href",d);try{img.setAttributeNS("http://www.w3.org/1999/xlink","href",d);}catch(e){}
+    img.dataset.pzsize="";const t=new Image();t.onload=()=>{img.dataset.pzsize=t.naturalWidth+"×"+t.naturalHeight;};t.src=d;}});
   if(!s0||s0.over)return;
   const [c,r0]=pzCR(s0),pw=PZ_W/c,ph=PZ_H/r0,tp=0.34*Math.min(pw,ph);
   const v=svg.viewBox.baseVal,VB=[v.x,v.y,v.width,v.height];
@@ -26707,9 +26775,19 @@ function pzLooseWire(m,svg){
     const lim=mates.reduce((L,k)=>{const hx=(k%c)*pw,hy=Math.floor(k/c)*ph;
       return [Math.max(L[0],Math.min(0,VB[0]+tp-hx)),Math.min(L[1],Math.max(0,VB[0]+VB[2]-pw-tp-hx)),
               Math.max(L[2],Math.min(0,VB[1]+tp-hy)),Math.min(L[3],Math.max(0,VB[1]+VB[3]-ph-tp-hy))];},[-1e9,1e9,-1e9,1e9]);
-    dr={i,els,lim,sx:u[0],sy:u[1],ox:o[0],oy:o[1],x:o[0],y:o[1],moved:false,id:e.pointerId};
+    dr={i,els,lim,sx:u[0],sy:u[1],ox:o[0],oy:o[1],x:o[0],y:o[1],moved:false,id:e.pointerId,
+      dirty:false,moves:0,frames:[]};
     try{svg.setPointerCapture(e.pointerId);}catch(err){}
-    els.forEach(el=>{svg.appendChild(el);el.classList.add("lift");});
+    els.forEach(el=>{svg.appendChild(el);el.classList.add("lift");
+      /* the hard shadow — see A PIECE IN HAND COSTS ONE PICTURE */
+      const p=q("path",el);
+      if(p&&!q(".pzsh",el)){const sh=p.cloneNode(false);sh.setAttribute("class","pzsh");sh.setAttribute("transform","translate(1.5 3)");el.insertBefore(sh,p);}});
+    /* one frame, one move: the position the pointer last reached is drawn
+       when the screen is next drawn, and each frame's time is kept */
+    const D=dr,tick=t=>{if(dr!==D)return;D.frames.push(t);
+      if(D.dirty){D.dirty=false;const tf=`translate(${D.x.toFixed(1)} ${D.y.toFixed(1)})`;D.els.forEach(el=>el.setAttribute("transform",tf));}
+      requestAnimationFrame(tick);};
+    requestAnimationFrame(tick);
   });
   svg.addEventListener("pointermove",e=>{
     if(!dr||e.pointerId!==dr.id)return;
@@ -26718,13 +26796,22 @@ function pzLooseWire(m,svg){
     const x=L[0]<=L[1]?Math.max(L[0],Math.min(L[1],dr.ox+ux-dr.sx)):dr.ox+ux-dr.sx;
     const y=L[2]<=L[3]?Math.max(L[2],Math.min(L[3],dr.oy+uy-dr.sy)):dr.oy+uy-dr.sy;
     if(Math.abs(x-dr.ox)+Math.abs(y-dr.oy)>0.5)dr.moved=true;
-    dr.x=x;dr.y=y;
-    const t=`translate(${x.toFixed(1)} ${y.toFixed(1)})`;dr.els.forEach(el=>el.setAttribute("transform",t));
+    dr.x=x;dr.y=y;dr.dirty=true;dr.moves++;
   });
   const end=e=>{
     if(!dr||(e&&e.pointerId!==dr.id))return;
-    const d=dr;dr=null;d.els.forEach(el=>el.classList.remove("lift"));
+    const d=dr;dr=null;d.els.forEach(el=>{el.classList.remove("lift");const sh=q(".pzsh",el);if(sh)sh.remove();});
     try{svg.releasePointerCapture(d.id);}catch(err){}
+    /* the last place reached, if no frame drew it yet */
+    if(d.dirty){const tf=`translate(${d.x.toFixed(1)} ${d.y.toFixed(1)})`;d.els.forEach(el=>el.setAttribute("transform",tf));}
+    /* a drag long enough to judge is written down for the readout */
+    const f=d.frames;
+    if(d.moved&&f.length>=10){
+      const iv=f.slice(1).map((t,k)=>t-f[k]),ms=f[f.length-1]-f[0],s=arcSlot("pz"),im=q("image[data-pzimg]",svg);
+      pzDragNote({t:Date.now(),v:window.APP_VERSION||"?",fps:Math.round((f.length-1)/(ms/1000)),ms:Math.round(ms),frames:f.length,
+        slow:iv.filter(x=>x>50).length,worst:Math.round(Math.max(...iv)),moves:d.moves,n:d.els.length,
+        of:s?pzCR(s).join("×"):"?",cut:(s&&s.cut)||"?",pic:(im&&im.dataset.pzsize)||"?"});
+    }
     if(!d.moved)return;
     const r=pzDrop(d.i,d.x,d.y),s=arcSlot("pz");
     if(s&&s.over){renderChallenges();return;}
@@ -30752,7 +30839,9 @@ function tuneDiagnostics(){
           +e.f[1]+" in the window ready at "+e.f[0]+" ms"
           +(e.lo?"; every row off this device by "+e.lo+" ms"+(e.al>e.lo+5?", cloud asked by "+e.al+" ms":""):"")
           +" ("+(e.n||e.w)+" rows: "+e.m+" from memory, "+e.l+" off this device, "+e.c+" from the cloud)")];
-    })()
+    })(),
+    /* see A PIECE IN HAND COSTS ONE PICTURE */
+    ...pzDragLines()
   ].filter(Boolean);
   return lines;
 }
