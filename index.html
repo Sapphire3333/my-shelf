@@ -11075,6 +11075,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-05.8",go:["tab:challenges"],lines:[
+    "<b>🧩 The piece in your hand slides instead of being drawn again.</b> While you hold a puzzle piece, the browser now moves the picture of it it already has, the way it scrolls a page, rather than drawing the piece afresh at every step. If a drag still catches, the copy from ⚙ Settings → <i>If something is wrong</i> now says at which step of the drag it caught — picking up, carrying or putting down.",
+    "<b>🌈 A colour's list says which book in a collection is that colour.</b> Tap a colour on the rainbow and a collection shows how many of its books matched; open it to see just those books — the ones whose own picture is that colour."]},
   {v:"2026-10-05.7",go:["tab:challenges"],lines:[
     "<b>🧩 The piece in your hand now moves on a layer of its own.</b> It used to move inside the whole board, so every step made the browser look at all hundred and fifty pieces again. While you hold one, it now sits above the board, and the board doesn't change until you let go.",
     "If it is still slow, the copy from ⚙ Settings → <i>If something is wrong</i> now also says how the board runs while nothing moves and what else the app was doing during each drag — send it along."]},
@@ -26724,8 +26727,10 @@ function pzPictureFor(svg,id,d){
 }
 /* the last few drags' frames, for the readout — see A PIECE IN HAND */
 const PZ_DRAG_KEY="shelfPzDrag";
-function pzDragNote(o){
-  try{const a=JSON.parse(localStorage.getItem(PZ_DRAG_KEY)||"[]");a.unshift(o);
+/* again: the same drag's note written over, once the drop has been timed */
+function pzDragNote(o,again){
+  try{const a=JSON.parse(localStorage.getItem(PZ_DRAG_KEY)||"[]");
+    if(again){if(a[0]&&a[0].t===o.t)a[0]=o;else return;}else a.unshift(o);
     localStorage.setItem(PZ_DRAG_KEY,JSON.stringify(a.slice(0,5)));}catch(e){}
 }
 function pzDragLines(){
@@ -26736,8 +26741,10 @@ function pzDragLines(){
   if(!a.length)return ["Puzzle drags: none timed yet — drag a piece of a wavy or jigsaw cover puzzle, then look here again.",...still];
   return ["Puzzle drags, newest first — frames a second while a piece was in hand:",
     ...a.map(e=>"   · "+new Date(e.t).toLocaleTimeString()+" "+e.v+" — "+e.fps+" a second over "+e.ms+" ms ("+e.frames+" frames, "
-      +e.slow+" slower than 50 ms, slowest "+e.worst+" ms); "+e.moves+" pointer moves"
-      +(e.lag!=null?", the latest waited "+e.lag+" ms to be heard":"")+"; "+e.n+" piece"+(e.n===1?"":"s")+" in hand of "
+      +e.slow+" slower than 50 ms, slowest "+e.worst+" ms"
+      +(e.worstAt?" at frame "+e.worstAt+" of "+e.frames+(e.worst<=50?"":e.worstAt<=2?", picking it up":", carrying it"):"")
+      +(e.drop!=null?"; putting it down "+e.drop+" ms":"")+"); "+e.moves+" pointer moves"
+      +(e.lag!=null?", the longest waited "+e.lag+" ms to be heard":"")+"; "+e.n+" piece"+(e.n===1?"":"s")+" in hand of "
       +e.of+", "+e.cut+"; picture "+e.pic+(e.dpr?" at "+e.dpr+"× pixels":"")
       +(e.busy?"; the app's own work meanwhile: "+e.busy:"")),...still];
 }
@@ -26844,18 +26851,26 @@ function pzLooseWire(m,svg){
     /* the pieces in hand leave the board for a layer of their own — see THE
        PIECE IN HAND, ON A LAYER OF ITS OWN */
     const lay=pzLayer(svg);
+    /* ---- SLID, NOT REDRAWN ----
+       On its own layer the piece still had its transform attribute rewritten
+       each move, and an svg whose content changes is drawn again — measured
+       after .7, 51–60 frames a second with a single 140–284 ms frame in some
+       drags. Now nothing inside the layer changes while it is held: the whole
+       layer is slid by a CSS transform (will-change, so it is its own
+       composited layer), which the browser moves without drawing anything.
+       kL is table units per CSS pixel of the layer; the drop writes the
+       piece's own transform once. */
+    const kL=Math.max(VB[2]/Math.max(1,svg.clientWidth),VB[3]/Math.max(1,svg.clientHeight));
+    lay.style.willChange="transform";
     dr={i,els,lim,sx:u[0],sy:u[1],ox:o[0],oy:o[1],x:o[0],y:o[1],moved:false,id:e.pointerId,
-      dirty:false,moves:0,frames:[],R:svg.getBoundingClientRect(),lay,lag:0,watch:pzWatchStart()};
+      moves:0,frames:[],R:svg.getBoundingClientRect(),lay,kL,lag:0,watch:pzWatchStart()};
     try{svg.setPointerCapture(e.pointerId);}catch(err){}
     els.forEach(el=>{lay.appendChild(el);el.classList.add("lift");
       /* the hard shadow — see A PIECE IN HAND COSTS ONE PICTURE */
       const p=q("path",el);
       if(p&&!q(".pzsh",el)){const sh=p.cloneNode(false);sh.setAttribute("class","pzsh");sh.setAttribute("transform","translate(1.5 3)");el.insertBefore(sh,p);}});
-    /* one frame, one move: the position the pointer last reached is drawn
-       when the screen is next drawn, and each frame's time is kept */
-    const D=dr,tick=t=>{if(dr!==D)return;D.frames.push(t);
-      if(D.dirty){D.dirty=false;const tf=`translate(${D.x.toFixed(1)} ${D.y.toFixed(1)})`;D.els.forEach(el=>el.setAttribute("transform",tf));}
-      requestAnimationFrame(tick);};
+    /* each frame's time is kept for the readout — moving is the slide below */
+    const D=dr,tick=t=>{if(dr!==D)return;D.frames.push(t);requestAnimationFrame(tick);};
     requestAnimationFrame(tick);
   });
   svg.addEventListener("pointermove",e=>{
@@ -26867,27 +26882,34 @@ function pzLooseWire(m,svg){
     const x=L[0]<=L[1]?Math.max(L[0],Math.min(L[1],dr.ox+ux-dr.sx)):dr.ox+ux-dr.sx;
     const y=L[2]<=L[3]?Math.max(L[2],Math.min(L[3],dr.oy+uy-dr.sy)):dr.oy+uy-dr.sy;
     if(Math.abs(x-dr.ox)+Math.abs(y-dr.oy)>0.5)dr.moved=true;
-    dr.x=x;dr.y=y;dr.dirty=true;dr.moves++;
+    dr.x=x;dr.y=y;dr.moves++;
+    /* SLID, NOT REDRAWN — at once, not a frame later */
+    dr.lay.style.transform=`translate(${((x-dr.ox)/dr.kL).toFixed(2)}px,${((y-dr.oy)/dr.kL).toFixed(2)}px)`;
   });
   const end=e=>{
     if(!dr||(e&&e.pointerId!==dr.id))return;
-    const d=dr;dr=null;
-    /* back onto the board, and the layer gone, before anything below looks
+    const d=dr,t0=performance.now();dr=null;
+    /* where the slid layer had them, written onto the pieces themselves; then
+       back onto the board, and the layer gone, before anything below looks
        for them there */
-    d.els.forEach(el=>{svg.appendChild(el);el.classList.remove("lift");const sh=q(".pzsh",el);if(sh)sh.remove();});
+    const tf=`translate(${d.x.toFixed(1)} ${d.y.toFixed(1)})`;
+    d.els.forEach(el=>{el.setAttribute("transform",tf);svg.appendChild(el);el.classList.remove("lift");const sh=q(".pzsh",el);if(sh)sh.remove();});
     if(d.lay)d.lay.remove();
     const busy=d.watch?d.watch.stop():"?";
     try{svg.releasePointerCapture(d.id);}catch(err){}
-    /* the last place reached, if no frame drew it yet */
-    if(d.dirty){const tf=`translate(${d.x.toFixed(1)} ${d.y.toFixed(1)})`;d.els.forEach(el=>el.setAttribute("transform",tf));}
     /* a drag long enough to judge is written down for the readout */
     const f=d.frames;
     if(d.moved&&f.length>=10){
       const iv=f.slice(1).map((t,k)=>t-f[k]),ms=f[f.length-1]-f[0],s=arcSlot("pz"),im=q("image[data-pzimg]",svg);
-      pzDragNote({t:Date.now(),v:window.APP_VERSION||"?",fps:Math.round((f.length-1)/(ms/1000)),ms:Math.round(ms),frames:f.length,
-        slow:iv.filter(x=>x>50).length,worst:Math.round(Math.max(...iv)),moves:d.moves,n:d.els.length,
+      const wv=Math.max(...iv);
+      const note={t:Date.now(),v:window.APP_VERSION||"?",fps:Math.round((f.length-1)/(ms/1000)),ms:Math.round(ms),frames:f.length,
+        slow:iv.filter(x=>x>50).length,worst:Math.round(wv),worstAt:iv.indexOf(wv)+2,moves:d.moves,n:d.els.length,
         of:s?pzCR(s).join("×"):"?",cut:(s&&s.cut)||"?",pic:(im&&im.dataset.pzsize)||"?",
-        lag:Math.round(d.lag),busy,dpr:window.devicePixelRatio||1});
+        lag:Math.round(d.lag),busy,dpr:window.devicePixelRatio||1};
+      pzDragNote(note);
+      /* putting it down: from the release to the second frame after it, the
+         first by which the board with the piece back on it has been drawn */
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{note.drop=Math.round(performance.now()-t0);pzDragNote(note,true);}));
     }
     if(!d.moved)return;
     const r=pzDrop(d.i,d.x,d.y),s=arcSlot("pz");
@@ -29564,7 +29586,12 @@ function pickDef(key){
            list is drawn again as the answers come in — see hueChanged */
         hueWaitN=hueMap?wait.length:-1;
         if(wait.length)hueQueue(wait);
-        return [...all.filter(b=>hueOf(b)===v),...colls.filter(x=>x.subs.some(s=>hueOf(s)===v)).map(x=>x.c)];}};}
+        /* and WHICH of its books, as `_hits` — Search's own way of saying which
+           books inside a collection answered: the row says how many, and its
+           fold opens on those books alone (see ONE ROW PER SHELF ITEM,
+           WHATEVER ROAD THE ANSWER CAME BY) */
+        return [...all.filter(b=>hueOf(b)===v),...colls.map(x=>({c:x.c,hits:x.subs.filter(s=>hueOf(s)===v)}))
+          .filter(x=>x.hits.length).map(x=>Object.assign({},x.c,{_hits:x.hits.map(s=>s.id.slice(s.id.indexOf("|")+1))}))];}};}
   if(k==="medal"){const d=PICK_MEDAL[v];if(d)return {label:d[0],note:d[1],rows:d[2]};}
   return {label:"Books",note:"",rows:()=>[]};
 }
