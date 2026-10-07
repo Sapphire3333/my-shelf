@@ -6970,6 +6970,14 @@ const pagesReached=(b,total)=>{
   const pc=pctOf(b);
   return (pc&&total)?Math.round(total*pc/100):0;
 };
+/* each whole book's length: its own and its folded-in tales', or — where not
+   one of them carries a length — the collection's, shared out evenly. One rule
+   for what a book read counts (readUnits) and what a list offers (pickUnits) */
+function wholeLens(b,ws){
+  const own=ws.map(en=>(parseInt(en.pages)||0)+entFoldedPages(b,en));
+  const tot=own.reduce((a,n)=>a+n,0),cp=parseInt(b.pages)||0;
+  return tot?own:ws.map(()=>cp?Math.round(cp/ws.length):0);
+}
 function readUnits(){
   const out=[];
   for(const b of books){
@@ -6981,10 +6989,9 @@ function readUnits(){
     const ws=collWholes(b);
     if(ws.length){
       const cr=doneReads(b);
-      const own=ws.map(en=>(parseInt(en.pages)||0)+entFoldedPages(b,en));
-      const tot=own.reduce((a,n)=>a+n,0),cp=parseInt(b.pages)||0;
+      const lens=wholeLens(b,ws);
       ws.forEach((en,i)=>{
-        const pg=tot?own[i]:(cp?Math.round(cp/ws.length):0);
+        const pg=lens[i];
         const mine=doneReads(en);
         const inherits=!mine.length&&!String(en.status||"").trim()&&!en.dnf&&entStatusOf(b,en)==="finished"&&!entDnfOf(b,en);
         let reads=mine.length?mine:(inherits?cr:[]);
@@ -11098,6 +11105,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-07.1",go:["tab:challenges"],lines:[
+    "<b>🎱 Bingo's book lists look at each book in a collection, not the collection.</b> Press a bingo square and then 📚 Books that would fit: a collection used to be judged as one big book — its pages all added up, its own name taken as the title — so a set of short books turned up under <i>300+ pages</i>, and a set whose name starts with R under <i>Title starts R</i> when none of its books do. Each book inside is asked now, the same way the square itself counts. A collection appears once, saying how many of its books fit, and <i>See the ones that matched</i> opens on just those. The medal lists that share these (500 pages, 300 pages, new authors, new genres) work the same way, and <i>The long one</i> and <i>The short one</i> errands no longer pick a whole collection by its added-up length."]},
   {v:"2026-10-05.11",go:["tab:library"],lines:[
     "<b>⌛ A story you haven't got no longer counts as read.</b> In a collection set to ✓ Read, a story with no stage of its own counts as read — and that included one marked ⌛ <i>Don't have it yet</i>, like the next book of a series that isn't out yet. It now counts as not read yet: the Library's Finished and Want to read counts, the collection's “2 of 3 read”, and anything that adds up finished books. A story you've marked ✓ Finished yourself is unchanged. Medals and points already earned stay yours."]},
   {v:"2026-10-05.10",go:["tab:challenges"],lines:[
@@ -23356,6 +23365,8 @@ const seriesBefore=b=>{
    have not got you cannot open. Each of those is stepped over rather than
    blocking the rest of the series, which is what asking dareOk buys. */
 const earlierToRead=b=>seriesBefore(b).find(dareOk)||null;
+/* the errands that are about a book's length — see "The long one" */
+const lenOk=b=>!b.apart&&dareOk(b)&&!collWholes(b).length&&!earlierToRead(b)&&(parseInt(b.pages)||0)>0;
 /* …and the ones merely unfinished, for the line the pick shows and for the
    dare when it could not move: something IS in front of you, it just isn't
    anything the draw is allowed to hand over. */
@@ -23668,14 +23679,17 @@ const ERRANDS=[
      return `You have never finished a book filed under <b>${esc(g)}</b>. This one is waiting. Read it — or give it a fair go and give up honestly.`;},
    done:(b,e)=>finishedSince(b,e.at)||(b.dnf&&ohNoDone(b,e.oh)),stale:(b,e)=>readBefore(b,e.at)},
   /* the longest and the shortest things waiting, paid by their length: the
-     long one is a real undertaking and pays like one */
+     long one is a real undertaking and pays like one. A collection with books
+     inside is not one of them — its length is all of its books added up, so a
+     set of twenty-one short ones stood as "the longest thing waiting", and
+     finishing any one story of it paid. lenOk keeps to single books. */
   {k:"long",icon:"🐘",name:"The long one",xp:60,
-   find:()=>books.filter(b=>!b.apart&&dareOk(b)&&!earlierToRead(b)&&(parseInt(b.pages)||0)>0).sort((a,c)=>(parseInt(c.pages)||0)-(parseInt(a.pages)||0))[0]||null,
+   find:()=>books.filter(lenOk).sort((a,c)=>(parseInt(c.pages)||0)-(parseInt(a.pages)||0))[0]||null,
    pay:b=>Math.max(60,Math.min(200,Math.round((parseInt(b.pages)||0)/5))),
    ask:b=>`The longest thing waiting on your shelf — ${(parseInt(b.pages)||0).toLocaleString()} pages. Finish it.`,
    done:(b,e)=>finishedSince(b,e.at),stale:(b,e)=>readBefore(b,e.at)},
   {k:"short",icon:"🐭",name:"The short one",xp:40,
-   find:()=>books.filter(b=>!b.apart&&dareOk(b)&&!earlierToRead(b)&&(parseInt(b.pages)||0)>0).sort((a,c)=>(parseInt(a.pages)||0)-(parseInt(c.pages)||0))[0]||null,
+   find:()=>books.filter(lenOk).sort((a,c)=>(parseInt(a.pages)||0)-(parseInt(c.pages)||0))[0]||null,
    ask:b=>`The shortest thing waiting — ${(parseInt(b.pages)||0).toLocaleString()} pages. A palate-cleanser. Finish it.`,
    done:(b,e)=>finishedSince(b,e.at),stale:(b,e)=>readBefore(b,e.at)},
   /* an author you rated high once and never went back to — with something of
@@ -28131,7 +28145,9 @@ function bgDeal(ym){
   const gs=Object.keys(gc).filter(g=>gc[g]>=3).sort((a,b)=>gc[b]-gc[a]||a.localeCompare(b)).slice(0,10);
   const tc={};books.forEach(b=>(b.keywords||[]).forEach(t=>{const k=String(t).trim();if(k)tc[k]=(tc[k]||0)+1;}));
   const ts=Object.keys(tc).filter(t=>tc[t]>=3).sort((a,b)=>tc[b]-tc[a]||a.localeCompare(b)).slice(0,6);
-  const lc={};books.forEach(b=>{const L=swNorm(String(b.title||"").replace(/^(the|a|an)\s+/i,""))[0];if(L)lc[L]=(lc[L]||0)+1;});
+  /* the letters the shelf's BOOKS start with — a collection's own name is no
+     title its square can be filled by (bgTitleOf) */
+  const lc={};stageUnits().forEach(u=>{const L=swNorm(bgTitleOf(u).replace(/^(the|a|an)\s+/i,""))[0];if(L)lc[L]=(lc[L]||0)+1;});
   const ls=Object.keys(lc).filter(L=>lc[L]>=3).sort();
   let s=strHash("bingo|"+ym)>>>0;
   const rnd=()=>((s=(Math.imul(s,1103515245)+12345)>>>0)/4294967296);
@@ -29505,9 +29521,11 @@ async function goTo(t){
    Only the lists: a ⌛ book you get and finish counts like any other. The
    two medal lists where the missing book IS the point — every book by an
    author, the next in a series — do not draw from here. */
+/* one book of a collection that is still yours to pick up */
+const pickableWhole=(b,en)=>!entDnfOf(b,en)
+  &&(entStatusOf(b,en)==="reading"||(entStatusOf(b,en)!=="finished"&&!entUnownedOf(b,en)));
 const canPickUp=b=>{
-  if(isColl(b)&&collWholes(b).length)return collWholes(b).some(en=>!entDnfOf(b,en)
-    &&(entStatusOf(b,en)==="reading"||(entStatusOf(b,en)!=="finished"&&!entUnownedOf(b,en))));
+  if(isColl(b)&&collWholes(b).length)return collWholes(b).some(en=>pickableWhole(b,en));
   return statusOf(b)==="reading"||!unownedOf(b);
 };
 /* pickFromPool: set when a list was drawn from here, so Search's heading can
@@ -29518,7 +29536,49 @@ const unreadPool=()=>{pickFromPool=true;
 /* whether the shelf has any waiting book that the pool leaves out */
 const pickLeftOut=()=>books.some(b=>!b.dnf&&(statusOf(b)==="want"||statusOf(b)==="reading")&&!canPickUp(b))
   ||books.some(b=>isColl(b)&&canPickUp(b)&&collWholes(b).some(en=>entStatusOf(b,en)==="want"&&!entDnfOf(b,en)&&entUnownedOf(b,en)));
-const byPagesAsc=a=>a.slice().sort((x,y)=>(parseInt(x.pages)||9e9)-(parseInt(y.pages)||9e9));
+/* ┌─ A LIST OF BOOKS ASKS EACH BOOK, NOT THE COLLECTION ─────────────────────┐
+   │ A square ticks for one book of a collection at a time — see A BOOK       │
+   │ INSIDE A COLLECTION ANSWERS FOR ITSELF — but the lists behind "Books     │
+   │ that would fit" asked the collection: a set of four 220-page books stood │
+   │ under "300+ pages" on its total of 903, and a set whose own name starts  │
+   │ with R under "Title starts R" when not one book in it does. Neither     │
+   │ could ever fill the square the list was offering it for.                │
+   │ pickUnits hands out what a square is actually asked about: every book   │
+   │ still to pick up, and every book of a collection that is (pickableWhole) │
+   │ with its own length (wholeLens). pickRows puts a test to each — the      │
+   │ square's own, through sqPick, wherever the square is about the book      │
+   │ itself — and gives a collection back ONCE, carrying the books that       │
+   │ answered as `_hits` (Search's way of naming them, as the rainbow's list  │
+   │ does) and the shortest of their lengths as `_pg` for byPagesAsc.         │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function pickUnits(){
+  const out=[];
+  unreadPool().forEach(b=>{
+    const ws=collWholes(b);
+    if(!ws.length){out.push({book:b,en:null,pages:parseInt(b.pages)||0});return;}
+    const lens=wholeLens(b,ws);
+    ws.forEach((en,i)=>{if(pickableWhole(b,en))out.push({book:b,en,pages:lens[i]});});
+  });
+  return out;
+}
+function pickRows(test){
+  const out=[],at=new Map();
+  pickUnits().forEach(u=>{
+    let ok=false;try{ok=!!test(u);}catch(e){}
+    if(!ok)return;
+    if(!u.en){out.push(u.book);return;}
+    const i=at.get(u.book.id);
+    if(i==null){at.set(u.book.id,out.length);out.push(Object.assign({},u.book,{_hits:[u.en.id],_pg:u.pages||0}));return;}
+    const r=out[i];r._hits.push(u.en.id);
+    if(u.pages&&(!r._pg||u.pages<r._pg))r._pg=u.pages;
+  });
+  return out;
+}
+/* a square's own test, put to a book that has not been read yet */
+const sqPick=code=>{const s=bgSquare(code);return u=>!!s&&s.test(null,{u,r:{},end:questToday()});};
+/* who wrote THIS book — a story's own author, or its collection's */
+const unitAuthor=u=>lowS(u.en?entAuthorOf(u.book,u.en):u.book.author);
+const byPagesAsc=a=>a.slice().sort((x,y)=>(x._pg||parseInt(x.pages)||9e9)-(y._pg||parseInt(y.pages)||9e9));
 const lowS=s=>String(s||"").trim().toLowerCase();
 /* ┌─ A COLLECTION'S BOOKS ARE ITS AUTHOR'S BOOKS ────────────────────────────┐
    │ Counted by author, the shelf asked each shelf item for one author and   │
@@ -29535,42 +29595,45 @@ function authorUnits(b){
 function finishedAuthors(){const n={};books.forEach(b=>authorUnits(b).forEach(u=>{if(u.done&&u.a)n[u.a]=(n[u.a]||0)+1;}));return n;}
 function finishedGenresThisYear(){const y=questToday().slice(0,4),s=new Set();
   ruNow().forEach(u=>u.reads.forEach(r=>{if(String(r.end||"").slice(0,4)===y)(u.en?entGenresOf(u.book,u.en):ownGenres(u.book)).forEach(g=>s.add(lowS(g)));}));return s;}
+/* every genre with a finished book in it, each book by its own genres — the
+   way Genre Wanderer counts them (c.finB) */
+function finishedGenresEver(){const s=new Set();
+  stageUnits().forEach(u=>{if(u.status==="finished"&&!u.dnf)(u.en?entGenresOf(u.book,u.en):ownGenres(u.book)).forEach(g=>s.add(lowS(g)));});return s;}
 const PICK_SQ={
-  p500:{note:"Finish any of these this month and it fills the square.",rows:()=>unreadPool().filter(b=>(parseInt(b.pages)||0)>=500)},
-  p300:{note:"Finish any of these this month and it fills the square.",rows:()=>unreadPool().filter(b=>(parseInt(b.pages)||0)>=300)},
-  p200:{note:"Finish any of these this month and it fills the square.",rows:()=>byPagesAsc(unreadPool().filter(b=>{const p=parseInt(b.pages)||0;return p>0&&p<200;}))},
-  newau:{note:"By authors you have never finished a book by.",rows:()=>{const f=finishedAuthors();return unreadPool().filter(b=>lowS(b.author)&&!f[lowS(b.author)]);}},
+  p500:{note:"Finish any of these this month and it fills the square.",rows:()=>pickRows(sqPick("p500"))},
+  p300:{note:"Finish any of these this month and it fills the square.",rows:()=>pickRows(sqPick("p300"))},
+  p200:{note:"Finish any of these this month and it fills the square.",rows:()=>byPagesAsc(pickRows(sqPick("p200")))},
+  newau:{note:"By authors you have never finished a book by.",rows:()=>{const f=finishedAuthors();return pickRows(u=>{const a=unitAuthor(u);return !!a&&!f[a];});}},
   reread:{note:"Books you have already finished — read one again this month.",rows:()=>books.filter(b=>statusOf(b)==="finished"&&!b.dnf).sort((a,b)=>(b.favorite?1:0)-(a.favorite?1:0)||(+b.rating||0)-(+a.rating||0))},
-  waited:{note:"On your shelf for over a year — start one now and it counts.",rows:()=>unreadPool().filter(b=>addedOf(b)<Date.now()-365*864e5).sort((a,b)=>addedOf(a)-addedOf(b))},
-  old:{note:"On your shelf for over two years.",rows:()=>unreadPool().filter(b=>addedOf(b)<Date.now()-730*864e5).sort((a,b)=>addedOf(a)-addedOf(b))},
-  sitting:{note:"Any book started and finished on the same day — the shortest are listed first.",rows:()=>byPagesAsc(unreadPool())},
-  week:{note:"Any book started and finished within seven days — the shortest are listed first.",rows:()=>byPagesAsc(unreadPool())},
-  newgen:{note:"Filed under a genre you haven't finished a book in yet this year.",rows:()=>{const s=finishedGenresThisYear();return unreadPool().filter(b=>ownGenres(b).some(g=>!s.has(lowS(g))));}},
+  waited:{note:"On your shelf for over a year — start one now and it counts.",rows:()=>pickRows(u=>addedOf(u.book)<Date.now()-365*864e5).sort((a,b)=>addedOf(a)-addedOf(b))},
+  old:{note:"On your shelf for over two years.",rows:()=>pickRows(u=>addedOf(u.book)<Date.now()-730*864e5).sort((a,b)=>addedOf(a)-addedOf(b))},
+  sitting:{note:"Any book started and finished on the same day — the shortest are listed first.",rows:()=>byPagesAsc(pickRows(()=>true))},
+  week:{note:"Any book started and finished within seven days — the shortest are listed first.",rows:()=>byPagesAsc(pickRows(()=>true))},
+  newgen:{note:"Filed under a genre you haven't finished a book in yet this year.",rows:()=>{const s=finishedGenresThisYear();return pickRows(u=>bgGenres(u).some(g=>!s.has(lowS(g))));}},
   /* a collection of two or more books is a series kept as one shelf item —
      see A BOOK INSIDE A COLLECTION ANSWERS FOR ITSELF */
-  series:{note:"Books that belong to a series, and collections of books.",rows:()=>unreadPool().filter(b=>!!seriesShown(b)||(isColl(b)&&entWholes(b).length>1))},
-  opener:{note:"First books of a series.",rows:()=>unreadPool().filter(b=>!!seriesShown(b)&&parseFloat(b.seriesNum)===1)},
+  series:{note:"Books that belong to a series, and collections of books.",rows:()=>pickRows(sqPick("series"))},
+  opener:{note:"First books of a series.",rows:()=>pickRows(sqPick("opener"))},
   coll:{note:"Collections with stories still to read.",rows:()=>books.filter(b=>isColl(b)&&(b.entries||[]).some(en=>!readsOf(en).some(r=>r&&r.end)
     &&(entStatusOf(b,en)==="reading"||!entUnownedOf(b,en))))},
-  solo:{note:"Books that aren't part of a series.",rows:()=>unreadPool().filter(b=>!seriesShown(b)&&!isColl(b))},
+  solo:{note:"Books that aren't part of a series.",rows:()=>pickRows(sqPick("solo"))},
   fav:{note:"Your favourites — a reread of one counts.",rows:()=>books.filter(b=>b.favorite)},
-  loyal:{note:"By authors you have already finished two books by — a third makes them an old friend.",rows:()=>{const f=finishedAuthors();return unreadPool().filter(b=>(f[lowS(b.author)]||0)>=2);}},
-  fic:{note:"Fanfics still to read.",rows:()=>unreadPool().filter(b=>kindOf(b)==="fanfic")},
+  loyal:{note:"By authors you have already finished two books by — a third makes them an old friend.",rows:()=>{const f=finishedAuthors();return pickRows(u=>(f[unitAuthor(u)]||0)>=2);}},
+  fic:{note:"Fanfics still to read.",rows:()=>pickRows(u=>kindOf(u.book)==="fanfic")},
   ai:{note:"AI stories.",rows:()=>books.filter(b=>kindOf(b)==="ai")},
-  tagged:{note:"Anything wearing one of your tags.",rows:()=>unreadPool().filter(b=>(b.keywords||[]).length||(b.entries||[]).some(en=>(en.keywords||[]).length))},
-  oneword:{note:"Titles of a single word.",rows:()=>unreadPool().filter(b=>bgTitleWords(b)===1)},
-  longt:{note:"Titles of five words or more.",rows:()=>unreadPool().filter(b=>bgTitleWords(b)>=5)},
+  tagged:{note:"Anything wearing one of your tags.",rows:()=>pickRows(sqPick("tagged"))},
+  oneword:{note:"Titles of a single word.",rows:()=>pickRows(sqPick("oneword"))},
+  longt:{note:"Titles of five words or more.",rows:()=>pickRows(sqPick("longt"))},
 };
 /* the squares with no list of their own — any book can meet them */
 const PICK_ANY="Any book you finish can fill this one, so here is everything waiting — the shortest first.";
 function pickBingo(code){
   if(PICK_SQ[code])return PICK_SQ[code];
   const i=code.indexOf(":"),k=code.slice(0,i),v=code.slice(i+1);
-  if(k==="g")return {note:"Filed under "+v+".",rows:()=>unreadPool().filter(b=>ownGenres(b).some(g=>lowS(g)===lowS(v)))};
-  if(k==="t")return {note:"Tagged "+v+".",rows:()=>unreadPool().filter(b=>(b.keywords||[]).some(t=>lowS(t)===lowS(v)))};
-  if(k==="L")return {note:"Titles beginning with "+v+" (a leading The or A doesn't count).",
-    rows:()=>unreadPool().filter(b=>swNorm(String(b.title||"").replace(/^(the|a|an)\s+/i,""))[0]===v)};
-  return {note:PICK_ANY,rows:()=>byPagesAsc(unreadPool())};
+  if(k==="g")return {note:"Filed under "+v+".",rows:()=>pickRows(sqPick(code))};
+  if(k==="t")return {note:"Tagged "+v+".",rows:()=>pickRows(sqPick(code))};
+  if(k==="L")return {note:"Titles beginning with "+v+" (a leading The or A doesn't count).",rows:()=>pickRows(sqPick(code))};
+  return {note:PICK_ANY,rows:()=>byPagesAsc(pickRows(()=>true))};
 }
 /* the lists behind the medals' ➡ Take me there, by the medal's key */
 const PICK_MEDAL={
@@ -29581,7 +29644,7 @@ const PICK_MEDAL={
   deco:["Finished, with a bare page","A picture, a note, a stroke of drawing or a background of its own on any of these counts.",()=>decoField()],
   fav:["Rated 8 or more, not yet a favourite","A heart on any of them counts.",()=>books.filter(b=>!b.favorite&&b.rating!=null&&+b.rating>=8)],
   genres:["In genres you have never finished a book in","Finish one and a new genre counts.",
-    ()=>{const f=new Set();stageUnits().forEach(u=>{if(u.status==="finished"&&!u.dnf)ownGenres(u.book).forEach(g=>f.add(lowS(g)));});return unreadPool().filter(b=>ownGenres(b).some(g=>!f.has(lowS(g))));}],
+    ()=>{const f=finishedGenresEver();return pickRows(u=>bgGenres(u).some(g=>!f.has(lowS(g))));}],
   wish:["Waiting on Want-to-read","Start any of these a day or more after it was added — it counts once you finish it.",()=>unreadPool().filter(b=>statusOf(b)==="want").sort((a,b)=>addedOf(a)-addedOf(b))],
   waited:["On your shelf for over a year","Start one now and finish it, and it counts.",()=>PICK_SQ.waited.rows()],
   series:["The next in your series","Finish a whole series — every book of it — and it counts.",
@@ -29600,7 +29663,7 @@ const PICK_MEDAL={
   tagsUsed:["Without a single tag","A tag of your own on any of them counts.",()=>books.filter(b=>!isColl(b)&&!(b.keywords||[]).length)],
   rereads:["Favourites you finished over a year ago","Read one again.",()=>books.filter(b=>b.favorite&&statusOf(b)==="finished"&&!b.dnf&&lastEnd(b)&&lastEnd(b)<shelfDayOf(Date.now()-365*864e5))],
   perfect:["Your nines","A ten is yours to give — these came closest.",()=>books.filter(b=>b.rating!=null&&+b.rating>=9&&+b.rating<10)],
-  holiday:["Waiting, shortest first","Finish one between 18 and 31 December.",()=>byPagesAsc(unreadPool())],
+  holiday:["Waiting, shortest first","Finish one between 18 and 31 December.",()=>byPagesAsc(pickRows(()=>true))],
   months:["Reading now and waiting","Finish three in a calendar month.",()=>unreadPool().sort((a,b)=>(statusOf(a)==="reading"?0:1)-(statusOf(b)==="reading"?0:1))],
   pagesRead:["Reading now","Every page read counts — say the page you're on.",()=>books.filter(b=>statusOf(b)==="reading"&&!b.dnf)],
   slowburn:["Reading now","A reading that runs over a year from start to finish counts.",()=>books.filter(b=>statusOf(b)==="reading"&&!b.dnf)],
@@ -29665,14 +29728,17 @@ function pickExtra(key){
   const say=(what,items,max)=>{max=max||14;if(!items.length)return "";
     return `${what}: <b>${items.slice(0,max).map(esc).join(" · ")}</b>${items.length>max?` · and ${items.length-max} more`:""}.`;};
   const fin=()=>finishedAuthors();
+  /* counted book by book, a collection's books each in their own right — see
+     A LIST OF BOOKS ASKS EACH BOOK, NOT THE COLLECTION */
+  const auName=u=>u.en?entAuthorOf(u.book,u.en):u.book.author;
   if(key==="bingo:newgen"){const done=finishedGenresThisYear();
-    return say("Genres you haven't finished a book in yet this year — with how many books are waiting in each",tally(unreadPool(),b=>ownGenres(b).filter(g=>!done.has(lowS(g)))));}
+    return say("Genres you haven't finished a book in yet this year — with how many books are waiting in each",tally(pickUnits(),u=>bgGenres(u).filter(g=>!done.has(lowS(g)))));}
   if(key==="bingo:newau"||key==="medal:authors"){const f=fin();
-    return say("Authors you've never finished a book by, with books waiting",tally(unreadPool().filter(b=>lowS(b.author)&&!f[lowS(b.author)]),b=>[b.author]),10);}
+    return say("Authors you've never finished a book by, with books waiting",tally(pickUnits().filter(u=>unitAuthor(u)&&!f[unitAuthor(u)]),u=>[auName(u)]),10);}
   if(key==="bingo:loyal"){const f=fin();
-    return say("Authors you've finished two books by, with a third waiting",tally(unreadPool().filter(b=>(f[lowS(b.author)]||0)>=2),b=>[b.author]));}
-  if(key==="medal:genres"){const done=new Set();stageUnits().forEach(u=>{if(u.status==="finished"&&!u.dnf)ownGenres(u.book).forEach(g=>done.add(lowS(g)));});
-    return say("Genres you've never finished a book in — with how many books are waiting in each",tally(unreadPool(),b=>ownGenres(b).filter(g=>!done.has(lowS(g)))));}
+    return say("Authors you've finished two books by, with a third waiting",tally(pickUnits().filter(u=>(f[unitAuthor(u)]||0)>=2),u=>[auName(u)]));}
+  if(key==="medal:genres"){const done=finishedGenresEver();
+    return say("Genres you've never finished a book in — with how many books are waiting in each",tally(pickUnits(),u=>bgGenres(u).filter(g=>!done.has(lowS(g)))));}
   if(key==="medal:complete"){const by=new Map();
     books.filter(b=>kindOf(b)==="book").forEach(b=>authorUnits(b).forEach(u=>{if(!u.a)return;
       const e=by.get(u.a)||{t:u.en?entAuthorOf(b,u.en):b.author,n:0,d:0};e.n++;if(u.done)e.d++;by.set(u.a,e);}));
