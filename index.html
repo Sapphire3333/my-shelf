@@ -4663,6 +4663,9 @@ html[data-phone="1"] #genSug .chip{--tapz:1.25}
 @keyframes vt-in{from{opacity:0;transform:translateY(6px)}}
 ::view-transition-old(root){animation:vt-out var(--dur-2) var(--ease-in) both}
 ::view-transition-new(root){animation:vt-in var(--dur-3) var(--ease) both}
+/* a tab is a glance, not a trip: half the length of a book's opening */
+html[data-vt="tab"] ::view-transition-old(root),html[data-vt="layout"] ::view-transition-old(root){animation-duration:90ms}
+html[data-vt="tab"] ::view-transition-new(root),html[data-vt="layout"] ::view-transition-new(root){animation-duration:160ms}
 ::view-transition-group(bookcover){animation-duration:var(--dur-3);animation-timing-function:var(--ease)}
 ::view-transition-old(bookcover),::view-transition-new(bookcover){height:100%;object-fit:cover}
 #tabbar{view-transition-name:tabbar}
@@ -4714,8 +4717,15 @@ const scrollBeh=()=>REDUCED()?"auto":"smooth";
 let vtBusy=false;
 function vtClear(){vtBusy=false;delete document.documentElement.dataset.vt;
   document.querySelectorAll("[style*=view-transition-name]").forEach(el=>{el.style.viewTransitionName="";});}
+/* A view transition photographs the whole screen twice, and on a shelf of a
+   thousand books a tab's screen is a long one: the photographs took longer
+   than the fade they were for, and a tab switch that used to be instant read
+   as a pause. Above VT_MAX_EL elements the change runs plainly; a book's
+   opening (a few hundred elements) keeps its motion. */
+const VT_MAX_EL=1800;
 function vtGoAsync(kind,change){
-  if(vtBusy||document.hidden||REDUCED()||typeof document.startViewTransition!=="function"){change();return Promise.resolve();}
+  const heavy=kind!=="book"&&document.getElementById("app")&&document.getElementById("app").getElementsByTagName("*").length>VT_MAX_EL;
+  if(vtBusy||heavy||document.hidden||REDUCED()||typeof document.startViewTransition!=="function"){change();return Promise.resolve();}
   vtBusy=true;document.documentElement.dataset.vt=kind;
   let t;
   try{t=document.startViewTransition(()=>{change();});}
@@ -11194,6 +11204,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-08.4",go:["tab:challenges"],lines:[
+    "<b>🎲 No game deals the same author, collection or series twice in ten turns.</b> Every game and the day's dare and errand already kept the same book away for ten deals; a shelf with fifteen books of one series still got the same cover three deals running. Now a dealt book keeps its author's other books, the rest of its collection and the rest of its series out of the next ten deals too — unless that would leave nothing to deal, in which case the oldest deal is let back first, as before.",
+    "<b>✨ Tabs change quicker.</b> A tab switch fades in half the time a book's opening takes, and on a long screen — a big shelf's Library — it changes at once instead of pausing to photograph the page first. Opening a book keeps its motion."]},
   {v:"2026-10-08.3",go:["tab:library"],lines:[
     "<b>📱 Two rows above the first book on a phone.</b> The Library's find box, then one row — All · ☰ Filters · ⇅ Sort · ▦ Grid · ⋯ More — that slides sideways. ☑ Select books, 🖼 Pictures and the 👁 / 📖 switch wait behind ⋯ More, and come out by themselves while you are ticking books or placing pictures. The first book stands about 90 px higher.",
     "<b>📖 A book's page labels in the shelf's own face.</b> Genres, Tags, Blurb, In your words, Length and Finished were small spaced capitals; they are set like the Library's headings now, in sentence case, so the page reads as one piece with the shelf."]},
@@ -23526,7 +23539,7 @@ function questDrawBook(){
   const two=quests.bookCh2&&quests.bookCh2.id,bd=quests.bday&&quests.bday.id;
   const pool=books.filter(b=>dareOk(b)&&!b.apart&&!kept.has(b.id)&&b.id!==two&&b.id!==bd);
   if(!pool.length)return null;
-  let b=pool[Math.floor(Math.random()*pool.length)];
+  let b=pick1(freshFrom("dare",pool,x=>x.id));
   /* the walk back. `from` is what the dice actually said, kept so the card can
      say it too — a draw that silently changed itself would look like a bug. */
   /* …and the walk back may not land on it either: two dares on one book pay
@@ -23535,6 +23548,7 @@ function questDrawBook(){
   const from=back?(seriesShown(b)&&b.seriesNum?`${seriesShown(b)} #${b.seriesNum}`:(b.title||"Untitled")):"";
   if(back)b=back;
   quests.bookCh={id:b.id,title:b.title||"Untitled",at:Date.now(),from,oh:ohNoBase(b)};
+  freshNote("dare",[b.id]);
   questSave();return b;
 }
 /* The kept list. It began as the Pick card's — draw with your eyes open,
@@ -23726,7 +23740,7 @@ const ERRANDS=[
        const nx=(c.entries||[]).find(en=>entStatusOf(c,en)!=="finished"&&!entDnfOf(c,en)&&!entHoldOf(c,en));
        if(nx&&entStatusOf(c,nx)==="want"&&!entUnownedOf(c,nx))out.push(Object.assign({},c,{title:nx.title||c.title,_en:nx.id}));
      });
-     return out.length?out[Math.floor(Math.random()*out.length)]:null;},
+     return out.length?pick1(freshFrom("errand",out,x=>x.id)):null;},
    snap:t=>t&&t._en?{en:t._en}:undefined,
    ask:(b,e)=>{const en=errEnt(b,e);
      return en?`You are partway through ${esc(b.title||"a collection")} and “${esc(en.title||"Untitled")}” is the next one waiting. Finish it.`
@@ -23747,7 +23761,7 @@ const ERRANDS=[
      const yrAgo=shelfDayOf(Date.now()-365*864e5);
      const p=books.filter(b=>b.favorite&&kindOf(b)==="book"&&!isColl(b)
        &&statusOf(b)==="finished"&&!b.dnf&&lastEnd(b)&&lastEnd(b)<yrAgo);
-     return p.length?p[Math.floor(Math.random()*p.length)]:null;},
+     return p.length?pick1(freshFrom("errand",p,x=>x.id)):null;},
    ask:b=>`A favourite you last finished ${esc(fmtEdited(lastEnd(b)+"T12:00"))}. Go round again.`,
    /* it is ALREADY marked finished, so nothing but a reading ended after the
       draw can prove a second trip happened — the same trap the kept picks hit */
@@ -23775,7 +23789,7 @@ const ERRANDS=[
      const last=b=>{const pl=(b.progLog||[]).map(x=>x.d).filter(Boolean).sort().pop()||"";
        const or=openRead(b);return [pl,(or&&or.start)||"",b.edited?shelfDayOf(b.edited):""].sort().pop()||"";};
      const p=books.filter(b=>!isColl(b)&&!b.apart&&statusOf(b)==="reading"&&!b.dnf&&!holdOf(b)&&last(b)&&last(b)<cut);
-     return p.length?pick1(p):null;},
+     return p.length?pick1(freshFrom("errand",p,x=>x.id)):null;},
    /* the bookmark as it stood, in pages AND in percent — a book with no page
       count keeps its place in percent, and moving that is moving it too */
    snap:b=>({p:parseInt(b.progress)||0,pc:pctOf(b)||0}),
@@ -23807,7 +23821,7 @@ const ERRANDS=[
    find:()=>{
      const fin=new Set();stageUnits().forEach(u=>{if(u.status==="finished"&&!u.dnf)(u.en?entGenresOf(u.book,u.en):ownGenres(u.book)).forEach(g=>fin.add(String(g).toLowerCase()));});
      const p=books.filter(b=>!b.apart&&dareOk(b)&&!earlierToRead(b)&&ownGenres(b).some(g=>!fin.has(String(g).toLowerCase())));
-     return p.length?pick1(p):null;},
+     return p.length?pick1(freshFrom("errand",p,x=>x.id)):null;},
    ask:b=>{const fin=new Set();stageUnits().forEach(u=>{if(u.status==="finished"&&!u.dnf)(u.en?entGenresOf(u.book,u.en):ownGenres(u.book)).forEach(g=>fin.add(String(g).toLowerCase()));});
      const g=ownGenres(b).find(x=>!fin.has(String(x).toLowerCase()))||ownGenres(b)[0]||"";
      return `You have never finished a book filed under <b>${esc(g)}</b>. This one is waiting. Read it — or give it a fair go and give up honestly.`;},
@@ -23834,7 +23848,7 @@ const ERRANDS=[
      books.forEach(b=>{if(isColl(b)||statusOf(b)!=="finished"||b.dnf)return;const a=low(b.author);if(!a)return;
        fin[a]=(fin[a]||0)+1;if(b.rating!=null&&+b.rating>=8)hi[a]=true;});
      const p=books.filter(b=>!b.apart&&dareOk(b)&&!earlierToRead(b)&&hi[low(b.author)]&&fin[low(b.author)]===1);
-     return p.length?pick1(p):null;},
+     return p.length?pick1(freshFrom("errand",p,x=>x.id)):null;},
    ask:b=>`You finished one book by <b>${esc(b.author)}</b>, rated it 8 or more, and never went back. This one of theirs is waiting.`,
    done:(b,e)=>finishedSince(b,e.at),stale:(b,e)=>readBefore(b,e.at)},
   /* a book finished exactly a year, two, three, five or ten years ago today —
@@ -23846,7 +23860,7 @@ const ERRANDS=[
         drawn for again is one thought, not two */
      const p=books.filter(b=>!b.apart&&doneReads(b).some(r=>want.has(String(r.end||"").slice(0,10)))
        &&!(b.edited&&shelfDayOf(b.edited)===t));
-     return p.length?pick1(p):null;},
+     return p.length?pick1(freshFrom("errand",p,x=>x.id)):null;},
    snap:b=>{const t=todayStr();
      return Object.assign(dearSnap(b),{on:doneReads(b).map(x=>String(x.end||"").slice(0,10)).find(x=>x.slice(5)===t.slice(5))||""});},
    ask:(b,e)=>{const on=(e&&e.x&&e.x.on)||"",n=on?(+shelfDayOf(e.at).slice(0,4))-(+on.slice(0,4)):0;
@@ -23857,7 +23871,7 @@ const ERRANDS=[
   {k:"insight",icon:"🔍",name:"Prove Insights wrong",xp:60,
    find:()=>{const g=insightGap();if(!g)return null;
      const p=books.filter(b=>!b.apart&&dareOk(b)&&!earlierToRead(b)&&ownGenres(b).some(x=>String(x).toLowerCase()===g.best.toLowerCase()));
-     return p.length?pick1(p):null;},
+     return p.length?pick1(freshFrom("errand",p,x=>x.id)):null;},
    ask:b=>{const g=insightGap();if(!g)return "Read it.";
      return `Your <b>${esc(g.best)}</b> books average ★ ${g.bestAvg.toFixed(1)} — higher than anything else you read — yet you have finished ${g.bestN} of them against ${g.mostN} ${esc(g.most)}. Here is one waiting. Read it.`;},
    done:(b,e)=>finishedSince(b,e.at),stale:(b,e)=>readBefore(b,e.at)},
@@ -24669,6 +24683,7 @@ function errandDraw(avoid){
   quests.errand={k:got.e.k,id:got.t.id,title:got.t.title||"Untitled",at:Date.now(),oh:ohNoBase(got.t),
     xp:got.e.pay?got.e.pay(got.t):got.e.xp,need:got.e.need?got.e.need(got.t):0};
   if(got.t.ids)quests.errand.ids=got.t.ids.slice();
+  freshNote("errand",[got.t.id]);
   /* `snap` is anything else a kind needs to remember from its draw */
   if(got.e.snap)quests.errand.x=got.e.snap(got.t);
   questSave();return quests.errand;
@@ -25814,14 +25829,41 @@ const pick1=a=>a[Math.floor(Math.random()*a.length)];
    └──────────────────────────────────────────────────────────────────────────┘ */
 const FRESH_N=10,FRESH_PER=20;
 function freshHist(g){const f=quests&&quests.fresh;return (f&&f[g]&&Array.isArray(f[g]))?f[g]:[];}
+/* ---- …AND NOTHING OF THE SAME AUTHOR, COLLECTION OR SERIES EITHER ----
+   Ten deals without the same book was not enough: a shelf with fifteen
+   Red Rock Mysteries dealt a Red Rock cover, then another, then another,
+   each a different book and each the same picture. So a dealt key that
+   resolves to a book (a book id, or "collection|story") also bans, for the
+   same ten deals, every book by any of its authors, every story of its
+   collection, and every book of its series. The ban falls back exactly as
+   before — the oldest deal let back first — so a shelf with one author on
+   it still gets dealt. Keys that are not books (a trait, a name, a quote)
+   ban only themselves, as they did. */
+function freshKin(k,byId){
+  const out=[k];
+  const sid=String(k),bar=sid.indexOf("|");
+  const b=byId.get(bar<0?sid:sid.slice(0,bar));
+  if(!b)return out;
+  if(bar>=0)out.push("coll:"+b.id);
+  let author=b.author||"";
+  if(bar>=0){const en=(b.entries||[]).find(x=>x.id===sid.slice(bar+1));if(en)try{author=entAuthorOf(b,en)||author;}catch(e){}}
+  authorParts(author).forEach(a=>{const n=a.trim().toLowerCase();if(n&&n!=="unknown author")out.push("au:"+n);});
+  const ser=String(b.series||"").trim().toLowerCase();
+  if(ser)out.push("ser:"+ser);
+  return out;
+}
 function freshFrom(g,pool,key,enough,was){
   const ok=enough||(l=>l.length>0);
   const deals=freshHist(g).map(d=>d.k||[]);
   if(was!=null&&was!==""){const w=String(was);if(!deals.length||deals[deals.length-1].indexOf(w)<0)deals.push([w]);}
+  if(!deals.length)return pool;
+  const byId=new Map(books.map(b=>[b.id,b]));
+  const kinOf=new Map();
+  const kin=k=>{const sk=String(k);let v=kinOf.get(sk);if(!v){v=freshKin(sk,byId);kinOf.set(sk,v);}return v;};
   for(let back=deals.length;back>0;back--){
     const ban=new Set();
-    for(const d of deals.slice(deals.length-back))for(const k of d)ban.add(k);
-    const left=pool.filter(x=>!ban.has(String(key(x))));
+    for(const d of deals.slice(deals.length-back))for(const k of d)for(const x of kin(k))ban.add(x);
+    const left=pool.filter(x=>!kin(key(x)).some(y=>ban.has(y)));
     if(ok(left))return left;
   }
   return pool;
