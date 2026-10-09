@@ -1799,6 +1799,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
     width:min(430px,calc(92vw/var(--uiz,1)));max-height:calc(78vh/var(--uiz,1));
     overflow:auto;background:var(--card);
     border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 10px 34px rgba(0,0,0,.28)}
+  /* the ⌨ Keys card (?) — keys on the left, what they do on the right */
+  .keyscard{width:min(480px,calc(92vw/var(--uiz,1)))}
+  .keysgrid{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 14px;align-items:baseline;font-size:13px}
+  .keysgrid .kk{white-space:nowrap}
+  .keyscard kbd{font:600 12px ui-monospace,Consolas,monospace;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:6px;padding:1px 6px;background:var(--bg);color:var(--ink)}
   /* Sits behind a panel and catches everything else. Without it, a click meant
      to dismiss the panel also lands on whatever was underneath — opening a book
      you only wanted to click past. */
@@ -4820,6 +4826,9 @@ function vtGoAsync(kind,change,dest){
   return t.updateCallbackDone;
 }
 const vtGo=(kind,change,dest)=>{vtGoAsync(kind,change,dest).catch(e=>console.error("[shelf] the screen change failed",e));};
+/* Esc: was there anything for it to close? Asked here, in the head, so this
+   listener runs before every one that closes something — see ONE KEY EACH */
+document.addEventListener("keydown",e=>{if(e.key==="Escape")e.__escFree=typeof escWouldClose==="function"&&!escWouldClose();},true);
 function vtNameCover(id){
   if(!id)return;
   /* a book's page already wears the name on its own cover (.vcover) — naming
@@ -7858,9 +7867,82 @@ document.addEventListener("keydown",e=>{
   if(a&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA"||a.tagName==="SELECT"||a.isContentEditable))return;
   if(q("#edPage")||q("#helpSheet")||document.querySelector(".ratepanel"))return;
   const box=view==="library"?q("#libFind"):view==="search"?q("#sq"):view==="quotes"?q("#qtFind"):null;
-  if(!box)return;
   e.preventDefault();
+  /* a screen with no find box of its own sends you to Search's */
+  if(!box){goTab("search").then(()=>{const s=q("#sq");if(s){s.focus();s.select();}});return;}
   box.focus();box.select();
+});
+/* ---- ONE KEY EACH, ON A COMPUTER ----
+   N adds a book, 1–9 and 0 are the tabs in their order, E turns a book's page
+   between ✎ Edit and 👁 Done, Esc goes ‹ Back from a book, ? shows the card
+   that lists them all (with / , Ctrl+K, ← → and Ctrl+Z, which were already
+   here). Never while you are typing, never with Ctrl/Alt/⌘ held (those are the
+   browser's), and never over a floating panel. Hangman takes every letter
+   while its board is up, so N and E stand aside there. */
+const kbTyping=t=>[t,document.activeElement].some(x=>x&&(x.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(x.tagName||"")));
+const kbPanelUp=()=>!!(q("#helpSheet")||q("#jumpBox")||document.querySelector(".ratepanel"));
+const kbHangman=()=>view==="challenges"&&typeof chGameNow==="function"&&chGameNow()==="sw";
+/* What would Esc close, if anything? Asked by the listener in the page's head,
+   before any of the closing listeners run — several close their panel without
+   saying so on the event, and Esc must never close a panel AND leave the book
+   in one press. */
+function escWouldClose(){
+  if(document.querySelector(".ratepanel,#helpSheet,#wrapPage,#jumpBox,#moveSheet,.pzfull,.dqpanel,#lvlPop"))return true;
+  if(q("#picView")&&!q("#picView").hidden)return true;
+  if([...document.querySelectorAll("#fabMenu,#addMenu,#tabmore,#moreSheet,#tagPanel,#qfromPanel,#orderPanel,.bgpanel")]
+    .some(p=>!p.hidden&&p.innerHTML.trim()))return true;
+  try{if(typeof kwSheetOpen==="function"&&kwSheetOpen())return true;}catch(e){}
+  return false;
+}
+function showKeysCard(){
+  const old=q("#keysCard");if(old){if(old.__close)old.__close();else old.remove();return;}
+  const wrap=document.createElement("div");
+  wrap.id="keysCard";wrap.className="ratepanel keyscard";
+  const k=t=>`<kbd>${t}</kbd>`;
+  const tabs=TAB_DEFS.map((t,i)=>`${(i+1)%10} ${t[2]}`).join(" · ");
+  const rows=[[k("/"),"Find — the box on this screen, or 🔍 Search's"],[k("Ctrl")+" "+k("K"),"Jump to any book by its name"],
+    [k("N"),"Add a book"],[k("1")+" – "+k("9")+" "+k("0"),"The tabs, in order: "+esc(tabs)],
+    [k("←")+" "+k("→"),"On a book's page: the book before / after"],[k("E"),"On a book's page: ✎ Edit / 👁 Done"],
+    [k("Esc"),"Close what is open — or, with nothing open, ‹ Back from a book"],
+    [k("Ctrl")+" "+k("Z")+" / "+k("Y"),"Undo / redo"],[k("?"),"This card"]];
+  wrap.innerHTML=`<div class="hrow2" style="margin-bottom:8px"><b style="font-size:14px">⌨ Keys</b>
+      <button class="btn" id="keysX" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+    <div class="keysgrid">${rows.map(([a,b])=>`<div class="kk">${a}</div><div>${b}</div>`).join("")}</div>
+    <div class="hint" style="margin:10px 0 0">None of these fire while you are typing in a box.</div>`;
+  document.body.appendChild(wrap);
+  const close=dismissable(wrap);wrap.__close=close;
+  q("#keysX",wrap).onclick=()=>close();
+}
+document.addEventListener("keydown",e=>{
+  if(e.ctrlKey||e.altKey||e.metaKey||kbTyping(e.target))return;
+  const key=e.key;
+  if(key==="?"){if(q("#helpSheet")||q("#jumpBox"))return;e.preventDefault();showKeysCard();return;}
+  if(key==="Escape"){
+    if(!e.__escFree||view!=="book"||!q("#edPage"))return;
+    if(typeof mode!=="undefined"&&mode!=="write")return;   /* drawing or arranging: Esc is not "leave" */
+    const b=q("#edBack");if(b){e.preventDefault();b.click();}
+    return;
+  }
+  if(e.shiftKey||kbPanelUp())return;
+  if(/^[0-9]$/.test(key)){
+    const t=TAB_DEFS[key==="0"?9:+key-1];if(!t)return;
+    e.preventDefault();goTab(t[0]);return;
+  }
+  const L=key.length===1?key.toLowerCase():"";
+  if((L==="n"||L==="e")&&kbHangman())return;
+  if(L==="n"){
+    if(q("#edPage"))return;
+    const ab=q("#addBook"),am=q("#addMenu");if(!ab||!am)return;
+    e.preventDefault();
+    if(am.hidden)ab.click();
+    const first=am.querySelector("button");if(first)first.focus();
+    return;
+  }
+  if(L==="e"){
+    if(!q("#edPage"))return;
+    const b=q("#toEdit")||q("#toView");if(!b)return;
+    e.preventDefault();b.click();
+  }
 });
 /* ---- jump to anything, from anywhere ----
    The 🔎 in the header (and on a book's own bar), or Ctrl+K: a box that takes
@@ -11221,6 +11303,7 @@ function showHelpSheet(){
       <dt>A− / A+</dt><dd>Text size, remembered per device. The layout rearranges itself to fit — there is no phone version to switch on, the page works out how much room it really has and lays itself out for that.</dd>
       <dt>Pictures and notes</dt><dd>The scrapbook — loose pictures, sticky notes, drawing — is one setting on the Overview tab, off to begin with on a phone. Turning it off hides nothing you wrote and loses nothing.</dd>
       <dt>↶ / ↷</dt><dd>Undo and redo — they work on everything, including deleting a book. Ctrl+Z does the same.</dd>
+      <dt>⌨ Keys, on a computer</dt><dd><b>/</b> finds, <b>N</b> adds a book, <b>1</b>–<b>9</b> and <b>0</b> are the tabs in order, <b>E</b> turns a book's page between ✎ Edit and 👁 Done, <b>Esc</b> goes back from a book, <b>← →</b> step through the books you came from, and <b>Ctrl+K</b> jumps to any book by name. Press <b>?</b> anywhere for the list. None of them fire while you are typing.</dd>
       <dt>＋ Add book</dt><dd>A blank page to fill in yourself. The two buttons under it do the filling for you:</dd>
       <dt>⚡ From text / photo</dt><dd>Paste a blurb, a review, any text about the book — or drop a photo of it — and the details are read off it.</dd>
       <dt>📕 By ISBN / barcode</dt><dd>Type the digits under the barcode, or photograph it — the number finds the exact book, title unseen.</dd>
@@ -11350,6 +11433,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-10.3",lines:[
+    "<b>⌨ Keys on the computer.</b> <b>1</b> to <b>9</b> and <b>0</b> take you to the tabs in their order — 1 is Today, 0 is Settings. <b>N</b> opens Add book. On a book's page, <b>E</b> switches between ✎ Edit and 👁 Done, and <b>Esc</b> goes back — unless something is open, which it closes first. <b>/</b> now works on every screen: where there is no find box, it takes you to 🔍 Search with the cursor in its box. Press <b>?</b> anywhere for the whole list, Ctrl+K and ← → included. None of them fire while you are typing, and Hangman keeps its letters."]},
   {v:"2026-10-10.1",lines:[
     "<b>🌙 Teal buttons are readable in the dark.</b> In the dark theme teal turns bright, and the white words on it read 1.9 to 1. Save in the page strip, the stage you picked, the day you chose, the run calendar's days, the tour card's header, the ⓘ button and a dozen more take dark ink there now, as the rest of the teal buttons already did.",
     "<b>📖 A book's stage keeps its colour in the dark.</b> Finished, Reading now, Want to read and Stopped were all the same grey on a book's page in the dark theme; each has its own colour again.",
