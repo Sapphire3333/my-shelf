@@ -21,6 +21,14 @@ const SHARE = "my-shelf-share";
    the file (?v=), so a replaced picture is a new address; the old copy of the
    same file is dropped when the new one is put away. */
 const ART_CACHE = "my-shelf-art";
+/* The libraries from the CDNs (the syncing library, the photo reader's
+   language files) — kept apart from the build-stamped cache for the same
+   reason. In that cache, every new build threw the syncing library away, and
+   the first visit after it with no connection ran with sync off: the app
+   could not start syncing without it. Refreshed in the background on every
+   fetch, as before, so a newer "@2" still lands. */
+const LIB_CACHE = "my-shelf-lib";
+const LIB_HOSTS = ["cdn.jsdelivr.net", "unpkg.com", "tessdata.projectnaptha.com"];
 const SHARED_KEY = "shared-backup";
 /* a share with no file in it — a line selected in a reader, a link to a
    book's page — is kept here as JSON and the app is sent on with ?shared=t */
@@ -36,11 +44,28 @@ self.addEventListener("install", e => {
 });
 
 self.addEventListener("activate", e => {
-  e.waitUntil(
-    caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE && k !== SHARE && k !== ART_CACHE).map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+  e.waitUntil((async () => {
+    const keep = [CACHE, SHARE, ART_CACHE, LIB_CACHE];
+    const old = (await caches.keys()).filter(k => keep.indexOf(k) < 0);
+    /* a library an older build's cache already holds moves across before that
+       cache goes, so the build that brings LIB_CACHE has no gap of its own */
+    try {
+      const lib = await caches.open(LIB_CACHE);
+      for (const k of old) {
+        const c = await caches.open(k);
+        for (const req of await c.keys()) {
+          let host = "";
+          try { host = new URL(req.url).hostname; } catch (_) {}
+          if (LIB_HOSTS.indexOf(host) >= 0 && !(await lib.match(req))) {
+            const res = await c.match(req);
+            if (res) await lib.put(req, res);
+          }
+        }
+      }
+    } catch (_) {}
+    await Promise.all(old.map(k => caches.delete(k)));
+    await self.clients.claim();
+  })());
 });
 
 /* ---- a file shared to the app from somewhere else ----
@@ -127,11 +152,11 @@ self.addEventListener("fetch", e => {
   // a photo keeps working offline once it has worked online.
   // unpkg.com is the fallback home for the same libraries, tried when jsdelivr
   // is blocked or unreachable on a device — whichever one answered gets kept.
-  if (url.hostname === "cdn.jsdelivr.net" || url.hostname === "unpkg.com" || url.hostname === "tessdata.projectnaptha.com") {
+  if (LIB_HOSTS.indexOf(url.hostname) >= 0) {
     e.respondWith(
       caches.match(req).then(hit => {
         const net = fetch(req).then(res => {
-          if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+          if (res && res.ok) { const copy = res.clone(); caches.open(LIB_CACHE).then(c => c.put(req, copy)); }
           return res;
         }).catch(() => hit);
         return hit || net;

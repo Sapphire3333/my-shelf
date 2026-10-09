@@ -8069,9 +8069,15 @@ function openFamiliesPanel(){
     q("#fmClose",wrap).onclick=()=>close();
     {const ub=q("#fmUndoFile",wrap);
      if(ub)ub.onclick=()=>{
+       const nowCats=kwCats,nowCols=catColors;
        kwCats=JSON.parse(JSON.stringify(filingBack.was));
        catColors=JSON.parse(JSON.stringify(filingBack.wasCols));
        Object.keys(kwCats).forEach(w=>unmarkMetaDel("kwcat:"+w));
+       /* what the paste newly filed, and the families it made, go WITH a mark
+          (see THE RULE at markMetaDel): the paste had already gone up, and the
+          other device's copy brought them straight back without one */
+       Object.keys(nowCats).forEach(w=>{if(!(w in kwCats))markMetaDel("kwcat:"+w);});
+       Object.keys(nowCols).forEach(f=>{if(!(f in catColors))markMetaDel("cat:"+f);});
        filingBack=null;
        saveKwCats();if(SYNC.on)flushQueue();
        draw();
@@ -8943,7 +8949,12 @@ function markOpDone(op){
 }
 async function loadSyncLocal(){
   const dq=readQueueRow(await dbGet("meta","syncQueue"));
-  SYNC.queue=dq.q;SYNC.done=dq.done;pruneDone();
+  const early=SYNC.queue;
+  SYNC.queue=dq.q;SYNC.done=dq.done;
+  /* anything queued before the saved row was read joins it, not vanishes */
+  if(early.length){const have=new Set(SYNC.queue.map(opKey));
+    early.forEach(o=>{if(!have.has(opKey(o))){have.add(opKey(o));SYNC.queue.push(o);}});saveQueue();}
+  pruneDone();
   const dd=await dbGet("meta","deletions");deletions=dd&&dd.v?dd.v:{};
   const sm=await dbGet("meta","seenMod");SYNC.seen=sm&&sm.v?sm.v:{};
   /* tombstones only need to outlive the longest-offline device — drop ancient ones
@@ -9013,8 +9024,12 @@ const opKey=o=>o.kind+":"+(o.id||o.key||"");
    told apart from the very same book queued again a moment later. */
 let lastOpAt=0;
 const opStamp=()=>(lastOpAt=Math.max(Date.now(),lastOpAt+1));
+/* Kept whenever sync is set up in config.js, even before initSync has said
+   so: when the library has to be fetched, initSync turns sync on (or HELD —
+   see SET UP BUT HELD) only after that wait, and the boot's own repairs are
+   queued during it. flushQueue still needs sync on and a user to send. */
 function enqueue(op){
-  if(!SYNC.on)return;
+  if(!SYNC.on&&!hcSettings())return;
   op.at=opStamp();
   /* In place, stopping at the first hit. filter() built a fresh copy of the
      whole list once per op — invisible day to day, but a first sync enqueues
@@ -9201,13 +9216,16 @@ async function runOp(op){
     if(c&&c.data){const bl=dataURLtoBlob(c.data);
       const {error}=await s.storage.from("shelf").upload(coverPath(op.id),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
   }else if(op.kind==="coverDel"){
-    await s.storage.from("shelf").remove([coverPath(op.id)]);
+    /* storage answers a failure with {error}, it does not throw — unread, a
+       delete lost on a bad connection counted as done and the file stayed up,
+       to be fetched back by the other device and by the cover sweep */
+    const {error}=await s.storage.from("shelf").remove([coverPath(op.id)]);if(error)throw error;
   }else if(op.kind==="img"){
     const im=await dbGetOrThrow("images",op.key);
     if(im&&im.data){const bl=dataURLtoBlob(im.data);
       const {error}=await s.storage.from("shelf").upload(imgPath(op.key),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
   }else if(op.kind==="imgDel"){
-    await s.storage.from("shelf").remove([imgPath(op.key)]);
+    const {error}=await s.storage.from("shelf").remove([imgPath(op.key)]);if(error)throw error;
   }
 }
 /* How many book rows share one request. Books can carry long notes and
@@ -9732,12 +9750,34 @@ async function initSync(){
     try{
       await loadScriptFrom(["https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2",
         "https://unpkg.com/@supabase/supabase-js@2"]);
+      SYNC.libErr="";
     }catch(e){SYNC.libErr=e.message||"couldn't be fetched";}
+    /* the next time the device says it is back online, the start is tried again */
+    if(!window.supabase&&!SYNC.libRetry){
+      SYNC.libRetry=true;
+      window.addEventListener("online",()=>{SYNC.libRetry=false;if(SYNC.held)initSync();},{once:true});
+    }
   }
-  if(!syncConfigured()){SYNC.on=false;render();return;}
+  /* ┌─ SET UP BUT HELD: NO LIBRARY, AND EVERY EDIT STILL QUEUED ──────────────┐
+     │ The library missing used to mean SYNC.on=false for the whole visit —    │
+     │ and the first open without a connection after a new build was exactly   │
+     │ that (the worker's cache was renamed per build; see LIB_CACHE in sw.js).│
+     │ Some 87 places queue an upload only `if(SYNC.on)`, so every edit of the │
+     │ visit was dropped, and nothing sends it later: pullAll keeps a newer    │
+     │ local copy but never uploads it. The other device never heard of it,    │
+     │ and its next edit of the same book wrote over this one.                 │
+     │ Now sync stays ON and HELD: the queue fills and is saved as usual, but  │
+     │ there is no client and no user, so flushQueue and pullAll stand still   │
+     │ (both need SYNC.user) and no sign-in screen is shown. The retry above,  │
+     │ or the next start, brings the library and the queue goes up.            │
+     └──────────────────────────────────────────────────────────────────────────┘ */
+  if(!syncConfigured()){
+    if(hcSettings()){SYNC.on=true;SYNC.held=true;setSync(navigator.onLine?"error":"offline");render();return;}
+    SYNC.on=false;render();return;
+  }
   try{SYNC.supa=window.supabase.createClient(CFG.url,CFG.anonKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});}
   catch(e){console.warn("[shelf] supabase init failed",e);SYNC.on=false;render();return;}
-  SYNC.on=true;
+  SYNC.held=false;SYNC.libErr="";SYNC.on=true;
   window.addEventListener("online",()=>{setSync("syncing");flushQueue().then(pullAll);});
   window.addEventListener("offline",()=>setSync("offline"));
   SYNC.supa.auth.onAuthStateChange((event,session)=>{
@@ -9949,10 +9989,10 @@ async function initSync(){
   if(!bootRestored){bootRestored=true;restoreFromHistory();}
   await loadSyncLocal();
   initSync();
-  /* only now is syncing awake — initSync turns it on before its first await, so
-     by here anything queued will actually be kept. The startup backfill runs far
-     above this and had been posting into a queue that was still switched off. */
-  if(SYNC.on&&backfilled.length)backfilled.forEach(id=>enqueue({kind:"book",id}));
+  /* after loadSyncLocal, so these join the saved queue. Not gated on SYNC.on:
+     initSync turns it on before its first await only when the library is
+     already loaded, and when it has to fetch it these repairs were dropped */
+  if(backfilled.length)backfilled.forEach(id=>enqueue({kind:"book",id}));
   maybeAutoBackup();
   maybeFolderBackup();
   maybeFileBackup();
@@ -10009,11 +10049,17 @@ let tabHeardT=null,tabClashed=new Set();
 function tabSoon(){clearTimeout(tabHeardT);tabHeardT=setTimeout(tabCatchUp,220);}
 async function tabCatchUp(){
   let touched=false;
+  let listsMoved=false;
   for(const k of tabHeard.meta){
     const fn=META_INTO[k];if(!fn)continue;
     const row=await dbGet("meta",k);
     fn(row?row.v:null);touched=true;
+    if(k==="genres"||k==="dnfReasons"||k==="audiences")listsMoved=true;
   }
+  /* the other tab's genres, reasons and audiences are the new "before" for
+     this tab's next saveMeta, as a pull's are — left stale, this tab's next
+     edit wrote an undo step whose undo took the other tab's change away */
+  if(listsMoved)metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   tabHeard.meta.clear();
   for(const id of tabHeard.books){
     /* never on top of the book you are writing in — the same rule the cloud
@@ -10713,8 +10759,9 @@ async function coverSweep(say){
     if(!data||data.length<1000)break;
   }
   /* a cover this device has made and not yet sent is NOT behind — it is ahead,
-     and taking the cloud's copy would throw the new one away */
-  const pending=new Set(SYNC.queue.filter(o=>o.kind==="cover").map(o=>o.id));
+     and taking the cloud's copy would throw the new one away. The same for one
+     it has REMOVED and not yet told the cloud: fetching it would undo that */
+  const pending=new Set(SYNC.queue.filter(o=>o.kind==="cover"||o.kind==="coverDel").map(o=>o.id));
   const mine=books.map(b=>b.id).filter(id=>cloud.has(id)&&!pending.has(id));
   const off=[];
   for(let i=0;i<mine.length;i++){
@@ -11222,6 +11269,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-09.3",lines:[
+    "<b>🔄 Nothing you change is lost to a missing connection.</b> Opening the app with no connection just after an update used to switch syncing off for the whole visit, and whatever you changed then never reached your other device. Syncing waits instead now: your changes are kept and go up as soon as the connection is back, and what the app needs to sync is kept across updates, so this should rarely happen at all. ⚙ Settings → If something is wrong says \"on hold\" while it waits.",
+    "<b>🗑 A delete always has somewhere to go.</b> With storage nearly full, a deleted book could skip Recently deleted and simply be gone. Now it goes there without its pictures if it must — they come back from the cloud when you put it back — and if there is no room even for that, nothing is deleted and you are told why.",
+    "<b>✍️ The last thing you typed stays.</b> Pressing a sister collection or a series line within a moment of typing a note lost the note; it is saved first now, as ‹ Back and ◂ ▸ always did. A save that was still running when you opened another book could also land on the wrong one. And a cover picked straight after 🔎 Fill in no longer undoes what the fill wrote, if a sync arrived during the run.",
+    "<b>🧹 Smaller safety fixes.</b> A removed cover stays removed on a bad connection. ↶ Undo after putting a folded book back keeps its story's picture. ↶ Put the old filing back holds on your other device too. Saving only a tag's colour no longer renames it. Moving a genre to a tag clears it from your list whatever its capitals. A big fill that runs out of room stops cleanly, can be undone, and says so. Changing the dragon's picture keeps each tab's own size and place."]},
   {v:"2026-10-09.2",go:["tab:search"],lines:[
     "<b>🔍 A \"Who it's for\" with no books looks it.</b> On 🔍 Search, an audience none of your books has is drawn quiet and can't be pressed — it was meant to be all along, but looked the same as the rest, and in the dark theme too."]},
   {v:"2026-10-09.1",go:["tab:challenges"],lines:[
@@ -14537,6 +14589,13 @@ async function applyOp(op,inv,quiet){
            pull */
         if(it.after===null&&unDelete(it.id))saveDeletions();
       }
+      /* pictures the op took off this book (a story's own, when its book was
+         put back from the bin — see restoreTrash) come back on undo and go
+         again on redo, here and in the cloud */
+      if(it.pics)for(const [k,d] of Object.entries(it.pics)){
+        if(inv){try{await dbPut("images",{key:k,data:d});}catch(e){}coverCache.delete(k);if(SYNC.on)enqueue({kind:"img",key:k});}
+        else{try{await dbDel("images",k);}catch(e){}coverCache.delete(k);if(SYNC.on)enqueue({kind:"imgDel",key:k});}
+      }
     }
     countTrash();   /* an item may have come out of the bin just above */
     /* `label` may be ONE vocabulary entry or a list of them. A merge retires a
@@ -16179,7 +16238,7 @@ function coverInner(b,withAuthor){
 }
 /* Syncing is on, we are online, and the signed-in session has not landed yet —
    so a picture that is not on this device may still be in the cloud, unasked. */
-const coversStillComing=()=>SYNC.on&&!SYNC.user&&navigator.onLine;
+const coversStillComing=()=>SYNC.on&&!SYNC.held&&!SYNC.user&&navigator.onLine;
 /* Once the session does land, the "no cover" answers given during that gap were
    never real answers. Forget them so the next draw asks again. */
 function forgetMissingCovers(){
@@ -18358,7 +18417,12 @@ async function openBulkFill(ids){
     }
   }
   async function setCollCover(g,data){
-    const b=g.b;
+    /* asked again, as writeAll does: g.b was taken when the sheet opened, and
+       a pull during the run replaces the book — writing g.b back undid every
+       story the run had just filled, on both devices */
+    const b=books.find(x=>x.id===g.b.id);
+    if(!b)return;
+    g.b=b;
     const before=JSON.parse(JSON.stringify(b));
     await dbPut("covers",{id:b.id,data});
     coverCache.set(b.id,data);SYNC.triedCover.delete(b.id);
@@ -20015,15 +20079,40 @@ async function noteFold(b,collId,en){
   try{const t=await dbGet("trash",b.id);if(t){t.foldedInto=note;await dbPut("trash",t);}}catch(e){}
   if(binLive(b.id)){trashCloud[b.id].foldedInto=note;saveTrashCloud();}
 }
+/* ┌─ A DELETE NEEDS SOMEWHERE TO GO ─────────────────────────────────────────┐
+   │ This caught every failure and said so only to the console, and the      │
+   │ delete carried on — so a book whose bin copy was refused was simply     │
+   │ gone, while the question had promised thirty days in Recently deleted.  │
+   │ The bin copy carries the cover and every picture, which makes it the    │
+   │ biggest write a delete makes and the first refused when storage is      │
+   │ nearly full. Now: the whole copy first; refused, the book alone (`bare` │
+   │ — its words, notes and readings, a small fraction of the size), whose   │
+   │ pictures restoreTrash fetches back from the cloud when it syncs; and    │
+   │ only if even that is refused does it answer false, for removeBook to    │
+   │ keep the book rather than lose it.                                      │
+   └──────────────────────────────────────────────────────────────────────────┘ */
 async function toTrash(b){
-  if(!b)return;
+  if(!b)return false;
+  const rec={id:b.id,at:Date.now(),book:JSON.parse(JSON.stringify(b)),cover:null,images:{}};
   try{
     const cov=await dbGet("covers",b.id);
     const images={};
     for(const k of imgKeysOf(b)){const r=await dbGet("images",k);if(r)images[k]=r.data;}
-    await dbPut("trash",{id:b.id,at:Date.now(),book:JSON.parse(JSON.stringify(b)),cover:cov?cov.data:null,images});
-  }catch(e){console.warn("[shelf] couldn't put that in the bin",e);}
+    await dbPut("trash",Object.assign({},rec,{cover:cov?cov.data:null,images}));
+    return true;
+  }catch(e){console.warn("[shelf] the bin refused that with its pictures",e);}
+  try{await dbPut("trash",Object.assign(rec,{bare:true}));return true;}
+  catch(e){console.warn("[shelf] couldn't put that in the bin",e);return false;}
 }
+const BIN_REFUSED="This device's storage is too full to keep a copy in Recently deleted, so nothing was deleted. Free some room (⚙ Settings → You and your things → Storage shows what is using it) and try again.";
+/* One book of a loop that may meet a full disk. Written — or, refused, put
+   back in memory exactly as it was before the loop changed it, so the
+   half-changed copy is not saved later by something else. */
+async function putOrRestore(b,before){
+  try{await dbPut("books",b);return true;}
+  catch(e){for(const k of Object.keys(b))delete b[k];Object.assign(b,JSON.parse(JSON.stringify(before)));return false;}
+}
+const STORE_FULL_STOP="It stopped there: this device's storage is full. The rest were left as they were — free some room (⚙ Settings → You and your things → Storage shows what is using it) and run it again.";
 async function restoreTrash(tid){
   /* the copy kept here if this is the device that deleted it, otherwise the one
      the cloud carries — with its pictures fetched back down */
@@ -20058,7 +20147,7 @@ async function restoreTrash(tid){
   await dbPut("books",b);
   if(t.cover){await dbPut("covers",{id:b.id,data:t.cover});coverCache.delete(b.id);SYNC.triedCover.delete(b.id);}
   for(const[k,d]of Object.entries(t.images||{}))await dbPut("images",{key:k,data:d});
-  if(fromCloud){coverCache.delete(b.id);SYNC.triedCover.delete(b.id);
+  if(fromCloud||t.bare){coverCache.delete(b.id);SYNC.triedCover.delete(b.id);
     if(SYNC.on&&SYNC.user&&navigator.onLine)try{await syncBookAssets(b);}catch(e){}}
   const i=books.findIndex(x=>x.id===b.id);
   if(i>=0)books[i]=b;else books.unshift(b);
@@ -20080,10 +20169,14 @@ async function restoreTrash(tid){
     touchBook(fColl);
     await dbPut("books",fColl);
     const key=fColl.id+"|"+fEn.id;
+    /* the story's own picture rides the undo step (`pics`): undoing puts the
+       story back with cover:true, and without its picture it stood blank on
+       both devices for good */
+    let pic=null;try{pic=await dbGet("images",key);}catch(e){}
     try{await dbDel("images",key);}catch(e){}
     coverCache.delete(key);
     if(SYNC.on){enqueue({kind:"book",id:fColl.id});if(fEn.cover)enqueue({kind:"imgDel",key});}
-    items.push({id:fColl.id,before,after:JSON.parse(JSON.stringify(fColl))});
+    items.push({id:fColl.id,before,after:JSON.parse(JSON.stringify(fColl)),...(pic&&pic.data?{pics:{[key]:pic.data}}:{})});
     if(cur&&cur.id===fColl.id)await rebaseOpenBook(fColl.id);
   }
   pushOp({t:"bulk",items});
@@ -20094,12 +20187,15 @@ async function restoreTrash(tid){
    that deleting one book and deleting the six you ticked take exactly the same
    path and cannot drift apart. */
 async function removeBook(b){
-  if(!b)return;
+  if(!b)return false;
   const id=b.id;
   /* the copy in the editor must die with the book — a pending autosave or a later
-     "Save now" would write it straight back onto the shelf */
-  if(cur&&cur.id===id){clearTimeout(saveTimer);cur=null;}
-  await toTrash(b);
+     "Save now" would write it straight back onto the shelf. The timer stops
+     first; the copy goes only once the bin has taken the book (A DELETE NEEDS
+     SOMEWHERE TO GO), so a refused delete keeps the open edits too */
+  if(cur&&cur.id===id)clearTimeout(saveTimer);
+  if(!(await toTrash(b)))return false;
+  if(cur&&cur.id===id)cur=null;
   await dbDel("books",id);
   books=books.filter(x=>x.id!==id);
   if(SYNC.on){
@@ -20109,12 +20205,14 @@ async function removeBook(b){
        it back possible from another device. purgeTrash clears them at 30 days. */
     trashCloud[id]={at:Date.now(),book:JSON.parse(JSON.stringify(b))};saveTrashCloud();
   }
+  return true;
 }
 async function deleteBookById(id){
   const b=books.find(x=>x.id===id);
   if(!confirm(`Delete “${(b&&b.title)||"Untitled"}” and all its pictures?\n\nIt waits in Recently deleted (on the History tab) for ${TRASH_DAYS} days, so you can get it back.`))return;
-  if(b)pushOp({t:"del",body:JSON.parse(JSON.stringify(b))});
-  await removeBook(b);
+  const body=b?JSON.parse(JSON.stringify(b)):null;
+  if(b&&!(await removeBook(b))){alert(BIN_REFUSED);return;}
+  if(body)pushOp({t:"del",body});
   if(view==="book"){view="library";}
   render();
 }
@@ -20127,8 +20225,12 @@ async function deleteTicked(){
   if(!list.length)return;
   const names=list.slice(0,6).map(b=>"• "+((b.title||"Untitled"))).join("\n");
   if(!confirm(`Delete ${list.length} book${list.length===1?"":"s"} and all their pictures?\n\n${names}${list.length>6?`\n…and ${list.length-6} more`:""}\n\nThey wait in Recently deleted (on the History tab) for ${TRASH_DAYS} days, so you can get them back.`))return;
-  pushOp({t:"dels",bodies:list.map(b=>JSON.parse(JSON.stringify(b)))});
-  for(const b of list)await removeBook(b);
+  const bodies=[];
+  for(const b of list){const body=JSON.parse(JSON.stringify(b));if(await removeBook(b))bodies.push(body);}
+  if(bodies.length)pushOp({t:"dels",bodies});
+  if(bodies.length<list.length)alert(bodies.length
+    ?`${bodies.length} of the ${list.length} went to Recently deleted. `+BIN_REFUSED.replace("so nothing was deleted","so the rest were kept")
+    :BIN_REFUSED);
   libSel.clear();
   render();
 }
@@ -22908,7 +23010,10 @@ async function setDragonPic(data){
     else await dbDel("covers","__dragon");
   }catch(e){alert("That picture couldn't be saved — storage may be full.");return;}
   dragonPic=data||"";
-  const c=dragonCfg();c.own=!!data;settings.dragon=c;saveSettings();
+  /* through dragonSet, not dragonCfg: that is the shared settings with THIS
+     tab's own size, place and strength laid over them, and writing it back
+     made this tab's the default for every other */
+  dragonSet("own",!!data);saveSettings();
 }
 /* ---- a picture of your own, made ready ----
    compressImage writes JPEG, which cannot hold transparency — so a dragon
@@ -29617,7 +29722,7 @@ function roadCheck(){
 function roadDiag(){
   const c=roadCfg(),R=c&&roadOf(c.k),{pages,km}=roadKm();
   const waiting=SYNC.queue.length,game=SYNC.queue.some(o=>o.kind==="meta"&&o.key==="quests");
-  const sync=!SYNC.on?"off — this device only":!SYNC.user?"not signed in"
+  const sync=!SYNC.on?"off — this device only":SYNC.held?`on hold, waiting for the syncing library — ${waiting} change${waiting===1?"":"s"} kept here`:!SYNC.user?"not signed in"
     :(SYNC.status||"?")+(waiting?`, ${waiting} change${waiting===1?"":"s"} waiting to go up${game?" (the game's among them)":""}`:"");
   const err=SYNC.lastErr?` — last trouble ${new Date(SYNC.lastErr.at).toLocaleString()}: ${SYNC.lastErr.msg}`:"";
   const at=c&&c.at?new Date(c.at).toLocaleString():(c&&c.from)||"";
@@ -31196,7 +31301,8 @@ function tuneDiagnostics(){
     "Screen "+realWidth()+" css px, text "+(settings.fontScale||100)+"% — the page lays out for "
       +Math.round(realWidth()/((settings.fontScale||100)/100))+", bucket "
       +(document.documentElement.getAttribute("data-vw")||"?"),
-    SYNC.on?("Syncing on"+(SYNC.user?", signed in as "+(SYNC.user.email||"?"):", not signed in"))
+    SYNC.held?("Syncing on hold — the syncing library "+(SYNC.libErr||"isn't here yet")+". Changes are kept here and go up once it arrives")
+    :SYNC.on?("Syncing on"+(SYNC.user?", signed in as "+(SYNC.user.email||"?"):", not signed in"))
       :"Syncing off — this device only"
         /* the one reason for it that is nobody's choice, and used to be silent */
         +(SYNC.libErr?" · the syncing library "+SYNC.libErr:(hcSettings()?"":" · no Supabase address and key in config.js")),
@@ -33328,12 +33434,14 @@ function renderReadEra(){
       +Object.keys(what).map(k=>what[k]+" × "+k).join("\n")
       +"\n\nNothing already written is changed — only blanks are filled. One Undo puts it all back."))return;
     fillBtn.disabled=true;fillBtn.textContent="Filling in…";
-    const items=[];
+    const items=[];let full=false;
     for(const r of want){
       const bk=r.have,before=JSON.parse(JSON.stringify(bk));
       reFillInto(bk,r.it,r.fill);
       touchBook(bk);
-      await dbPut("books",bk);
+      /* storage full mid-run: stop, keep what was written, and still push the
+         undo step below — see the same stop in the bulk fill's writeAll */
+      if(!(await putOrRestore(bk,before))){full=true;break;}
       if(SYNC.on)enqueue({kind:"book",id:bk.id});
       items.push({id:bk.id,before,after:JSON.parse(JSON.stringify(bk))});
     }
@@ -33342,7 +33450,7 @@ function renderReadEra(){
     if(items.length)pushOp({t:"bulk",items});
     if(SYNC.on)flushQueue();
     const n=items.length;
-    alert(n+" book"+(n===1?"":"s")+" filled in. Undo puts it all back.");
+    alert(n+" book"+(n===1?"":"s")+" filled in. Undo puts it all back."+(full?"\n\n"+STORE_FULL_STOP:""));
     await reAfterChange();
   };
   qa("[data-rechk]",box).forEach(c=>c.onchange=()=>{
@@ -33358,7 +33466,7 @@ function renderReadEra(){
   const go=q("#reGo",box);
   if(go)go.onclick=async()=>{
     go.disabled=true;go.textContent="Bringing them in…";
-    const items=[];let added=0,intoStory=false;
+    const items=[];let added=0,intoStory=false,full=false;
     for(const r of chosen){
       const fresh=newQ(r);if(!fresh.length)continue;
       const b=r.hit.b,en=r.hit.en;
@@ -33379,7 +33487,7 @@ function renderReadEra(){
         added++;
       }
       touchBook(b);
-      await dbPut("books",b);
+      if(!(await putOrRestore(b,before))){added-=fresh.length;full=true;break;}
       if(SYNC.on)enqueue({kind:"book",id:b.id});
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
     }
@@ -33388,7 +33496,7 @@ function renderReadEra(){
     alert(added+" quote"+(added===1?"":"s")+" brought in, on "+items.length+" book"+(items.length===1?"":"s")
       +"."+(intoStory?"\n\nWhere the line came from a story inside a collection, it sits on the collection and says which story — press that to go there. Its page rides at the end of the line."
         :"\n\nEach one carries the page it came from.")
-      +"\n\nUndo puts it all back.");
+      +"\n\nUndo puts it all back."+(full?"\n\n"+STORE_FULL_STOP:""));
     await reAfterChange();
   };
 }
@@ -33775,10 +33883,14 @@ async function addQuoteTo(id,text,enId){
   if(enId&&(b.entries||[]).some(e=>e.id===enId))listFromArr(b)[b.quotes.length-1]=enId;
   b.touched=true;
   touchBook(b);
-  pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+  /* the disk first, the undo step after: refused, it said "Couldn't save"
+     but left the quote in memory and on the undo stack, and the book's next
+     save quietly wrote it after all */
   try{await dbPut("books",b);}
   catch(e){shareNote("SAVE FAILED",{book:b.title||"Untitled",err:String(e&&e.message||e)});
+    for(const k of Object.keys(b))delete b[k];Object.assign(b,before);
     alert("Couldn't save — storage may be full.");return false;}
+  pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   shareNote("quote kept",{book:b.title||"Untitled",now:(b.quotes||[]).length+" on that book"});
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
   if(view==="book"&&cur&&cur.id===b.id)await rebaseOpenBook(b.id);
@@ -33923,7 +34035,8 @@ async function autoTakeQuotes(){
       added++;
     }
     touchBook(b);
-    await dbPut("books",b);
+    /* storage full: stop with what was written, and keep its undo step */
+    if(!(await putOrRestore(b,before))){added-=fresh.length;break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
     items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   }
@@ -34152,21 +34265,22 @@ function refreshNameDupes(){
     if(!others.length)return;
     const n=others.reduce((s,nm)=>s+g.spellings[nm].length,0);
     if(!confirm(`Change ${others.map(o=>`“${o}”`).join(" and ")} to “${keep}”?\n\n${n} book${n===1?"":"s"} ${n===1?"is":"are"} affected. Nothing else about them changes, and Undo can put it back.`))return;
-    const items=[];
-    for(const nm of others){
+    const items=[];let full=false;
+    outer:for(const nm of others){
       for(const b of g.spellings[nm]){
         const before=JSON.parse(JSON.stringify(b));
         b[g.field]=keep;
         touchBook(b);
-        await dbPut("books",b);
+        if(!(await putOrRestore(b,before))){full=true;break outer;}
         if(SYNC.on)enqueue({kind:"book",id:b.id});
         items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
       }
     }
     /* the promise in the confirm above is now kept: one press restores every
-       spelling this just rewrote */
+       spelling this just rewrote — and a full disk partway keeps it too */
     if(items.length)pushOp({t:"bulk",items});
     if(SYNC.on)flushQueue();
+    if(full)alert(items.length+" changed. "+STORE_FULL_STOP);
     refreshNameDupes();refreshDupes();
   });
 }
@@ -37697,11 +37811,16 @@ async function commitCur(){
   /* that look at the disk is a wait, and a book can be deleted during one — the
      same reason the check at the top of this function exists at all */
   if(!cur)return;
+  /* …and another book can be OPENED during one. Everything below speaks of
+     `id`, the book these edits are, and touches `cur` only while it still is
+     that book — read off `cur` again, the stamps, the upload and the undo
+     step all landed on the newly opened one, and this one never went up */
+  const id=after.id,same=cur.id===id;
   /* beat our previous save AND anything the cloud has shown us, so a device whose
      clock runs fast can't have its older copy win forever */
-  after.edited=Date.now();after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,diskAt+1,seenFloor(cur.id)+1);
-  after.touched=true;cur.touched=true;   /* you've worked on it — no longer a raw import */
-  cur.modified=after.modified;
+  after.edited=Date.now();after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,diskAt+1,seenFloor(id)+1);
+  after.touched=true;   /* you've worked on it — no longer a raw import */
+  if(same){cur.touched=true;cur.modified=after.modified;}
   try{await dbPut("books",after);}
   catch(e){
     const el=q("#saveMsg");if(el){el.textContent="Couldn't save!";el.className="savemsg no";}
@@ -37709,13 +37828,16 @@ async function commitCur(){
       alert("This couldn't be saved — storage may be full.\n\nExport a backup from the Overview tab, then delete some pictures or old backups.");}
     return;
   }
-  pushOp({t:"book",id:cur.id,before,after:JSON.parse(JSON.stringify(after))});
-  if(i>=0)books[i]=after;else books.unshift(after);
+  pushOp({t:"book",id,before,after:JSON.parse(JSON.stringify(after))});
+  /* found again: a pull during the waits above replaces the whole array */
+  const j=books.findIndex(b=>b.id===id);
+  if(j>=0)books[j]=after;else books.unshift(after);
   /* through unDelete, never a bare delete — the join in saveSharedMap reads
      the disk copy back and would hand the tombstone straight over otherwise,
      making this the one un-delete in the app that quietly didn't take */
-  if(SYNC.on){if(unDelete(cur.id))saveDeletions();enqueue({kind:"book",id:cur.id});}
-  isNew=false;setSaved(true);
+  if(SYNC.on){if(unDelete(id))saveDeletions();enqueue({kind:"book",id});}
+  if(same)isNew=false;
+  setSaved(true);
 }
 function scheduleSave(){
   setSaved(false);clearTimeout(saveTimer);
@@ -37876,32 +37998,48 @@ async function moveWordEverywhere(name,toGenre){
       }
     }
   }
+  let full=false;
   for(const bk of touched.values()){
+    if(full){const w=was.get(bk.id);for(const k of Object.keys(bk))delete bk[k];Object.assign(bk,JSON.parse(JSON.stringify(w)));continue;}
     bk.touched=true;
     touchBook(bk);
-    try{await dbPut("books",bk);}
-    catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
+    /* storage full: this book and every one after it go back in memory to how
+       they were — changed but never written, they were neither saved nor in
+       the undo step, and the vocabulary below was still taken away */
+    if(!(await putOrRestore(bk,was.get(bk.id)))){full=true;continue;}
     if(SYNC.on)enqueue({kind:"book",id:bk.id});
     items.push({id:bk.id,before:was.get(bk.id),after:JSON.parse(JSON.stringify(bk))});
   }
+  if(full){
+    if(items.length)pushOp({t:"bulk",items});
+    if(SYNC.on)flushQueue();
+    alert("This couldn't all be saved — storage may be full.\n\n"+items.length+" book"+(items.length===1?" was":"s were")+" changed, and one press of Undo puts "+(items.length===1?"it":"them")+" back. The word stays in your list until the rest can be moved.");
+    if(cur){const me=books.find(x=>x.id===cur.id);if(me)cur=JSON.parse(JSON.stringify(me));}
+    return {n:items.length,storiesLeft,full:true};
+  }
   /* the vocabulary travels with the books as ONE step: undoing a move has to put
-     the genre back in your list as well as back on the books */
+     the genre back in your list as well as back on the books. Found by name in
+     any case, as the books were: removed by exact name, a list holding "Science
+     Fiction" kept it when the move began from "Science fiction" */
+  const keyIn=o=>Object.keys(o).find(k=>k.toLowerCase()===low)||name;
   let label=null;
   if(toGenre){
     ensureGenre(gn);
     /* the word's colour and its family go with it — unless a story still holds
        it, in which case it is still a word and still needs them */
     if(!storiesLeft){
-      label={kind:"kw",name,color:kwColors[name]||"",cat:kwCats[name]||""};
-      delete kwColors[name];delete kwCats[name];markMetaDel("kw:"+name);saveKwColors();saveKwCats();
+      const kc=keyIn(kwColors),kf=keyIn(kwCats);
+      label={kind:"kw",name,color:kwColors[kc]||"",cat:kwCats[kf]||""};
+      delete kwColors[kc];delete kwCats[kf];markMetaDel("kw:"+name);saveKwColors();saveKwCats();
     }
   }else{
-    label={kind:"genre",name,color:genres[name]||genreColor(name)};
-    delete genres[name];markMetaDel("genre:"+name);saveGenresQuiet();
+    const g=keyIn(genres);
+    label={kind:"genre",name:g,color:genres[g]||genreColor(g)};
+    delete genres[g];markMetaDel("genre:"+g);saveGenresQuiet();
     /* the picture and the loose-art tie go with the heading — see the tag
        editor's delete, which does the same */
-    await clearGroupArt("genre|"+name);
-    untieLibArt("genre|"+name);
+    await clearGroupArt("genre|"+g);
+    untieLibArt("genre|"+g);
   }
   if(items.length)pushOp(label?{t:"bulk",items,label}:{t:"bulk",items});
   if(SYNC.on)flushQueue();
@@ -39651,9 +39789,14 @@ function renderBookView(){
   {const st=q("#vSerTog");
    if(st)st.onclick=e=>{e.stopPropagation();vSeriesOpen=!vSeriesOpen;renderBookView();};
    /* across to a sister collection, keeping the face you are reading on */
-   qa("[data-kincoll]",page).forEach(x=>x.onclick=e=>{e.stopPropagation();openBook(x.dataset.kincoll);});
+   /* both through finishSaveThen, as stepWalk and ‹ Back are: openBook swaps
+      `cur` at once, so a note typed or a picture moved in the last 0.7 s was
+      saved onto the book being opened (unchanged) and lost from this one */
+   qa("[data-kincoll]",page).forEach(x=>x.onclick=e=>{e.stopPropagation();
+     clearTimeout(saveTimer);finishSaveThen(()=>openBook(x.dataset.kincoll));});
    qa("[data-sergo2]",page).forEach(x=>x.onclick=e=>{
-     e.stopPropagation();keepMyPlace();openBook(x.dataset.sergo2,false);});
+     e.stopPropagation();keepMyPlace();
+     clearTimeout(saveTimer);finishSaveThen(()=>openBook(x.dataset.sergo2,false));});
    const sa=q("#vSerAll");
    if(sa)sa.onclick=e=>{
      e.stopPropagation();
@@ -44604,8 +44747,12 @@ function renderEditor(){
       await removeWordEverywhere(isG,name);
     };
     q("#teSave",box).onclick=async()=>{
-      /* read everything off the panel before emptying it */
-      const nn=titleCase(q("#teName",box).value.trim());
+      /* read everything off the panel before emptying it. A name left as it
+         was stays exactly as it was: title-cased regardless, "favorites" or a
+         looked-up "Slow burn" came back different, and Save — pressed for a
+         colour — renamed it on every book and marked the old spelling gone */
+      const typed=q("#teName",box).value.trim();
+      const nn=typed===name?name:titleCase(typed);
       const wholeFamily=!!(q("#teCatCol",box)&&q("#teCatCol",box).checked);
       /* a family typed into the "New family…" box but never Entered was thrown
          away without a word — the placeholder says (Enter), and nobody reads a
