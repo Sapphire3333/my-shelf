@@ -11221,6 +11221,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-09.1",go:["tab:challenges"],lines:[
+    "<b>🎲 A dealt book never comes straight back.</b> Since games stopped dealing the same author, collection or series twice in ten turns, a pool made of a single series could hand you the very book it dealt last time. Now, when the series rule leaves nothing to deal, the same books are kept out instead, the oldest deal let back first — as it always was.",
+    "<b>⏱ Each game keeps its own clock.</b> While Fill it in was running, Tag hunt and Draw it from memory flickered between their own time and Fill's, and could be redrawn under you when Fill ran out.",
+    "<b>🔄 A task you redrew shows on your other device</b> even when that device is still on yesterday's three. It used to bring back the original task there, though the redraw had been paid for.",
+    "<b>🏅 Small things on Medals and Challenges.</b> Folding a medal wall leaves one arrow by its name, not two. A run that has gone cold has the dashed edge it was always meant to have. Medal notes keep their order after you press a button on one. The XP list names a harder week \"level 2\", \"level 3\" like its card does. A puzzle piece held while the board redraws is let go cleanly."]},
   {v:"2026-10-08.5",go:["tab:library"],lines:[
     "<b>📖 A book's page puts its title across the top.</b> Title, author and series run the full width beside the cover, so a long title keeps to one line. Under them two columns share the rest: on the left what you did — stage, mark, favourite, what your notes lean to, progress, readings — and on the right what the book is — length and dates, genres, tags, and the See-it-on links. A collection no longer says how far you are twice; the bar says it once."]},
   {v:"2026-10-08.4",go:["tab:challenges"],lines:[
@@ -20852,6 +20857,8 @@ function achToast(r,t,isXp){
   setTimeout(()=>{el.style.transition="none";el.style.opacity="1";el.style.transform="none";},400);
   achPlay(snd);
   setTimeout(()=>{
+    /* its button already took it away, and drained the queue then */
+    if(!el.isConnected)return;
     /* the fade is handed back its transition for the way out */
     el.style.transition="";el.style.opacity="";el.style.transform="";
     el.classList.remove("show");
@@ -21204,7 +21211,7 @@ function renderAch(){
     const now=wall.hidden;
     wall.hidden=!now;
     h.setAttribute("aria-expanded",now?"true":"false");
-    h.firstChild.textContent=now?"▾":"▸";
+    {const ar=q(".ar",h);if(ar)ar.textContent=now?"▾":"▸";}
     achSecSet(h.dataset.achsec,now);
   });
   /* the ones not earned yet, per wall — remembered, like the lids */
@@ -21263,8 +21270,7 @@ function runsHtml(){
     const s=st[k]||{};
     const alive=s.last&&(Date.now()-new Date(s.last+"T12:00")<3*86400000);
     const done=s.last===runToday;
-    return `<button class="achstreak run${achRunOpen===k?" on":""}" data-run="${esc(k)}"${alive?'':' class="cold"'
-      } title="${done?"Today already counts toward this run":"Nothing has counted toward this run today"} — press for the last thirty days">${ico} ${s.cur||0} day${(s.cur||0)===1?"":"s"} ${what}${s.best>1?` · best ${s.best}`:""} <span class="runday ${done?"yes":"no"}">${done?"✓ today":"not yet"}</span></button>`;
+    return `<button class="achstreak run${achRunOpen===k?" on":""}${alive?"":" cold"}" data-run="${esc(k)}" title="${done?"Today already counts toward this run":"Nothing has counted toward this run today"} — press for the last thirty days">${ico} ${s.cur||0} day${(s.cur||0)===1?"":"s"} ${what}${s.best>1?` · best ${s.best}`:""} <span class="runday ${done?"yes":"no"}">${done?"✓ today":"not yet"}</span></button>`;
   };
   /* ---- one month at a time, walkable ----
      A day this device has no record of is NOT a missed day: the day-by-day
@@ -21509,7 +21515,7 @@ function wireQuestCards(m){
     if(anyClock()&&view==="challenges"){
       fillTimer=setInterval(()=>{
         if(view!=="challenges"){clearInterval(fillTimer);return;}
-        const els=qa(".qclock");
+        const els=qa('.qclock[data-clock="fill"],.qclock[data-clock="deco"]');
         if(!els.length){clearInterval(fillTimer);return;}
         let ran=false;
         els.forEach(el=>{
@@ -21659,7 +21665,9 @@ function mergeQuests(rv){
     if(!l.daily||rv.daily.day>l.daily.day)l.daily={day:rv.daily.day,got:[...(rv.daily.got||[])],
       slots:Object.assign({},rv.daily.slots||{}),gotAt:Object.assign({},rv.daily.gotAt||{}),
       bonus:rv.daily.bonus||0,
-      won:Object.assign({},rv.daily.won||{})};
+      won:Object.assign({},rv.daily.won||{}),
+      swap:Object.assign({},rv.daily.swap||{}),
+      peek:!!rv.daily.peek,peekAt:rv.daily.peekAt||0};
     else if(rv.daily.day===l.daily.day){
       l.daily.got=[...new Set([...(l.daily.got||[]),...(rv.daily.got||[])])];
       /* a task redrawn on either screen is redrawn on both; a peek bought on
@@ -24827,7 +24835,7 @@ function questCheck(){
         const pay=Math.round((w.xp||150)*(w.stake?1.5:1));
         const t=weekTier(w);
         questAward(pay,"The week's work: "+g.name.toLowerCase()
-          +(t?" ×"+Math.pow(2,t):"")+(w.stake?" — stake won":""),"w:"+w.wk+":"+t);
+          +(t?", level "+(t+1):"")+(w.stake?" — stake won":""),"w:"+w.wk+":"+t);
       }
     }
   }
@@ -25883,6 +25891,15 @@ function freshFrom(g,pool,key,enough,was){
     const ban=new Set();
     for(const d of deals.slice(deals.length-back))for(const k of d)for(const x of kin(k))ban.add(x);
     const left=pool.filter(x=>!kin(key(x)).some(y=>ban.has(y)));
+    if(ok(left))return left;
+  }
+  /* kin left too little even for the newest deal alone: keep the same BOOKS
+     out instead, oldest deal let back first — a three-book series still never
+     deals the book it dealt last time */
+  for(let back=deals.length;back>0;back--){
+    const ban=new Set();
+    for(const d of deals.slice(deals.length-back))for(const k of d)ban.add(String(k));
+    const left=pool.filter(x=>!ban.has(String(key(x))));
     if(ok(left))return left;
   }
   return pool;
@@ -27109,7 +27126,11 @@ function pzLooseWire(m,svg){
       const p=q("path",el);
       if(p&&!q(".pzsh",el)){const sh=p.cloneNode(false);sh.setAttribute("class","pzsh");sh.setAttribute("transform","translate(1.5 3)");el.insertBefore(sh,p);}});
     /* each frame's time is kept for the readout — moving is the slide below */
-    const D=dr,tick=t=>{if(dr!==D)return;D.frames.push(t);requestAnimationFrame(tick);};
+    const D=dr,tick=t=>{if(dr!==D)return;
+      /* the board redrawn under a held piece: no pointerup will ever reach
+         this svg, so let go here, and put back what the watch wrapped */
+      if(!svg.isConnected){dr=null;try{if(D.watch)D.watch.stop();}catch(err){}return;}
+      D.frames.push(t);requestAnimationFrame(tick);};
     requestAnimationFrame(tick);
   });
   svg.addEventListener("pointermove",e=>{
