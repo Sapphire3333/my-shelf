@@ -46,6 +46,33 @@ if [ -n "$news" ] && [ "$(newer_of "$news" "$d.$n")" != "$news" ]; then
   echo "pre-commit: note — this commit becomes $d.$n and WHATS_NEW stops at $news." >&2
 fi
 
+# Two mistakes that pass every test and only show up later. Both are read off
+# the STAGED index.html, before the build is stamped.
+#
+# A raw NUL byte makes search tools take the file for binary: a folder-wide
+# ripgrep stopped at the first one, and every function below it — a third of
+# the app — answered "no matches". In a string it is written "\u0000".
+#
+# One tag with two class attributes: the parser keeps the first and silently
+# drops the second, so a state class (`off`, `cold`) never applies. Two did
+# exactly that, unseen, for months.
+if git cat-file -e :index.html 2>/dev/null; then
+  all=$(git show :index.html | wc -c)
+  nonul=$(git show :index.html | tr -d '\000' | wc -c)
+  if [ "$all" -ne "$nonul" ]; then
+    echo "pre-commit: index.html holds $((all - nonul)) raw NUL byte(s). Write it as \"\\u0000\" inside" >&2
+    echo "  the string — a raw one makes search tools skip the rest of the file." >&2
+    exit 1
+  fi
+  dup=$(git show :index.html | grep -naoE '<[a-zA-Z][a-zA-Z0-9]*[[:space:]][^<>]*\bclass="[^"]*"[^<>]*\bclass=' | head -3)
+  if [ -n "$dup" ]; then
+    echo "pre-commit: a tag in index.html has two class attributes, and the browser ignores the second." >&2
+    echo "  Put both in one class list. Line:" >&2
+    echo "$dup" | cut -c1-160 >&2
+    exit 1
+  fi
+fi
+
 cat > version.js <<EOF
 /* Build stamp — written by .githooks/pre-commit at every commit; do not edit.
    The app shows it (Overview → Storage), and the offline cache is named after
