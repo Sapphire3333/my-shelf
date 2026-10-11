@@ -33,6 +33,9 @@ const SHARED_KEY = "shared-backup";
 /* a share with no file in it — a line selected in a reader, a link to a
    book's page — is kept here as JSON and the app is sent on with ?shared=t */
 const SHARED_TEXT_KEY = "shared-text";
+/* when the page last came out of the cache rather than off the network —
+   see THE CODE AND ITS STAMP COME FROM THE SAME PLACE */
+let shellFromCacheAt = 0;
 
 self.addEventListener("install", e => {
   e.waitUntil(
@@ -203,9 +206,31 @@ self.addEventListener("fetch", e => {
   // stamp each time, and every one of those was kept as its own three-quarters
   // of a megabyte until the next build cleared the cache. None of our own files
   // mean anything different for having a query on the end.
+  // A page asking with cache: "no-store" wants the server's own answer and
+  // nothing else — index.html's check of the build stamp (see THE STAMP CAN
+  // LIE there). Answering it from the cache would make that check agree with
+  // whatever the cache says.
+  if (req.cache === "no-store") { e.respondWith(fetch(req)); return; }
   const key = url.origin + url.pathname;
+  const shell = /\/(index\.html)?$/.test(url.pathname);
   e.respondWith((async () => {
-    const net = fetch(req).then(res => {
+    // ---- THE CODE AND ITS STAMP COME FROM THE SAME PLACE ----
+    // Pages tells the browser to keep every file ten minutes, so a plain
+    // fetch here could hand back the browser's own old copy for ten minutes
+    // after a deploy; "no-cache" asks the server every time (an unchanged file
+    // costs a 304). And index.html is 3.6 MB where version.js is 263 bytes: on
+    // a phone's connection the page could lose the 2.5 s race and come from
+    // the cache while its stamp won and came fresh — measured, a phone ran the
+    // last build's code under the new build's number, so nothing looked wrong
+    // and nothing set about mending it. So once the page has come from the
+    // cache, the stamp does too: the page then says the build it really is,
+    // its own no-store check finds the server ahead, and the new build is
+    // installed and offered (index.html, A NEWER BUILD).
+    if (!shell && /\/version\.js$/.test(url.pathname) && Date.now() - shellFromCacheAt < 20000) {
+      const hit = await caches.match(key);
+      if (hit) return hit;
+    }
+    const net = fetch(req.url, { cache: "no-cache", credentials: "same-origin" }).then(res => {
       if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(key, copy)); }
       return res;
     });
@@ -219,6 +244,7 @@ self.addEventListener("fetch", e => {
       net.then(res => (res && res.ok) ? res : null).catch(() => null),
       new Promise(r => setTimeout(r, 2500, null))
     ]);
+    if (shell) shellFromCacheAt = winner ? 0 : Date.now();
     return winner || cached;
   })());
 });
