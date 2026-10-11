@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Finish a change to My Shelf and hand it over — measure what it might have broken, run the smoke (and the layout sweep when anything visual moved), write the build's What's new line, commit with a message about the code, take it out of the queue, and end the message on the push block. Use this whenever a piece of work in this repo is done and about to be committed — "ship it", "commit", "wrap up", "that group's done" — even when the change looks too small to need it.
+description: Finish a change to My Shelf and hand it over — measure what it might have broken, run the smoke (and the layout sweep when anything visual moved), write the build's What's new line, commit with a message about the code, take it out of the queue, and end the message on the push block (in a cloud session: push, merge and say it is live). Use this whenever a piece of work in this repo is done and about to be committed — "ship it", "commit", "wrap up", "that group's done" — even when the change looks too small to need it.
 ---
 
 # Ship a change
@@ -121,6 +121,11 @@ build without a line looks, from outside, exactly like nothing changed.
 - The exception is a cloud session (`CLAUDE_CODE_REMOTE=true`): its commit
   lives only in a container that is thrown away, and the owner follows it
   from a phone. There, push the session's own branch yourself —
-  `git push -u origin <branch>` — and say it is pushed instead of ending on
-  the block. The guard lets exactly that through: a named branch, never main
-  or master (main is the deploy), never forced.
+  `git push -u origin <branch>` — then open a pull request into main, merge
+  it with a merge commit, and read the checks and Pages runs on the merge
+  commit; say it is live instead of ending on the block. Their standing
+  instruction, in CLAUDE.md: no asking first. The guard lets the branch push
+  through: a named branch, never main or master (main is the deploy), never
+  forced; main is reached only by the merged pull request. In a fresh
+  checkout git skips the pre-commit hook (not executable), so run
+  `sh .githooks/pre-commit` between `git add` and `git commit`.
