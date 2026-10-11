@@ -8,7 +8,9 @@ a PreToolUse hook on the Bash and PowerShell tools.
    from, and the owner follows it from a phone app where a command handed over
    to paste is a chore. So there it may send a branch of its own -- named, never
    main or master (Pages serves main: a push there is a deploy), never forced,
-   never deleting anything.
+   never deleting anything. Main is reached from there only by merging a pull
+   request, which the owner asked for as a standing instruction (CLAUDE.md);
+   a push straight onto main stays refused.
 
 2. Any PowerShell command that WRITES to a file inside this folder. Windows
    PowerShell 5.1 reads a BOM-less UTF-8 file as ANSI, so a read-modify-write

@@ -244,6 +244,7 @@ open it in a browser, done.
 | `sw.js` | Service worker so the app itself opens offline. |
 | `version.js` | Build stamp, rewritten by the pre-commit hook. The app shows it, and the offline cache is named after it. |
 | `dev-check.html` | Developer tool, not part of the app — opens every screen at a row of widths and fails loudly if anything scrolls sideways. |
+| `CLAUDE.md` | Standing instructions for Claude sessions working on the repo — how to ask, and how a change made in a cloud session is pushed, merged and checked. Not part of the app. |
 | `wash-check.html` | Developer tool — counts your covers and draws the "Your covers" background four ways side by side. Reads only. |
 | `.githooks/pre-commit` | Stamps `version.js`. Run `git config core.hooksPath .githooks` once per clone or it never fires. |
 | `art/` | The app's own pictures: medals, games, five cards and the owl's five moods, as WebP. A spot with no picture of the reader's own wears the one here. Listed with a fingerprint each as `ART` in `index.html`; the two are written together from a pictures file the app saves, so change both or neither. |
