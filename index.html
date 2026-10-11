@@ -4039,13 +4039,17 @@ html[data-phone="1"] .arcchips .pill.arcchip{font-size:13px;padding:6px 10px}
   user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .pztray.drop{outline:3px dashed var(--teal);outline-offset:-3px}
 .pztp{display:block;width:auto;height:min(calc(86% * var(--g,1)),calc(100px * var(--g,1)));overflow:visible;cursor:grab;touch-action:pan-x}
-.pztp.out{opacity:.2}
+.pztp.out{visibility:hidden}
 .pztp path,.pzfloat path{fill:url(#pzPat);stroke:rgba(0,0,0,.5);stroke-width:1;vector-effect:non-scaling-stroke;stroke-linejoin:round}
 .pztempty{grid-row:1 / -1;align-self:center;font-size:13px;color:var(--mut)}
 /* the piece lifted out of the tray: on <body>, outside the text-size zoom,
    so it is sized in the screen's own pixels to the board's scale, and slid
-   by a transform rather than drawn again */
-.pzfloat{position:fixed;left:0;top:0;z-index:600;pointer-events:none;overflow:visible;will-change:transform;cursor:grabbing}
+   by a transform rather than drawn again. The svg inside starts at the
+   strip's size and eases to the board's (OUT OF THE TRAY AT ONCE) — its own
+   transform, so the slide of the box round it is never eased */
+.pzfloat{position:fixed;left:0;top:0;z-index:600;pointer-events:none;will-change:transform;cursor:grabbing}
+.pzfloat svg{display:block;overflow:visible;transition:transform .12s ease-out}
+@media(prefers-reduced-motion:reduce){.pzfloat svg{transition:none}}
 .pzfloat .pzsh{fill:rgba(0,0,0,.3);stroke:none}
 /* a hint and what it costs (see HINTS, AND WHAT THEY COST); an answer a hint
    took away stays in its place, crossed out, so nothing shifts under a finger */
@@ -11607,6 +11611,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-11.5",go:["arc:pz"],lines:[
+    "<b>🧩 Pieces come out of the tray at once.</b> Pull a piece up — straight or at a slant — and it comes out within a few pixels; hold a piece a moment and it comes out whichever way you then move. Only a clearly sideways swipe scrolls the tray now. The piece leaves its place in the tray instead of a faded copy staying behind, and it comes out at the tray's size, shrinking to the board's under your finger."]},
   {v:"2026-10-11.4",go:["arc:pz"],lines:[
     "<b>🔄 A new version of the app now says so.</b> When the app comes back to the front — or opens — and a newer build has gone out, it gets it ready and a bar at the top offers <b>↻ Reload</b>. Until now a phone that kept the app open in the background went on running the old one, and could even show the new build's number while it did.",
     "<b>🧩 The puzzle's top bar stays on one line at any text size</b>, its buttons tightening as the screen narrows, and the pieces in the tray grow with your text size like the rest of the app."]},
@@ -27988,7 +27994,28 @@ function pzLooseWire(m,svg){
    down lifts the piece. A mouse lifts it on any move. Lifted, the piece is
    drawn at the board's own scale on a float of its own over everything, so
    what is carried is what lands; let go over the board, it is laid where it
-   was let go, and pzDrop sends it home or joins it as for any drop. */
+   was let go, and pzDrop sends it home or joins it as for any drop.
+   ┌─ OUT OF THE TRAY AT ONCE ──────────────────────────────────────────────┐
+   │ Their word for it was gum, and their phone's own timings showed nothing │
+   │ slow: 113–120 frames a second, touches heard in 8–10 ms. What they      │
+   │ named was the tray: slow to come out of, and a faded copy left behind.  │
+   │ A piece came out only once the finger had gone 8px and more up than    │
+   │ sideways — a pull up and across scrolled the strip instead — and the    │
+   │ float came out at the board's scale, smaller than the piece in the      │
+   │ strip and under the fingertip, while the strip kept the piece at a     │
+   │ fifth of its strength. So it looked as if nothing had come out. Now:   │
+   │  · it lifts at 6px when the pull is at least half as much up as across │
+   │    (about 27° from flat), or on a hold of 200 ms whichever way the      │
+   │    finger then goes; only a clearly sideways swipe scrolls;            │
+   │  · once lifted, a touchmove listener that is not passive cancels the   │
+   │    browser's own scroll, so a piece taken out stays in hand;           │
+   │  · its place in the strip empties — hidden, not removed, since closing  │
+   │    the gap re-laid all 150 out (a 133 ms frame at 4× CPU) — and fills   │
+   │    again if it is let go anywhere but the board, where it goes for good;│
+   │  · the float starts at the strip's size and shrinks to the board's in  │
+   │    120 ms about the point under the finger — the piece visibly coming  │
+   │    out of the tray rather than vanishing under a fingertip.            │
+   └──────────────────────────────────────────────────────────────────────────┘ */
 function pzTrayWire(tray,svg,w){
   const NS="http://www.w3.org/2000/svg";
   let td=null;
@@ -27996,59 +28023,73 @@ function pzTrayWire(tray,svg,w){
   const mk=k=>{const g=document.createElementNS(NS,"g"),p=document.createElementNS(NS,"path"),src=q(`path[data-pzk="${k}"]`,tray);
     g.setAttribute("class","pzp");g.setAttribute("data-pzi",String(k));
     p.setAttribute("d",src?src.getAttribute("d"):pzPaths(arcSlot("pz"))[k]);g.appendChild(p);return g;};
+  const move=(x,y)=>{td.fl.style.transform=`translate(${(x-td.gx).toFixed(1)}px,${(y-td.gy).toFixed(1)}px)`;};
   const lift=d=>{
+    clearTimeout(d.hold);
     const vb=d.it.viewBox.baseVal,per=w.scale(),ir=d.it.getBoundingClientRect();
-    const fw=vb.width/per,fh=vb.height/per,fl=document.createElementNS(NS,"svg");
-    fl.setAttribute("class","pzfloat");fl.setAttribute("aria-hidden","true");
-    fl.setAttribute("viewBox",[vb.x,vb.y,vb.width,vb.height].join(" "));
-    fl.style.width=fw+"px";fl.style.height=fh+"px";
+    const fw=vb.width/per,fh=vb.height/per,gx=(d.sx-ir.left)/Math.max(1,ir.width)*fw,gy=(d.sy-ir.top)/Math.max(1,ir.height)*fh;
+    const fl=document.createElement("div"),pc=document.createElementNS(NS,"svg");
+    fl.className="pzfloat";fl.setAttribute("aria-hidden","true");
+    pc.setAttribute("viewBox",[vb.x,vb.y,vb.width,vb.height].join(" "));
+    pc.style.cssText=`width:${fw}px;height:${fh}px;transform-origin:${gx.toFixed(1)}px ${gy.toFixed(1)}px;transform:scale(${(ir.width/Math.max(1,fw)).toFixed(3)})`;
     const ps=qa("path",d.it);
-    ps.forEach(p=>{const sh=p.cloneNode(false);sh.setAttribute("class","pzsh");sh.setAttribute("transform","translate(1.5 3)");fl.appendChild(sh);});
-    ps.forEach(p=>fl.appendChild(p.cloneNode(false)));
-    document.body.appendChild(fl);
-    /* the same spot of the piece stays under the finger as it grows */
-    Object.assign(d,{k:+d.it.dataset.pzi,o:[vb.x,vb.y],fl,gx:(d.sx-ir.left)/Math.max(1,ir.width)*fw,gy:(d.sy-ir.top)/Math.max(1,ir.height)*fh});
-    d.it.classList.add("out");
+    ps.forEach(p=>{const sh=p.cloneNode(false);sh.setAttribute("class","pzsh");sh.setAttribute("transform","translate(1.5 3)");pc.appendChild(sh);});
+    ps.forEach(p=>pc.appendChild(p.cloneNode(false)));
+    fl.appendChild(pc);document.body.appendChild(fl);
+    Object.assign(d,{k:+d.it.dataset.pzi,o:[vb.x,vb.y],fl,gx,gy});
+    move(d.x,d.y);
+    /* from the strip's size to the board's, about the point under the finger */
+    void pc.getBoundingClientRect();pc.style.transform="scale(1)";
+    /* the capture moves to the strip itself before the piece leaves it */
     try{tray.setPointerCapture(d.id);}catch(err){}
+    d.it.classList.add("out");
+    gameSfx("tap");
     /* the room redrawn while a piece is out: nothing will ever let go of it */
     const look=()=>{if(td!==d)return;if(!tray.isConnected){fl.remove();td=null;return;}requestAnimationFrame(look);};
     requestAnimationFrame(look);
   };
-  const move=e=>{td.fl.style.transform=`translate(${(e.clientX-td.gx).toFixed(1)}px,${(e.clientY-td.gy).toFixed(1)}px)`;};
   tray.addEventListener("pointerdown",e=>{
     if(td)return;
     const it=e.target&&e.target.closest?e.target.closest("svg.pztp"):null;if(!it)return;
     const s=arcSlot("pz");if(!s||s.over)return;
-    td={it,id:e.pointerId,sx:e.clientX,sy:e.clientY,touch:e.pointerType==="touch",fl:null};
+    td={it,id:e.pointerId,sx:e.clientX,sy:e.clientY,x:e.clientX,y:e.clientY,touch:e.pointerType==="touch",fl:null,hold:0};
     /* a mouse would start selecting or dragging the picture */
-    if(!td.touch)e.preventDefault();
+    if(!td.touch){e.preventDefault();return;}
+    /* held still a moment, it comes out whichever way the finger goes next */
+    const d=td;d.hold=setTimeout(()=>{if(td===d&&!d.fl)lift(d);},200);
   });
   tray.addEventListener("pointermove",e=>{
     if(!td||e.pointerId!==td.id)return;
+    td.x=e.clientX;td.y=e.clientY;
     if(!td.fl){
-      const dx=e.clientX-td.sx,dy=e.clientY-td.sy;
+      const dx=Math.abs(e.clientX-td.sx),dy=Math.abs(e.clientY-td.sy);
       if(td.touch){
-        if(Math.abs(dx)>10&&Math.abs(dx)>=Math.abs(dy)){td=null;return;}
-        if(Math.abs(dy)<8||Math.abs(dy)<Math.abs(dx))return;
-      }else if(Math.abs(dx)+Math.abs(dy)<5)return;
-      lift(td);gameSfx("tap");
+        if(dy>=6&&dy*2>=dx)lift(td);
+        else if(dx>=10&&dx>dy*2){clearTimeout(td.hold);td=null;return;}
+        else return;
+      }else if(dx+dy<4)return;
+      else lift(td);
     }
-    e.preventDefault();move(e);
+    e.preventDefault();move(e.clientX,e.clientY);
   });
+  /* a piece in hand is not a swipe: the browser's own scroll of the strip is
+     refused for as long as one is out (pan-x would otherwise take it) */
+  tray.addEventListener("touchmove",e=>{if(td&&td.fl&&e.cancelable)e.preventDefault();},{passive:false});
   const up=e=>{
     if(!td||e.pointerId!==td.id)return;
-    const d=td;td=null;
+    const d=td;td=null;clearTimeout(d.hold);
     if(!d.fl)return;
-    d.fl.remove();d.it.classList.remove("out");
+    d.fl.remove();
     try{tray.releasePointerCapture(d.id);}catch(err){}
     const s=arcSlot("pz");
-    if(e.type!=="pointerup"||!s||s.over||!Array.isArray(s.pos)||!w.inBox(svg.getBoundingClientRect(),e))return;
+    const back=()=>d.it.classList.remove("out");
+    if(e.type!=="pointerup"||!s||s.over||!Array.isArray(s.pos)||!w.inBox(svg.getBoundingClientRect(),e)){back();return;}
     /* the float's corner on the table is where the group's own corner goes:
        the offset from home, kept on the table as any drag is */
     const [ux,uy]=w.toU({clientX:e.clientX-d.gx,clientY:e.clientY-d.gy});
     const L=w.limOf(pzMates(s,d.k)),x=ux-d.o[0],y=uy-d.o[1];
     const r=pzDrop(d.k,L[0]<=L[1]?Math.max(L[0],Math.min(L[1],x)):x,L[2]<=L[3]?Math.max(L[2],Math.min(L[3],y)):y);
-    if(!r)return;
+    if(!r){back();return;}
     if(Array.isArray(s.tb))s.tb=s.tb.filter(k=>r.mates.indexOf(k)<0);
     if(s.over){renderChallenges();return;}
     w.settle(r,r.mates.map(k=>w.gOf(k)||mk(k)));
