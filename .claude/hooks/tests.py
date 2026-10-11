@@ -21,6 +21,10 @@ PROJECT = os.path.dirname(HERE)
 # slashes; the cases run against that shape on purpose.
 CWD = PROJECT.replace("/", SEP)
 ENV = dict(os.environ, CLAUDE_PROJECT_DIR=PROJECT.replace(SEP, "/"))
+# The owner's own machine, wherever the cases happen to run: a cloud session
+# has CLAUDE_CODE_REMOTE set, and the cases below that are about one say so.
+ENV.pop("CLAUDE_CODE_REMOTE", None)
+CLOUD = dict(ENV, CLAUDE_CODE_REMOTE="true")
 
 
 def win(p):
@@ -99,26 +103,52 @@ CASES = [
      "echo hi > " + TMP + SEP + "out.txt"),
 ]
 
+# A cloud session may send a named branch of its own, and nothing else.
+CLOUD_CASES = [
+    ("cloud: its own branch", 0, "Bash", SEND + " -u origin ccr-1234-abc"),
+    ("cloud: its own branch, src:dst", 0, "Bash", SEND + " origin ccr-1:ccr-1"),
+    ("cloud: main", 2, "Bash", SEND + " -u origin main"),
+    ("cloud: master", 2, "Bash", SEND + " origin master"),
+    ("cloud: onto main by refspec", 2, "Bash", SEND + " origin ccr-1:main"),
+    ("cloud: onto refs/heads/main", 2, "Bash", SEND + " origin HEAD:refs/heads/main"),
+    ("cloud: HEAD", 2, "Bash", SEND + " origin HEAD"),
+    ("cloud: no branch named", 2, "Bash", SEND),
+    ("cloud: a remote but no branch", 2, "Bash", SEND + " origin"),
+    ("cloud: --force", 2, "Bash", SEND + " --force origin ccr-1"),
+    ("cloud: -f", 2, "Bash", SEND + " -f origin ccr-1"),
+    ("cloud: -uf", 2, "Bash", SEND + " -uf origin ccr-1"),
+    ("cloud: --force-with-lease", 2, "Bash", SEND + " --force-with-lease origin ccr-1"),
+    ("cloud: a + refspec", 2, "Bash", SEND + " origin +ccr-1"),
+    ("cloud: --delete", 2, "Bash", SEND + " --delete origin ccr-1"),
+    ("cloud: deleting by :branch", 2, "Bash", SEND + " origin :ccr-1"),
+    ("cloud: --all", 2, "Bash", SEND + " --all origin"),
+    ("cloud: --mirror", 2, "Bash", SEND + " --mirror origin"),
+    ("cloud: a second send onto main", 2, "Bash",
+     SEND + " origin ccr-1 && " + SEND + " origin main"),
+    ("cloud: its own branch after a commit", 0, "Bash",
+     "git commit -F m.txt && " + SEND + " -u origin ccr-1"),
+]
 
-def run(tool, command):
+
+def run(tool, command, env=ENV):
     payload = json.dumps(
         {"tool_name": tool, "cwd": CWD, "tool_input": {"command": command}}
     )
     done = subprocess.run(
         [sys.executable, GUARD], input=payload, text=True,
-        capture_output=True, env=ENV,
+        capture_output=True, env=env,
     )
     return done.returncode
 
 
 bad = 0
-for name, want, tool, command in CASES:
-    got = run(tool, command)
+for name, want, tool, command in CASES + CLOUD_CASES:
+    got = run(tool, command, CLOUD if name.startswith("cloud:") else ENV)
     if got == want:
         print("  ok    " + name)
     else:
         bad += 1
         print("  FAIL  %s -- wanted %d, got %d" % (name, want, got))
 
-print(os.linesep + "%d cases, %d failed" % (len(CASES), bad))
+print(os.linesep + "%d cases, %d failed" % (len(CASES) + len(CLOUD_CASES), bad))
 sys.exit(1 if bad else 0)

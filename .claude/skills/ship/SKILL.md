@@ -118,3 +118,9 @@ build without a line looks, from outside, exactly like nothing changed.
 - Never push. The last thing in the message is a fenced `bash` block holding
   exactly `git push` — one plain command, nothing bash-only, because it is
   pasted into Windows PowerShell 5.1.
+- The exception is a cloud session (`CLAUDE_CODE_REMOTE=true`): its commit
+  lives only in a container that is thrown away, and the owner follows it
+  from a phone. There, push the session's own branch yourself —
+  `git push -u origin <branch>` — and say it is pushed instead of ending on
+  the block. The guard lets exactly that through: a named branch, never main
+  or master (main is the deploy), never forced.

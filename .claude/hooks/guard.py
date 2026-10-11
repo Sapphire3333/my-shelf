@@ -3,6 +3,12 @@ a PreToolUse hook on the Bash and PowerShell tools.
 
 1. Sending commits to the remote. That belongs to the owner of the repo, not to
    a session working in it; the session's job ends at the commit.
+   A cloud session (CLAUDE_CODE_REMOTE=true) is the one exception: its commits
+   live in a container that is thrown away, on no machine the owner can push
+   from, and the owner follows it from a phone app where a command handed over
+   to paste is a chore. So there it may send a branch of its own -- named, never
+   main or master (Pages serves main: a push there is a deploy), never forced,
+   never deleting anything.
 
 2. Any PowerShell command that WRITES to a file inside this folder. Windows
    PowerShell 5.1 reads a BOM-less UTF-8 file as ANSI, so a read-modify-write
@@ -62,12 +68,44 @@ positions = re.sub(r"<<-?\s*(['\"]?)(\w+)\1\r?\n.*?\r?\n\2", " ", cmd, flags=re.
 SEND = re.compile(
     r"(?:^|[\n;&|(]\s*)git\s+(?:-{1,2}\S+\s+)*" + "push" + r"(?:\s|$)"
 )
+FORCE = re.compile(r"^(?:--force.*|--mirror|--all|--delete|--prune|-[^-]*[fd][^-]*)$")
+
+
+def cloud_send_refused(text):
+    """Why a cloud session may not send what this command sends, or None. Every
+    send in the command is read: the words after it, up to the end of that
+    command, as flags, then the remote, then what goes where."""
+    for m in SEND.finditer(text):
+        rest = re.split(r"[\n;&|)]", text[m.end():], maxsplit=1)[0]
+        toks = [t.strip("\"'") for t in rest.split()]
+        if any(FORCE.match(t) for t in toks):
+            return "never by force, and never deleting anything"
+        words = [t for t in toks if not t.startswith("-")]
+        if len(words) < 2:
+            return "name the remote and the branch: git push -u origin <branch>"
+        for spec in words[1:]:
+            if spec.startswith("+"):
+                return "never by force, and never deleting anything"
+            src, colon, dst = spec.rpartition(":")
+            if colon and not src:
+                return "never by force, and never deleting anything"
+            dst = re.sub(r"^refs/heads/", "", dst)
+            if dst in ("main", "master", "HEAD", ""):
+                return "never main or master (main is the deploy), and never HEAD -- name the branch"
+    return None
+
+
 if SEND.search(positions):
-    deny(
-        "BLOCKED: sending commits to the remote is the repo owner's, never this\n"
-        "session's. Commit, then hand them the command as the last thing in the\n"
-        "message."
-    )
+    if os.environ.get("CLAUDE_CODE_REMOTE") == "true":
+        why = cloud_send_refused(positions)
+        if why:
+            deny("BLOCKED: a cloud session may send only a branch of its own -- " + why + ".")
+    else:
+        deny(
+            "BLOCKED: sending commits to the remote is the repo owner's, never this\n"
+            "session's. Commit, then hand them the command as the last thing in the\n"
+            "message."
+        )
 
 if tool != "PowerShell":
     sys.exit(0)
