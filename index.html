@@ -11617,6 +11617,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-12.1",go:["arc:pz"],lines:[
+    "<b>🧩 A piece put back in the tray goes where you let it go.</b> Drag one down off the board and it drops into the tray right under your finger, the pieces after it sliding along to make room — the tray no longer jumps back to its start, so you keep your place. A hint, the whole-screen switch or anything else that draws the puzzle again also keeps the tray where you had it. 🧺 still gathers every lone piece to the front, where you can find them together."]},
   {v:"2026-10-11.9",go:["arc:pz"],lines:[
     "<b>🧩 On a phone the cover puzzle opens over the whole screen.</b> Open its tile or deal a new one and you are straight in, board and tray filling the screen. ✕ or Back brings you out to a page with just the choices — pieces and cut — and <b>▶ Play</b> to go back in, so nothing sits behind the board any more. Changing the pieces or the cut there keeps you on the page until you press ▶ Play. On a computer the puzzle stays on the page as before."]},
   {v:"2026-10-11.8",go:["arc:pz"],lines:[
@@ -27253,9 +27255,10 @@ function pzTableOf(A){
    │ where it had one row of small ones. A table still widens where the     │
    │ window is wider than the board — room beside it, not above it.          │
    │ The bands were also where pieces could be put aside; the tray is that  │
-   │ place now. A group put back in it, by dragging it down or with 🧺, goes │
-   │ to the FRONT (s.tb, newest first) rather than back among the shuffled  │
-   │ rest, where it would have been lost.                                    │
+   │ place now. A group put back in it with 🧺 goes to the FRONT (s.tb,      │
+   │ newest first) rather than back among the shuffled rest, where it would │
+   │ have been lost. One dragged down goes where it is let go — see PUT BACK │
+   │ WHERE IT IS LET GO.                                                     │
    └──────────────────────────────────────────────────────────────────────────┘ */
 /* the board and its rim — the narrowest table a tray ever has */
 const PZ_RIM=12,PZ_RIMA=(PZ_W+2*PZ_RIM)/(PZ_H+2*PZ_RIM);
@@ -27322,23 +27325,27 @@ function pzTrayRank(s){
 function pzToFront(s,ks){
   const set=new Set(ks);
   s.tb=[...ks,...(Array.isArray(s.tb)?s.tb:[]).filter(k=>!set.has(k))].slice(0,pzCR(s)[0]*pzCR(s)[1]);
+  if(s.tk&&typeof s.tk==="object")ks.forEach(k=>{delete s.tk[k];});
 }
 /* one svg a group, each in its own home units so the board's pattern lands
    on it right. A lone piece stands its row's full 86% (the CSS); a group is
    that much smaller (--g) until it is no taller than one and no wider than
-   three lone pieces. Those put back come first, then the shuffled rest. */
+   three lone pieces. Those put back with 🧺 come first, then the shuffled
+   rest, and one dragged back stands where it was let go (s.tk). Each says
+   its place in data-pzo, which is what a drop between two of them reads. */
 function pzTrayItems(s,paths,away){
   const [c,r]=pzCR(s),N=c*r,pw=PZ_W/c,ph=PZ_H/r,tp=0.34*Math.min(pw,ph),grp=pzGroups(s),rank=pzTrayRank(s),L=ph+2*tp;
   const tb=Array.isArray(s.tb)?s.tb:[],front=new Map(tb.map((k,i)=>[k,i]));
+  const tk=s.tk&&typeof s.tk==="object"?s.tk:{},at=k=>typeof tk[k]==="number"?tk[k]:front.has(k)?front.get(k)-N:rank[k];
   const groups=new Map();
   [...away].forEach(k=>{if(!groups.has(grp[k]))groups.set(grp[k],[]);groups.get(grp[k]).push(k);});
   if(!groups.size)return `<span class="pztempty">Every piece is on the board.</span>`;
   const f=v=>String(Math.round(v*100)/100);
-  const key=ks=>Math.min(...ks.map(k=>front.has(k)?front.get(k)-N:rank[k]));
+  const key=ks=>Math.min(...ks.map(at));
   return [...groups.values()].sort((a,b)=>key(a)-key(b)).map(ks=>{
     const hb=pzHomeBox(ks,c,pw,ph),vb=[hb[0]-tp,hb[1]-tp,hb[2]-hb[0]+2*tp,hb[3]-hb[1]+2*tp];
     const g=Math.min(1,vb[3]/L,3*vb[3]/vb[2]);
-    return `<svg class="pztp" role="listitem" aria-label="${ks.length>1?ks.length+" joined pieces":"A piece"}" data-pzi="${ks[0]}" viewBox="${vb.map(f).join(" ")}"${g<0.999?` style="--g:${g.toFixed(3)}"`:""}>${
+    return `<svg class="pztp" role="listitem" aria-label="${ks.length>1?ks.length+" joined pieces":"A piece"}" data-pzi="${ks[0]}" data-pzo="${key(ks)}" viewBox="${vb.map(f).join(" ")}"${g<0.999?` style="--g:${g.toFixed(3)}"`:""}>${
       ks.map(j=>`<path data-pzk="${j}" d="${paths[j]}"/>`).join("")}</svg>`;
   }).join("");
 }
@@ -27765,23 +27772,87 @@ function pzIdleNote(F){
    │    phone the piece trembled as it went, the guesses overshooting and    │
    │    swinging back at a slow drag. A piece is drawn where the finger IS.  │
    └──────────────────────────────────────────────────────────────────────────┘ */
-function pzTrayClose(tray,gone){
-  if(!gone.length)return;
+/* a change to the strip, the pieces in sight sliding from their old places
+   to their new ones rather than jumping */
+function pzTraySlide(tray,change){
   const T=tray.getBoundingClientRect(),z=T.width/Math.max(1,tray.offsetWidth)||1;
-  const near=qa("svg.pztp",tray).filter(x=>{if(gone.indexOf(x)>=0)return false;const r=x.getBoundingClientRect();
+  const near=qa("svg.pztp",tray).filter(x=>{const r=x.getBoundingClientRect();
     return r.right>T.left-T.width*0.5&&r.left<T.right+T.width*0.5;});
   const was=near.map(x=>x.getBoundingClientRect());
-  gone.forEach(x=>x.remove());
-  if(!q("svg.pztp",tray)){tray.innerHTML=`<span class="pztempty">Every piece is on the board.</span>`;return;}
+  change();
   if(matchMedia("(prefers-reduced-motion: reduce)").matches)return;
   const moved=[];
-  near.forEach((x,i)=>{const b=x.getBoundingClientRect(),dx=(was[i].left-b.left)/z,dy=(was[i].top-b.top)/z;
+  near.forEach((x,i)=>{if(!x.isConnected)return;const b=x.getBoundingClientRect(),dx=(was[i].left-b.left)/z,dy=(was[i].top-b.top)/z;
     if(Math.abs(dx)<0.5&&Math.abs(dy)<0.5)return;
     x.style.transition="none";x.style.transform=`translate(${dx.toFixed(1)}px,${dy.toFixed(1)}px)`;moved.push(x);});
   if(!moved.length)return;
   void tray.offsetWidth;
   moved.forEach(x=>{x.style.transition="transform .18s ease-out";x.style.transform="";});
   setTimeout(()=>moved.forEach(x=>{x.style.transition="";}),260);
+}
+function pzTrayClose(tray,gone){
+  if(!gone.length)return;
+  pzTraySlide(tray,()=>{gone.forEach(x=>x.remove());
+    if(!q("svg.pztp",tray))tray.innerHTML=`<span class="pztempty">Every piece is on the board.</span>`;});
+}
+/* ┌─ PUT BACK WHERE IT IS LET GO ───────────────────────────────────────────┐
+   │ A group dragged from the board down into the strip used to go to its   │
+   │ front, and the strip was scrolled back to its start to show it — so a  │
+   │ strip looked through halfway lost its place at every piece put back.   │
+   │ Now it goes into the cell under the finger: the strip fills a column   │
+   │ at a time, top to bottom, so the cell is the column the finger is over │
+   │ and the row nearest it; the piece in that cell and every one after it  │
+   │ move on by one, sliding, and nothing scrolls. Past the last piece it   │
+   │ goes last. Its place is a number between its neighbours' (s.tk, one a  │
+   │ piece), so it keeps it as other pieces come and go. 🧺 Back to the tray │
+   │ still sends every lone piece to the front together (pzToFront).        │
+   │ And a redraw of the same board — a hint, the whole window, the other   │
+   │ device's news — opens the strip at the piece that stood at its left    │
+   │ edge (pzTrayKeep), not at its start.                                   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function pzTraySpot(tray,e){
+  const its=qa("svg.pztp",tray),n=its.length;
+  if(!n)return {before:null,key:0};
+  const rs=its.map(x=>x.getBoundingClientRect()),o=x=>+x.dataset.pzo||0;
+  /* rows: the pieces standing in the first column, each of which starts
+     left of the first one's right edge (they are centred in it) */
+  let R=1;while(R<n&&rs[R].left<rs[0].right)R++;
+  const cols=Math.ceil(n/R),ext=[];
+  for(let j=0;j<cols;j++){let l=Infinity,r=-Infinity;
+    for(let i=j*R;i<Math.min(n,(j+1)*R);i++){l=Math.min(l,rs[i].left);r=Math.max(r,rs[i].right);}
+    ext.push([l,r]);}
+  /* right of the last column: after the last piece */
+  if(e.clientX>ext[cols-1][1])return {before:null,key:o(its[n-1])+1};
+  let col=0;while(col<cols-1&&e.clientX>(ext[col][1]+ext[col+1][0])/2)col++;
+  let row=0,bd=Infinity;
+  for(let i=0;i<R;i++){const d=Math.abs(e.clientY-(rs[i].top+rs[i].bottom)/2);if(d<bd){bd=d;row=i;}}
+  const at=col*R+row;
+  if(at>=n)return {before:null,key:o(its[n-1])+1};
+  return {before:its[at],key:at?(o(its[at-1])+o(its[at]))/2:o(its[at])-1};
+}
+function pzTrayPut(s,tray,ks,e){
+  const sp=pzTraySpot(tray,e),set=new Set(ks);
+  if(Array.isArray(s.tb))s.tb=s.tb.filter(k=>!set.has(k));
+  if(!s.tk||typeof s.tk!=="object")s.tk={};
+  ks.forEach(k=>{s.tk[k]=sp.key;});
+  const html=pzTrayItems(s,pzPaths(s),set);
+  pzTraySlide(tray,()=>{const em=q(".pztempty",tray);if(em)em.remove();
+    if(sp.before)sp.before.insertAdjacentHTML("beforebegin",html);else tray.insertAdjacentHTML("beforeend",html);});
+}
+let pzTrayKeep={at:0,k:-1,x:0};
+function pzTrayKeepWire(tray,s){
+  const at=s.at;
+  if(pzTrayKeep.at===at){
+    const it=pzTrayKeep.k>=0&&q(`svg.pztp[data-pzi="${pzTrayKeep.k}"]`,tray);
+    if(it){const T=tray.getBoundingClientRect(),z=T.width/Math.max(1,tray.offsetWidth)||1;
+      tray.scrollLeft+=(it.getBoundingClientRect().left-T.left)/z-(parseFloat(getComputedStyle(tray).paddingLeft)||0);}
+    else tray.scrollLeft=pzTrayKeep.x;
+  }
+  let t=0;
+  tray.addEventListener("scroll",()=>{clearTimeout(t);t=setTimeout(()=>{
+    if(!tray.isConnected)return;
+    const T=tray.getBoundingClientRect(),it=qa("svg.pztp",tray).find(x=>x.getBoundingClientRect().right>T.left+4);
+    pzTrayKeep={at,k:it?+it.dataset.pzi:-1,x:tray.scrollLeft};},150);},{passive:true});
 }
 /* the cover into the pattern, cut to the sharpest size anything shows it at:
    the board as it is zoomed now, or the tray, whichever is bigger */
@@ -27864,13 +27935,7 @@ function pzLooseWire(m,svg){
     if(tray){const gone=[];r.mates.forEach(k=>{const p=q(`path[data-pzk="${k}"]`,tray),it=p&&p.closest("svg");if(it&&gone.indexOf(it)<0)gone.push(it);});
       pzTrayClose(tray,gone);}
   };
-  /* the tray drawn again from the slot, and scrolled to its front, where a
-     group just put back lies (see ROOM FOR THE SPARE PIECES) */
-  const refill=s=>{
-    if(!tray)return;
-    tray.innerHTML=pzTrayItems(s,pzPaths(s),pzAway(s,B));
-    tray.scrollLeft=0;
-  };
+  if(tray)pzTrayKeepWire(tray,s0);
   /* ---- TWO FINGERS ZOOM ---- */
   const zMax=Math.max(2.5,Math.min(5,c/2));
   const view=()=>svg.setAttribute("viewBox",pzViewBox(B).join(" "));
@@ -27990,13 +28055,14 @@ function pzLooseWire(m,svg){
          first by which the board with the piece back on it has been drawn */
       requestAnimationFrame(()=>requestAnimationFrame(()=>{note.drop=Math.round(performance.now()-t0);pzDragNote(note,true);}));
     }
-    /* let go over the tray: the group goes back into it */
+    /* let go over the tray: the group goes back into it, where it is let go
+       (see PUT BACK WHERE IT IS LET GO) */
     if(d.T&&e&&e.type==="pointerup"&&inBox(d.T,e)){
       const s=arcSlot("pz");if(!s)return;
       const back=pzMates(s,d.i);
       back.forEach(k=>{s.pos[k]=null;const el=gOf(k);if(el)el.remove();});
-      pzToFront(s,back);
-      gameSfx("drop");questSave();refill(s);say();
+      if(tray)pzTrayPut(s,tray,back,e);
+      gameSfx("drop");questSave();say();
       return;
     }
     if(!d.moved)return;
@@ -28165,6 +28231,7 @@ function pzTrayWire(tray,svg,w){
     const r=pzDrop(d.k,L[0]<=L[1]?Math.max(L[0],Math.min(L[1],x)):x,L[2]<=L[3]?Math.max(L[2],Math.min(L[3],y)):y);
     if(!r){back();return;}
     if(Array.isArray(s.tb))s.tb=s.tb.filter(k=>r.mates.indexOf(k)<0);
+    if(s.tk&&typeof s.tk==="object")r.mates.forEach(k=>{delete s.tk[k];});
     if(s.over){renderChallenges();return;}
     w.settle(r,r.mates.map(k=>w.gOf(k)||mk(k)));
     w.say();
@@ -28299,6 +28366,8 @@ function pzToTray(s,vb){
   const back=[];
   for(let k=0;k<N;k++)if(!got.has(k)&&!away.has(k)&&n[grp[k]]===1){s.pos[k]=null;back.push(k);}
   pzToFront(s,back);
+  /* the strip opens at its front, where they have gone */
+  if(back.length)pzTrayKeep={at:0,k:-1,x:0};
   gameSfx("drop");
 }
 /* ┌─ ON A PHONE, THE WHOLE WINDOW ─────────────────────────────────────────┐
