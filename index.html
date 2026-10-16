@@ -3728,6 +3728,12 @@ html[data-phone="1"] .bcgrid{grid-template-columns:repeat(auto-fill,minmax(82px,
 @keyframes bcspark{0%,100%{transform:scale(1) rotate(0);opacity:.85}50%{transform:scale(1.25) rotate(15deg);opacity:1}}
 @media(prefers-reduced-motion:reduce){.bcard.lv-spark .bcf::after{animation:none}}
 .wantrow{margin:10px 0 0;font-size:13px;display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center}
+/* the scratch card — see TODAY'S SCRATCH CARD */
+.scratch{position:relative;height:110px;width:min(280px,100%);border-radius:12px;overflow:hidden;background:var(--bg);border:1px solid var(--line);margin-top:8px;touch-action:none}
+.scratchprize{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:700 19px Georgia,serif;color:var(--ink);text-align:center;padding:8px}
+.scratchfoil{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair;transition:opacity .6s}
+.scratchfoil.gone{opacity:0;pointer-events:none}
+.scratch.done{border-color:var(--teal)}
 .vguess{margin:6px 0 0;font-size:13px;padding:8px 11px;border:1px solid var(--line);border-left:4px solid var(--teal);border-radius:10px;background:var(--card)}
 .seasonbox{margin:10px 0 0;padding:9px 11px;border:1px solid var(--line);border-left:4px solid var(--teal);border-radius:10px;font-size:13px;background:var(--card)}
 .setsrow{margin:10px 0 0;font-size:13px;display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center}
@@ -11855,7 +11861,8 @@ function showHelpSheet(){
       <dt>Export &amp; import</dt><dd>One .json holding every book, cover and picture — your safety net, and how the shelf moves to another device. The line under it says how old your last one is.</dd>
       <dt>Tidying up</dt><dd>Duplicate titles, one author written two ways, a keyword that repeats a genre, two genres that are the same genre twice, two tags that are the same tag twice, tags with no capital letter. Each opens a panel that shows you everything before anything changes.</dd>
       <dt>Settings</dt><dd>Light or dark, the background, what opening a book shows you, text size — plus Saving, the automatic backups that live inside this browser, and the Goodreads / StoryGraph import. <b>How it works</b> also holds <b>📜 Everything that's changed</b>: every update there has ever been, a day at a time, with a search.</dd>
-    </dl>
+          <dt>🎟 Today's scratch card</dt><dd>One a day on Today: rub the foil off with a finger or the mouse and the prize under it is yours — nothing most days, 10 to 50 XP often enough, a booster pack now and then. The same card on both your screens, paid once; a new one when the day turns.</dd>
+</dl>
     <h3 id="hs-library">📚 Library</h3>
     <dl>
       <dt>🔎 Find…</dt><dd>Type a few letters of a title, author, series — or a story inside a collection — to narrow the shelf. On a computer, pressing / puts you straight in this box. The Search tab digs deeper: notes, quotes, everything.</dd>
@@ -11966,6 +11973,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-16.14",go:["el:overview:#secScratch"],lines:[
+    "<b>🎟 A scratch card on Today.</b> One a day: rub the silver foil off with a finger or the mouse, and under it is nothing most days, 10 to 50 XP often enough, or a booster pack now and then. The same card on both your screens, paid once; a new one when the day turns."]},
   {v:"2026-10-16.13",lines:[
     "<b>🔮 What will you give it?</b> A book marked Reading asks, on its page, what mark you expect to give it. The guess stays there until the book is finished and marked; then the line says what you expected and what you gave, and a guess within 1 pays 20 XP. The 🔮 Oracle medal, on the Your words and marks wall, counts the calls you got right."]},
   {v:"2026-10-16.12",go:["shop:fun"],lines:[
@@ -22230,6 +22239,65 @@ function spareTake(n,tier){
 const spareOfTier=t=>{const sp=cardSpareMap(),byKey={};cardPool().forEach(c=>{byKey[c.key]=c;});let s=0;for(const k in sp)if(byKey[k]&&byKey[k].tier===t)s+=sp[k];return s;};
 const CARD_LV=[[10,"spark","✨ sparkling"],[5,"gold","gold"],[3,"silver","silver"]];
 const cardLevel=n=>{for(const [at,k,name] of CARD_LV)if(n>=at)return {k,name};return null;};
+/* ---- TODAY'S SCRATCH CARD ----
+   One a day on Today: a foil over a prize, rubbed off with the pointer
+   (destination-out on a canvas); at 45% clear the foil fades and the
+   prize is claimed. The prize is the day's hash (scratchPrize), so both
+   devices show the same card, and the claim is one ledger line sc:<day>
+   — an XP award, a pack sc:<day>, or questMark for nothing — so it is
+   paid once however many screens scratch it. SCRATCH_PACK and SCRATCH_XP
+   are percentages; the rest is nothing. */
+const SCRATCH_PACK=10,SCRATCH_XP=30;
+function scratchPrize(day){
+  const h=strHash("scratch|"+day),r=h%100;
+  if(r<SCRATCH_PACK)return {kind:"pack",say:"🎴 A booster pack!"};
+  if(r<SCRATCH_PACK+SCRATCH_XP){const n=[10,10,25,25,25,50][(h>>>8)%6];return {kind:"xp",n,say:"⚡ +"+n+" XP"};}
+  return {kind:"none",say:"Nothing today"};
+}
+const scratchDone=day=>!!((quests&&quests.led&&quests.led["sc:"+day])||packList().some(p=>p&&p.id==="sc:"+day));
+function scratchClaim(day){
+  if(!quests||scratchDone(day))return false;
+  const pz=scratchPrize(day);
+  if(pz.kind==="pack")packGrant("sc:"+day,"deed","Today's scratch card");
+  else if(pz.kind==="xp")questAward(pz.n,"Today's scratch card","sc:"+day);
+  else questMark("sc:"+day);
+  return true;
+}
+function scratchHtml(){
+  if(!quests)return "";
+  const day=questToday(),done=scratchDone(day),pz=scratchPrize(day);
+  return `<div class="sec" id="secScratch"><div class="hcard">
+    <div class="hrow2" style="justify-content:space-between;align-items:center;gap:8px"><b>🎟 Today's scratch card</b><span class="hint" style="margin:0">${done?"Done — a new one when the day turns":"Rub the foil off"}</span></div>
+    <div class="scratch${done?" done":""}" id="scratchBox"><div class="scratchprize">${esc(pz.say)}</div>${done?"":`<canvas class="scratchfoil" id="scratchFoil" aria-label="Rub to reveal today's prize"></canvas>`}</div>
+    <div class="hint" style="margin:6px 0 0">One a day, the same card on both your screens. Under the foil: nothing most days, some XP often enough, a booster pack now and then.</div>
+  </div></div>`;
+}
+function wireScratch(m){
+  const cv=q("#scratchFoil",m);if(!cv)return;
+  const box=cv.parentNode,br=box.getBoundingClientRect(),W=Math.round(br.width)||260,H=Math.round(br.height)||110,dpr=Math.min(2,devicePixelRatio||1);
+  cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);
+  const x=cv.getContext("2d",{willReadFrequently:true});x.scale(dpr,dpr);
+  const g=x.createLinearGradient(0,0,W,H);g.addColorStop(0,"#d1d5db");g.addColorStop(.4,"#9ca3af");g.addColorStop(.6,"#e5e7eb");g.addColorStop(1,"#9ca3af");
+  x.fillStyle=g;x.fillRect(0,0,W,H);
+  x.fillStyle="#374151";x.font="600 13px \"Segoe UI\",system-ui,sans-serif";x.textAlign="center";x.fillText("rub me",W/2,H/2+5);
+  x.globalCompositeOperation="destination-out";
+  let down=false,cleared=false,strokes=0;
+  const check=()=>{
+    if(cleared)return;
+    const d=x.getImageData(0,0,cv.width,cv.height).data;let n=0,t=0;
+    for(let i=3;i<d.length;i+=28){t++;if(d[i]<40)n++;}
+    if(n/t>=0.45){cleared=true;cv.classList.add("gone");box.classList.add("done");
+      scratchClaim(questToday());
+      setTimeout(()=>{if(view==="overview")try{renderHub("today");}catch(e){}},1600);}
+  };
+  const rub=e=>{const r=cv.getBoundingClientRect();
+    x.beginPath();x.arc(e.clientX-r.left,e.clientY-r.top,18,0,Math.PI*2);x.fill();
+    if(++strokes%6===0)check();};
+  cv.addEventListener("pointerdown",e=>{down=true;rub(e);try{cv.setPointerCapture(e.pointerId);}catch(x){}e.preventDefault();});
+  cv.addEventListener("pointermove",e=>{if(down)rub(e);});
+  const up=()=>{down=false;check();};
+  cv.addEventListener("pointerup",up);cv.addEventListener("pointercancel",up);
+}
 /* ---- GUESS YOUR MARK ----
    A book gone to Reading asks "What will you give it?"; the answer is
    b.guess {v,at} on the book, so it travels with it, and sits on the page
@@ -35080,6 +35148,7 @@ async function renderHub(part){
     </div>`:""}
     ${(()=>{try{return wrapNoteHtml();}catch(e){return "";}})()}
     ${(()=>{try{return petCardHtml("today");}catch(e){return "";}})()}
+    ${today?(()=>{try{return scratchHtml();}catch(e){return "";}})():""}
     ${readingNowHtml}
     ${(()=>{try{return ruHold(bdayCardHtml);}catch(e){return "";}})()}
     ${qod?`<div class="sec">
@@ -35236,6 +35305,7 @@ async function renderHub(part){
   m.innerHTML=today?todayHtml:careHtml;
   try{wirePet(m);}catch(e){}
 
+  try{wireScratch(m);}catch(e){}
   const nxSec=q("#secNext",m);
   if(nxSec&&nextUp.length){wireOpen(nxSec,false);hydrateCovers(nxSec);
     const ask=q("#nextAsk",nxSec);if(ask)ask.onclick=e=>{e.stopPropagation();askSerials(nextUp.map(b=>b.id),ask);};
