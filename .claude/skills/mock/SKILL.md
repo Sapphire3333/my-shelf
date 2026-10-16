@@ -73,6 +73,11 @@ scroll sideways and no text may collapse to a word per line.
 
 ## 4. Publish and stop
 
+The page ends with **📋 Copy my choices** (in the template's frame): it
+copies every answer that differs from the pick, one line each, and says
+"Go with your picks" when nothing does — so the answer can be pasted into
+the chat from a phone. Nothing to add per mock; keep the frame as it is.
+
 Load the `artifact-design` skill, then publish the file with the Artifact
 tool. In the message: the link, each question in one line with my pick and
 the reason for it, and what the build would cost. Record the artifact link
