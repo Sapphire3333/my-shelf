@@ -3754,6 +3754,7 @@ html[data-phone="1"] .bcgrid{grid-template-columns:repeat(auto-fill,minmax(82px,
 .roomfloor{position:absolute;left:0;right:0;bottom:0;height:32%;box-shadow:inset 0 3px 0 #00000033}
 .roomthing{position:absolute;line-height:0;filter:drop-shadow(1px 2px 0 #00000055)}
 .roomthing svg{display:block;width:100%;height:auto}
+.roomthing.own img{display:block;width:100%;height:auto;image-rendering:auto;-webkit-user-drag:none}
 .room.live .roomthing{cursor:grab}
 .roompanel{width:min(760px,calc(92vw/var(--uiz,1)));max-height:calc(90vh/var(--uiz,1))}
 .roomcat{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px}
@@ -5463,6 +5464,7 @@ if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0&&!/[?&]db
 <input type="file" id="dragonFile" accept="image/*" hidden>
 <input type="file" id="petFile" accept="image/*" hidden>
 <input type="file" id="shopFile" accept="image/*" hidden>
+<input type="file" id="roomFile" accept="image/*" hidden>
 <input type="file" id="pzFile" accept="image/*" multiple hidden>
 <input type="file" id="iconFile" accept="image/*" hidden>
 
@@ -11938,7 +11940,7 @@ function showHelpSheet(){
       <dt>Settings</dt><dd>Light or dark, the background, what opening a book shows you, text size — plus Saving, the automatic backups that live inside this browser, and the Goodreads / StoryGraph import. <b>How it works</b> also holds <b>📜 Everything that's changed</b>: every update there has ever been, a day at a time, with a search.</dd>
           <dt>🎟 Today's scratch card</dt><dd>One a day on Today: rub the foil off with a finger or the mouse and the prize under it is yours — nothing most days, 10 to 50 XP often enough, a booster pack now and then. The same card on both your screens, paid once; a new one when the day turns.</dd>
       <dt>🦉 The owl's story</dt><dd>Twelve short chapters, the owl telling them, a small mystery in a library after dark. The first is open from the day the story began; every three books you finish after that open one more, and the owl says so. On Today: Read opens the chapter, the numbers along the top walk the ones that are open, a 🔒 says how many books the next one waits for.</dd>
-      <dt>🏠 Your room</dt><dd>A small pixel room at the top of Today that grows with your reading. You start with two tokens and every book you finish from the day the room began earns one more; a token places one thing from the catalogue — a plant, a lamp, a rug, a cat, a bookcase and more. <b>⛶ Arrange</b> opens the room large: drag a thing to move it, tap it to make it bigger or smaller or to take it away (the token comes back), and choose the wall and the floor. It travels to your other device.</dd>
+      <dt>🏠 Your room</dt><dd>A small pixel room at the top of Today that grows with your reading. You start with two tokens and every book you finish from the day the room began earns one more; a token places one thing from the catalogue — a plant, a lamp, a rug, a cat, a bookcase and more. <b>⛶ Arrange</b> opens the room large: drag a thing to move it, tap it to make it bigger or smaller or to take it away (the token comes back), and choose the wall and the floor. <b>🖼 A picture of your own</b> puts any picture in the room for a token — a photo, a drawing, something made for you — with its plain background cut away unless you untick that; twelve at most. It all travels to your other device.</dd>
 </dl>
     <h3 id="hs-library">📚 Library</h3>
     <dl>
@@ -12050,6 +12052,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-17.4",go:["el:overview:#secRoom"],lines:[
+    "<b>🖼 Your own pictures in the room.</b> In ⛶ Arrange: 🖼 A picture of your own puts any picture in the room for a token — a photo, a drawing, something made for you — placed, moved and sized like anything from the catalogue. Its plain background is cut away on the way in, so a picture made on a white ground lands clean; untick that to keep the background. Twelve at most, and they travel to your other device."]},
   {v:"2026-10-17.3",go:["el:overview:#secRoom"],lines:[
     "<b>🏠 A room that grows with your reading.</b> At the top of Today: a small pixel room. You have two tokens to start and every book you finish from today earns one more; a token places one thing from the catalogue — a plant, a floor lamp, a rug, a cat, a bookcase, an armchair, a clock, a teapot, a candle, a picture, a globe, a stack of books, a mug, a mushroom lamp, a cactus, a window, a radio, a bird. ⛶ Arrange opens it large: drag things about, tap one to make it bigger or smaller or take it away, and choose the wall and the floor. Your own pictures in it come next."]},
   {v:"2026-10-17.2",go:["el:overview:#secStory"],lines:[
@@ -20769,6 +20773,12 @@ q("#shopFile").addEventListener("change",async e=>{
   const f=e.target.files&&e.target.files[0];e.target.value="";
   if(f&&shopSlot)await shopSetPic(shopSlot,f);
 });
+/* a picture for the room — see a picture of your own in the room */
+q("#roomFile").addEventListener("change",async e=>{
+  const f=e.target.files&&e.target.files[0];e.target.value="";
+  if(!f)return;
+  if(await roomAddPic(f)){const d=document.getElementById("roomPanel");if(d&&d.__close){d.__close();}roomArrange();}
+});
 /* pictures for the puzzle, several at once — see YOUR OWN PUZZLES */
 q("#pzFile").addEventListener("change",async e=>{
   const fs=[...(e.target.files||[])];e.target.value="";
@@ -22370,6 +22380,39 @@ function roomSvg(t,extra){
   const rects=t.rows.map((row,y)=>[...row].map((c,x)=>ROOM_PAL[c]?`<rect x="${x}" y="${y}" width="1" height="1" fill="${ROOM_PAL[c]}"/>`:"").join("")).join("");
   return `<svg viewBox="0 0 ${w} ${h}" shape-rendering="crispEdges" ${extra||""} aria-hidden="true">${rects}</svg>`;
 }
+/* ---- a picture of your own in the room ----
+   One token like anything else. The picture is read, its plain background
+   cut away unless asked not to (petPrepareInfo, the pet's own path), shrunk
+   to ROOM_PIC_MAX and kept in the images store under __room|<id>, pushed
+   to the cloud as an "img" op like a puzzle picture; the thing in
+   quests.room.items is {k:"own", pic:<key>} and draws through roomHydrate,
+   which fetches the picture from the store or the cloud where this device
+   lacks it. ROOM_OWN_MAX of them, so a room cannot fill the store. */
+const ROOM_PIC_MAX=512,ROOM_OWN_MAX=12,ROOM_OWN_W=14;
+const roomPicKey=id=>"__room|"+id;
+const roomCutOn=()=>!settings||settings.roomCut!==false;
+async function roomAddPic(file){
+  roomCheck();const r=roomCfg();
+  if(roomTokens()<=0){alert("A picture takes a token, and you have none — finish a book.");return false;}
+  if(roomItems().filter(i=>i.k==="own").length>=ROOM_OWN_MAX){alert(`${ROOM_OWN_MAX} pictures of your own is the most the room keeps — take one away first.`);return false;}
+  let data;
+  try{data=roomCutOn()?(await petPrepareInfo(file,ROOM_PIC_MAX)).d:await petEncode(await shrinkData(await pngResize(file,1024),ROOM_PIC_MAX));}
+  catch(e){alert("That picture couldn't be read.");return false;}
+  const id=uid(),key=roomPicKey(id);
+  try{await dbPut("images",{key,data});}catch(e){alert("That picture couldn't be kept — the browser's storage may be full.");return false;}
+  coverCache.set(key,data);
+  if(SYNC.on)enqueue({kind:"img",key});
+  r.items=[...(r.items||[]),{id,k:"own",pic:key,x:30+Math.round(Math.random()*30),y:4+Math.round(Math.random()*8),s:1,at:Date.now()}];
+  roomPick=id;questSave();return true;
+}
+async function roomHydrate(root){
+  for(const im of qa("img[data-roompic]",root||document)){
+    if(im.getAttribute("src"))continue;
+    const key=im.dataset.roompic;let d=coverCache.get(key);
+    if(typeof d!=="string"||!d){try{d=await loadImgData(key);}catch(e){d=null;}if(d)coverCache.set(key,d);}
+    if(d&&im.isConnected)im.src=d;
+  }
+}
 const roomCfg=()=>(quests&&quests.room)||null;
 function roomCheck(){
   if(!quests)return;
@@ -22387,7 +22430,9 @@ function roomHtml(live){
   const r=roomCfg();if(!r)return "";
   const wall=(ROOM_WALLS[r.wall]||ROOM_WALLS.paper).css,floor=(ROOM_FLOORS[r.floor]||ROOM_FLOORS.wood).css;
   return `<div class="room${live?" live":""}" id="${live?"roomLive":"roomToday"}"><div class="roomwall" style="background:${wall}"></div><div class="roomfloor" style="background:${floor}"></div>
-    ${roomItems().map(it=>{const t=roomThing(it.k);if(!t)return "";
+    ${roomItems().map(it=>{
+      if(it.k==="own"&&it.pic)return `<div class="roomthing own" data-roomit="${esc(it.id)}" style="left:${it.x}%;bottom:${it.y}%;width:${(ROOM_OWN_W*(it.s||1)).toFixed(1)}%" title="A picture of yours"><img data-roompic="${esc(it.pic)}" alt="" draggable="false"></div>`;
+      const t=roomThing(it.k);if(!t)return "";
       return `<div class="roomthing" data-roomit="${esc(it.id)}" style="left:${it.x}%;bottom:${it.y}%;width:${(t.w*(it.s||1)).toFixed(1)}%" title="${esc(t.name)}">${roomSvg(t)}</div>`;}).join("")}
   </div>`;
 }
@@ -22413,11 +22458,14 @@ function roomArrange(){
         <span class="hint" style="margin:0">🪙 <b style="color:var(--ink)">${tk}</b> to place · a token for every book finished · drag a thing to move it, tap it for more</span>
         <button class="btn" id="roomX" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
       ${roomHtml(true)}
-      ${sel?`<div class="hrow2" style="gap:6px;margin:8px 0 0;flex-wrap:wrap;align-items:center"><span class="hint" style="margin:0"><b style="color:var(--ink)">${esc((roomThing(sel.k)||{}).name||"")}</b></span>
+      ${sel?`<div class="hrow2" style="gap:6px;margin:8px 0 0;flex-wrap:wrap;align-items:center"><span class="hint" style="margin:0"><b style="color:var(--ink)">${esc(sel.k==="own"?"A picture of yours":(roomThing(sel.k)||{}).name||"")}</b></span>
         <button class="btn smallbtn" data-roomsize="-">− smaller</button><button class="btn smallbtn" data-roomsize="+">+ bigger</button>
         <button class="btn smallbtn" data-roomremove>✕ Take it away (the token comes back)</button></div>`:""}
       <div class="hrow2" style="gap:6px;margin:10px 0 4px;flex-wrap:wrap;align-items:center"><span class="lbl">Wall</span>${Object.entries(ROOM_WALLS).map(([k,w])=>`<button class="pill${r.wall===k?" on":""}" data-roomwall="${k}">${w.name}</button>`).join("")}
         <span class="lbl" style="margin-left:8px">Floor</span>${Object.entries(ROOM_FLOORS).map(([k,f])=>`<button class="pill${r.floor===k?" on":""}" data-roomfloor="${k}">${f.name}</button>`).join("")}</div>
+      <div class="hrow2" style="gap:8px;margin:12px 0 4px;flex-wrap:wrap;align-items:center"><button class="btn smallbtn pri" data-roomown${tk<=0?" disabled":""} title="${tk<=0?"Finish a book for a token":"Any picture — a photo, a drawing, something made for you"}">🖼 A picture of your own · one token</button>
+        <label class="hint" style="margin:0;display:inline-flex;gap:5px;align-items:center"><input type="checkbox" id="roomCut"${roomCutOn()?" checked":""}> cut the plain background away</label>
+        <span class="hint" style="margin:0">${roomItems().filter(i=>i.k==="own").length} of ${ROOM_OWN_MAX}</span></div>
       <div class="lbl" style="display:block;margin:10px 0 4px">The catalogue — one token each</div>
       <div class="roomcat">${ROOM_THINGS.map(t=>`<button class="roomcatit" data-roomadd="${t.k}"${tk<=0?" disabled":""} title="${tk<=0?"Finish a book for a token":"Place it"}"><span class="roomcatpv">${roomSvg(t)}</span><span>${esc(t.name)}</span></button>`).join("")}</div>`;
     q("#roomX",d).onclick=()=>close();
@@ -22429,6 +22477,9 @@ function roomArrange(){
     qa("[data-roomsize]",d).forEach(b=>b.onclick=()=>{const it=roomItems().find(i=>i.id===roomPick);if(!it)return;it.s=Math.max(.5,Math.min(2.5,Math.round(((it.s||1)+(b.dataset.roomsize==="+"?.15:-.15))*100)/100));it.at=Date.now();questSave();paint();});
     qa("[data-roomremove]",d).forEach(b=>b.onclick=()=>{if(!roomPick)return;r.gone=[...(r.gone||[]),roomPick];roomPick=null;questSave();paint();});
     roomWireDrag(d,paint);
+    qa("[data-roomown]",d).forEach(b=>b.onclick=()=>{if(roomTokens()<=0)return;q("#roomFile").click();});
+    {const c=q("#roomCut",d);if(c)c.onchange=()=>{settings.roomCut=c.checked;saveSettings();};}
+    try{roomHydrate(d);}catch(e){}
   };
   document.body.appendChild(d);
   const close=dismissable(d,()=>{if(view==="overview")try{renderHub("today");}catch(e){}});d.__close=close;
@@ -35811,6 +35862,7 @@ async function renderHub(part){
   try{wireScratch(m);}catch(e){}
   qa("[data-story]",m).forEach(b=>b.onclick=()=>storyShow(+b.dataset.story));
   qa("[data-roomarrange]",m).forEach(b=>b.onclick=()=>roomArrange());
+  try{roomHydrate(m);}catch(e){}
   const nxSec=q("#secNext",m);
   if(nxSec&&nextUp.length){wireOpen(nxSec,false);hydrateCovers(nxSec);
     const ask=q("#nextAsk",nxSec);if(ask)ask.onclick=e=>{e.stopPropagation();askSerials(nextUp.map(b=>b.id),ask);};
