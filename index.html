@@ -10397,8 +10397,9 @@ function renderLogin(msg){
       }else{
         const {error}=await SYNC.supa.auth.signInWithPassword({email:email(),password:pass()});
         if(error)throw error; // onAuthStateChange takes over on success
+        authLog("signin","with a password");
       }
-    }catch(e){setMsg(e.message||"That didn't work.",true);}
+    }catch(e){authLog("failed",e.message||"sign-in failed");setMsg(e.message||"That didn't work.",true);}
     busy(false);
   };
   q("#auSignup").onclick=()=>{mode="up";q("#auGo").textContent="Create account";
@@ -10409,14 +10410,42 @@ function renderLogin(msg){
   q("#auMagic").onclick=async()=>{
     if(!email()){setMsg("Enter your email first.",true);return;}
     try{const {error}=await SYNC.supa.auth.signInWithOtp({email:email()});if(error)throw error;
-      setMsg("Check your email for a one-tap sign-in link.",false);}catch(e){setMsg(e.message||"Couldn't send the link.",true);}
+      authLog("link","a sign-in link was emailed");
+      setMsg("Check your email for a one-tap sign-in link.",false);}catch(e){authLog("failed","the link: "+(e.message||"?"));setMsg(e.message||"Couldn't send the link.",true);}
   };
   q("#auEmail").addEventListener("keydown",e=>{if(e.key==="Enter")q("#auPass").focus();});
   q("#auPass").addEventListener("keydown",e=>{if(e.key==="Enter")q("#auGo").click();});
 }
 /* the queue is kept: unsynced edits go up on the next sign-in (the account
    check below stops them landing in the wrong account) */
-async function signOut(){try{await SYNC.supa.auth.signOut();}catch(e){}SYNC.user=null;renderLogin({text:"Signed out.",err:false});}
+/* ---- WHY WAS I SIGNED OUT? — the sign-in log ----
+   The app never signs anyone out on its own (only signOut, from the button
+   and the account check), so a sign-in screen that appears unasked means
+   the kept session was gone from this browser's storage or the server
+   refused to refresh it — and nothing said which. authLog keeps the last
+   AUTH_LOG_MAX events on this device (meta "authLog", never synced): what
+   the boot found in storage, every event the auth library raises, every
+   sign-in attempt and its outcome. tuneDiagnostics prints it, so Settings
+   → what this device is answers the question the next time. */
+const AUTH_LOG_MAX=40;
+let authLogList=null,authLogQ=Promise.resolve();
+/* one at a time: the boot line, the library's first event and the gate
+   all arrive within a few ms, and two writers reading the list at once
+   kept only the last to write */
+function authLog(k,n){
+  authLogQ=authLogQ.then(async()=>{
+    if(!authLogList){const r=await dbGet("meta","authLog");authLogList=(r&&Array.isArray(r.v))?r.v:[];}
+    authLogList.push({t:Date.now(),k,n:String(n||"").slice(0,140)});
+    if(authLogList.length>AUTH_LOG_MAX)authLogList=authLogList.slice(-AUTH_LOG_MAX);
+    await dbPut("meta",{k:"authLog",v:authLogList});
+  }).catch(()=>{});
+  return authLogQ;
+}
+/* whether the auth library's own token is in localStorage right now */
+const authTokenHere=()=>{try{return Object.keys(localStorage).some(k=>/^sb-.*-auth-token/.test(k));}catch(e){return false;}};
+const authLogLines=()=>(authLogList||[]).slice(-12).reverse().map(e=>{
+  const d=new Date(e.t);return d.toLocaleDateString(undefined,{day:"numeric",month:"short"})+" "+d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"})+" — "+e.k+": "+e.n;});
+async function signOut(){authLog("signout","by the button or the account check");try{await SYNC.supa.auth.signOut();}catch(e){}SYNC.user=null;renderLogin({text:"Signed out.",err:false});}
 
 /* signing into a DIFFERENT account than this device last synced with would merge
    the local library into it and push everything up — make that an informed choice */
@@ -10473,9 +10502,12 @@ async function initSync(){
   try{SYNC.supa=window.supabase.createClient(CFG.url,CFG.anonKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});}
   catch(e){console.warn("[shelf] supabase init failed",e);SYNC.on=false;render();return;}
   SYNC.held=false;SYNC.libErr="";SYNC.on=true;
+  (async()=>{let per="";try{if(navigator.storage&&navigator.storage.persisted)per=(await navigator.storage.persisted())?", storage marked persistent":", storage NOT marked persistent (the browser may clear it)";}catch(e){}
+    authLog("boot",(authTokenHere()?"a session was kept in this browser":"NO session in this browser's storage")+", "+(navigator.onLine?"online":"offline")+per);})();
   window.addEventListener("online",()=>{forgetMissingCovers();setSync("syncing");flushQueue().then(pullAll);});
   window.addEventListener("offline",()=>setSync("offline"));
   SYNC.supa.auth.onAuthStateChange((event,session)=>{
+    authLog("event",event+(session&&session.user?" as "+(session.user.email||"?"):" (no session)"));
     if(event==="SIGNED_IN"&&session&&session.user){
       if(!SYNC.user){
         SYNC.user=session.user;forgetMissingCovers();render();
@@ -10484,11 +10516,13 @@ async function initSync(){
     }else if(event==="SIGNED_OUT"){SYNC.user=null;renderLogin();}
     else if(session&&session.user){SYNC.user=session.user;}
   });
-  const {data}=await SYNC.supa.auth.getSession();
+  const {data,error}=await SYNC.supa.auth.getSession();
+  if(error)authLog("error","getSession: "+(error.message||error));
   if(data&&data.session&&data.session.user){
     SYNC.user=data.session.user;forgetMissingCovers();render();
     if(await checkAccount(SYNC.user))flushQueue().then(pullAll);
   }else{
+    authLog("gate","no usable session at start — the sign-in screen is shown"+(authTokenHere()?" although a token is in storage (refused, or expired)":" and storage holds no token (cleared, or a different browser/app window)"));
     renderLogin();
   }
 }
@@ -11988,6 +12022,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-17.1",go:["set:trouble:#diagCopy"],lines:[
+    "<b>🔑 Why was I signed out?</b> The app never signs you out by itself, so a sign-in screen that appears unasked means the kept session was gone from this browser's storage or the server refused to refresh it — and nothing said which. This device keeps a sign-in log now: what each start found in storage, every event the sign-in library raised, every link sent and password tried. It is at the foot of ⚙ Settings → what this device is, under ⧉ Copy all of it, so the next time the screen appears the log says why."]},
   {v:"2026-10-16.16",go:["arc:ws"],lines:[
     "<b>🔡 Word search, in the arcade.</b> Ten words off your shelf — from titles, authors' names and fic characters — hidden in a 10×10 square across, down and diagonally, under a three-minute clock. Drag a finger or the mouse along a word; found ones are struck through in the list beside it, with the book they came from. +3 a word, +15 more for all ten."]},
   {v:"2026-10-16.15",go:["arc:br"],lines:[
@@ -34506,7 +34542,9 @@ function tuneDiagnostics(){
           +" ("+(e.n||e.w)+" rows: "+e.m+" from memory, "+e.l+" off this device, "+e.c+" from the cloud)")];
     })(),
     /* see A PIECE IN HAND COSTS ONE PICTURE */
-    ...pzDragLines()
+    ...pzDragLines(),
+    /* see WHY WAS I SIGNED OUT? */
+    ...(authLogList&&authLogList.length?["Sign-in log, this device, newest first:",...authLogLines().map(l=>"  "+l)]:[])
   ].filter(Boolean);
   return lines;
 }
