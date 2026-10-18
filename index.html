@@ -9232,6 +9232,16 @@ const collRateNote=b=>{
 /* every image key a book owns: its page pictures + its stories' covers */
 const imgKeysOf=b=>!b?[]:[...((b.images)||[]).map(im=>b.id+"|"+im.id),
   ...((b.entries)||[]).filter(en=>en.cover).map(en=>b.id+"|"+en.id)];
+/* ---- EVERY FILE A BOOK OWNS ----
+   imgKeysOf is the scrapbook's pictures and the stories' covers — the ones a
+   book names by "<book>|<picture>". A book's own file to read (__read|<book>)
+   and its own map (ownMap.pic, __map|<book>) are its files too, filed under a
+   reserved key the start-up sweep spares, and every road that carries a
+   book's pictures — the bin, putting it back, deleting for good, the first
+   upload of a book made before sync was on — carried those two to nowhere:
+   a deleted book lost its file at the next start, a purged one kept it in
+   the cloud for ever, and a file added offline never went up at all. */
+const fileKeysOf=b=>!b?[]:[...imgKeysOf(b),...(b.readFile?["__read|"+b.id]:[]),...(b.ownMap&&b.ownMap.pic?[b.ownMap.pic]:[])];
 const q=(sel,root=document)=>root.querySelector(sel);
 const qa=(sel,root=document)=>[...root.querySelectorAll(sel)];
 /* A search box that redraws its own panel destroys the box you are typing in,
@@ -10595,8 +10605,8 @@ async function pullAll(){
     // push up any local-only books the cloud hasn't seen yet (e.g. made offline or before first sync)
     for(const b of books){
       if(!remoteIds.has(b.id)&&!(deletions[b.id]>=(b.modified||0))){
-        enqueue({kind:"book",id:b.id});enqueue({kind:"cover",id:b.id});
-        imgKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
+        enqueue({kind:"cover",id:b.id});fileKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
+        enqueue({kind:"book",id:b.id});
       }
     }
     /* the other device may have written a collection's words onto its stories
@@ -11004,7 +11014,13 @@ async function initSync(){
     for(const k of await dbAllKeys("images"))if(!validImg.has(k)&&String(k).slice(0,2)!=="__")await dbDel("images",k);
     /* …except a book's own file to read (__read|<book>), which goes with its
        book — see THE READER */
-    for(const k of await dbAllKeys("images")){const s=String(k);if(s.indexOf("__read|")===0&&!live.has(s.slice(7)))await dbDel("images",k);}
+    /* …and a book's own map (__map|<book>). A book in Recently deleted keeps
+       both: its bin copy carries them since EVERY FILE A BOOK OWNS, but bin
+       copies made before that do not, so the sweep spares them while the book
+       is in the bin and takes them once it is gone for good. */
+    {const binned=new Set((await dbAllKeys("trash")).map(k=>String(k)));
+     for(const k of await dbAllKeys("images")){const s=String(k),id=s.indexOf("__read|")===0?s.slice(7):s.indexOf("__map|")===0?s.slice(6):null;
+       if(id&&!live.has(id)&&!binned.has(id))await dbDel("images",k);}}
   }catch(e){}
   /* A book named in the address is opened HERE, as soon as the shelf is in
      memory — not wherever the first paint happens to come from, because that is
@@ -11931,7 +11947,7 @@ const HOWTO=[
   ["🧰 Shelf care","Add a whole staged section at once","☑ Tick all",
    ["Narrow the staged list with its search box if you want only some.","Press <b>☑ Tick all</b> in the section's head.","Then choose: as books, 🔗 as a series, 📚 as one collection, or 📥 into one you have.","<b>Add all</b> beside it skips the ticking and puts them in as plain books."]],
   ["⚙ Settings","Back everything up","Export & import",
-   ["⚙ Settings → <b>You and your things</b>.","Press <b>⭳ Back up now</b> for a file you keep yourself.","The list under it is the automatic ones this device holds.","A backup restores onto any device — it carries the pictures too."]],
+   ["⚙ Settings → <b>You and your things</b>.","Press <b>⭳ Export backup file</b> for a file you keep yourself, outside the browser.","<b>＋ Back up now</b> makes a copy inside this browser instead; the list under it is those copies, the daily ones among them.","A backup file restores onto any device — the pictures, your XP, challenges, bookcases and room go with it."]],
   ["⚙ Settings","Make everything bigger","A− / A+",
    ["<b>A+</b> in the corner of any screen, or the same control in ⚙ Settings.","The layout rearranges itself to fit; there is no phone version to switch on.","On a phone the bottom bar has a size of its own, under Text size."]]
 ];
@@ -12346,6 +12362,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-18.29",go:["set:you:#fold-bk"],lines:[
+    "<b>💾 A backup file holds everything now.</b> Your XP and level, your own challenges, the timeline's named stretches, your bookcases and where each book stands, author notes, the room, your cards and packs, the medals' dates, your streaks, the change log, your tags, your goal and when your day begins — all of it goes into ⭳ Export backup file and the daily copies, and comes back when you restore. Restoring an older one joins it with what you have, so it never takes XP or a medal away. Files made before today still restore as they always did.",
+    "<b>Restoring is safer.</b> The copy taken just before a restore is labelled <i>Before restore</i> and kept apart, so it can no longer push out the very backup you are restoring; the two newest are kept. After a restore your other device fetches the restored pictures instead of keeping its own, and a restore that stops because storage is full says so plainly.",
+    "<b>A book in Recently deleted keeps its file to read and its own map</b>, and putting it back brings them back — before, a restart threw them away. Deleting it for good now clears them from your cloud too, and a picture taken out of your room goes with it. Backup files are named by your own day, not a day early after midnight, and Settings counts the daily backup file when it says when you last made one."]},
   {v:"2026-10-18.28",lines:[
     "<b>🔄 Your two devices keep what each one did.</b> A book deleted on one no longer comes back because the other hadn't synced yet — the same for Recently deleted and your tags, and a tag you retire stays retired after a restart. A picture above a genre heading, or one on the Library page, now reaches your other device when you change, move or resize it.",
     "<b>↶ Undo takes back only its own change.</b> If your other device has added to the book since — a quote, a page — that stays. If it changed the very thing you are undoing, the copy being replaced waits in Recently deleted, marked “replaced by ↶ Undo”.",
@@ -15768,11 +15788,15 @@ async function applyOp(op,inv,quiet){
          that way. Putting it back is what an undo IS, so the bin has no further
          claim on it, on this device or the other one. */
       if(op.t==="del"){
+        /* the bin's copy holds the files the start-up sweep may since have
+           taken from the store (a reader file, a map) — put them back first */
+        try{const tr=await dbGet("trash",id);
+          if(tr&&tr.images)for(const[k,d]of Object.entries(tr.images))if(!(await dbGet("images",k)))await dbPut("images",{key:k,data:d});}catch(e){}
         try{await dbDel("trash",id);}catch(e){}
         if(trashCloud[id]){delete trashCloud[id];saveTrashCloud();}
         countTrash();
       }
-      if(SYNC.on){if(unDelete(id))saveDeletions();enqueue({kind:"book",id});enqueue({kind:"cover",id});imgKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));}
+      if(SYNC.on){if(unDelete(id))saveDeletions();enqueue({kind:"cover",id});fileKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));enqueue({kind:"book",id});}
     }else{
       const gone=(op.t==="del"?op.body:op.after)||null;
       /* and back INTO the bin on the way out, for the same reason: a delete you
@@ -21595,7 +21619,7 @@ async function purgeTrash(){
        deleting the cloud pictures now would strip them off the living book */
     if(SYNC.on&&!books.some(b=>b.id===id)){
       enqueue({kind:"coverDel",id});
-      imgKeysOf(e.book).forEach(key=>enqueue({kind:"imgDel",key}));
+      fileKeysOf(e.book).forEach(key=>enqueue({kind:"imgDel",key}));
     }
     delete trashCloud[id];changed=true;
   }
@@ -21636,7 +21660,7 @@ async function toTrash(b){
   try{
     const cov=await dbGet("covers",b.id);
     const images={};
-    for(const k of imgKeysOf(b)){const r=await dbGet("images",k);if(r)images[k]=r.data;}
+    for(const k of fileKeysOf(b)){const r=await dbGet("images",k);if(r)images[k]=r.data;}
     await dbPut("trash",Object.assign({},rec,{cover:cov?cov.data:null,images}));
     return true;
   }catch(e){console.warn("[shelf] the bin refused that with its pictures",e);}
@@ -21692,8 +21716,11 @@ async function restoreTrash(tid){
   if(i>=0)books[i]=b;else books.unshift(b);
   if(SYNC.on){
     if(unDelete(b.id))saveDeletions();
-    enqueue({kind:"book",id:b.id});enqueue({kind:"cover",id:b.id});
-    imgKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
+    /* the pictures before the book, so the other device never fetches the
+       book ahead of its own picture — see A BOOK MUST NEVER OVERTAKE ITS OWN
+       PICTURE */
+    enqueue({kind:"cover",id:b.id});fileKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
+    enqueue({kind:"book",id:b.id});
   }
   await dbDel("trash",tid);
   if(trashCloud[tid]){delete trashCloud[tid];saveTrashCloud();}
@@ -23144,7 +23171,12 @@ function roomArrange(){
       const id=uid();r.items=[...(r.items||[]),{id,k:t.k,x:Math.round(20+Math.random()*50),y:t.wall?48+Math.round(Math.random()*20):(t.k==="rug"?2:4+Math.round(Math.random()*6)),s:1,at:Date.now()}];
       roomPick=id;questSave();paint();});
     qa("[data-roomsize]",d).forEach(b=>b.onclick=()=>{const it=roomItems().find(i=>i.id===roomPick);if(!it)return;it.s=Math.max(.5,Math.min(2.5,Math.round(((it.s||1)+(b.dataset.roomsize==="+"?.15:-.15))*100)/100));it.at=Date.now();questSave();paint();});
-    qa("[data-roomremove]",d).forEach(b=>b.onclick=()=>{if(!roomPick)return;r.gone=[...(r.gone||[]),roomPick];roomPick=null;questSave();paint();});
+    /* a picture of your own goes with its thing: it sat in the store, and in
+       the cloud, for good — the start-up sweep spares every "__" key */
+    qa("[data-roomremove]",d).forEach(b=>b.onclick=()=>{if(!roomPick)return;
+      const it=(r.items||[]).find(i=>i&&i.id===roomPick);
+      if(it&&it.k==="own"&&it.pic){dbDel("images",it.pic).catch(()=>{});coverCache.delete(it.pic);if(SYNC.on)enqueue({kind:"imgDel",key:it.pic});}
+      r.gone=[...(r.gone||[]),roomPick];roomPick=null;questSave();paint();});
     roomWireDrag(d,paint);
     qa("[data-roomown]",d).forEach(b=>b.onclick=()=>{if(roomTokens()<=0)return;q("#roomFile").click();});
     {const c=q("#roomCut",d);if(c)c.onchange=()=>{settings.roomCut=c.checked;saveSettings();};}
@@ -37457,10 +37489,16 @@ function renderSettings(){
         </div>
         <div class="hint" style="margin:9px 0 0"><b>CSV</b> is the way <i>out</i>: a spreadsheet with one row per book, per collection and per story, under Goodreads' own column names — it opens in Excel or Sheets and imports into Goodreads or StoryGraph. It carries no covers, pictures, drawings or quotes, so it is a listing, not a backup.</div>
         <div class="hint" style="margin:9px 0 0">Export downloads a single .json holding every book, cover and picture — your safety net, and how you move your shelf onto another device or back into the old offline file.</div>
-        ${books.length?`<div class="hint" id="expAge" style="margin:7px 0 0${lastExport&&Date.now()-lastExport<30*864e5?"":";color:var(--amber-ink)"}">${
-          lastExport?(()=>{const d=Math.floor((Date.now()-lastExport)/864e5);
-            return "Last exported backup: "+(d===0?"today":d===1?"yesterday":d+" days ago")+(d>=30?" — worth making a fresh one":"");})()
-          :"No backup has ever been exported from this browser — the automatic ones live in the same browser as your books, so they can't help if it loses them."}</div>`:""}
+        ${books.length?(()=>{
+          /* a file written outside the browser is a file outside the browser,
+             whichever road wrote it: the daily folder backup and the daily
+             file in Downloads count, not only this button — the amber "never"
+             stood here while the card below said "last: today" */
+          const out=Math.max(lastExport||0,lastDirBk||0,lastFileBk||0);
+          return `<div class="hint" id="expAge" style="margin:7px 0 0${out&&Date.now()-out<30*864e5?"":";color:var(--amber-ink)"}">${
+          out?(()=>{const d=Math.floor((Date.now()-out)/864e5);
+            return "Last backup file made outside this browser: "+(d===0?"today":d===1?"yesterday":d+" days ago")+(d>=30?" — worth making a fresh one":"");})()
+          :"No backup file has ever been made from this browser — the automatic ones live in the same browser as your books, so they can't help if it loses them."}</div>`;})():""}
       </div>
     </div>
     <div class="sec" data-stab="you">
@@ -41076,7 +41114,7 @@ async function purgeOneTrash(id){
        stale and the pictures belong to the living book. */
     if(SYNC.on&&!books.some(b=>b.id===id)){
       enqueue({kind:"coverDel",id});
-      imgKeysOf(trashCloud[id].book).forEach(key=>enqueue({kind:"imgDel",key}));
+      fileKeysOf(trashCloud[id].book).forEach(key=>enqueue({kind:"imgDel",key}));
     }
     delete trashCloud[id];
   }
@@ -41326,7 +41364,7 @@ async function measureStorage(){
   /* sizes without opening a single one */
   (await snapIndex()).forEach(s=>{kind.snap+=(s.size||0);
     items.push({n:s.size||0,what:`Backup — ${fmtWhen(s.at)}`,k:"snap",
-      note:`${s.nbooks||0} books${s.auto?"":" · made by you, never cleared away on its own"}`,go:{t:"backups"}});});
+      note:`${s.nbooks||0} books${s.why==="restore"?" · taken before a restore, the two newest kept":s.auto?"":" · made by you, never cleared away on its own"}`,go:{t:"backups"}});});
   await dbScan("trash",r=>{
     const n=JSON.stringify(r||{}).length;kind.trash+=n;
     items.push({n,what:`In the bin — ${(r&&r.book&&r.book.title)||"a deleted book"}`,k:"trash",
@@ -41485,7 +41523,7 @@ async function refreshSnaps(){
   q("#snapList").innerHTML=list.length?list.map(s=>`
     <div class="snap">
       <div><div class="when">${fmtWhen(s.at)}</div><div class="meta">${s.nbooks} book${s.nbooks===1?"":"s"} · ${fmtBytes(s.size)}</div></div>
-      <span class="tagx ${s.auto?"":"man"}">${s.auto?"AUTO":"SAVED"}</span>
+      <span class="tagx ${s.auto?"":"man"}">${s.why==="restore"?"BEFORE RESTORE":s.auto?"AUTO":"SAVED"}</span>
       <div class="sp">
         <button class="btn" data-sr="${s.id}">Restore</button>
         <button class="btn" data-sd="${s.id}" title="Download as a file">⭳</button>
@@ -41496,18 +41534,24 @@ async function refreshSnaps(){
     const s=await dbGet("snapshots",b.dataset.sr);if(!s)return;
     if(!confirm(`Restore the backup from ${fmtWhen(s.at)}?\n\nIt holds ${s.nbooks} book${s.nbooks===1?"":"s"}. Books you've added since are kept; any book also in the backup goes back to its backed-up version.\n\nA backup of right now is taken first, so you can undo this.`))return;
     const msg=q("#busyMsg");if(msg)msg.textContent="Restoring…";
+    /* two different failures, said apart — the file restore's own rule: a
+       safety copy refused by a full disk is not a broken backup, and a write
+       stopped partway leaves some books in */
+    try{await makeSnapshot(false,"restore");}
+    catch(e){if(!confirm("A safety copy of your shelf as it is now couldn't be saved — storage is probably full.\n\nThe backup itself is fine. Restore it without the safety copy?\n\nIf you'd rather not, cancel and free some room first."))
+      {if(q("#busyMsg"))q("#busyMsg").textContent="";return;}}
     try{
-      await makeSnapshot(true);
       const {n,failedPics}=await applyBackup(JSON.parse(s.data));
-      render();
+      render();refreshSnaps();
       alert(`Restored ${n} book${n===1?"":"s"} from ${fmtWhen(s.at)}.`
         +(failedPics?`\n\n${failedPics} picture${failedPics===1?" didn't":"s didn't"} fit — storage may be full. Free some room and restore again; the books themselves are in.`:""));
-    }catch(e){alert("That backup couldn't be restored.");}
+    }catch(e){render();
+      alert("Restoring stopped partway — storage is probably full.\n\nSome books may already be in. Free some room and restore the same backup again; restoring it twice is safe.");}
     if(q("#busyMsg"))q("#busyMsg").textContent="";
   });
   qa("[data-sd]",box).forEach(b=>b.onclick=async()=>{
     const s=await dbGet("snapshots",b.dataset.sd);if(!s)return;
-    downloadJson(s.data,`my-shelf-backup-${new Date(s.at).toISOString().slice(0,10)}.json`);
+    downloadJson(s.data,`my-shelf-backup-${shelfDayOf(s.at)}.json`);
   });
   qa("[data-sx]",box).forEach(b=>b.onclick=async()=>{
     const s=(await snapIndex()).find(x=>x.id===b.dataset.sx);if(!s)return;
@@ -43385,7 +43429,7 @@ function renderInsights(){
       const blob=new Blob([text],{type:"text/plain"});
       const url=URL.createObjectURL(blob);
       const a=document.createElement("a");
-      a.href=url;a.download=`my-reading-${new Date().toISOString().slice(0,10)}.txt`;
+      a.href=url;a.download=`my-reading-${todayStr()}.txt`;
       document.body.appendChild(a);a.click();a.remove();
       setTimeout(()=>URL.revokeObjectURL(url),4000);
     };
@@ -52853,7 +52897,22 @@ async function buildBackup(){
   const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
   return {app:"my-shelf",version:1,exported:new Date().toISOString(),
     index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
-    backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,kwCats,catColors,libArt,covers,images};
+    backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,kwCats,catColors,libArt,covers,images,
+    meta:backupMeta()};
+}
+/* ---- WHAT A BACKUP CARRIES BESIDES THE BOOKS ----
+   The file held the books, their words, covers and pictures — and none of
+   the records the shelf keeps beside them: the XP and level, the day's and
+   week's work, your own challenges, the eras on the timeline, the bookcases
+   (so every restored book pointed at a case that did not exist and stood in
+   the tray), author notes, the room, the cards and packs, the medals' first
+   seen dates, the streaks, the change log, the tag list, the goal, the hour
+   a day begins, and the indexes of your own pictures. Restored without sync,
+   all of it was gone. Under one key, `meta`: an older copy of the app reads
+   past it, and an older file without it restores as it always did. */
+function backupMeta(){
+  return {quests,achSeen,streaks,histLog,kwList,goal:settings.goal||"",dayline:dayLine,
+    prefs:sharedPrefs,ownIcons,petPics,shopPics,pzPics,tidyKeep:tidyRulings()};
 }
 function downloadJson(json,name,mime){
   const blob=new Blob([json],{type:mime||"application/json"});
@@ -52866,7 +52925,7 @@ function downloadJson(json,name,mime){
 async function exportBackup(){
   const msg=q("#busyMsg");if(msg)msg.textContent="Packing your shelf…";
   try{
-    downloadJson(JSON.stringify(await buildBackup()),`my-shelf-backup-${new Date().toISOString().slice(0,10)}.json`);
+    downloadJson(JSON.stringify(await buildBackup()),`my-shelf-backup-${todayStr()}.json`);
     lastExport=Date.now();dbPut("meta",{k:"lastExport",v:lastExport});
     const n=q("#expAge");if(n){n.textContent="Last exported backup: just now";n.style.color="";}
   }catch(e){alert("Export ran into a problem — try again.");}
@@ -52914,7 +52973,7 @@ function csvText(){
     out.push(line({
       "Title":b.title||"","Author":b.author||"","ISBN13":b.isbn||"","My Rating":five(b.rating),
       "Number of Pages":b.pages||"","Date Read":d.read,"Date Started":d.start,
-      "Date Added":addedOf(b)?new Date(addedOf(b)).toISOString().slice(0,10):"",
+      "Date Added":addedOf(b)?shelfDayOf(addedOf(b)):"",
       "Read Count":timesRead(b),"Exclusive Shelf":shelf(st),
       "Bookshelves":[...gen,...tags,b.dnf?"did-not-finish":"",hold?"on-hold":""].filter(Boolean).join(", "),
       /* canvasText, not `notes`: that is the STORY's spelling for the same
@@ -52934,7 +52993,7 @@ function csvText(){
       out.push(line({
         "Title":en.title||"","Author":entAuthorOf(b,en),"ISBN13":en.isbn||"","My Rating":five(en.rating),
         "Number of Pages":en.pages||"","Date Read":dd.read,"Date Started":dd.start,
-        "Date Added":addedOf(b)?new Date(addedOf(b)).toISOString().slice(0,10):"",
+        "Date Added":addedOf(b)?shelfDayOf(addedOf(b)):"",
         "Read Count":Math.max(doneReads(en).length,(es==="finished"&&!ed)?1:0),"Exclusive Shelf":shelf(es),
         "Bookshelves":[...eg,...et,ed?"did-not-finish":""].filter(Boolean).join(", "),
         "My Review":text(en.summary),"Private Notes":text(en.notes),
@@ -52953,7 +53012,7 @@ function csvText(){
   return "﻿"+out.join("\r\n");
 }
 function exportCsv(){
-  try{downloadJson(csvText(),`my-shelf-${new Date().toISOString().slice(0,10)}.csv`,"text/csv;charset=utf-8");}
+  try{downloadJson(csvText(),`my-shelf-${todayStr()}.csv`,"text/csv;charset=utf-8");}
   catch(e){alert("The spreadsheet couldn't be made — try again.");}
 }
 /* a backup file is the one input that may come from outside this app — strip
@@ -52993,7 +53052,19 @@ async function applyBackup(data){
   /* stamp restored books as edited-now: "restore wins" then holds on every device,
      instead of losing a last-write race against newer cloud copies */
   const now=Date.now();
-  for(const b of data.books){sanitizeBook(b);b.modified=now;await dbPut("books",b);}
+  /* ---- RESTORED MEANS NEWER, ON EVERY DEVICE ----
+     A bare Date.now() lost to a device whose clock runs ahead (seenFloor is
+     what nextMod is for), and lost to the delete if the book had been deleted.
+     And a restored picture came back under its OLD version: the other device,
+     holding a newer one, saw its own version as high enough and kept it. Every
+     picture the file restores is stamped now, on the book and in the store. */
+  const picV=new Set(Object.keys(data.images||{}));
+  for(const b of data.books){sanitizeBook(b);
+    (b.images||[]).forEach(im=>{if(im&&picV.has(b.id+"|"+im.id))im.cut=now;});
+    (b.entries||[]).forEach(en=>{if(en&&en.cover&&picV.has(b.id+"|"+en.id))en.coverV=now;});
+    b.modified=Math.max(nextMod(b),now);
+    if(deletions[b.id]&&b.modified<=deletions[b.id])b.modified=deletions[b.id]+1;
+    await dbPut("books",b);}
   /* pictures are where a restore actually runs out of room. Failing one must
      not abandon the rest — and must not bubble out as "the file couldn't be
      read" after every book was already written. The count comes back to the
@@ -53004,7 +53075,7 @@ async function applyBackup(data){
     catch(e){failedPics++;}
   }
   for(const[k,d]of Object.entries(data.images||{})){
-    try{await dbPut("images",{key:k,data:d});}catch(e){failedPics++;}
+    try{await dbPut("images",{key:k,data:d,v:now});coverCache.delete(k);}catch(e){failedPics++;}
   }
   const map=new Map(books.map(b=>[b.id,b]));
   for(const b of data.books)map.set(b.id,b);
@@ -53044,10 +53115,38 @@ async function applyBackup(data){
   (data.libArt||[]).forEach(a=>{if(a&&a.id&&!haveLa.has(a.id))libArt.push(a);});
   saveBgList();savePadList();saveFandoms();saveGroupArt();saveKwColors();saveLibArt();
   saveMeta();
+  /* the rest of what the shelf keeps (see WHAT A BACKUP CARRIES), each JOINED
+     through the merge a pull uses — so restoring an older file never lowers
+     the XP, takes back a medal or brings back something taken away since */
+  const M=(data.meta&&typeof data.meta==="object")?data.meta:null;
+  if(M){
+    try{questInit();}catch(e){}
+    if(!achSeen&&M.achSeen&&typeof M.achSeen==="object")achSeen=JSON.parse(JSON.stringify(M.achSeen));
+    if(!streaks&&M.streaks&&typeof M.streaks==="object")streaks=JSON.parse(JSON.stringify(M.streaks));
+    for(const[k,fn]of [["quests",mergeQuests],["achSeen",mergeAchSeen],["streaks",mergeStreaks],["tidyKeep",mergeTidy],["histLog",mergeHistLog],
+      ["prefs",mergePrefs],["petPics",mergePetPics],["shopPics",mergeShopPics],["ownIcons",mergeOwnIcons],["pzPics",mergePzPics]]){
+      if(M[k]==null)continue;
+      try{fn(JSON.parse(JSON.stringify(M[k])));}catch(e){console.warn("[shelf] restore: "+k,e);}
+    }
+    if(M.kwList&&typeof M.kwList==="object"){let add=false;
+      for(const w in M.kwList)if(!kwList[w]&&!metaGone("kw:"+w)){kwList[w]=M.kwList[w];add=true;}
+      if(add)saveKwList();}
+    /* one answer each, so a restore fills them only where this device has none */
+    if((settings.goal===""||settings.goal==null)&&M.goal!==undefined&&M.goal!==""&&M.goal!==null){settings.goal=M.goal;saveGoal();}
+    if(!dayLineH()&&!(dayLine&&dayLine.tz)&&M.dayline&&typeof M.dayline==="object"&&(parseInt(M.dayline.h)||M.dayline.tz)){
+      dayLine={h:parseInt(M.dayline.h)||0,tz:String(M.dayline.tz||"")};saveDayLine();}
+    const mine={quests,achSeen,streaks,tidyKeep:tidyRulings(),petPics,shopPics,ownIcons,pzPics,histLog};
+    for(const k in mine){if(mine[k]==null)continue;try{await dbPut("meta",{k,v:mine[k]});}catch(e){}if(SYNC.on)enqueue({kind:"meta",key:k});}
+    if(SYNC.on&&sharedPrefs)enqueue({kind:"meta",key:"prefs"});
+  }
   if(SYNC.on){
-    for(const b of data.books){unDelete(b.id);enqueue({kind:"book",id:b.id});}
-    for(const id of Object.keys(data.covers||{}))enqueue({kind:"cover",id});
+    /* pictures first, then the books: queued the other way round, the other
+       device could pull a restored book in the gap and fetch the picture from
+       before the restore — see A BOOK MUST NEVER OVERTAKE ITS OWN PICTURE.
+       Device-only covers (__avatar, __dragon) stay on this device. */
+    for(const id of Object.keys(data.covers||{}))if(String(id).slice(0,2)!=="__")enqueue({kind:"cover",id});
     for(const k of Object.keys(data.images||{}))enqueue({kind:"img",key:k});
+    for(const b of data.books){unDelete(b.id);enqueue({kind:"book",id:b.id});}
     saveDeletions();flushQueue();
   }
   return {n:data.books.length,failedPics};
@@ -56657,27 +56756,39 @@ async function snapIndexFresh(){
   let idx=(rec&&Array.isArray(rec.v))?rec.v.slice():(await snapIndex()).slice();
   const keys=(await dbAllKeys("snapshots")).map(String),there=new Set(keys),have=new Set(idx.map(x=>String(x.id)));
   for(const k of keys)if(!have.has(k)){const x=await dbGet("snapshots",k);
-    if(x)idx.push({id:x.id,at:x.at,auto:!!x.auto,size:x.size||0,nbooks:x.nbooks||0});}
+    if(x)idx.push(Object.assign({id:x.id,at:x.at,auto:!!x.auto,size:x.size||0,nbooks:x.nbooks||0},x.why?{why:x.why}:{}));}
   return snapIdx=idx.filter(x=>there.has(String(x.id)));
 }
 async function dropSnapshot(id){
   await dbDel("snapshots",id);
   await snapIndexFresh();snapIdx=snapIdx.filter(x=>x.id!==id);await saveSnapIndex();
 }
-async function makeSnapshot(auto){
+/* ---- THE COPY TAKEN BEFORE A RESTORE IS NOT A DAILY ONE ----
+   It was made as an automatic backup, so the prune counted it against the
+   daily ones it keeps (two, to begin with): restoring yesterday's backup made
+   the copy, the prune kept it and today's — and deleted yesterday's, the very
+   backup being restored, which a restore stopped partway needs to run again.
+   It is its own kind now (`why:"restore"`), labelled so in the list, and the
+   two newest of its kind are kept apart from the daily ones. */
+const SNAP_KEEP_RESTORE=2;
+async function makeSnapshot(auto,why){
   const json=JSON.stringify(await buildBackup());
-  const snap={id:uid(),at:Date.now(),auto:!!auto,size:json.length,nbooks:books.length,data:json};
+  const snap={id:uid(),at:Date.now(),auto:!!auto&&!why,size:json.length,nbooks:books.length,data:json};
+  if(why)snap.why=why;
   /* read before the new one is stored, so it isn't taken for a lost one and read back whole */
   await snapIndexFresh();
   await dbPut("snapshots",snap);
-  snapIdx.push({id:snap.id,at:snap.at,auto:snap.auto,size:snap.size,nbooks:snap.nbooks});
+  snapIdx.push(Object.assign({id:snap.id,at:snap.at,auto:snap.auto,size:snap.size,nbooks:snap.nbooks},why?{why}:{}));
   await saveSnapIndex();
   await pruneSnapshots();
   return snap;
 }
 async function pruneSnapshots(){
-  const autos=(await snapIndexFresh()).filter(s=>s.auto).sort((a,b)=>b.at-a.at);
+  const idx=await snapIndexFresh();
+  const autos=idx.filter(s=>s.auto).sort((a,b)=>b.at-a.at);
   for(const s of autos.slice(Math.max(1,settings.keepAuto|0)))await dropSnapshot(s.id);
+  const safes=idx.filter(s=>s.why==="restore").sort((a,b)=>b.at-a.at);
+  for(const s of safes.slice(SNAP_KEEP_RESTORE))await dropSnapshot(s.id);
 }
 async function maybeAutoBackup(){
   if(!settings.autoBackup||!books.length)return;
@@ -56705,7 +56816,7 @@ async function dirPermission(ask){
   }catch(e){return "none";}
 }
 async function writeFolderBackup(){
-  const name=`my-shelf-auto-backup-${new Date().toISOString().slice(0,10)}.json`;
+  const name=`my-shelf-auto-backup-${todayStr()}.json`;
   const fh=await bkDir.getFileHandle(name,{create:true});
   const w=await fh.createWritable();               /* writes land whole: a crash mid-write leaves the old file, not half a new one */
   await w.write(JSON.stringify(await buildBackup()));
@@ -56761,7 +56872,7 @@ async function maybeFileBackup(){
   const sig=libSig();
   if(sig===lastFileSig)return;                   /* nothing has changed since the last one — another copy of it is just clutter */
   try{
-    downloadJson(JSON.stringify(await buildBackup()),`my-shelf-auto-backup-${new Date().toISOString().slice(0,10)}.json`);
+    downloadJson(JSON.stringify(await buildBackup()),`my-shelf-auto-backup-${todayStr()}.json`);
     lastFileBk=Date.now();lastFileSig=sig;fileBkCount++;
     dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:fileBkCount}});
     renderDirUi();
@@ -56782,7 +56893,7 @@ q("#importFile").addEventListener("change",async e=>{
      step now says what it was doing when it failed. */
   try{
     if(books.length){
-      try{await makeSnapshot(true);}
+      try{await makeSnapshot(false,"restore");}
       catch(err){
         if(!confirm("A safety copy of your shelf as it is now couldn't be saved — storage is probably full.\n\nThe file itself is fine. Carry on without the safety copy?\n\nIf you'd rather not, cancel and free some room first — Recently deleted and old backups are the usual culprits."))
           {if(q("#busyMsg"))q("#busyMsg").textContent="";return;}
