@@ -2483,7 +2483,8 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   /* not a favourite: there, but quiet about it */
   .vfav:not(.on){color:var(--faint);border-color:var(--line);background:transparent;font-weight:400}
   .vfav:not(.on):hover{color:var(--rose)}
-  .vprog{display:flex;align-items:center;gap:9px}
+  .vprog{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .tmbtn{font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
   .vfacts{font-size:13px;color:var(--mut)}
   /* the filing card (their pick 14A): the loose facts in one card washed with
      the leading genre's chip colours — --fc* set inline per book, falling back
@@ -12041,6 +12042,7 @@ function showHelpSheet(){
       <dt>📱 Fit</dt><dd>Stacks the freely-placed things into a tidy column instead — best on a phone. Their real places are kept for when it's off.</dd>
       <dt>🗑</dt><dd>The book waits in Recently deleted (History tab) for 30 days before it's really gone.</dd>
           <dt>🤝 Lent to… / Borrowed from…</dt><dd>A line on a book's page: say who has it, or whose it is, and the book's row wears a 🤝 chip until ✓ It's back. Once a loan is four weeks old, Today lists it under Out on loan with ✓ It's back and Later; Later asks again in two weeks. Past loans are kept on the page, a hover away. Fics and AI stories are not lent — they are links.</dd>
+          <dt>⏱ Start / ⏹ Stop</dt><dd>Beside the progress bar of a book you are reading; the clock runs in the button, and belongs to the book, so your other device sees it too. Stop asks which page you reached and moves the bookmark, so the pages count for your pace, the roads and your pet as if typed. The page then keeps the sessions under the bar: how many, how long, about how many pages an hour. Under half a minute is not kept; a clock left running past eight hours is dropped.</dd>
           <dt>🔮 What will you give it?</dt><dd>On a book marked Reading: press the mark you expect to give it. The guess stays on the page (and travels with the book); when the book is finished and marked, the line says what you expected and what you gave, and a guess within 1 pays 20 XP. The 🔮 Oracle medal on the Your words and marks wall counts the ones you called. Stories and collections are not asked.</dd>
 </dl>
     <h3 id="hs-edit">While editing</h3>
@@ -12071,6 +12073,8 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-18.4",go:["tab:library"],lines:[
+    "<b>⏱ A reading clock on the book's page.</b> Beside the progress bar of a book you are reading: ⏱ Start, and the time runs in the button — on both your devices, since the clock belongs to the book. ⏹ Stop asks which page you reached and moves the bookmark, so the pages count for your pace, the roads and your pet as if you had typed them. Under the bar the page then keeps the sessions: how many, how long in all, about how many pages an hour, and the last one; the last few are a hover away. Half a minute or less is not kept, and a clock left running past eight hours is dropped and says so. No XP for it — a clock that paid would be left running."]},
   {v:"2026-10-18.3",go:["tab:library"],lines:[
     "<b>🤝 Lent out, or borrowed.</b> On a book's page, under its stage: 📤 Lent to… and 📥 Borrowed from… ask for a name, and from then on the book's row in the Library wears a 🤝 chip saying who has it, or whose it is, until ✓ It's back on the page. A loan four weeks old lands on Today under <b>Out on loan</b> with ✓ It's back and Later, which asks again in two weeks. Loans travel with the book to your other device, and the ones that came back stay on the page, a hover away. Fics and AI stories have no loan line — they are links, not copies."]},
   {v:"2026-10-18.2",go:["el:overview:#secScratch"],lines:[
@@ -22713,6 +22717,51 @@ async function shelfMut(id,mut){
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
   refreshShelfSub();renderMain();return true;
 }
+/* ---- THE READING TIMER ----
+   ⏱ beside the progress bar of a book being read (timerBtn, in the view's
+   vprog block). Start writes b.timing {since, from} on the book, so the
+   clock is the book's and the other device sees it running too; Stop asks
+   the page reached (prompt) and moves the bookmark through setProgress —
+   so the trail, the pace, the roads and the pet see the pages as typed —
+   then files {at, secs, from, to} in b.sessions, two hundred kept.
+   sessionsLine reads them back: how many, how long, pages an hour off the
+   ones where the bookmark moved, and the last. A clock under TIMER_MIN_S
+   is not a session; one past TIMER_MAX_H hours was left running and is
+   dropped, with a word (timerSaid, shown once). No XP: a clock that paid
+   would be left running. */
+const TIMER_MIN_S=30,TIMER_MAX_H=8;
+let timerSaid="";
+const timerOn=b=>!!(b&&b.timing&&b.timing.since);
+const timerSecs=b=>timerOn(b)?Math.max(0,Math.round((Date.now()-b.timing.since)/1000)):0;
+const secsSay=s=>{s=Math.max(0,Math.round(s));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+":"+String(m).padStart(2,"0"):String(m))+":"+String(x).padStart(2,"0");};
+const minsSay=m=>{m=Math.round(m||0);const h=Math.floor(m/60),mm=m%60;return h?`${h} h${mm?" "+mm+" min":""}`:`${mm} min`;};
+function timerStart(b){if(timerOn(b))return false;b.timing={since:Date.now(),from:parseInt(b.progress)||0};timerSaid="";return true;}
+/* page: what was typed at Stop — "" keeps the bookmark where it is */
+function timerStop(b,page){
+  const t=b.timing;if(!t||!t.since)return false;
+  const secs=Math.round((Date.now()-t.since)/1000);delete b.timing;
+  if(secs>TIMER_MAX_H*3600){timerSaid="⏱ That clock ran "+Math.round(secs/3600)+" hours — it was left running, so it is not kept.";return true;}
+  if(secs<TIMER_MIN_S){timerSaid="⏱ Under half a minute — not kept as a session.";return true;}
+  const from=t.from||0;let to=from;
+  const p=String(page==null?"":page).trim();
+  if(p!==""){setProgress(b,p);to=parseInt(b.progress)||0;}
+  b.sessions=(b.sessions||[]).concat([{at:t.since,secs,from,to}]).slice(-200);
+  timerSaid="";return true;
+}
+function sessionsLine(b){
+  const ss=(b&&b.sessions)||[];
+  const said=timerSaid?`<div class="hint vpace">${esc(timerSaid)}</div>`:"";
+  if(!ss.length)return said;
+  const secs=ss.reduce((a,s)=>a+(+s.secs||0),0);
+  const moved=ss.filter(s=>+s.to>+s.from&&+s.secs>0);
+  const pph=moved.length?moved.reduce((a,s)=>a+(s.to-s.from),0)/(moved.reduce((a,s)=>a+ +s.secs,0)/3600):0;
+  const last=ss[ss.length-1];
+  const tip=ss.slice(-6).reverse().map(s=>new Date(+s.at).toLocaleDateString(undefined,{day:"numeric",month:"short"})+" · "+minsSay(s.secs/60)+(s.to>s.from?" · p. "+s.from+" to "+s.to:"")).join("\n");
+  return said+`<div class="hint vpace" title="${esc("The last few:\n"+tip)}">⏱ ${ss.length} session${ss.length===1?"":"s"} · ${minsSay(secs/60)} in all${pph?` · about ${Math.round(pph)} pages an hour`:""} · last ${minsSay(last.secs/60)}</div>`;
+}
+const timerBtn=b=>timerOn(b)
+  ?`<button class="btn smallbtn pri tmbtn" id="vTimer" title="Reading since ${esc(new Date(b.timing.since).toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"}))} — press to stop; it asks the page you reached">⏹ ${secsSay(timerSecs(b))}</button>`
+  :`<button class="btn smallbtn tmbtn" id="vTimer" title="Start a reading clock; Stop asks the page you reached and moves the bookmark">⏱ Start</button>`;
 /* ---- GUESS YOUR MARK ----
    A book gone to Reading asks "What will you give it?"; the answer is
    b.guess {v,at} on the book, so it travels with it, and sits on the page
@@ -43112,7 +43161,7 @@ function renderBookView(){
             title="How far through you are — type a percent, and with a page count it becomes the page"
             style="border:none;background:transparent;font:inherit;color:var(--ink);font-weight:700;width:40px;text-align:center;padding:0">`;
           if(parseInt(b.pages))return `<div class="vprog"><span class="prog" id="vProgBar" style="flex:1"><i style="width:${pct||0}%"></i></span>
-            <span class="rr">${pcin}% · p.${pin('id="vProg"',b.progress,parseInt(b.pages),"The page you're on — type a new one and press Enter")} of ${esc(String(b.pages))}</span></div>`+paceLine(b);
+            <span class="rr">${pcin}% · p.${pin('id="vProg"',b.progress,parseInt(b.pages),"The page you're on — type a new one and press Enter")} of ${esc(String(b.pages))}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b);
           /* No page count. There was no box here at all once, which made a book
              you are READING the one book with nowhere on this page to say where
              you are; then both numbers stood here and the bar waited on a total.
@@ -43121,7 +43170,7 @@ function renderBookView(){
              for, quietly, because a page is the better record where it exists. */
           return `<div class="vprog">${b.pct?`<span class="prog" style="flex:1"><i style="width:${pct||0}%"></i></span>`:""}
             <span class="rr">${pcin}% through</span>
-            <span class="rr">p.${pin('id="vProg"',b.progress,0,"The page you're on")} of ${pin('id="vPages"',"",0,"How many pages it has — a page is a better record than a percent")}</span></div>`+paceLine(b);
+            <span class="rr">p.${pin('id="vProg"',b.progress,0,"The page you're on")} of ${pin('id="vPages"',"",0,"How many pages it has — a page is a better record than a percent")}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b);
         })():""}
         ${/* A finished book with no readings offers the fold so the dates can be
               typed in. A finished COLLECTION with none said "▸ no dates
@@ -43389,6 +43438,18 @@ function renderBookView(){
     setTimeout(()=>{const el=q("#iywCopy");if(el)el.textContent="⧉ Copy";},1600);
   };}
   q("#vStatus").onclick=e=>{e.stopPropagation();vStatusOpen=!vStatusOpen;vRateOpen=false;renderBookView();};
+  /* the reading clock — see THE READING TIMER; the button is the readout */
+  {const tb=q("#vTimer",page);
+   if(tb){
+     tb.onclick=e=>{e.stopPropagation();
+       if(timerOn(cur)){
+         const p=prompt("Which page did you reach? Leave it empty to keep the bookmark where it is.",cur.progress||"");
+         if(p===null)return;
+         quickEdit(bk=>timerStop(bk,p));
+       }else quickEdit(bk=>timerStart(bk));};
+     if(timerOn(cur)){const tk=setInterval(()=>{if(!tb.isConnected||!cur||!timerOn(cur)){clearInterval(tk);return;}tb.textContent="⏹ "+secsSay(timerSecs(cur));},1000);}
+     timerSaid="";   /* said once, in the draw just done */
+   }}
   /* the loan line — see LOANS; quickEdit redraws the page */
   qa("[data-loan]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
