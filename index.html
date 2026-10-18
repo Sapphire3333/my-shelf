@@ -8464,7 +8464,10 @@ async function liftUnanimousGenres(){
     const seen=new Set(own.map(g=>String(g).trim().toLowerCase()));
     b.genres=own.concat(voice.filter(g=>!seen.has(String(g).trim().toLowerCase())));
     (b.entries||[]).forEach(en=>{en.genres=[];});
-    touchBook(b);
+    /* housekeeping, so the sync clock only — see TWO CLOCKS. touchBook set
+       `edited` too, and every collection lifted after a pull jumped to the top
+       of Recently edited with nothing in What changed */
+    b.modified=nextMod(b);
     try{await dbPut("books",b);touchedIds.push(b.id);}catch(e){}
     if(typeof cur!=="undefined"&&cur&&cur.id===b.id)rebaseOpenBook(b.id);
   }
@@ -9638,7 +9641,7 @@ const gartCache=new Map();
 let libArt=[],libArtMode=false;
 const libArtCache=new Map();
 const libArtKey=id=>"__libart|"+id;
-function saveLibArt(){dbPut("meta",{k:"libArt",v:libArt});enqueue({kind:"meta",key:"libArt"});}
+function saveLibArt(){dbPut("meta",{k:"libArt",v:libArt});enqueue({kind:"meta",key:"libArt"});touchMeta("libArt");}
 /* A loose picture ties itself to a heading by its "kind|Label" key — and no
    rename or delete of the heading ever touched the tie, so the picture stopped
    folding with its group and its label went on showing the old name. */
@@ -9800,8 +9803,15 @@ const SYNC={supa:null,user:null,on:false,queue:[],
      that should have gone to Recently deleted was silently skipped. This map
      only feeds the `modified` stamp, so the next edit still outranks the held
      version; it is deliberately not persisted, because after a reload the
-     pending upload finds the honest `seen` and bins the copy itself. */
-  held:{}};
+     pending upload finds the honest `seen` and bins the copy itself.
+     ONE NAME, ONE THING: the flag for "sync is set up but the syncing
+     library hasn't loaded" is `onHold`, below. It was once called `held`
+     too, and initSync's `SYNC.held=false` on every start replaced this map
+     with a boolean — property writes on `false` vanish without an error, so
+     seenFloor never saw a held-back version and the protection above was
+     off for every visit. */
+  held:{},
+  onHold:false};
 /* the floor a fresh `modified` stamp must clear — everything this device has
    seen from the cloud, absorbed or not */
 const seenFloor=id=>Math.max(SYNC.seen[id]||0,SYNC.held[id]||0);
@@ -10111,11 +10121,30 @@ async function runOp(op){
        next colour edit overwrote the other device's. So the cloud's row is
        read and each name keeps the later of the two dates. Only what goes UP
        is joined: this device's own record still says what IT has taken. */
-    if((op.key==="metaTimes"||op.key==="metaDel"||op.key==="metaAlive")&&value&&typeof value==="object"){
+    if((op.key==="metaTimes"||op.key==="metaDel"||op.key==="metaAlive"||op.key==="deletions")&&value&&typeof value==="object"){
       const {data:row,error:re}=await s.from("meta").select("value").eq("user_id",uid).eq("key",op.key).maybeSingle();
       if(re)throw re;
       const cv=(row&&row.value&&typeof row.value==="object")?row.value:{},joined=Object.assign({},cv);
       for(const k in value)joined[k]=Math.max(+cv[k]||0,+value[k]||0);
+      value=joined;
+    }
+    /* ---- A DELETE MUST NOT BE UNDONE BY SOMEONE WHO NEVER SAW IT ----
+       `deletions` (above), the bin's list and the tag list went up whole too.
+       A device that had not pulled since the other one deleted a book sent up
+       its own list without that delete, the cloud row lost it, and the next
+       pull here found the book missing from the cloud with no record of why —
+       so it uploaded it again, alive, to every device. The bin's entries are
+       joined by the newer `at` (a `gone` mark included, which is how deleted
+       for good travels); the tag list keeps every word either side knows,
+       minus the ones retired (metaGone), the rule its pull already keeps.
+       A restore removes its bin entry only here; the cloud's stale copy is
+       swept by every pull, as before (binLive, below). */
+    if((op.key==="trashCloud"||op.key==="kwList")&&value&&typeof value==="object"){
+      const {data:row,error:re}=await s.from("meta").select("value").eq("user_id",uid).eq("key",op.key).maybeSingle();
+      if(re)throw re;
+      const cv=(row&&row.value&&typeof row.value==="object")?row.value:{},joined=Object.assign({},cv);
+      if(op.key==="kwList"){for(const k in value)joined[k]=value[k];for(const k in joined)if(metaGone("kw:"+k))delete joined[k];}
+      else for(const k in value){const l=value[k],c=joined[k];if(!c||((l&&l.at)||0)>=((c&&c.at)||0))joined[k]=l;}
       value=joined;
     }
     /* ┌─ THE GAME GOES UP JOINED, NOT WHOLE ─────────────────────────────────┐
@@ -10318,8 +10347,16 @@ async function pullAll(){
               if(gone("fandom:"+f))continue;
               fandoms[f]=[...new Set([...(rv[f]||[]),...(fandoms[f]||[])])];
             }}
-          else if(row.key==="groupArt"){const rv=row.value||{};
-            for(const k in rv)if(!groupArt[k]&&!gone("gart:"+k))groupArt[k]=rv[k];}
+          /* ---- A CHANGED PICTURE IS NEWER, NOT ONLY ANOTHER ----
+             These two joined by adding what this device lacked, so a heading
+             picture replaced, refocused or resized on the other device, or a
+             Library picture moved, resized or regrouped there, never arrived:
+             the key was already here, holding the old one. Their saves stamp
+             metaTimes now, and the newer side's copy is taken whole, keeping
+             anything only this device has that was not taken away. */
+          else if(row.key==="groupArt"){
+            if(cloudNewer("groupArt"))groupArt=takeWhole(row.value,groupArt,"gart:");
+            else{const rv=row.value||{};for(const k in rv)if(!groupArt[k]&&!gone("gart:"+k))groupArt[k]=rv[k];}}
           else if(row.key==="kwColors"){
             if(cloudNewer("kwColors"))kwColors=takeWhole(row.value,kwColors,"kw:");
             else{const rv=row.value||{};for(const k in rv)if(!kwColors[k]&&!gone("kw:"+k))kwColors[k]=rv[k];}}
@@ -10358,8 +10395,11 @@ async function pullAll(){
               dayLine={h:parseInt(v.h)||0,tz:String(v.tz||"")};
               dbPut("meta",{k:"dayline",v:{h:dayLineH(),tz:dayLine.tz}});
             }}
-          else if(row.key==="libArt"){const have=new Set(libArt.map(a=>a.id));
-            (row.value||[]).forEach(a=>{if(a&&a.id&&!have.has(a.id)&&!gone("libart:"+a.id))libArt.push(a);});}
+          else if(row.key==="libArt"){
+            if(cloudNewer("libArt")){const rv=(row.value||[]).filter(a=>a&&a.id&&!gone("libart:"+a.id)),there=new Set(rv.map(a=>a.id));
+              libArt=rv.concat(libArt.filter(a=>a&&a.id&&!there.has(a.id)&&!gone("libart:"+a.id)));}
+            else{const have=new Set(libArt.map(a=>a.id));
+              (row.value||[]).forEach(a=>{if(a&&a.id&&!have.has(a.id)&&!gone("libart:"+a.id))libArt.push(a);});}}
           else if(row.key==="kwCats"){
             if(cloudNewer("kwCats"))kwCats=takeWhole(row.value,kwCats,"kw:");
             else{const rv=row.value||{};for(const k in rv)if(!kwCats[k]&&!gone("kw:"+k))kwCats[k]=rv[k];}}
@@ -10437,6 +10477,10 @@ async function pullAll(){
         for(const k in rTimes)metaTimes[k]=Math.max(metaTimes[k]||0,rTimes[k]);
         dbPut("meta",{k:"metaTimes",v:metaTimes});
         dbPut("meta",{k:"metaDel",v:metaDel});dbPut("meta",{k:"metaAlive",v:metaAlive});dbPut("meta",{k:"kwColors",v:kwColors});dbPut("meta",{k:"trashCloud",v:trashCloud});
+        /* the tag list was joined above in memory only, so a word retired on
+           the other device came back here at the next start, and one it added
+           went missing until the next pull */
+        dbPut("meta",{k:"kwList",v:kwList});
         /* Our side of the four newcomers goes up whenever it says something
            the cloud's copy doesn't — including the very first time, when there
            is no cloud copy at all. Written to disk BEFORE it is queued: the
@@ -10721,7 +10765,7 @@ async function initSync(){
     /* the next time the device says it is back online, the start is tried again */
     if(!window.supabase&&!SYNC.libRetry){
       SYNC.libRetry=true;
-      window.addEventListener("online",()=>{SYNC.libRetry=false;if(SYNC.held)initSync();},{once:true});
+      window.addEventListener("online",()=>{SYNC.libRetry=false;if(SYNC.onHold)initSync();},{once:true});
     }
   }
   /* ┌─ SET UP BUT HELD: NO LIBRARY, AND EVERY EDIT STILL QUEUED ──────────────┐
@@ -10738,12 +10782,12 @@ async function initSync(){
      │ or the next start, brings the library and the queue goes up.            │
      └──────────────────────────────────────────────────────────────────────────┘ */
   if(!syncConfigured()){
-    if(hcSettings()){SYNC.on=true;SYNC.held=true;setSync(navigator.onLine?"error":"offline");render();return;}
+    if(hcSettings()){SYNC.on=true;SYNC.onHold=true;setSync(navigator.onLine?"error":"offline");render();return;}
     SYNC.on=false;render();return;
   }
   try{SYNC.supa=window.supabase.createClient(CFG.url,CFG.anonKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});}
   catch(e){console.warn("[shelf] supabase init failed",e);SYNC.on=false;render();return;}
-  SYNC.held=false;SYNC.libErr="";SYNC.on=true;
+  SYNC.onHold=false;SYNC.libErr="";SYNC.on=true;
   (async()=>{let per="";try{if(navigator.storage&&navigator.storage.persisted)per=(await navigator.storage.persisted())?", storage marked persistent":", storage NOT marked persistent (the browser may clear it)";}catch(e){}
     authLog("boot",(authTokenHere()?"a session was kept in this browser":"NO session in this browser's storage")+", "+(navigator.onLine?"online":"offline")+per);})();
   window.addEventListener("online",()=>{forgetMissingCovers();setSync("syncing");flushQueue().then(pullAll);});
@@ -11006,6 +11050,14 @@ const META_INTO={
   trashCloud:v=>{trashCloud=v||{};},
   deletions:v=>{deletions=v||{};},
   seenMod:v=>{SYNC.seen=v||{};},
+  /* three more two tabs lost for each other: the hour a day begins and the
+     year's goal (the other tab filed a 1am finish on the wrong day, and its
+     pull then thought itself up to date), and the tag list, which the other
+     tab's next save wrote back whole over a word just added here */
+  dayline:v=>{if(v&&typeof v==="object")dayLine={h:parseInt(v.h)||0,tz:String(v.tz||"")};},
+  goal:v=>{settings.goal=(v===undefined||v===null)?"":v;},
+  kwList:v=>{kwList=v||{};},
+  snapIndex:v=>{if(Array.isArray(v))snapIdx=v;},
   /* the queue is joined, never taken: an op of ours that has not been written
      down yet is not the other tab's to drop, and dropping them is precisely
      what two tabs used to do to each other */
@@ -12294,6 +12346,10 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-18.28",lines:[
+    "<b>🔄 Your two devices keep what each one did.</b> A book deleted on one no longer comes back because the other hadn't synced yet — the same for Recently deleted and your tags, and a tag you retire stays retired after a restart. A picture above a genre heading, or one on the Library page, now reaches your other device when you change, move or resize it.",
+    "<b>↶ Undo takes back only its own change.</b> If your other device has added to the book since — a quote, a page — that stays. If it changed the very thing you are undoing, the copy being replaced waits in Recently deleted, marked “replaced by ↶ Undo”.",
+    "<b>And smaller things that went missing between devices:</b> a pick you take off the kept list stays off, keeping a dare can no longer pay it twice, a pack opened on both screens settles on one set of cards, the day's game wins from both devices add up, and the streak's one forgiven day a week is one a week again. With the app open in two windows, the start of your day, your goal and your backups now stay in step between them."]},
   {v:"2026-10-18.27",go:["tab:library"],lines:[
     "<b>❝ Keep a line you're reading.</b> In 📖 Read it here, select some words and ❝ Keep as a quote appears at the foot: it files them among the book's quotes, dated today, with the page they were on — p. 112, or a percent where the book has no page count — the way a photographed page does.",
     "<b>⏱ And the reader keeps the time for you.</b> While it is open, the time you spend reading is counted — only while it is showing and you are moving through it, so a reader left open on the table doesn't read for you — and shown in the foot. When you close it, or leave the app, the sitting goes under the book's bar as a reading session, from the page you started on to the page you reached, with the pages an hour. If you started ⏱ yourself for that book, that clock is the one that counts. That finishes the reader."]},
@@ -14282,7 +14338,9 @@ function repairGroupArt(){
   if(moved)saveGroupArt();
   return moved;
 }
-function saveGroupArt(){dbPut("meta",{k:"groupArt",v:groupArt});enqueue({kind:"meta",key:"groupArt"});}
+/* stamped, so the pull can tell a newer copy from an older one — see A
+   CHANGED PICTURE IS NEWER, NOT ONLY ANOTHER in pullAll */
+function saveGroupArt(){dbPut("meta",{k:"groupArt",v:groupArt});enqueue({kind:"meta",key:"groupArt"});touchMeta("groupArt");}
 async function setGroupArt(key,file,maxDim){
   if(!file||!file.type.startsWith("image/"))return false;
   let data;try{data=await compressImage(file,maxDim||2000,.88);}catch(e){picFail(e,"That image couldn't be read.");return false;}
@@ -15651,7 +15709,32 @@ async function applyOp(op,inv,quiet){
     const body=op.t==="del"?(inv?op.body:null):(inv?op.before:op.after);
     const id=op.t==="del"?op.body.id:op.id;
     if(body){
-      const clone=JSON.parse(JSON.stringify(body));
+      let clone=JSON.parse(JSON.stringify(body));
+      /* ---- AN UNDO TAKES BACK ITS OWN CHANGE, NOT EVERYONE ELSE'S ----
+         The step holds the whole book as it was before and after, and writing
+         `before` back whole also wrote back everything ELSE as it stood then.
+         Mark a book finished here, let the other device add three quotes to it,
+         pull them, press ↶ — and the quotes were gone on both devices, with
+         nothing in Recently deleted. Nothing changed since the step (the usual
+         case: an undo straight after the edit) still restores the copy whole.
+         Once the book has moved on, only the fields this step changed go back,
+         onto the book as it stands now; and where one of THOSE fields has been
+         changed again since, the copy being replaced waits in Recently deleted
+         ("replaced by ↶ Undo"), so nothing is lost without a trace. */
+      const live=op.t==="book"&&op.before&&op.after?books.find(x=>x.id===id):null;
+      if(live){
+        const prior=inv?op.after:op.before,SKIP={modified:1,edited:1},same=(x,y)=>JSON.stringify(x)===JSON.stringify(y);
+        const keys=[...new Set([...Object.keys(op.before),...Object.keys(op.after),...Object.keys(live)])].filter(k=>!SKIP[k]);
+        const moved=keys.filter(k=>!same(op.before[k],op.after[k]));
+        const since=keys.filter(k=>!same(live[k],prior[k]));
+        if(since.length){
+          clone=JSON.parse(JSON.stringify(live));
+          moved.forEach(k=>{if(body[k]===undefined)delete clone[k];else clone[k]=JSON.parse(JSON.stringify(body[k]));});
+          if(since.some(k=>moved.includes(k)))
+            try{await dbPut("trash",{id:id+"~undo"+(live.modified||0),at:Date.now(),conflict:true,why:"undo",
+              book:JSON.parse(JSON.stringify(live)),cover:null,images:{}});countTrash();}catch(e){}
+        }
+      }
       /* stamped as edited-now, same as restoreTrash: an undo carrying its old time
          would lose the sync race to the version it undid — the other device still
          holds that newer copy and would quietly put it back */
@@ -17446,7 +17529,7 @@ function coverInner(b,withAuthor){
 }
 /* Syncing is on, we are online, and the signed-in session has not landed yet —
    so a picture that is not on this device may still be in the cloud, unasked. */
-const coversStillComing=()=>SYNC.on&&!SYNC.held&&!SYNC.user&&navigator.onLine;
+const coversStillComing=()=>SYNC.on&&!SYNC.onHold&&!SYNC.user&&navigator.onLine;
 /* Once the session does land, the "no cover" answers given during that gap were
    never real answers. Forget them so the next draw asks again. */
 function forgetMissingCovers(){
@@ -22494,6 +22577,7 @@ function achToast(r,t,isXp){
    missed day a week — their answer — spent automatically and remembered by
    the week it was spent in. */
 let streaks=null,streaksTimer=0;
+const weekNum=k=>{const m=/^(\d{4})-W(\d{1,2})$/.exec(String(k||""));return m?(+m[1])*100+(+m[2]):0;};
 function weekKeyOf(day){
   const d=new Date(day+"T12:00");
   const th=new Date(d);th.setDate(d.getDate()+(4-((d.getDay()+6)%7+1)));
@@ -22581,7 +22665,11 @@ function mergeStreaks(rv){
     });
     l.cur=cur;l.last=last;
     l.best=Math.max(l.best||0,r.best||0,calc.best,cur);
-    if(r.grace&&(!l.grace||r.grace>l.grace))l.grace=r.grace;
+    /* the later WEEK, compared as numbers: weekKeyOf writes "2026-W5", which
+       sorts after "2026-W42" as text, so a forgiveness spent in week 5 beat
+       one spent in week 42 and a second missed day was forgiven again after
+       every sync, through weeks 10 to 49 */
+    if(r.grace&&(!l.grace||weekNum(r.grace)>weekNum(l.grace)))l.grace=r.grace;
   });
   const changed=JSON.stringify(streaks)!==before;
   if(changed)dbPut("meta",{k:"streaks",v:streaks}).catch(()=>{});
@@ -25078,14 +25166,24 @@ function wireQuestCards(m){
    const pk=q("#qpKeep",m);if(pk)pk.onclick=()=>{
      quests.picks=quests.picks||[];
      const d=quests.bookCh;
-     if(d&&!quests.picks.some(p=>p.id===d.id)&&quests.picks.filter(p=>!p.done).length<keptCap())
+     /* a book kept and read before is kept afresh on a re-read — the old,
+        finished entry was what made this throw the dare away unkept */
+     if(d&&!quests.picks.some(p=>p.id===d.id&&!p.done)&&quests.picks.filter(p=>!p.done).length<keptCap()){
+       quests.picks=quests.picks.filter(p=>p.id!==d.id);
        quests.picks.unshift({id:d.id,title:d.title,at:Date.now(),xp:d.xp||100,dare:true,wasDone:false,
-         oh:d.oh||ohNoBase(books.find(x=>x.id===d.id))});
+         oh:d.oh||ohNoBase(books.find(x=>x.id===d.id))});}
      if(quests.picks.length>40)quests.picks.length=40;
-     quests.bookCh=null;questDrawBook();pickOpen=true;questSave();renderChallenges();
+     /* closed by its draw, like ✕ Give it back — set to null bare, the other
+        device's copy of the same dare came back live beside the kept one, and
+        finishing the book paid it twice */
+     closeSlot("bookCh");questDrawBook();pickOpen=true;questSave();renderChallenges();
    };
    const pf=q("#qpFold",m);if(pf)pf.onclick=()=>{pickOpen=!pickOpen;renderChallenges();};
-   qa("[data-qpdrop]",m).forEach(b=>b.onclick=()=>{quests.picks.splice(+b.dataset.qpdrop,1);questSave();renderChallenges();});
+   /* taken off with a mark — a bare splice came straight back from the other
+      device's copy, still blocking that book from the dare — see mergeQuests */
+   qa("[data-qpdrop]",m).forEach(b=>b.onclick=()=>{const p=quests.picks[+b.dataset.qpdrop];if(!p)return;
+     quests.picksGone=Object.assign({},quests.picksGone,{[p.id]:Date.now()});
+     quests.picks.splice(+b.dataset.qpdrop,1);questSave();renderChallenges();});
    /* the errand's three: draw, draw a different KIND, put down. None of them
       costs anything — the same footing the dare and the pick stand on. */
    /* the guessing game. Deal, answer, skip — an answer is one press and cannot
@@ -25391,8 +25489,13 @@ function mergeQuests(rv){
   if(rv.story&&rv.story.since){if(!l.story||!l.story.since||rv.story.since<l.story.since)l.story=Object.assign({},l.story||{},{since:rv.story.since,at:rv.story.at||0});
     l.story.seen=Math.max(l.story.seen||1,rv.story.seen||1);}
   /* booster packs granted and opened, unions by id — see 🎴 BOOSTER PACKS */
+  /* one pack opened on both devices before they met holds two different
+     five-card pulls under one id, and "first seen" kept each device's own —
+     two albums for good. The earlier opening wins on both sides (and, on a
+     tie, the same one on both), so they come back to one album */
   ["packs","pulls","trades"].forEach(k=>{if(!l[k]&&!rv[k])return;const by={};
-    [...(l[k]||[]),...(rv[k]||[])].forEach(p=>{if(p&&p.id&&!by[p.id])by[p.id]=p;});
+    [...(l[k]||[]),...(rv[k]||[])].forEach(p=>{if(!p||!p.id)return;const o=by[p.id];
+      if(!o||(p.at||0)<(o.at||0)||((p.at||0)===(o.at||0)&&JSON.stringify(p)<JSON.stringify(o)))by[p.id]=p;});
     l[k]=Object.values(by).sort((a,b)=>(a.at||0)-(b.at||0));});
   /* the week's work, joined the way the day's three are: a later week wins
      outright, and the same week takes the FURTHER of the two counts rather
@@ -25468,7 +25571,12 @@ function mergeQuests(rv){
         again, and paid again, on the other */
      else if((p.at||0)===(by[p.id].at||0)&&p.done&&!by[p.id].done)by[p.id]=p;
    });
-   l.picks=Object.values(by).sort((a,b)=>(b.at||0)-(a.at||0)).slice(0,40);}
+   /* ✕ marks a pick gone by book and time; a pick kept AFTER the mark is a
+      new keep and stands */
+   const pg=Object.assign({},l.picksGone||{});
+   for(const k in (rv.picksGone||{}))pg[k]=Math.max(pg[k]||0,+rv.picksGone[k]||0);
+   if(Object.keys(pg).length)l.picksGone=pg;
+   l.picks=Object.values(by).filter(p=>!((pg[p.id]||0)>=(p.at||0))).sort((a,b)=>(b.at||0)-(a.at||0)).slice(0,40);}
   /* the year's twelve are drawn from the year and the round, so both devices
      hold the same twelve and it is the ticks that have to meet. A later round
      is a set the other device has already moved on to, and wins outright with
@@ -25778,9 +25886,18 @@ const gameOfDay=day=>{const d=day||questToday();
   let list=GAMES.filter(g=>!g[4]||d>=g[4]);
   if(d>="2026-10-01"){const ok=list.filter(g=>gamePlayable(g[0]));if(ok.length)list=ok;}
   return list[strHash("game|"+d)%list.length];};
+/* The day's tally is one device's number, and the merge can only keep the
+   higher of two: three wins here and two on the phone before they met read
+   "3 of 5". Every win is also a line in the ledger, stamped, from both sides
+   — so today's count is whichever says more, the tally or the ledger's lines
+   from today (never the sum, which would count this device's wins twice). */
+const ledToday=pre=>{const led=(quests&&quests.led)||{},day=questToday();let n=0;
+  for(const key in led)if(key.indexOf(pre)===0){const e=led[key];if(e&&shelfDayOf(e[1]||0)===day)n++;}return n;};
 const gameWonToday=k=>{
   const d=quests&&quests.daily;
-  return (d&&d.day===questToday()&&d.won&&d.won[k])||0;
+  const tally=(d&&d.day===questToday()&&d.won&&d.won[k])||0;
+  const row=GAMES.find(g=>g[0]===k),pre=row&&(GAME_WIN_KEYS[row[1]]||LED_COUNTS[row[1]]);
+  return Math.max(tally,pre?ledToday(pre):0);
 };
 /* ---- THE ARCADE'S DAY IS ANY GAME'S DAY ----
    "Win 5 of the arcade" counted only the sixteen arcade games, but 🕹 Games
@@ -35320,7 +35437,7 @@ function roadCheck(){
 function roadDiag(){
   const c=roadCfg(),R=c&&roadOf(c.k),{pages,km}=roadKm();
   const waiting=SYNC.queue.length,game=SYNC.queue.some(o=>o.kind==="meta"&&o.key==="quests");
-  const sync=!SYNC.on?"off — this device only":SYNC.held?`on hold, waiting for the syncing library — ${waiting} change${waiting===1?"":"s"} kept here`:!SYNC.user?"not signed in"
+  const sync=!SYNC.on?"off — this device only":SYNC.onHold?`on hold, waiting for the syncing library — ${waiting} change${waiting===1?"":"s"} kept here`:!SYNC.user?"not signed in"
     :(SYNC.status||"?")+(waiting?`, ${waiting} change${waiting===1?"":"s"} waiting to go up${game?" (the game's among them)":""}`:"");
   const err=SYNC.lastErr?` — last trouble ${new Date(SYNC.lastErr.at).toLocaleString()}: ${SYNC.lastErr.msg}`:"";
   const at=c&&c.at?new Date(c.at).toLocaleString():(c&&c.from)||"";
@@ -36928,7 +37045,7 @@ function tuneDiagnostics(){
     "Screen "+realWidth()+" css px, text "+(settings.fontScale||100)+"% — the page lays out for "
       +Math.round(realWidth()/((settings.fontScale||100)/100))+", bucket "
       +(document.documentElement.getAttribute("data-vw")||"?"),
-    SYNC.held?("Syncing on hold — the syncing library "+(SYNC.libErr||"isn't here yet")+". Changes are kept here and go up once it arrives")
+    SYNC.onHold?("Syncing on hold — the syncing library "+(SYNC.libErr||"isn't here yet")+". Changes are kept here and go up once it arrives")
     :SYNC.on?("Syncing on"+(SYNC.user?", signed in as "+(SYNC.user.email||"?"):", not signed in"))
       :"Syncing off — this device only"
         /* the one reason for it that is nobody's choice, and used to be silent */
@@ -40994,7 +41111,7 @@ async function refreshTrash(){
     const left=Math.max(0,TRASH_DAYS-Math.floor((Date.now()-(t.at||0))/864e5));
     return `<div class="snap">
       <div><div class="when">${esc((t.book&&t.book.title)||"Untitled")}${t.conflict?" <span style='font-weight:400;color:var(--faint)'>· older version</span>":""}</div>
-        <div class="meta">${esc((t.book&&t.book.author)||"Unknown author")} · ${t.conflict?"overwritten by an edit from another device":"deleted"} ${fmtWhen(t.at)} · ${left} day${left===1?"":"s"} left${t.elsewhere?" · from another device":""}</div></div>
+        <div class="meta">${esc((t.book&&t.book.author)||"Unknown author")} · ${t.conflict?(t.why==="undo"?"replaced by ↶ Undo":"overwritten by an edit from another device"):"deleted"} ${fmtWhen(t.at)} · ${left} day${left===1?"":"s"} left${t.elsewhere?" · from another device":""}</div></div>
       <div class="sp">
         <button class="btn" data-tr="${t.id}" ${t.conflict?'title="Swap it back in — the version it replaces waits here in its turn"':""}>Put back</button>
         <button class="btn danger" data-tx="${t.id}" title="Delete for good">✕</button>
@@ -56527,23 +56644,39 @@ async function snapIndex(){
   dbPut("meta",{k:"snapIndex",v:snapIdx});
   return snapIdx;
 }
-function saveSnapIndex(){dbPut("meta",{k:"snapIndex",v:snapIdx||[]});}
+function saveSnapIndex(){return dbPut("meta",{k:"snapIndex",v:snapIdx||[]});}
+/* ---- TWO WINDOWS, ONE LIST OF BACKUPS ----
+   Each window kept the index it loaded and wrote its whole copy back on every
+   change, so with the installed app and a tab both open past a day, each
+   one's daily backup dropped the other's out of the list: still in the store,
+   never offered, never pruned, never counted. Before any change the index is
+   read afresh, and a backup in the store that the index has lost is taken
+   back into it. */
+async function snapIndexFresh(){
+  const rec=await dbGet("meta","snapIndex");
+  let idx=(rec&&Array.isArray(rec.v))?rec.v.slice():(await snapIndex()).slice();
+  const keys=(await dbAllKeys("snapshots")).map(String),there=new Set(keys),have=new Set(idx.map(x=>String(x.id)));
+  for(const k of keys)if(!have.has(k)){const x=await dbGet("snapshots",k);
+    if(x)idx.push({id:x.id,at:x.at,auto:!!x.auto,size:x.size||0,nbooks:x.nbooks||0});}
+  return snapIdx=idx.filter(x=>there.has(String(x.id)));
+}
 async function dropSnapshot(id){
   await dbDel("snapshots",id);
-  await snapIndex();snapIdx=snapIdx.filter(x=>x.id!==id);saveSnapIndex();
+  await snapIndexFresh();snapIdx=snapIdx.filter(x=>x.id!==id);await saveSnapIndex();
 }
 async function makeSnapshot(auto){
   const json=JSON.stringify(await buildBackup());
   const snap={id:uid(),at:Date.now(),auto:!!auto,size:json.length,nbooks:books.length,data:json};
+  /* read before the new one is stored, so it isn't taken for a lost one and read back whole */
+  await snapIndexFresh();
   await dbPut("snapshots",snap);
-  await snapIndex();
   snapIdx.push({id:snap.id,at:snap.at,auto:snap.auto,size:snap.size,nbooks:snap.nbooks});
-  saveSnapIndex();
+  await saveSnapIndex();
   await pruneSnapshots();
   return snap;
 }
 async function pruneSnapshots(){
-  const autos=(await snapIndex()).filter(s=>s.auto).sort((a,b)=>b.at-a.at);
+  const autos=(await snapIndexFresh()).filter(s=>s.auto).sort((a,b)=>b.at-a.at);
   for(const s of autos.slice(Math.max(1,settings.keepAuto|0)))await dropSnapshot(s.id);
 }
 async function maybeAutoBackup(){
