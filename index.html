@@ -7832,8 +7832,13 @@ function markEntStatus(coll,en,what){
   else if(what==="unowned"){en.unowned=!en.unowned;return true;}
   else{en.dnf=false;en.hold=false;en.status=what;
     if(what==="reading"||what==="finished")en.unowned=false;
-    if(what==="finished"&&!finWas){finFxSoon();
-      try{packGrant("fin:"+coll.id+"|"+en.id,"finish","“"+(en.title||"Untitled")+"”");}catch(e){}}
+    /* a tale is a note about the tale, not a book finished — see A PIECE OF A
+       VOLUME IS NEVER A THING OF ITS OWN — so a split volume pays its one pack
+       (under the volume's own id) when the tale that completes it is marked */
+    if(what==="finished"&&!finWas){
+      const split=isSplitTale(coll,en),h=markHolder(coll,en);
+      if(!split||volState(coll,h).status==="finished"){finFxSoon();
+        try{packGrant("fin:"+coll.id+"|"+(split?h.id:en.id),"finish","“"+((split?h:en).title||"Untitled")+"”");}catch(e){}}}
     if(what==="finished"){
       if(!isSplitTale(coll,en))finishProgress(en);
       /* a tale of a split volume moves no bookmark of its own — see ONE BOOK,
@@ -12362,6 +12367,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-18.31",lines:[
+    "<b>📥 Folding a book into a collection keeps its quotes and what you liked.</b> They go onto the collection's own lists, each quote still saying which story it came from — before, they stayed behind on the old page and were gone a month later. Before a fold, the question now names anything a story can't hold (a loan, a sealed letter, questions for later, a file to read, a bookcase place), which stays with the old page in Recently deleted. A new collection made from books takes only the tags they all share, plus a format, language, source or setting they all agree on.",
+    "<b>⤴ Out again, the other way:</b> a story given its own page keeps ⌛ Don't have it yet, and takes the collection's format, language, source and setting.",
+    "<b>✂ Split says how the new tales start.</b> In a collection that counts unmarked stories as read, tales cut from an unmarked volume used to start out read, so marking the first one finished seemed to finish the others too. The panel now says what they'll be and why, and offers 🔖 Not read yet. ✎ Edit's story menus all update together when one tale changes, and a split volume pays one booster pack, when its last tale is done.",
+    "<b>And around collections:</b> a ★ you give a collection on its page stays yours instead of being replaced by its stories' average at the next start; ⏭ Up next on a collection starts its next story you have; the missing books you paste into a collection arrive ⌛, as Hardcover's do, and Hardcover's list no longer offers books already inside a collection; “Make it a genre” reaches stories that have genres of their own; and 🔎 Auto-fill on a story fills in that story's author, not the whole collection's. A book made into a collection still shows its owl's answers, its letter, its questions and its file to read."]},
   {v:"2026-10-18.30",go:["set:how:#ocrExtra"],lines:[
     "<b>🛤 The long road is one road now: around the world, London to London, again and again.</b> Every page you read walks you along it at ten kilometres a page, every city pays +20 each lap and every lap home +100 more. If you were on one of the roads that arrived and stopped, Challenges → 📖 Reading offers Set off again — your XP from it stays.",
     "<b>📷 Photos of a page read in the book's own language.</b> A photographed quote is read in English and in the language the book's Read in box names; a photographed cover in English and one more you choose in ⚙ Settings → How it works → 📷 Reading text in photos. If you photograph books in another language, pick it there once.",
@@ -17754,6 +17764,28 @@ async function hydrateCovers(root){
 /* pick the stage from a list — a single click was too easy to do by accident */
 async function setStatus(id,what){
   const b=books.find(x=>x.id===id);if(!b)return;
+  /* ---- 📖 START IT, ON A COLLECTION ----
+     A collection can stand in Up next, and "📖 Start it" (and the offer made
+     after a finish) asked it to be Reading now — which markStatus, rightly,
+     reads on a collection as "what an unmarked story means": nothing started,
+     the queue kept it, the offer came back after every finish, and on a set
+     marked ✓ Read it turned every unmarked story unread. Starting a collection
+     starts its next story you have — the one Continue with? would name — and
+     takes the collection out of the queue. */
+  if(what==="reading"&&collRow(b)){
+    const nx=collWholes(b).find(en=>entStatusOf(b,en)!=="finished"&&!entDnfOf(b,en)&&!entUnownedOf(b,en));
+    if(!nx){alert(`Nothing in “${b.title||"this collection"}” is left to start — every story you have is read or set aside.`);stPickFor=null;paintStPick();return;}
+    const before=JSON.parse(JSON.stringify(b));
+    markEntStatus(b,nx,"reading");
+    if(inUpNext(b))delete b.upnext;
+    touchBook(b);
+    pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    await dbPut("books",b);
+    if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+    stPickFor=null;refreshShelfSub();renderMain();
+    sayIfAutoDated();
+    return;
+  }
   /* said no to starting it again — touch nothing, not even the edited-at stamp */
   /* declined the "start it again?" question — nothing changed, so nothing to
      rebuild. Only the little list goes away. */
@@ -17787,6 +17819,9 @@ async function setRating(id,n){
   /* a mark set by hand on a collection takes it off the average of its
      stories, the same rule the editor's own box follows */
   b.ratingOwn=isColl(b)&&b.rating!=null;
+  /* and taking it off hands the mark back to the stories' average now,
+     not at the next start-up (backfillCollRatings) */
+  if(isColl(b)&&b.rating==null)syncCollRating(b);
   touchBook(b);
   pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
   await dbPut("books",b);
@@ -18437,6 +18472,17 @@ async function entryToBook(coll,en){
      fills in where no dated reading answers for it */
   syncReads(nb);
   if(!nb.dateFinished)nb.dateFinished=String(en.dateFinished||"");
+  /* ⌛ goes with it, its own or the one its collection hands down
+     (entUnownedOf) — bookToEntry carries it in, and the way out dropped it,
+     so three volumes not yet bought came out as plain Want to read and joined
+     the dare and the pile. And what the collection says about all of its
+     books — the format, the language, who sent it, where it is set — goes
+     with each one, since a story says only what differs. */
+  if(entUnownedOf(coll,en)&&nb.status!=="finished"&&nb.status!=="reading")nb.unowned=true;
+  if(fmtOf(coll)){nb.format=coll.format;if(coll.format==="audio"&&coll.audioMins&&!parseInt(nb.pages))nb.audioMins=coll.audioMins;}
+  if(langOf(coll))nb.lang=langOf(coll);
+  if(fromOf(coll))nb.from=fromOf(coll);
+  if(setInOf(coll).length)nb.setIn=setInOf(coll).slice();
   nb.modified=Date.now();
   /* its picture, copied to a cover of its own — its own where it has one, and
      the volume's where it was BORROWING one (covFrom), because a book has
@@ -18515,6 +18561,35 @@ async function retireBook(b){
        put the folded-away page back from its own Recently deleted */
     trashCloud[b.id]={at:Date.now(),book:JSON.parse(JSON.stringify(b))};saveTrashCloud();}
 }
+/* ---- WHAT A FOLDED BOOK BRINGS WITH IT, AND WHAT IT CANNOT ----
+   bookToEntry makes the story; the book's quotes and what you liked and
+   didn't live on the collection's own lists, so they were left on the old
+   page in Recently deleted and were gone with it thirty days later. They go
+   onto the collection now, each quote marked as having come FROM its story
+   (the source ⤴ Own book and ⤴ Unfold read to take them back out), with its
+   strength and its date. A story has nowhere to keep a loan, a sealed
+   letter, the owl's answers, questions for later, a file to read, a map, a
+   bookcase place or reading sessions, so foldLeftBehind names them in the
+   question before the fold, rather than saying everything carries over. */
+function foldCarry(coll,b,en){
+  const qs=b.quotes||[];
+  if(qs.length){const w=b.quotesW||[],at=b.quotesAt||[];
+    qs.forEach((qt,i)=>{if(!stripHtml(qt||"").trim())return;
+      const k=pushQuote(coll,qt,at[i]||"");
+      if(!at[i])coll.quotesAt[k]="";
+      coll.quotesFrom[k]=en.id;
+      if(w[i]!=null)coll.quotesW[k]=w[i];});}
+  ["pros","cons","meh"].forEach(k=>{const list=b[k]||[],w=b[k+"W"]||[];
+    list.forEach((t,i)=>{if(!stripHtml(t||"").trim())return;
+      coll[k]=coll[k]||[];coll[k].push(t);const cw=listWArr(coll,k);if(w[i]!=null)cw[cw.length-1]=w[i];});});
+}
+function foldLeftBehind(list){
+  const has=f=>list.some(b=>b&&f(b));
+  const bits=[[b=>loanOf(b),"a loan"],[b=>b.letter,"a sealed letter"],[b=>b.owl,"the owl's answers"],
+    [b=>(b.quiz||[]).length,"questions for later"],[b=>b.readFile,"a file to read"],[b=>b.ownMap,"a map of its own"],
+    [b=>b.place,"a place on a bookcase"],[b=>(b.sessions||[]).length,"reading sessions"]].filter(([f])=>has(f)).map(([,t])=>t);
+  return bits.length?`\n\nStaying with the old page in Recently deleted, since a story has nowhere to keep them: ${bits.join(", ")}.`:"";
+}
 /* several books at once into a collection that already exists. The same two
    steps folding one book from inside a collection has always taken — become a
    story, then let the old page go to the bin — done for a ticked handful. */
@@ -18536,7 +18611,7 @@ async function foldIntoCollection(ids,coll){
     if(!b||isColl(b)||b.id===coll.id)continue;
     const was=JSON.parse(JSON.stringify(b));
     const {en}=await bookToEntry(b,coll.id,collDefault(coll),coll.author,coll.dnf,coll.keywords);
-    coll.entries.push(en);
+    coll.entries.push(en);foldCarry(coll,b,en);
     await retireBook(b);
     await noteFold(b,coll.id,en);
     /* after:null — retired to the bin by this press, the same shape ⤴ Unfold
@@ -18565,7 +18640,18 @@ async function makeCollectionFrom(ids,name,author){
   nb.author=author||sel[0].author||"";
   nb.kind=kindOf(sel[0]);
   nb.genres=[...new Set(sel.flatMap(b=>b.genres||[]))];
-  nb.keywords=[...new Set(sel.flatMap(b=>b.keywords||[]))].slice(0,20);
+  /* the tags EVERY book carries, not every tag any book carries: a story's
+     tags are added to its collection's (entKeywordsOf), so the union gave
+     each story every other book's tags */
+  {const lower=b=>new Set((b.keywords||[]).map(k=>String(k).toLowerCase()));const sets=sel.map(lower);
+   nb.keywords=(sel[0].keywords||[]).filter(k=>sets.every(st=>st.has(String(k).toLowerCase()))).slice(0,20);}
+  /* and what they all agree on about how, in what and from whom: a set of
+     audiobooks, read in one language, sent by one friend, set in one place */
+  {const one=f=>{const v=sel.map(f);return v.every(x=>x&&x===v[0])?v[0]:"";};
+   const fm=one(b=>fmtOf(b));if(fm)nb.format=fm;
+   const lg=one(b=>langOf(b));if(lg)nb.lang=lg;
+   const fr=one(b=>fromOf(b));if(fr)nb.from=fr;
+   const si=one(b=>setInOf(b).slice().sort().join("|"));if(si)nb.setIn=si.split("|");}
   nb.favorite=sel.some(b=>b.favorite);
   /* what a book left unmarked here means — all of them read makes it "read",
      anything else "not read yet"; see A COLLECTION IS ITS BOOKS */
@@ -18578,7 +18664,7 @@ async function makeCollectionFrom(ids,name,author){
   for(const b of sel){
     items.push({id:b.id,before:JSON.parse(JSON.stringify(b)),after:null});
     const en=(await bookToEntry(b,nb.id,nb.status,nb.author,nb.dnf,nb.keywords)).en;
-    nb.entries.push(en);folded.set(b.id,en);
+    nb.entries.push(en);foldCarry(nb,b,en);folded.set(b.id,en);
   }
   nb.modified=Date.now();
   await dbPut("books",nb);
@@ -19020,7 +19106,7 @@ function renderAuthorPanel(name){
     if(authSel.size<2)return;
     const nm=prompt("Name for the collection (its title on the shelf):",name?name+" — collection":"");
     if(nm==null||!nm.trim())return;
-    if(!confirm(`Fold ${authSel.size} books into “${nm.trim()}”?\n\nTheir own pages move to Recently deleted (Overview tab) — notes, ratings, pages and covers carry into the collection.`))return;
+    if(!confirm(`Fold ${authSel.size} books into “${nm.trim()}”?\n\nTheir own pages move to Recently deleted (on History) — notes, ratings, pages, covers, quotes and likes carry into the collection.${foldLeftBehind([...authSel].map(id=>books.find(b=>b.id===id)))}`))return;
     await new Promise(r=>finishSaveThen(r));   /* the same guard the merge has */
     const openId=view==="book"&&cur?cur.id:null;
     const nid=await makeCollectionFrom([...authSel],nm.trim(),name);
@@ -21211,7 +21297,7 @@ function renderLibrary(){
       const first=books.find(b=>b.id===ids[0]);
       const nm=prompt("Name for the collection (its title on the shelf):",(first&&first.author?first.author+" — ":"")+"collection");
       if(nm==null||!nm.trim())return;
-      if(!confirm(`Fold ${ids.length} book${ids.length===1?"":"s"} into “${nm.trim()}”?${skipped?`\n\n${skipped} collection${skipped===1?"":"s"} left alone.`:""}\n\nTheir own pages move to Recently deleted — notes, ratings, pages and covers carry into the collection.`))return;
+      if(!confirm(`Fold ${ids.length} book${ids.length===1?"":"s"} into “${nm.trim()}”?${skipped?`\n\n${skipped} collection${skipped===1?"":"s"} left alone.`:""}\n\nTheir own pages move to Recently deleted — notes, ratings, pages, covers, quotes and likes carry into the collection.${foldLeftBehind(ids.map(id=>books.find(b=>b.id===id)))}`))return;
       await makeCollectionFrom(ids,nm.trim(),first?first.author:"");
       libSel.clear();render();
     };
@@ -21252,7 +21338,7 @@ function renderLibrary(){
         se.oninput=()=>{iq=se.value;keepCaret(se,draw,()=>q("#intoQ",panel));};
         qa("[data-into2]",panel).forEach(btn=>btn.onclick=async()=>{
           const coll=books.find(x=>x.id===btn.dataset.into2);if(!coll)return;
-          if(!confirm(`Put ${ids.length} book${ids.length===1?"":"s"} inside “${coll.title||"Untitled"}”?\n\nEach keeps its rating, pages, cover, dates and writing. Their own pages move to Recently deleted, where they can be brought back for ${TRASH_DAYS} days.`))return;
+          if(!confirm(`Put ${ids.length} book${ids.length===1?"":"s"} inside “${coll.title||"Untitled"}”?\n\nEach keeps its rating, pages, cover, dates, writing, quotes and likes. Their own pages move to Recently deleted, where they can be brought back for ${TRASH_DAYS} days.${foldLeftBehind(ids.map(id=>books.find(b=>b.id===id)))}`))return;
           btn.disabled=true;
           const msg=q("#busyMsg");if(msg)msg.textContent=`Filing ${ids.length}…`;
           let n=0;
@@ -23692,8 +23778,14 @@ const LETTER_MONTHS=12;
 const OWL_QS=[["word","One word for it"],["hand","Who would you hand it to?"],["remember","What will you still remember in a year?"]];
 let owlOpen=null;   /* the book whose put-off card is open again, this visit */
 const owlCan=b=>!!b&&!b._story&&!isColl(b)&&statusOf(b)==="finished"&&!b.dnf;
+/* A book ticked into "a whole series as one shelf item" became a collection
+   still holding its owl answers, its letter, its questions and its file to
+   read — and every one of these lines said nothing for a collection, so they
+   were kept and could not be reached. A collection shows what it holds; it is
+   only never ASKED for new ones (owlCan, and quizCan's finished test). */
 function owlHtml(b){
-  if(!b||b._story||isColl(b))return "";
+  if(!b||b._story)return "";
+  if(isColl(b)&&!b.owl&&!(b.letter&&b.letter.text))return "";
   const a=b.owl,L=b.letter;
   if(a||(L&&L.text)){
     const lines=a?OWL_QS.filter(([k])=>a[k]).map(([k,l])=>`<span><b>${l.replace(/\?$/,"")}:</b> ${esc(a[k])}</span>`):[];
@@ -24231,7 +24323,7 @@ async function rdForget(){
   await quickEdit(bk=>{if(!bk.readFile)return false;delete bk.readFile;return true;});
 }
 function readerLineHtml(b){
-  if(!b||b._story||isColl(b))return "";
+  if(!b||b._story||(isColl(b)&&!b.readFile))return "";
   const f=rdFileOf(b),pick=`<input type="file" id="rdFile" accept=".epub,.html,.htm,.xhtml,.txt,application/epub+zip,text/html,text/plain" hidden>`;
   if(f){const pct=b.readPos?Math.round((+b.readPos.f||0)*100):0;
     return `<div class="vloan"><button class="btn smallbtn pri" id="rdOpen" title="Read it here, where you left off">📖 Read it here</button><span class="hint" style="margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${esc(f.name)}${pct?` · ${pct}%`:""}</span><button class="btn smallbtn" id="rdAdd" title="Read from another file instead">⤓ Another file</button><button class="btn smallbtn" id="rdForget" title="Forget the file — your place and the bookmark stay">✕</button>${pick}</div>`;}
@@ -24282,7 +24374,8 @@ async function rdSave(final,sitting){
   s.saved=f;
   const mut=bk=>{bk.readPos={f,at:Date.now()};
     const t=parseInt(bk.pages)||0;
-    if(statusOf(bk)==="reading"&&!bk.dnf){
+    /* a collection's place is its stories', never one number of its own */
+    if(statusOf(bk)==="reading"&&!bk.dnf&&!isColl(bk)){
       if(t){const p=Math.round(f*t);if(p>(parseInt(bk.progress)||0))setProgress(bk,p);}
       else{const pc=Math.round(f*100);if(pc>(parseInt(bk.pct)||0))setPct(bk,pc);}}
     if(secs>=TIMER_MIN_S&&secs<=TIMER_MAX_H*3600&&!timerOn(bk)){
@@ -33272,8 +33365,8 @@ const QZ_N=3,QZ_MONTHS=3,QZ_EACH=10,QZ_ALL=30;
 const quizOf=b=>Array.isArray(b&&b.quiz)?b.quiz.filter(x=>x&&x.id&&String(x.q||"").trim()):[];
 const quizCut=()=>{const d=new Date(todayStr()+"T12:00");d.setMonth(d.getMonth()-QZ_MONTHS);return dayKeyOf(d);};
 const quizReady=x=>String(x.at||"")<=quizCut();
-function quizOld(){return books.filter(b=>b&&!isColl(b)&&!b.apart).map(b=>({b,qs:quizOf(b).filter(quizReady)})).filter(x=>x.qs.length);}
-const quizCan=b=>!!b&&!b._story&&!isColl(b)&&((statusOf(b)==="finished"&&!b.dnf)||quizOf(b).length>0);
+function quizOld(){return books.filter(b=>b&&(!isColl(b)||quizOf(b).length)&&!b.apart).map(b=>({b,qs:quizOf(b).filter(quizReady)})).filter(x=>x.qs.length);}
+const quizCan=b=>!!b&&!b._story&&((!isColl(b)&&statusOf(b)==="finished"&&!b.dnf)||quizOf(b).length>0);
 function quizLineHtml(b){
   if(!quizCan(b))return "";
   const qs=quizOf(b),n=qs.length;
@@ -44535,6 +44628,14 @@ let editModesHold={id:null,fdTidy:false};
    mode, the panel and the unfolded list back exactly, and a trip anywhere
    else quietly tears the ticket up. */
 let panelReturn=null;
+/* "every story inside gets it" — but a story with genres of its own files
+   under those INSTEAD of its collection's (entGenresOf), so a genre put on
+   the collection never reached it, and the tag it came from was taken off:
+   the story the word was about ended with neither. Those stories take the
+   genre among their own. */
+function storiesTakeGenre(bk,gn){
+  (bk.entries||[]).forEach(en=>{if((en.genres||[]).length&&!en.genres.includes(gn))en.genres.push(gn);});
+}
 function chipMoveMenu(b,kind,name){
   const ens=(b.entries)||[];
   const isC=isColl(b)&&ens.length>1;
@@ -44597,6 +44698,7 @@ function chipMoveMenu(b,kind,name){
         bk.kwBreaks=(bk.kwBreaks||[]).filter(w=>w.toLowerCase()!==low);
         bk.genres=bk.genres||[];
         if(!bk.genres.includes(gn))bk.genres.push(gn);
+        storiesTakeGenre(bk,gn);
       });
     }else if(a==="off"){
       await quickEdit(bk=>{
@@ -44620,6 +44722,7 @@ function chipMoveMenu(b,kind,name){
       await quickEdit(bk=>{
         bk.genres=bk.genres||[];
         if(!bk.genres.includes(gn))bk.genres.push(gn);
+        storiesTakeGenre(bk,gn);
         (bk.entries||[]).forEach(en=>{
           if((en.keywords||[]).length)en.keywords=en.keywords.filter(w=>w.toLowerCase()!==low);
         });
@@ -46131,7 +46234,10 @@ function renderBookView(){
          collection's, so it says what it is instead. */
       if(gone&&gone.open){
         const done=doneReads(f.host).length;
-        if(f.host===bk){if(statusOf(bk)==="reading"&&!bk.dnf)bk.status=done?"finished":"want";}
+        /* not on a collection with stories: its `status` there means what an
+           unmarked story is, and rewriting it turned every unmarked story read
+           — the editor's own ✕ keeps the same guard (collRow) */
+        if(f.host===bk){if(!collRow(bk)&&statusOf(bk)==="reading"&&!bk.dnf)bk.status=done?"finished":"want";}
         else if(f.host.status==="reading")f.host.status=done?"finished":"want";
       }
       syncReads(f.host);});
@@ -46165,7 +46271,11 @@ function renderBookView(){
     e.stopPropagation();
     const v=x.dataset.vr;
     vRateOpen=false;
-    quickEdit(bk=>{bk.rating=v==="clear"?null:Number(v);});
+    /* on a collection a mark set by hand is its own (ratingOwn), the rule the
+       shelf and the editor keep — without it the stories' average wrote over
+       it at the next start; taking it off hands the mark back to the average */
+    quickEdit(bk=>{bk.rating=v==="clear"?null:Number(v);
+      if(isColl(bk)){bk.ratingOwn=bk.rating!=null;if(bk.rating==null)syncCollRating(bk);}});
     setTimeout(()=>{try{guessCheck();}catch(e){}},900);
   });
   /* a story inside a collection, changed without going into the editor — the
@@ -46206,7 +46316,10 @@ function renderBookView(){
     e.stopPropagation();
     const [id,v]=x.dataset.evr.split("|");
     vEntRate=null;
-    quickEdit(bk=>{const en=findEn(bk,id);if(en)en.rating=v==="clear"?null:Number(v);});
+    /* the collection's mark follows its stories', as it does from ✎ Edit —
+       left alone, it stayed stale until the editor was opened or the app
+       restarted */
+    quickEdit(bk=>{const en=findEn(bk,id);if(en)en.rating=v==="clear"?null:Number(v);if(isColl(bk))syncCollRating(bk);});
   });
   /* the rating suggestion's Use / ? buttons — the book's own line and the one
      inside each story's rating panel. No chips live on this face; the words
@@ -47899,7 +48012,9 @@ function renderEditor(){
     const hadCover=en?!!curEnt[en.id]:!!curCover;
     const hadSummary=!!stripHtml((en?en.summary:cur.summary)||"").trim();
     const curPages=en?en.pages:cur.pages;
-    const curAuthor=(cur.author||"").trim();
+    /* a story looked up is compared with the author it SHOWS (its own, or
+       the collection's it inherits) — see applyAuthor */
+    const curAuthor=(en?(entAuthorOf(cur,en)||""):(cur.author||"")).trim();
     const newAuthor=(info.author||"").trim();
     const showAuth=!!newAuthor&&newAuthor.toLowerCase()!==curAuthor.toLowerCase();
     const showPages=!!info.pages&&String(info.pages)!==String(curPages||"");
@@ -48114,10 +48229,16 @@ function renderEditor(){
     const applyAuthor=()=>{
       const fa=q("#fpAuth",box);
       if(!fa||fa.disabled)return false;
-      /* the author belongs to the book even when a single story was looked up —
-         a story inside a collection has no author of its own */
-      cur.author=newAuthor;
-      const el=q("#fAuthor");if(el)el.value=newAuthor;
+      /* A story has an author of its own now (the Author box on its row,
+         entAuthorOf), and an anthology's stories each have theirs: writing a
+         story's author onto the collection put it on every story that
+         inherits it. A story's lookup writes the story; a different name
+         from the collection's is kept as its own, the same name clears it. */
+      if(en){const ca=String(cur.author||"").trim();
+        if(newAuthor.toLowerCase()===ca.toLowerCase())delete en.author;else en.author=newAuthor;
+        renderEntries();}
+      else{cur.author=newAuthor;
+        const el=q("#fAuthor");if(el)el.value=newAuthor;}
       scheduleSave();fa.disabled=true;fa.textContent="Author set ✓";
       return true;
     };
@@ -49313,6 +49434,7 @@ function renderEditor(){
       /* it is a piece of the volume above it, not another volume — see
          entWholes: this is what stops fifteen books counting as seventeen */
       x.partOf=en.id;
+      if(opts.start==="want")x.status="want";
       /* only where there is a picture to borrow — a pointer at nothing would
          draw the generated cover twice over */
       if(en.cover)x.covFrom=en.id;
@@ -49329,7 +49451,18 @@ function renderEditor(){
        reason they are boxes and not a sentence saying "3 stories found" */
     let rows=found.length?found.map(t=>({on:true,title:t.title,text:t.text,author:t.author||""}))
       :[{on:true,title:"",text:"",author:""},{on:true,title:"",text:"",author:""}];
-    let opts={prefix:true,summaries:found.length>0};
+    let opts={prefix:true,summaries:found.length>0,start:"same"};
+    /* ---- HOW THE NEW TALES START ----
+       The tales cut out of a volume say nothing of their own, so they are
+       whatever the volume is — and a volume that says nothing is whatever its
+       collection says unmarked stories are. In a collection marked ✓ Read
+       (or never marked at all) that is "read": the new tales came out read,
+       and the first time one was marked finished the others were plainly
+       read beside it, which looks exactly like that press having read them.
+       The panel says which it will be, and why, and offers "not read yet". */
+    const volSay=(()=>{const st=entStatusOf(cur,en),own=String(en.status||"").trim();
+      const w=st==="finished"?"read":st==="reading"?"being read":"not read yet";
+      return {st,w,why:own?"":(st==="finished"?" — the collection counts stories you haven't marked as read":"")};})();
     const wrap=document.createElement("div");
     wrap.id="entSplitPanel";wrap.className="ratepanel";
     /* Esc and a press on the dark close it, like every other floating panel —
@@ -49357,11 +49490,15 @@ function renderEditor(){
         <label class="hrow2" style="font-size:13px;gap:7px;margin-bottom:5px;flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="esPre" ${opts.prefix?"checked":""} style="flex:none;margin-top:2px"><span style="min-width:0">Keep “${esc(String(en.title||"").trim())} · ” in front of each</span></label>
         <label class="hrow2" style="font-size:13px;gap:7px;flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="esSum" ${opts.summaries?"checked":""} ${found.length?"":"disabled"} style="flex:none;margin-top:2px"><span style="min-width:0">Give each one its part of the blurb</span></label>
         <div class="hint" style="margin:9px 0 0">The first keeps this one's rating, length, dates, tags and cover. The rest start empty, and show the volume's cover behind them until you give them one.</div>
+        ${volSay.st==="want"?"":`<div class="hrow2" style="margin:9px 0 0;flex-wrap:wrap;gap:6px;align-items:center"><span class="lbl" style="flex-basis:100%">The new ones start as the volume is now: <b>${volSay.w}</b>${esc(volSay.why)}.</span>
+          <button class="pill ${opts.start==="same"?"on":""}" data-esst="same">${volSay.st==="finished"?"✓ Read":"📖 Being read"}, like the volume</button>
+          <button class="pill ${opts.start==="want"?"on":""}" data-esst="want">🔖 Not read yet</button></div>`}
         <div class="hrow2" style="margin-top:12px">
           <button class="btn pri" id="esGo" ${live>1?"":"disabled"}>✂ Make ${live}</button>
           <span class="none" style="font-size:12px">↶ Undo puts it back as one</span>
         </div>`;
       qa("[data-eson]",wrap).forEach(b=>b.onclick=()=>{rows[+b.dataset.eson].on=!rows[+b.dataset.eson].on;draw();});
+      qa("[data-esst]",wrap).forEach(b=>b.onclick=()=>{opts.start=b.dataset.esst;draw();});
       /* a list pasted into a box fills that box and the ones after it — see
          listTitles. A single title pastes as it always did. The box's own
          paste would have run a list together: an input drops line breaks. */
@@ -49758,9 +49895,16 @@ function renderEditor(){
     qa("[data-est]",list).forEach(el=>el.addEventListener("change",()=>{
       /* choosing a stage for a story opens or closes a reading of it, the same
          way choosing one for a book does */
-      markEntStatus(cur,find(el.dataset.est),el.value);
+      const en0=find(el.dataset.est);
+      markEntStatus(cur,en0,el.value);
       sayIfAutoDated();
-      renderEntReads(el.dataset.est);scheduleSave();}));
+      /* a tale of a split volume moves its neighbours too (pinTales gives the
+         silent ones what they showed), and only this row's readings were
+         redrawn — the other tales' menus went on saying what they said
+         before, so the screen and the shelf disagreed */
+      if(en0&&isSplitTale(cur,en0))renderEntries();
+      else renderEntReads(el.dataset.est);
+      scheduleSave();}));
     /* one story's readings, redrawn where they sit without disturbing the rest */
     function renderEntReads(id){
       const w=q(`[data-enrw="${id}"]`,list);const en=find(id);
@@ -50213,7 +50357,10 @@ function renderEditor(){
     go.onclick=()=>{
       const {fresh}=parse();if(!fresh.length)return;
       cur.entries=cur.entries||[];
-      fresh.forEach(r=>cur.entries.push(Object.assign(blankEntry(),{title:r.title,status:"want"})));
+      /* the books you are MISSING, so ⌛ Don't have it yet — the mark the
+         reading page's 📙 The missing ones gives the same list; as plain Want
+         to read they joined the dare and the pile */
+      fresh.forEach(r=>cur.entries.push(Object.assign(blankEntry(),{title:r.title,status:"want",unowned:true})));
       renderEntries();scheduleSave();close();
     };
     setTimeout(()=>{try{ta.focus();}catch(e){}},30);
@@ -50244,7 +50391,7 @@ function renderEditor(){
       se.oninput=()=>{fq=se.value;keepCaret(se,draw,()=>q("#fdSearch",box));};
       qa("[data-fb]",box).forEach(btn=>btn.onclick=async()=>{
         const b=books.find(x=>x.id===btn.dataset.fb);if(!b)return;
-        if(!confirm(`Fold “${b.title||"Untitled"}” into this collection?\n\nIts own page moves to Recently deleted — notes, rating, pages, cover, the stage it's at and the day you finished it all carry over.`))return;
+        if(!confirm(`Fold “${b.title||"Untitled"}” into this collection?\n\nIts own page moves to Recently deleted — notes, rating, pages, cover, quotes, likes, the stage it's at and the day you finished it all carry over.${foldLeftBehind([b])}`))return;
         btn.disabled=true;
         /* the collection may have no author yet — take this book's, so nothing
            is lost into a "same as the collection" that means same as nothing */
@@ -50259,7 +50406,7 @@ function renderEditor(){
         const was=JSON.parse(JSON.stringify(b));
         if(!String(cur.author||"").trim()&&String(b.author||"").trim())cur.author=String(b.author).trim();
         const {en,coverData}=await bookToEntry(b,cur.id,collDefault(cur),cur.author,cur.dnf,cur.keywords);
-        cur.entries.push(en);
+        cur.entries.push(en);foldCarry(cur,b,en);
         if(coverData)curEnt[en.id]=coverData;
         await retireBook(b);
         await noteFold(b,cur.id,en);
@@ -55106,8 +55253,15 @@ async function fetchSeriesMissing(b){
   catch(e){say("📙 Hardcover didn't answer: "+String(e&&e.message||e).slice(0,80));return;}
   if(!r.ok){say("📙 Hardcover "+r.why);return;}
   const mates=seriesMates(b);
-  const haveK=new Set(mates.map(x=>titleKey(x.title))),haveF=new Set(mates.map(x=>softFold(x.title)));
-  const havePos=new Set(mates.map(x=>parseFloat(x.seriesNum)).filter(n=>isFinite(n)).map(String));
+  /* and the books INSIDE a mate that is a collection — a set kept as one
+     collection of four with the fifth standing alone offered the four back as
+     new ⌛ books; the next-out line and the number lookup already look inside */
+  const inside=[];
+  mates.forEach(m=>{if(!isColl(m))return;const num=entNumbers(m);
+    (m.entries||[]).forEach(en=>{if(en&&!entIsPart(m,en))inside.push({title:en.title,pos:num[en.id]});});});
+  const haveK=new Set(mates.map(x=>titleKey(x.title)).concat(inside.map(x=>titleKey(x.title))));
+  const haveF=new Set(mates.map(x=>softFold(x.title)).concat(inside.map(x=>softFold(x.title))));
+  const havePos=new Set(mates.map(x=>parseFloat(x.seriesNum)).concat(inside.map(x=>parseFloat(x.pos))).filter(n=>isFinite(n)).map(String));
   const notHere=r.books.filter(x=>!haveK.has(titleKey(x.title))&&!haveF.has(softFold(x.title))
     &&!(x.pos&&isFinite(parseFloat(x.pos))&&havePos.has(String(parseFloat(x.pos)))));
   /* a likely translation is named, not added — see `foreign` in fetchHardcoverSeries */
@@ -55131,11 +55285,15 @@ async function fetchSeriesMissing(b){
     if(x.cover){try{const data=await fetchCoverData([x.cover]);if(data){await dbPut("covers",{id:nb.id,data});coverCache.delete(nb.id);nb.coverV=Date.now();}}catch(e){}}
     await dbPut("books",nb);books.unshift(nb);
     items.push({id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))});
-    if(SYNC.on){enqueue({kind:"book",id:nb.id});if(nb.coverV)enqueue({kind:"cover",id:nb.id});}
+    if(SYNC.on){if(nb.coverV)enqueue({kind:"cover",id:nb.id});enqueue({kind:"book",id:nb.id});}
   }
   pushOp({t:"bulk",items});
   if(SYNC.on)flushQueue();
-  refreshShelfSub();renderBookView();
+  /* the covers take a while, and the page may have been left meanwhile — a
+     redraw of a book page with no book open threw, and with another book open
+     in the editor drew this one over it */
+  refreshShelfSub();
+  if(view==="book"&&cur&&cur.id===b.id&&!settings.bookEdit)renderBookView();else render();
 }
 /* ---- the fourth voice: AniList, for manhwa, webtoons and manga ----
    The open database of comics, and it answers a web page directly with no
