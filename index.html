@@ -5814,19 +5814,24 @@ const distToSeg=(p,a,b)=>{
   return Math.hypot(p[0]-(a[0]+t*dx),p[1]-(a[1]+t*dy));
 };
 /* strokes are stored 0..1 on images/notes (so they scale with them) and in px on the page */
+/* a drawing's colour and widths go into the page as attributes, and a
+   backup or the cloud can carry anything in them */
+const strokeColor=c=>/^#[0-9a-f]{3,8}$/i.test(String(c||""))||/^(rgba?|hsla?)\([\d.,%\s]+\)$/i.test(String(c||""))||/^[a-z]{3,20}$/i.test(String(c||""))?String(c):"#1c1917";
 function drawSvgHtml(strokes,sx,sy){
   return (strokes||[]).map(s=>{
-    const p=(s.pts||[]).map(q2=>[q2[0]*sx,q2[1]*sy]);
+    const p=(s.pts||[]).map(q2=>[(+q2[0]||0)*sx,(+q2[1]||0)*sy]);
     if(!p.length)return "";
     const hl=s.t==="hl";
-    const w=hl?Math.max(9,s.w*4):s.w;
-    const at=`stroke="${s.c}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${hl?(s.o==null?.35:s.o):1}"`;
+    const sw=Math.max(.5,Math.min(80,+s.w||3));
+    const w=hl?Math.max(9,sw*4):sw;
+    const op=hl?(s.o==null?.35:Math.max(0,Math.min(1,+s.o||0))):1;
+    const at=`stroke="${strokeColor(s.c)}" stroke-width="${w}" fill="none" stroke-linecap="round" stroke-linejoin="round" opacity="${op}"`;
     const n=v=>v.toFixed(1);
     if(s.t==="pen"||hl)return `<polyline points="${p.map(q2=>n(q2[0])+","+n(q2[1])).join(" ")}" ${at}/>`;
     const a=p[0],b=p[1]||p[0];
     if(s.t==="line")return `<line x1="${n(a[0])}" y1="${n(a[1])}" x2="${n(b[0])}" y2="${n(b[1])}" ${at}/>`;
     if(s.t==="arrow"){
-      const ang=Math.atan2(b[1]-a[1],b[0]-a[0]),L=Math.max(10,s.w*3.4);
+      const ang=Math.atan2(b[1]-a[1],b[0]-a[0]),L=Math.max(10,sw*3.4);
       const h1=[b[0]-L*Math.cos(ang-Math.PI/7),b[1]-L*Math.sin(ang-Math.PI/7)];
       const h2=[b[0]-L*Math.cos(ang+Math.PI/7),b[1]-L*Math.sin(ang+Math.PI/7)];
       return `<line x1="${n(a[0])}" y1="${n(a[1])}" x2="${n(b[0])}" y2="${n(b[1])}" ${at}/>`
@@ -7285,7 +7290,7 @@ function applyReading(x,st,dnf,flag){
        happen in silence. The flag is read by whoever handled the press;
        applyReading itself is called by the importers too, and a few thousand
        books arriving must not put a few thousand notes on the screen. */
-    autoDated={x,rid:guess.id};
+    autoDated={x,rid:guess.id,at:Date.now()};
   }
   return syncReads(x);
 }
@@ -7293,7 +7298,11 @@ let autoDated=null;
 /* called by the press handlers, never by an import */
 function sayIfAutoDated(){
   if(!autoDated)return;
-  const {x,rid}=autoDated;autoDated=null;
+  const {x,rid,at}=autoDated;autoDated=null;
+  /* a note armed by a bulk stage change or an import — which never say it —
+     is not this press's to say: it named another book, and its Finished
+     today dated that one */
+  if(!at||Date.now()-at>8000)return;
   /* NOT flagged as an XP note. The corner's "⚡ the XP ones" setting can be
      turned off entirely, and this is a word about what was written on your
      behalf, not a reward — it must not be silenced by a preference about
@@ -12461,6 +12470,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-19.6",lines:[
+    "<b>↶ Undo brings pictures back.</b> In ✎ Edit, ✕ on a cover, a new cover, a pasted one, a sharper one, Auto-fill's cover, a story's cover, and a picture added, cut out, cropped or taken off — ↶ now puts the picture back as it was. Before, ↶ brought back the book and left the picture gone.",
+    "<b>↶ Undo does what it says.</b> Leaving a book's page no longer adds a step of its own that changes nothing, so the first ↶ after an edit takes back the edit. Taking back a book you just made no longer leaves a copy in Recently deleted. ⚡ Quick add can be taken back. Taking back ＋ Add from an import puts the row back on the import list too. And Auto-fill's “Use everything” with new genres is one press of ↶, where it was one for each genre and one more.",
+    "<b>Things land where they belong.</b> An Auto-fill answer that arrives after you've moved on to another book is dropped, not written onto that one. A photographed quote goes onto the book you photographed it for, and closing its panel while it reads stops it.",
+    "<b>And smaller things:</b> warnings filed under Warnings stay filed, in the spelling they have on the book; ✂ Tidy the chapters leaves a fic's listed chapters alone and keeps a chapter's mark and part; finishing a book in ✎ Edit offers your Up next; a series spelled once in lower case is the same series on the reading page; the “had no dates” note after a bulk change or an import no longer turns up on your next press about another book; and Shelf care stays where you are when you merge or tidy tags, instead of jumping to the top."]},
   {v:"2026-10-19.5",go:["el:insights:#secTbr"],lines:[
     "<b>⛰ Your own mountain.</b> Under the mountain of unread books on ✨ Insights, 🖼 A photo of your own mountain makes any photo the mountain — one you climbed, one you'd like to. Tap its foot, then its top, and the climber walks that line as the pile goes down. ⤴ Set the path again, and ✕ brings the drawn one back.",
     "<b>🧗 You climb it, and 🙂 you walk the road.</b> One picture of you takes the dot's place on the mountain and 🚶's on 🛤 the long road. Change it from either.",
@@ -15953,15 +15967,24 @@ async function applyOp(op,inv,quiet){
         if(trashCloud[id]){delete trashCloud[id];saveTrashCloud();}
         countTrash();
       }
+      /* ↷ on a creation: a bin copy an older build left behind goes */
+      if(op.t==="book"&&!op.before){
+        try{if(await dbGet("trash",id)){await dbDel("trash",id);countTrash();}}catch(e){}
+        if(trashCloud[id]){delete trashCloud[id];saveTrashCloud();}
+      }
       if(SYNC.on){if(unDelete(id))saveDeletions();enqueue({kind:"cover",id});fileKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));enqueue({kind:"book",id});}
     }else{
       const gone=(op.t==="del"?op.body:op.after)||null;
+      /* a book this step CREATED is un-created by ↶, not deleted: binning it
+         left a copy in Recently deleted whose Put back, after ↷, wrote that
+         old copy over the book */
+      const unmade=op.t==="book"&&!op.before;
       /* and back INTO the bin on the way out, for the same reason: a delete you
          redo has to keep the promise the delete you made was given — thirty days
          in Recently deleted, with its cover and its pictures. It was only ever
          banked in the shared bin for the other device, so on this one a redone
          delete was final. */
-      if(gone)await toTrash(gone);
+      if(gone&&!unmade)await toTrash(gone);
       await dbDel("books",id);
       books=books.filter(x=>x.id!==id);
       countTrash();
@@ -15969,7 +15992,7 @@ async function applyOp(op,inv,quiet){
         /* redoing a delete used to destroy the cloud cover and pictures on the
            spot — this delete now banks them in the shared bin for its 30 days,
            exactly like the delete it is redoing */
-        if(gone){trashCloud[id]={at:Date.now(),book:JSON.parse(JSON.stringify(gone))};saveTrashCloud();}
+        if(gone&&!unmade){trashCloud[id]={at:Date.now(),book:JSON.parse(JSON.stringify(gone))};saveTrashCloud();}
       }
     }
     if(view==="book"&&cur&&cur.id===id&&!quiet){
@@ -24107,7 +24130,7 @@ async function quotePhotoRead(file){
   try{const r=await worker.recognize(file);return (r.data&&r.data.text)||"";}
   finally{try{worker.terminate();}catch(e){}}
 }
-function quotePhotoPanel(raw,busy){
+function quotePhotoPanel(raw,busy,forId){
   const old=document.getElementById("qphotoPanel");if(old&&old.__close)old.__close();
   const d=document.createElement("div");d.id="qphotoPanel";d.className="ratepanel";
   const t=busy?{text:"",page:""}:quoteTidy(raw);
@@ -24123,16 +24146,22 @@ function quotePhotoPanel(raw,busy){
   q("#qphX",d).onclick=()=>close();
   const keep=q("#qphKeep",d);
   if(keep)keep.onclick=()=>{const text=q("#qphText",d).value.trim(),page=q("#qphPage",d).value.trim();if(!text)return;
-    quickEdit(bk=>{const i=pushQuote(bk,esc(text).replace(/\n/g,"<br>"));if(page)bk.quotesFrom[i]=TYPED+"p. "+page;});close();};
+    /* onto the book the photo was taken for, open or not */
+    const put=bk=>{const i=pushQuote(bk,esc(text).replace(/\n/g,"<br>"));if(page)bk.quotesFrom[i]=TYPED+"p. "+page;};
+    if(!forId||(cur&&cur.id===forId))quickEdit(put);else shelfMut(forId,put);
+    close();};
   return d;
 }
 async function quotePhoto(file){
-  const d=quotePhotoPanel("","Reading the photo — this can take a little while on a phone…");
+  const forId=cur&&cur.id;
+  const d=quotePhotoPanel("","Reading the photo — this can take a little while on a phone…",forId);
   let text="";
   try{text=await quotePhotoRead(file);}
   catch(e){const m=q("#qphMsg",d);if(m)m.textContent=(e&&e.message)||"That photo couldn't be read.";return;}
+  /* closed while it was reading: nothing more to show */
+  if(!d.isConnected)return;
   if(!text.trim()){const m=q("#qphMsg",d);if(m)m.textContent="No readable text found in that photo — a sharper, closer shot works best.";return;}
-  quotePhotoPanel(text);
+  quotePhotoPanel(text,null,forId);
 }
 /* ---- THE OWL'S THREE QUESTIONS, AND THE SEALED LETTER ----
    A book just finished gets a card on its page (owlHtml): the owl's three
@@ -33430,7 +33459,7 @@ function brHtml(){
       <div class="qgrid4" style="--q4:2">${one(a)}${one(b)}</div>
       ${brTreeHtml(s)}<div class="hrow2" style="margin-top:8px">${arcSkipBtn("br")}</div>`;
   }
-  return arcSaid(true,"Your book of "+s.year+": “"+arcTitle(s.winner)+"”."+arcXp("x:br:"+s.at))
+  return arcSaid(true,"Your book of "+s.year+": “"+esc(arcTitle(s.winner))+"”."+arcXp("x:br:"+s.at))
     +brTreeHtml(s)
     +`<div class="hrow2" style="margin-top:8px;flex-wrap:wrap"><button class="btn pri" data-brposter>⬇ The poster</button>${arcOpenBtn(s.winner)}${arcAgainBtn("br","🏆 Another bracket")}</div>`;
 }
@@ -39595,7 +39624,7 @@ function refreshImport(light){
     const msg=q("#busyMsg");if(msg)msg.textContent=`Filling in ${batch.length}…`;
     const steps=[];
     await runBatch(batch,it=>importMerge(it,steps),"Filling in");
-    if(steps.length){const was=histSrc;histSrc=HIST_IMPORT;try{pushOp({t:"bulk",items:steps});}finally{histSrc=was;}}
+    if(steps.length){const was=histSrc;histSrc=HIST_IMPORT;try{pushOp(impStepOp(steps));}finally{histSrc=was;}}
     saveImportQueue();
     if(SYNC.on)flushQueue();
     if(q("#busyMsg"))q("#busyMsg").textContent="";
@@ -41046,6 +41075,21 @@ function unleaveTagPair(key){tidyDrop("tagLeave",key);}
    merging the other. Same shape, same buttons, same "leave them", so nothing
    here has to be learnt twice. */
 const genLeft=()=>new Set(settings.genLeave||[]);
+/* ┌─ SHELF CARE KEEPS ITS PLACE ──────────────────────────────────────────────┐
+   │ A merge, a capital, a tidy of ticked tags redrew the whole of Shelf care, │
+   │ and the place was put back for 220 ms. The tidy boxes are filled after   │
+   │ the page is written, and on a full shelf that takes longer, so the page  │
+   │ was still short when the place was put back and you landed at the top,  │
+   │ measured going to 0 even on a small one. Only the four tidy boxes are   │
+   │ drawn again now, and the page under you does not move.                  │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+async function careAfterTidy(where){
+  if(view==="care"&&q("#tagDupBox")){
+    for(const f of [refreshGenDupes,refreshTagDupes,refreshKwDupes,refreshCapTags])try{f();}catch(e){}
+    return;
+  }
+  await Promise.resolve(render());keepPlaceAfterRedraw(where);
+}
 function refreshGenDupes(){
   const box=q("#genDupBox");if(!box)return;
   const left=genLeft();
@@ -41125,8 +41169,7 @@ function refreshGenDupes(){
     b.disabled=true;b.textContent="Merging…";
     const where=window.scrollY;
     await mergeGenre(drop,keep);
-    await Promise.resolve(render());
-    keepPlaceAfterRedraw(where);
+    await careAfterTidy(where);
   });
 }
 function refreshTagDupes(){
@@ -41235,9 +41278,9 @@ function refreshTagDupes(){
        page — so putting the scroll back on the next line put it back on the OLD
        page and the new one arrived at the top. It has to be awaited, and then
        re-asserted once more, because the page goes on growing for a moment as
-       the covers land. */
-    await Promise.resolve(render());
-    keepPlaceAfterRedraw(where);
+       the covers land. Now only the tidy boxes are — see SHELF CARE KEEPS ITS
+       PLACE. */
+    await careAfterTidy(where);
   });
 }
 function refreshKwDupes(){
@@ -41369,7 +41412,7 @@ function refreshKwDupes(){
     tidyAdd("kwKeep",h.k);
     delete kwDupTicks[h.k];
     if(SYNC.on)flushQueue();
-    await Promise.resolve(render());keepPlaceAfterRedraw(where);
+    await careAfterTidy(where);
   });
   /* filled in the first time it is opened, and toggled after that — redrawing the
      whole box here would throw away whatever you had just ticked */
@@ -41455,7 +41498,7 @@ function refreshKwDupes(){
     /* the same courtesy the tag merge pays: the card you pressed this from is a
        long way down Overview, and a redraw that starts you at the top again
        reads as being thrown out of what you were doing */
-    await Promise.resolve(render());keepPlaceAfterRedraw(where);
+    await careAfterTidy(where);
   };
 }
 
@@ -41830,8 +41873,7 @@ function refreshCapTags(){
     const where=window.scrollY;
     await capitaliseTags(list.map(w=>[w,sentenceCase(w)]));
     capSkip=new Set();
-    await Promise.resolve(render());
-    keepPlaceAfterRedraw(where);
+    await careAfterTidy(where);
   };
 }
 /* How many are in the bin, so the History tab can say so on its own button
@@ -42688,7 +42730,7 @@ function renderSearchBody(){
       results=(f.value==="none"?pu.filter(u=>!u.p)
         :pu.filter(u=>u.p&&u.p>=f.value.min&&u.p<=f.value.max)).map(u=>u.row());
     }
-    if(f.type==="series")results=pool.filter(b=>(b.series||"").trim()===f.value).sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0));
+    if(f.type==="series")results=pool.filter(b=>(b.series||"").trim().toLowerCase()===String(f.value||"").trim().toLowerCase()).sort((a,b)=>(parseFloat(a.seriesNum)||0)-(parseFloat(b.seriesNum)||0));
     if(f.type==="rating")results=(f.value==="unrated"
       ?sUnits.filter(u=>u.rating==null)
       :sUnits.filter(u=>u.rating!=null&&u.rating>=f.value.min&&u.rating<=f.value.max)).map(unitRow);
@@ -44715,6 +44757,19 @@ async function openBook(id,fresh,keepPlace,goToStory){
 }
 
 function setSaved(ok){const el=q("#saveMsg");if(el){el.textContent=ok?"Saved":"Saving…";el.className="savemsg "+(ok?"ok":"no");}}
+/* ┌─ A PICTURE CHANGED IN ✎ EDIT GOES ON THE SAVE'S ↶ STEP ────────────────┐
+   │ A cover and a picture are written to their own stores the moment they   │
+   │ change, and the save that follows made a step of ↶ that knew nothing of │
+   │ them: ✕ on a cover, then ↶, brought the book back with no cover, for    │
+   │ good. edPendCover and edPendImg note the picture before and after;      │
+   │ commitCur hands them to pushOp as op.cover and op.imgs, which applyOp   │
+   │ already restores. The first `before` for a key is kept, so two changes  │
+   │ in one save undo to the picture there was before both.                  │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+let edPend=null;
+function edPendFor(){if(!cur)return null;if(!edPend||edPend.id!==cur.id)edPend={id:cur.id,imgs:{}};return edPend;}
+function edPendCover(before,after){const p=edPendFor();if(!p)return;if(p.cover)p.cover.after=after||null;else p.cover={before:before||null,after:after||null};}
+function edPendImg(key,before,after){const p=edPendFor();if(!p)return;if(p.imgs[key])p.imgs[key].after=after||null;else p.imgs[key]={before:before||null,after:after||null};}
 async function commitCur(){
   if(!cur){setSaved(true);return;}
   const after=JSON.parse(JSON.stringify(cur));
@@ -44723,7 +44778,10 @@ async function commitCur(){
      open somewhere. Writing it anyway would resurrect it — on every device. */
   if(i<0&&!isNew){setSaved(true);return;}
   const before=i>=0?JSON.parse(JSON.stringify(books[i])):null;
-  const strip=o=>{const c={...o};delete c.modified;return JSON.stringify(c);};
+  /* an empty list is no data: opening a new book fills in readings:[] where
+     it had none, and leaving its page saved that as a change of its own — a
+     step of ↶ that showed nothing, standing in front of the one that made it */
+  const strip=o=>{const c={...o};delete c.modified;delete c.edited;for(const k in c)if(Array.isArray(c[k])&&!c[k].length)delete c[k];return JSON.stringify(c);};
   if(before&&strip(before)===strip(after)){setSaved(true);return;}
   /* The other tab may have written this same book while it sat open here — the
      one case the tab-to-tab catch-up deliberately steps around, because these
@@ -44753,7 +44811,10 @@ async function commitCur(){
      clock runs fast can't have its older copy win forever */
   after.edited=Date.now();after.modified=Math.max(Date.now(),((before&&before.modified)||0)+1,diskAt+1,seenFloor(id)+1);
   after.touched=true;   /* you've worked on it — no longer a raw import */
-  if(same){cur.touched=true;cur.modified=after.modified;}
+  /* the stamps this save wrote go onto the open copy as well: left behind,
+     `edited` differed from the shelf's, and the next save — leaving the page,
+     a second press — made a step of ↶ that changed nothing but the stamp */
+  if(same){cur.touched=true;cur.modified=after.modified;cur.edited=after.edited;}
   try{await dbPut("books",after);}
   catch(e){
     const el=q("#saveMsg");if(el){el.textContent="Couldn't save!";el.className="savemsg no";}
@@ -44761,7 +44822,9 @@ async function commitCur(){
       alert("This couldn't be saved — storage may be full.\n\nExport a backup from the Overview tab, then delete some pictures or old backups.");}
     return;
   }
-  pushOp({t:"book",id,before,after:JSON.parse(JSON.stringify(after))});
+  const pics={};
+  if(edPend&&edPend.id===id){if(edPend.cover)pics.cover=edPend.cover;if(Object.keys(edPend.imgs).length)pics.imgs=edPend.imgs;edPend=null;}
+  pushOp(Object.assign({t:"book",id,before,after:JSON.parse(JSON.stringify(after))},pics));
   /* found again: a pull during the waits above replaces the whole array */
   const j=books.findIndex(b=>b.id===id);
   if(j>=0)books[j]=after;else books.unshift(after);
@@ -45706,10 +45769,12 @@ function iywText(b){
    the ones you have finished ticked. What it CANNOT do is list the books you
    do not own — nothing on this shelf knows they exist — so where the numbers
    say there are more, it says how many are missing rather than pretending. */
+/* the case of the name aside, as the editor's own list has always matched */
 const seriesMates=b=>{
-  const s=seriesShown(b);
+  const k=x=>String(seriesShown(x)||"").trim().toLowerCase();
+  const s=k(b);
   if(!s)return [];
-  return books.filter(x=>seriesShown(x)===s)
+  return books.filter(x=>k(x)===s)
     .sort((x,y)=>{
       const a=parseFloat(x.seriesNum),c=parseFloat(y.seriesNum);
       if(isFinite(a)&&isFinite(c)&&a!==c)return a-c;
@@ -47362,6 +47427,7 @@ function wireScrapbook(page,host){
     const baseY=scrapDropY(page);
     const im={id:uid(),x:30+(cur.images.length*26)%180,y:baseY+(cur.images.length*18)%90,w:240,behind:false};
     try{await dbPut("images",{key:cur.id+"|"+im.id,data});}catch(err){alert("That image couldn't be saved.");return;}
+    edPendImg(cur.id+"|"+im.id,null,data);
     curImgs[im.id]=data;cur.images.push(im);
     if(SYNC.on)enqueue({kind:"img",key:cur.id+"|"+im.id});
     /* on the reading page, hand over the move tool so you can place it straight
@@ -47685,6 +47751,7 @@ function wireScrapbook(page,host){
       if(!result)return;
       im.cut=Date.now();          /* a real change, so the book saves and other devices re-pull this picture */
       await dbPut("images",{key,data:result.data,v:im.cut});
+      edPendImg(key,curImgs[im.id]||null,result.data);
       curImgs[im.id]=result.data;
       if(SYNC.on)enqueue({kind:"img",key});
       applied=true;q("#cutBack",box).hidden=false;
@@ -47695,6 +47762,7 @@ function wireScrapbook(page,host){
       if(!applied)return;
       im.cut=Date.now();
       await dbPut("images",{key,data:orig,v:im.cut});
+      edPendImg(key,curImgs[im.id]||null,orig);
       curImgs[im.id]=orig;
       if(SYNC.on)enqueue({kind:"img",key});
       renderImages();scheduleSave();
@@ -47786,6 +47854,7 @@ function wireScrapbook(page,host){
         im.cut=Date.now();
         try{await dbPut("images",{key,data,v:im.cut});}
         catch(err){alert("That didn't fit — storage may be full.");return;}
+        edPendImg(key,curImgs[im.id]||null,data);
         curImgs[im.id]=data;
         if(SYNC.on)enqueue({kind:"img",key});
         applied=true;q("#crBack",box).hidden=false;
@@ -47802,6 +47871,7 @@ function wireScrapbook(page,host){
       if(!applied)return;
       im.cut=Date.now();
       await dbPut("images",{key,data:orig,v:im.cut});
+      edPendImg(key,curImgs[im.id]||null,orig);
       curImgs[im.id]=orig;
       if(SYNC.on)enqueue({kind:"img",key});
       const ci=q("#crImg",box);if(ci)ci.src=orig;
@@ -48033,6 +48103,7 @@ function wireScrapbook(page,host){
       q(".scut",el).onclick=e=>{e.stopPropagation();smenu.hidden=true;openCut(im);};
       startRot(q(".rot",el),el,im);
       q(".sdel",el).onclick=e=>{e.stopPropagation();
+        edPendImg(cur.id+"|"+im.id,curImgs[im.id]||null,null);
         delete curImgs[im.id];
         if(SYNC.on)enqueue({kind:"imgDel",key:cur.id+"|"+im.id});
         cur.images=cur.images.filter(i=>i.id!==im.id);renderImages();scheduleSave();};
@@ -48622,6 +48693,9 @@ function renderEditor(){
       <button class="btn" id="fpClose" style="margin-left:auto;padding:4px 10px">Close</button></div>`;
     const wireClose=()=>{const c=q("#fpClose",box);if(c)c.onclick=closeFetch;};
     const title=((en?en.title:cur.title)||"").trim();
+    /* the book this lookup is for: an answer arriving after you have left it,
+       for another book or the Library, is dropped rather than written there */
+    const forId=cur.id;
     /* A number is a question all by itself, and this used to insist on a title
        anyway — "that's what it searches by", which stopped being true the day
        books could be added by their barcode. The barcode sheet asks with no
@@ -48635,7 +48709,7 @@ function renderEditor(){
     const probe={};
     try{info=await fetchBookInfo(title,(cur.author||"").trim(),askIsbn,probe);}
     catch(e){unreachable=true;}
-    if(box.hidden)return;   /* closed while we were fetching */
+    if(box.hidden||!box.isConnected||!cur||cur.id!==forId)return;   /* closed, or left, while we were fetching */
     if(!info){
       box.innerHTML=head+`<div class="none">${unreachable
         ? "Couldn't reach the book sites just now — they're free and sometimes busy. Your connection may also be down."
@@ -48877,11 +48951,17 @@ function renderEditor(){
           }
         }else addKw(t);
       };
+      /* onto the list quietly (ensureGenre) and onto the book, so the save is
+         the one step of ↶ — addGenre's saveMeta made a step of its own for
+         each new genre, four presses to take back one "Use everything" */
+      let added=false;
       genSel.forEach(g=>{
         const nm=titleCase(String(g||"").trim());if(!nm)return;
         if(genAs[g]==="tag"){addTagWord(nm);return;}
-        addGenre(nm,genres[nm]||genreColor(nm));
+        ensureGenre(nm);
+        if(!cur.genres.includes(nm)){cur.genres.push(nm);added=true;}
       });
+      if(added){renderGenres();scheduleSave();}
       fg.textContent=`Added ${n} ✓`;fg.disabled=true;genSel.clear();
       return n;
     };
@@ -48908,9 +48988,11 @@ function renderEditor(){
       let warned=0;
       if(info.warnTags)tagSel.forEach(t=>{
         const v=String(t).trim();
-        if(info.warnTags.has(v.toLowerCase())){fileUnder(titleCase(v),WARN_FAMILY,WARN_COLOR);warned++;}
+        /* filed under the spelling the tag went on in (sentenceCase, above),
+           and saved by saveKwCats — saveMeta writes genres, not families */
+        if(info.warnTags.has(v.toLowerCase())){fileUnder(sentenceCase(v),WARN_FAMILY,WARN_COLOR);warned++;}
       });
-      if(warned){saveMeta();renderKw();}
+      if(warned){saveKwCats();renderKw();}
       ft.textContent=`Added ${n} ✓`;ft.disabled=true;tagSel.clear();
       return n;
     };
@@ -49015,13 +49097,17 @@ function renderEditor(){
            one instead and reported success. It looked as though only the first
            choice in the row ever worked. */
         const data=await fetchCoverData([covers[covI]].filter(Boolean),COVER_MAX);
+        /* the answer is for the book the panel was opened on */
+        if(!cur||cur.id!==forId||!box.isConnected)return false;
         if(en){
+          edPendImg(cur.id+"|"+en.id,curEnt[en.id]||null,data);
           en.cover=true;en.coverV=Date.now();
           await dbPut("images",{key:cur.id+"|"+en.id,data,v:en.coverV});
           curEnt[en.id]=data;coverCache.set(cur.id+"|"+en.id,data);bumpCovers();
           if(SYNC.on)enqueue({kind:"img",key:cur.id+"|"+en.id});
           renderEntries();
         }else{
+          edPendCover(curCover,data);
           await dbPut("covers",{id:cur.id,data});
           curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);bumpCovers();
           renderCover();
@@ -49321,7 +49407,7 @@ function renderEditor(){
        colour and gather together everywhere tags are listed */
     const bW=q("#fcW",out);if(bW)bW.onclick=()=>{
       wSel.forEach(w=>{addKw(w);fileUnder(titleCase(w.trim()),WARN_FAMILY,WARN_COLOR);});
-      saveMeta();renderKw();done(bW,"Added ✓");
+      saveKwCats();renderKw();done(bW,"Added ✓");
     };
     const bR=q("#fcR",out);if(bR)bR.onclick=()=>{
       cur.ships=cur.ships||[];
@@ -49398,7 +49484,7 @@ function renderEditor(){
       </div>`:""}
       ${ch.length?`<div class="lbox chapbox"><div class="lhead">
         <h3>Chapters <span class="none" style="font-weight:400">${ch.length} · ${words.toLocaleString()} words</span></h3>
-        ${(cur.chapters||[]).some(c=>{const t=c.text||"";
+        ${!ficCh&&(cur.chapters||[]).some(c=>{const t=c.text||"";if(!t.trim())return false;
             return (!looksLikeChapter(t)&&!HEAD_ANYWHERE.test(t))||splitChapterText(t).before;})
           ?`<button class="btn" id="chTidy" title="Move the replies that were never chapters to the discussion, and fold the working-out into the chapters it belongs to">✂ Tidy the chapters</button>`:""}
         ${ficCh?"":`<button class="btn" id="chSave" title="Save the chapters out as one file">⭳ Save as a file</button>`}
@@ -49669,11 +49755,16 @@ function renderEditor(){
       const kept=[];
       (cur.chapters||[]).forEach(c=>{
         const t=c.text||"";
+        /* a chapter that is only listed — a fic's chapter list, a title and
+           no text — is a chapter, and all of them went to the discussion */
+        if(!t.trim()){kept.push(c);return;}
         if(!looksLikeChapter(t)&&!HEAD_ANYWHERE.test(t)){toDisc.push(c);return;}
         const {before,chapter}=splitChapterText(t);
         if(!before){kept.push(c);return;}
-        const r=mkRow(chapter,null);r.id=c.id;r.plan=before;planned++;
-        kept.push(r);
+        /* the chapter as it was, its mark and its part kept, with the text and
+           title rebuilt and the working-out folded in */
+        const f=mkRow(chapter,null);
+        kept.push(Object.assign({},c,{title:f.title,text:f.text,words:f.words,plan:before}));planned++;
       });
       if(!toDisc.length&&!planned)return;
       const bits=[];
@@ -50083,7 +50174,9 @@ function renderEditor(){
     let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(err){picFail(err,"That image couldn't be read.");return;}
     const key=cur.id+"|"+en.id;
     en.coverV=Date.now();          /* version, so replacing a cover reaches other devices too */
+    const wasE=curEnt[en.id]||null;
     try{await dbPut("images",{key,data,v:en.coverV});}catch(err){alert("That cover couldn't be saved.");return;}
+    edPendImg(key,wasE,data);
     curEnt[en.id]=data;en.cover=true;coverCache.set(key,data);bumpCovers();
     if(SYNC.on)enqueue({kind:"img",key});
     renderEntries();scheduleSave();
@@ -50726,6 +50819,7 @@ function renderEditor(){
     qa("[data-ex]",list).forEach(el=>el.onclick=()=>{
       const en=find(el.dataset.ex);if(!en)return;
       if(!confirm(`Remove “${en.title||"Untitled"}” from this collection?`))return;
+      if(en.cover)edPendImg(cur.id+"|"+en.id,curEnt[en.id]||null,null);
       if(SYNC.on&&en.cover)enqueue({kind:"imgDel",key:cur.id+"|"+en.id});
       delete curEnt[en.id];
       cur.entries=cur.entries.filter(x=>x.id!==en.id);
@@ -51165,7 +51259,10 @@ function renderEditor(){
     /* choosing a stage here opens or closes a reading, exactly as it does on the
        shelf and on the book's own page — one rule, wherever you happen to be */
     qa("[data-st]").forEach(x=>x.onclick=()=>{
+      const wasDone=statusOf(cur)==="finished"&&!cur.dnf||collRow(cur);
       markStatus(cur,x.dataset.st);sayIfAutoDated();
+      /* the same offer the shelf and the reading page make */
+      if(x.dataset.st==="finished"&&!wasDone&&statusOf(cur)==="finished")offerUpNext(cur.id);
       /* saying it is finished says it is neither given up on nor set down — both
          buttons here have to agree, as the ones on the shelf and on the book's
          own page already do */
@@ -52525,6 +52622,7 @@ function renderEditor(){
     if(d)d.onclick=async e=>{
       e.stopPropagation();
       if(!confirm("Remove this cover?"))return;
+      edPendCover(curCover,null);
       await dbDel("covers",cur.id);
       curCover=null;coverCache.set(cur.id,null);bumpCovers();
       if(SYNC.on)enqueue({kind:"coverDel",id:cur.id});
@@ -52538,9 +52636,11 @@ function renderEditor(){
     const f=e.target.files[0];e.target.value="";if(!f)return;
     /* into a local first: a refusal must leave the cover you had standing */
     let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(err){picFail(err,"That picture couldn't be read.");return;}
+    const was=curCover;
     curCover=data;
     try{await dbPut("covers",{id:cur.id,data:curCover});}
-    catch(err){alert("That cover couldn't be saved — storage may be full.");return;}
+    catch(err){curCover=was;alert("That cover couldn't be saved — storage may be full.");return;}
+    edPendCover(was,data);
     coverCache.set(cur.id,curCover);SYNC.triedCover.delete(cur.id);bumpCovers();
     renderCover();
     if(SYNC.on)enqueue({kind:"cover",id:cur.id});
@@ -53903,7 +54003,8 @@ function exportCsv(){
 function cleanHtml(h){
   if(typeof h!=="string"||h.indexOf("<")<0)return h;
   const t=document.createElement("template");t.innerHTML=h;
-  t.content.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach(n=>n.remove());
+  /* a <base> anywhere in the page moves every relative address the app has */
+  t.content.querySelectorAll("script,style,iframe,frame,frameset,object,embed,applet,link,meta,base").forEach(n=>n.remove());
   /* An address has to be judged by what the browser will DO with it, not by how
      it is spelled. Browsers throw away spaces, tabs and newlines sitting inside
      a scheme, so "java<tab>script:" is plain javascript: by the time it runs —
@@ -55277,10 +55378,10 @@ async function importMerge(it,into){
       applyImportFills(it,t.b,t.en,fills);
       touchBook(t.b);
       try{await dbPut("books",t.b);}catch(e){return false;}
-      const step={id:t.b.id,before,after:JSON.parse(JSON.stringify(t.b))};
+      const step={id:t.b.id,before,after:JSON.parse(JSON.stringify(t.b)),impRow:JSON.parse(JSON.stringify(it))};
       /* signed as the import's, so Recently edited says who did it */
       const was=histSrc;histSrc=HIST_IMPORT;
-      try{if(into)into.push(step);else pushOp(Object.assign({t:"book"},step));}finally{histSrc=was;}
+      try{if(into)into.push(step);else pushOp({t:"book",id:step.id,before:step.before,after:step.after,impq:[step.impRow]});}finally{histSrc=was;}
       if(SYNC.on)enqueue({kind:"book",id:t.b.id});
     }
   }
@@ -55582,7 +55683,7 @@ async function importOne(it,extra,steps){
   importQueue=importQueue.filter(x=>x.id!==it.id);
   /* the change it is — see ADDING FROM AN IMPORT IS A CHANGE LIKE ANY OTHER.
      A batch hands in `steps` and writes them as one op when it is done */
-  const step={id:b.id,before:null,after:JSON.parse(JSON.stringify(b))};
+  const step={id:b.id,before:null,after:JSON.parse(JSON.stringify(b)),impRow:JSON.parse(JSON.stringify(it))};
   if(steps)steps.push(step);else importAddLog([step]);
 }
 /* ┌─ ADDING FROM AN IMPORT IS A CHANGE LIKE ANY OTHER ───────────────────────┐
@@ -55599,7 +55700,15 @@ async function importOne(it,extra,steps){
 function importAddLog(steps){
   if(!steps||!steps.length)return;
   const was=histSrc;histSrc=HIST_IMPORT;
-  try{pushOp({t:"bulk",items:steps});}finally{histSrc=was;}
+  try{pushOp(impStepOp(steps));}finally{histSrc=was;}
+}
+/* the rows a step took off the import list ride on it as op.impq, so ↶
+   puts them back on the list as well as taking the book back — undoing
+   ＋ Add took the book off the shelf and the row was gone from the list too */
+function impStepOp(steps){
+  const impq=steps.map(x=>x.impRow).filter(Boolean);
+  const items=steps.map(x=>{const c=Object.assign({},x);delete c.impRow;return c;});
+  return Object.assign({t:"bulk",items},impq.length?{impq}:{});
 }
 /* several staged entries -> stories inside a collection you already have. The
    companion to landing a series as one new collection: once the collection
@@ -56730,16 +56839,17 @@ async function clipboardImage(){
 async function applyCoverBlob(f){
   if(!cur)return;
   let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){picFail(e,"That picture couldn't be read.");return;}
+  const was=curCover||null;
   try{await dbPut("covers",{id:cur.id,data});}
   catch(e){alert("That cover couldn't be saved — storage may be full.");return;}
   curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);bumpCovers();
   if(SYNC.on)enqueue({kind:"cover",id:cur.id});
-  if(bookMode==="edit"){cur.coverV=Date.now();scheduleSave();
+  if(bookMode==="edit"){edPendCover(was,data);cur.coverV=Date.now();scheduleSave();
     /* redraw without losing where you stood — a bare render put the scroll
        wherever the page fell */
     const place=bookPlace();renderBook();
     if(place)setTimeout(()=>restoreBookPlace(place),0);}
-  else await quickEdit(bk=>{bk.coverV=Date.now();});
+  else await quickEdit(bk=>{bk.coverV=Date.now();},{cover:{before:was,after:data}});
 }
 /* The same button on a story's row inside a collection's editor. A story's
    cover is not a book's cover: it lives among the images under
@@ -56750,7 +56860,9 @@ async function applyEntCoverBlob(en,f){
   let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){picFail(e,"That picture couldn't be read.");return;}
   const key=cur.id+"|"+en.id;
   en.coverV=Date.now();
+  const wasE=curEnt[en.id]||null;
   try{await dbPut("images",{key,data,v:en.coverV});}catch(e){alert("That cover couldn't be saved.");return;}
+  edPendImg(key,wasE,data);
   curEnt[en.id]=data;en.cover=true;coverCache.set(key,data);bumpCovers();
   if(SYNC.on)enqueue({kind:"img",key});
   scheduleSave();
@@ -56861,6 +56973,7 @@ async function sharpenCover(b,en){
       },0);
       return;
     }
+    const wasCov=(cur&&cur.id===b.id&&curCover)||coverCache.get(b.id)||null;
     try{await dbPut("covers",{id:b.id,data:best.data});}
     catch(e){alert("That cover couldn't be saved — storage may be full.");return;}
     coverCache.set(b.id,best.data);SYNC.triedCover.delete(b.id);bumpCovers();
@@ -56881,7 +56994,7 @@ async function sharpenCover(b,en){
        │ commitCur does the rest properly — the stamp with its sync floor, the   │
        │ shelf array, the undo step and the line in What changed.                │
        └────────────────────────────────────────────────────────────────────────┘ */
-    if(cur&&cur.id===b.id)scheduleSave();
+    if(cur&&cur.id===b.id){edPendCover(typeof wasCov==="string"?wasCov:null,best.data);scheduleSave();}
     else{touchBook(b);
       try{await dbPut("books",b);}catch(e){}
       const i=books.findIndex(x=>x.id===b.id);if(i>=0)books[i]=b;}
@@ -57622,6 +57735,9 @@ function showQuickPreview(p){
     b.modified=Date.now();
     try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");return;}
     books.unshift(b);
+    /* a step with no `before`, so ↶ takes it back — see ADDING FROM AN
+       IMPORT IS A CHANGE LIKE ANY OTHER */
+    pushOp({t:"bulk",items:[{id:b.id,before:null,after:JSON.parse(JSON.stringify(b))}]});
     if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
     closeQuickAdd();
     openBook(b.id,false);
