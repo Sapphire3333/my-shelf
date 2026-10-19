@@ -8923,12 +8923,17 @@ function jumpHits(raw,booksOnly){
     const best=Math.min(...[tb,ta,ts].filter(x=>x>=0).concat([9]));
     if(best<9)push("book",best+(tb===best?0:.5),{id:b.id,label:b.title||"Untitled",sub:[b.author,seriesShown(b)?"in "+seriesShown(b):""].filter(Boolean).join(" · ")});
     if(isColl(b))for(const en of (b.entries||[])){
-      const te=tier(en.title);
-      if(te>=0)push("story",te,{id:b.id,en:en.id,label:en.title||"Untitled",sub:"in "+(b.title||"Untitled")});
+      /* a story found by its own author as well as its title, and that author
+         offered like any other — as tags are taken from the stories too, the
+         way vocabKeywords takes them */
+      const ea=String(en.author||"").trim(),te=tier(en.title),tea=ea?tier(ea):-1;
+      const tb2=Math.min(...[te,tea].filter(x=>x>=0).concat([9]));
+      if(tb2<9)push("story",tb2+(te===tb2?0:.5),{id:b.id,en:en.id,label:en.title||"Untitled",sub:"in "+(b.title||"Untitled")+(ea?" · "+ea:"")});
+      if(ea&&!authors.has(ea))authors.set(ea,tea);
     }
     const a=String(b.author||"").trim();if(a&&!authors.has(a))authors.set(a,ta);
     const s=String(b.series||"").trim();if(s&&!series.has(s))series.set(s,ts);
-    (b.keywords||[]).forEach(k=>tags.add(k));
+    allKeywordsOf(b).forEach(k=>tags.add(k));
   }
   if(!booksOnly){
     authors.forEach((t,a)=>push("author",t,{label:a,sub:"author"}));
@@ -12632,6 +12637,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-19.11",lines:[
+    "<b>📚 Goodreads keeps count.</b> Pressing a shelf from the Goodreads feed no longer resets how many times you have read a book: the feed doesn't say, and it was telling the list “once”, over the three times an export had brought. A shelf that takes longer than thirty seconds to answer now says so and gives the buttons back, instead of leaving them greyed for good — and a cover or a lookup whose answer stops half-way gives up too.",
+    "<b>📥 Adding from your import list.</b> With <i>Include the ones already on your shelf</i> ticked, <b>＋ Add all inside</b> filed those again as duplicate stories; it adds only the new ones now, and its count says how many. The barcode reader now really tries harder on a photo — its own settings were being thrown away on every try.",
+    "<b>🧰 One name, spelled more than one way</b> pairs a name written with an accent and the same name without one, reads names in any alphabet, and includes the authors written on stories inside a collection, changing them too.",
+    "<b>And smaller things:</b> 🔎 Ctrl+K finds a story by its own author and offers the tags written on stories; Today's <b>Next in line</b> no longer skips a ⌛ book in a series to offer the one after it — it says the series is waiting for that one, as the collection cards do, and the Next in line errand waits too; the quotes wall gives two books with the same title a heading each, and ❐ Copy and the saved file credit a story's quote to the story; a cover taken from a folder of pictures reaches the cloud before the book that names it."]},
   {v:"2026-10-19.10",lines:[
     "<b>❓ How do I… covers what has been added since the 10th.</b> Press <b>?</b>: reading a file in the app, bookcases, lending, the reading clock, format, language and where a book came from and is set, the owl and the letter, questions for later, a photo of a page as a quote, a quote as a picture, printing, author pages, the keys, the timeline, the recap, the mountain, spines, your own challenges, the crossword, the word search, the bracket, the road, the scratch card, today's three cards, the room, the owl's story, packs, seasons, the trading post, the shop and the pet — 38 jobs, each a card of steps. Seven old ones that described buttons since renamed or moved are rewritten: adding a book by hand and by number, Auto-fill, keeping a quote, a second reading, folding books together and opening a pack.",
     "<b>Words that pointed the wrong way.</b> ‹ Back names the screen it goes back to — it said “‹ Library” on the way back to Shelf care, Quotes, Settings or Challenges, and “Overview” for Today. The owl answers the level you pick instead of “Rarely, then” every time. The storage-full messages send you to ⚙ Settings → You and your things for the backup file, not to the Overview tab. A collection of books says <i>books</i> on its rating panel, not <i>stories</i>. The foot of the page on a phone says “on this device”, the kept-words list says it travels, and the button is called 🔎 Auto-fill wherever it is mentioned.",
@@ -28413,6 +28423,21 @@ const seriesBefore=b=>{
    have not got you cannot open. Each of those is stepped over rather than
    blocking the rest of the series, which is what asking dareOk buys. */
 const earlierToRead=b=>seriesBefore(b).find(dareOk)||null;
+/* ┌─ NEXT MEANS NEXT, FOR A SERIES OF SEPARATE BOOKS ────────────────────────┐
+   │ The first of them not read and not given up on, in order. Today's Next  │
+   │ in line and the errand took the first one a dare could deal, so a ⌛     │
+   │ book was stepped over and #3 offered after #1 — the collection cards     │
+   │ wait on a ⌛ next instead (collWaiting). {next} is one to start now,     │
+   │ {wait} a ⌛ one still to get hold of; null when the next is being read,  │
+   │ is on hold, is set apart or is not a book.                               │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function seriesNextOf(mates){
+  const nx=(mates||[]).find(x=>statusOf(x)!=="finished"&&!x.dnf);
+  if(!nx)return null;
+  if(dareOk(nx)&&!nx.apart)return {next:nx};
+  if(kindOf(nx)==="book"&&statusOf(nx)==="want"&&unownedOf(nx)&&!holdOf(nx)&&!nx.apart)return {wait:nx};
+  return null;
+}
 /* the errands that are about a book's length — see "The long one" */
 const lenOk=b=>!b.apart&&dareOk(b)&&!collWholes(b).length&&!earlierToRead(b)&&(parseInt(b.pages)||0)>0;
 /* …and the ones merely unfinished, for the line the pick shows and for the
@@ -28685,7 +28710,7 @@ const ERRANDS=[
        const s=seriesShown(b);if(!s||seen.has(s))return;seen.add(s);
        const mates=seriesMates(b);
        if(!mates.some(x=>statusOf(x)==="finished"&&!x.dnf))return;
-       const nxt=mates.find(dareOk);if(nxt)out.push(nxt);
+       const r=seriesNextOf(mates);if(r&&r.next)out.push(r.next);
      });
      /* ┌─ AND A SERIES KEPT AS A COLLECTION ─────────────────────────────────┐
         │ Only a series NAME was asked about, and a series kept as one      │
@@ -39143,18 +39168,26 @@ async function renderHub(part){
      Every series you are part-way through, and the next one you could start
      today — the same rule the errand of that name draws one of. All of them
      here, because a list is what "what shall I read next" wants. */
+  /* see NEXT MEANS NEXT, FOR A SERIES OF SEPARATE BOOKS — a series whose next
+     is ⌛ is named underneath, not skipped past */
+  const nextWait=[];
   const nextLine=(()=>{const seen=new Set(),out=[];
     books.forEach(b=>{const s=seriesShown(b);if(!s||seen.has(s))return;seen.add(s);
       const mates=seriesMates(b);
       if(!mates.some(x=>statusOf(x)==="finished"&&!x.dnf))return;
       if(mates.some(x=>statusOf(x)==="reading"&&!x.dnf&&!holdOf(x)))return;   /* already on it */
-      const nxt=mates.find(dareOk);if(nxt)out.push(nxt);});
+      const r=seriesNextOf(mates);if(!r)return;
+      if(r.next)out.push(r.next);else nextWait.push(r.wait);});
     return out;})();
-  const nextLineHtml=today&&nextLine.length?`<div class="sec" id="secNextLine">
+  const nextWaitHtml=nextWait.length?`<div class="hint" style="margin:2px 0 6px">⌛ Waiting to get hold of the next in ${nextWait.map(b=>
+      `<button class="linkbtn" data-open="${b.id}" title="${esc(b.title||"Untitled")} — take the ⌛ off when you have it">${esc(seriesShown(b))}${b.seriesNum?" #"+esc(String(b.seriesNum)):""}</button>`).join(", ")
+    } — the series comes back here when the mark is off.</div>`:"";
+  const nextLineHtml=today&&(nextLine.length||nextWait.length)?`<div class="sec" id="secNextLine">
     <div class="heading"><h2 class="serif">Next in line</h2>${nextLine.length>1?`<span class="n">(${nextLine.length})</span>`:""}</div>
     ${nextLine.slice(0,5).map(b=>rowHtml(b,false)+`<div class="hrow2" style="margin:-4px 0 8px 4px"><button class="btn smallbtn" data-setst="${b.id}|reading" title="Mark it Reading now — it moves up to Reading now">📖 Start it</button>
       <span class="hint" style="margin:0">the next unread in ${esc(seriesShown(b))}</span></div>`).join("")}
     ${nextLine.length>5?`<div class="hint" style="margin:0 0 4px">…and ${nextLine.length-5} more series with a next one waiting — 🔗 Series overview in the Library lists them all.</div>`:""}
+    ${nextWaitHtml}
   </div>`:"";
   /* ---- Up next: the queue you ordered yourself — see upNextList ---- */
   const upq=today?upNextList():[];
@@ -41186,16 +41219,21 @@ function refreshDupes(){
    spaces taken out — which catches every case above and, deliberately, nothing
    cleverer. Near-misses are not guessed at: "Fenwright" and "Fenwick" are not the
    same author and no amount of fuzziness should be allowed to think so. */
-const nameKey=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
+/* accents folded and every alphabet kept: a–z only never paired Brontë with
+   Bronte, and a name written in Cyrillic or Hangul had no key at all */
+const nameKey=s=>String(s||"").normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^\p{L}\p{N}]+/gu,"");
 function nameDupeGroups(){
   const out=[];
-  [["author","Author",b=>[b.author]],["series","Series",b=>[b.series]]].forEach(([field,label,get])=>{
+  /* each spelling points at where it is written: the book, or a story with an
+     author of its own — Search lists those as authors, and this never saw them */
+  [["author","Author",b=>[[b.author,null],...(isColl(b)?(b.entries||[]).filter(en=>en&&String(en.author||"").trim()).map(en=>[en.author,en]):[])]],
+   ["series","Series",b=>[[b.series,null]]]].forEach(([field,label,get])=>{
     const map={};
-    books.forEach(b=>get(b).forEach(v=>{
+    books.forEach(b=>get(b).forEach(([v,en])=>{
       const name=String(v||"").trim();if(!name)return;
       const k=nameKey(name);if(!k)return;
       (map[k]=map[k]||{}) ;
-      (map[k][name]=map[k][name]||[]).push(b);
+      (map[k][name]=map[k][name]||[]).push({b,en});
     }));
     Object.values(map).forEach(spellings=>{
       const names=Object.keys(spellings);
@@ -41225,18 +41263,21 @@ function refreshNameDupes(){
     const g=groups[+btn.dataset.nmk],keep=btn.dataset.nmv;
     const others=g.names.filter(n=>n!==keep);
     if(!others.length)return;
-    const n=others.reduce((s,nm)=>s+g.spellings[nm].length,0);
-    if(!confirm(`Change ${others.map(o=>`“${o}”`).join(" and ")} to “${keep}”?\n\n${n} book${n===1?"":"s"} ${n===1?"is":"are"} affected. Nothing else about them changes, and Undo can put it back.`))return;
+    const refs=others.flatMap(nm=>g.spellings[nm]),n=refs.length,ns=refs.filter(r=>r.en).length;
+    if(!confirm(`Change ${others.map(o=>`“${o}”`).join(" and ")} to “${keep}”?\n\n${n} ${n===1?"place":"places"} ${n===1?"is":"are"} affected${ns?` — ${ns} of them ${ns===1?"a story":"stories"} inside a collection`:""}. Nothing else about them changes, and Undo can put it back.`))return;
+    /* one save and one undo item per book, however many of its stories change */
+    const byBook=new Map();
+    refs.forEach(r=>{const x=byBook.get(r.b.id)||{b:r.b,self:false,ens:[]};if(r.en)x.ens.push(r.en);else x.self=true;byBook.set(r.b.id,x);});
     const items=[];let full=false;
-    outer:for(const nm of others){
-      for(const b of g.spellings[nm]){
-        const before=JSON.parse(JSON.stringify(b));
-        b[g.field]=keep;
-        touchBook(b);
-        if(!(await putOrRestore(b,before))){full=true;break outer;}
-        if(SYNC.on)enqueue({kind:"book",id:b.id});
-        items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
-      }
+    for(const {b,self,ens} of byBook.values()){
+      const before=JSON.parse(JSON.stringify(b));
+      if(self)b[g.field]=keep;
+      ens.forEach(en=>{en.author=keep;});
+      touchBook(b);
+      if(!(await putOrRestore(b,before))){full=true;break;}
+      if(SYNC.on)enqueue({kind:"book",id:b.id});
+      items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+      try{await rebaseOpenBook(b.id);}catch(e){}
     }
     /* the promise in the confirm above is now kept: one press restores every
        spelling this just rewrote — and a full disk partway keeps it too */
@@ -43710,17 +43751,26 @@ function renderQuotes(){
     ||(x.b.genres||[]).some(g=>softHit(g,fq)));
   /* a book's FIRST genre stands for it here, the same call the Library's
      genre sort makes — one quote, one place, never counted twice */
-  const keyOf=x=>QT.group==="book"?(x.b.title||"Untitled")
+  /* a book is its id: two books called the same were one heading, their
+     quotes and their ★ together — the title is only what the heading says */
+  const keyOf=x=>QT.group==="book"?x.b.id
     :QT.group==="genre"?((x.b.genres||[])[0]||"No genre")
     :QT.group==="kind"?kindLabel(kindOf(x.b))
     :QT.group==="recent"?(QT.hand?"A handful at random":"Newest first")
     :(QT.hand?"A handful at random":"Every quote");
   const groups={};hits.forEach(x=>(groups[keyOf(x)]=groups[keyOf(x)]||[]).push(x));
   let names=Object.keys(groups);
+  /* the heading: the title, and the author too where two books share it */
+  const titleN={};
+  if(QT.group==="book")names.forEach(k=>{const t=String(groups[k][0].b.title||"Untitled").toLowerCase();titleN[t]=(titleN[t]||0)+1;});
+  const labelOf=k=>{if(QT.group!=="book")return k;
+    const b=groups[k][0].b,t=b.title||"Untitled",a=String(b.author||"").trim();
+    return titleN[t.toLowerCase()]>1&&a?t+" — "+a:t;};
+  const byLabel=(a,b)=>labelOf(a).localeCompare(labelOf(b));
   const bestOf=g=>Math.max(...groups[g].map(x=>x.b.rating!=null?Number(x.b.rating):-1));
-  if(QT.order==="count")names.sort((a,b)=>groups[b].length-groups[a].length||a.localeCompare(b));
-  else if(QT.order==="rating")names.sort((a,b)=>bestOf(b)-bestOf(a)||a.localeCompare(b));
-  else names.sort((a,b)=>a.localeCompare(b));
+  if(QT.order==="count")names.sort((a,b)=>groups[b].length-groups[a].length||byLabel(a,b));
+  else if(QT.order==="rating")names.sort((a,b)=>bestOf(b)-bestOf(a)||byLabel(a,b));
+  else names.sort(byLabel);
   /* ONE PRESS, TWO DIRECTIONS: pressing the option you are already on turns it round. The
      reversal is done here, on the finished order, rather than inside each of
      the three comparators — one place to be right instead of three, and the
@@ -43802,7 +43852,7 @@ function renderQuotes(){
       const best=bestOf(nm);
       return `<div class="sec" style="margin-bottom:14px">
         <div class="heading" data-qtfold="${esc(nm)}" style="cursor:pointer"><span class="lbl" style="margin:0">${shutG?"▸":"▾"}</span>
-          <h2 class="serif" style="font-size:17px">${esc(nm)}</h2>
+          <h2 class="serif" style="font-size:17px">${esc(labelOf(nm))}</h2>
           <span class="n">(${list.length}${QT.group==="book"&&best>=0?` · ★ ${best.toFixed(1)}`:""})</span></div>
         ${shown.length?`<div class="qwall">${shown.map(card).join("")}</div>`:""}
         ${!shutG&&rest>0?`<div><button class="btn" data-qtmore="${esc(nm)}" style="padding:3px 11px;font-size:12px">Show all ${list.length}</button></div>`:""}
@@ -43822,7 +43872,9 @@ function renderQuotes(){
   qa("[data-qcopy]",m).forEach(b2=>b2.onclick=async e=>{
     e.stopPropagation();
     const x=flat[+b2.dataset.qcopy];if(!x)return;
-    const a=String(x.b.author||"").trim(),t2=x.b.title||"Untitled";
+    /* credited as 🖼 credits it: a story's quote to the story and its own
+       author, where it named the collection */
+    const who=quotePicWho(x.b,quoteFrom(x.b,x.i)),a=who.author,t2=who.title||"Untitled";
     const line=`“${stripHtml(x.t).trim()}” — ${t2}${a&&!t2.toLowerCase().includes(a.toLowerCase())?`, ${a}`:""}`;
     try{await navigator.clipboard.writeText(line);b2.textContent="✓";setTimeout(()=>{b2.textContent="❐";},900);}catch(err){}
   });
@@ -43845,7 +43897,7 @@ function renderQuotes(){
     /* the list is a way IN, so it puts the wall into the shape where that book
        has a heading of its own, opens it, and takes the search off — landing on
        a group that a leftover search had emptied would look like a dead press */
-    const nm=bk.title||"Untitled";
+    const nm=bk.id;
     QT.group="book";QT.rev=false;QT.hand=null;QT.q="";QT.books=false;
     QT.shut.delete(nm);QT.open.add(nm);
     renderQuotes();
@@ -43858,11 +43910,16 @@ function renderQuotes(){
     QT.hand=pool.slice(0,5);QT.q="";QT.shut.clear();QT.open.clear();renderQuotes();
   };
   q("#qtSave",m).onclick=()=>{
-    const by={};all.forEach(x=>{const t2=x.b.title||"Untitled";(by[t2]=by[t2]||[]).push(x);});
-    const txt=Object.keys(by).sort((a,b)=>a.localeCompare(b)).map(t2=>{
-      const b=by[t2][0].b,a=String(b.author||"").trim();
+    /* by book, each under its own author — by title, two books of one name
+       were one heading and the second's lines went under the first's author —
+       and a story's line says which story */
+    const by=new Map();all.forEach(x=>{if(!by.has(x.b.id))by.set(x.b.id,[]);by.get(x.b.id).push(x);});
+    const txt=[...by.values()].sort((p,q2)=>String(p[0].b.title||"Untitled").localeCompare(String(q2[0].b.title||"Untitled"))).map(list=>{
+      const b=list[0].b,t2=b.title||"Untitled",a=String(b.author||"").trim();
       return t2+(a&&!t2.toLowerCase().includes(a.toLowerCase())?` — ${a}`:"")+"\n"
-        +by[t2].map(x=>`  “${stripHtml(x.t).trim()}”`).join("\n");
+        +list.map(x=>{const w=quotePicWho(x.b,quoteFrom(x.b,x.i));
+          const from=w.title&&w.title!==t2?` (${w.title}${w.author&&w.author!==a?", "+w.author:""})`:"";
+          return `  “${stripHtml(x.t).trim()}”${from}`;}).join("\n");
     }).join("\n\n");
     const blob=new Blob([txt],{type:"text/plain;charset=utf-8"});
     const a=document.createElement("a");a.href=URL.createObjectURL(blob);
@@ -53976,7 +54033,9 @@ async function scanTake(key,asCover){
   }catch(e){say("Couldn't be saved — storage may be full.");return;}
   touchBook(b);b.touched=true;
   try{await dbPut("books",b);}catch(e){}
-  if(SYNC.on){enqueue({kind:"book",id:b.id});if(asCover)enqueue({kind:"cover",id:b.id});flushQueue();}
+  /* the cover first: queued after, the book's new coverV reached the other
+     device before the picture it names was in the cloud */
+  if(SYNC.on){if(asCover)enqueue({kind:"cover",id:b.id});enqueue({kind:"book",id:b.id});flushQueue();}
   if(asCover)bumpCovers();
   histSrc="pictures from your files";
   pushOp({t:"bulk",items:[{id:b.id,before,after:JSON.parse(JSON.stringify(b))}]});
@@ -54897,7 +54956,9 @@ function fromGoodreads(o){
     /* the day it went onto your Goodreads shelf — see WHEN A BOOK WAS ADDED.
        The feed says it as _added (see grParseFeed). */
     added:cleanDate(o["Date Added"]||o._added||""),
-    rereads:Math.max(0,(parseInt(o["Read Count"]||"1")||1)-1),
+    /* a blank count is no answer — the feed has none (see grParseFeed) — and
+       a blank is what impMerge leaves alone; a 0 here overwrote an export's 3 */
+    rereads:o["Read Count"]===""?"":Math.max(0,(parseInt(o["Read Count"]||"1")||1)-1),
     summary:o["My Review"]||"",notes:o["Private Notes"]||"",
     tags:splitTags(o["Bookshelves"]).filter(t=>!["read","to-read","currently-reading"].includes(t.toLowerCase()))};
 }
@@ -55401,6 +55462,8 @@ const bImpRow=(it,coll)=>`<div class="snap bimprow" style="padding:6px 10px">
 function bookImportHtml(b){
   if(!importQueue.length)return "";
   const {hit,near}=bImpRows(b);
+  /* the sweep files only what is not on the shelf yet — see #bImpAll */
+  const sweepN=hit.filter(it=>!it.dupe).length;
   const coll=isColl(b);
   const total=hit.length+near.length;
   /* Matching finds books by title and author, so a book that belongs to a
@@ -55441,8 +55504,8 @@ function bookImportHtml(b){
       <span class="fclear"><input class="field" id="bImpQ" placeholder="Search the whole import list…" value="${esc(bImpQ)}" style="font-size:13px;padding:7px 11px">
         <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the search">✕</button></span>
       ${dupeN?`<label class="chk" style="margin-top:7px"><input type="checkbox" id="bImpHave" ${bImpHave?"checked":""}> Include the ${dupeN} already on your shelf</label>`:""}
-      ${hit.length?`<div class="hrow2" style="margin-top:8px">
-        <button class="btn pri" id="bImpAll" style="padding:5px 11px">${coll?`＋ Add all ${hit.length} inside`:`📚 Make it a collection and add all ${hit.length}`}</button>
+      ${sweepN?`<div class="hrow2" style="margin-top:8px">
+        <button class="btn pri" id="bImpAll" style="padding:5px 11px">${coll?`＋ Add all ${sweepN} inside`:`📚 Make it a collection and add all ${sweepN}`}</button>
         ${near.length?`<span class="none" style="font-size:12px">the ${near.length} same-author guess${near.length===1?"":"es"} below aren't in that — tick the ones you want</span>`:""}
       </div>`:""}
       ${total?`<div class="hrow2" style="margin-top:8px;align-items:center">
@@ -55604,7 +55667,9 @@ function wireBookImport(b){
   /* the sweep takes only the rows the TITLE vouches for — a same-author row
      is a guess, and the Overview list's rule holds here too: a sweep must
      not act on a guess. Each guess keeps its own ＋ Inside. */
-  if(all)all.onclick=()=>{const {hit}=bImpRows(b);file(hit,all);};
+  /* …nor on a row already on the shelf, shown because you asked to see them:
+     with that ticked, the sweep filed every one again as a duplicate story */
+  if(all)all.onclick=()=>{const {hit}=bImpRows(b);file(hit.filter(it=>!it.dupe),all);};
 }
 /* "nothing new to take from it" is a conclusion, and a conclusion you cannot see
    the working of is indistinguishable from a bug. This shows both sides. Lives
@@ -55937,12 +56002,23 @@ const grBuiltLine=t=>{
    otherwise, because the editor's "deploy a new function" hands out a sample
    name (smart-task) and renaming the title afterwards leaves the address */
 const goodreadsFn=()=>String(CFG.goodreadsFunction||"goodreads").trim().replace(/[^a-z0-9_-]/gi,"")||"goodreads";
+const GR_WAIT=30000;
 async function fetchGoodreadsFeed(shelf,page){
   const base=String(CFG.url||"").replace(/\/+$/,"");
-  const r=await fetch(base+"/functions/v1/"+goodreadsFn(),{method:"POST",
-    headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+CFG.anonKey},
-    body:JSON.stringify({shelf,page})});
-  const text=await r.text();
+  /* a page that never comes held the shelf buttons greyed for good: the
+     wait covers the answer AND its body, and then says so */
+  const ac=typeof AbortController==="function"?new AbortController():null;
+  const t=ac?setTimeout(()=>ac.abort(),GR_WAIT):null;
+  let r,text;
+  try{
+    r=await fetch(base+"/functions/v1/"+goodreadsFn(),{method:"POST",
+      headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+CFG.anonKey},
+      body:JSON.stringify({shelf,page}),...(ac?{signal:ac.signal}:{})});
+    text=await r.text();
+  }catch(e){
+    if(e&&e.name==="AbortError")throw new Error(`page ${page} took longer than ${GR_WAIT/1000} seconds — Goodreads is slow at times; try again in a minute`);
+    throw e;
+  }finally{if(t)clearTimeout(t);}
   if(!r.ok){
     let why="";try{why=String(JSON.parse(text).error||"");}catch(e){}
     /* a function never deployed answers 404 with Supabase's own words, not ours */
@@ -55967,7 +56043,10 @@ function grParseFeed(text,shelf){
     "My Rating":g(it,"user_rating"),"Number of Pages":g(it,"num_pages"),
     "Date Read":grDate(g(it,"user_read_at")),
     "Exclusive Shelf":grShelfOf(g(it,"user_shelves"),shelf),
-    Bookshelves:g(it,"user_shelves"),"My Review":stripHtml(g(it,"user_review")),"Private Notes":"","Read Count":"1",
+    Bookshelves:g(it,"user_shelves"),"My Review":stripHtml(g(it,"user_review")),"Private Notes":"",
+    /* the feed does not say how many times a book was read; "1" here read as
+       "never again" and wiped the count an export had brought */
+    "Read Count":"",
     _added:grDate(g(it,"user_date_added"))}));
   /* when Goodreads last rebuilt this snapshot, carried on the list itself —
      see grBuiltLine for why it is worth saying out loud */
@@ -56213,9 +56292,10 @@ async function fetchJson(url,tries,ms,opts){
   for(let i=0;i<(tries||3);i++){
     const ac=typeof AbortController==="function"?new AbortController():null;
     const t=ac?setTimeout(()=>ac.abort(),ms||9000):null;
+    /* the timer stands until the body is read: cleared when the headers came,
+       a body that stalled in r.json() waited without any limit */
     try{
       const r=await fetch(url,Object.assign({},opts||{},ac?{signal:ac.signal}:{}));
-      if(t)clearTimeout(t);
       if(r.status===429||r.status>=500)last=new Error("busy ("+r.status+")");
       /* a 403 is Google saying "quota" — parsing its error body used to come back
          as a normal answer with no items, which read as "nothing found" */
@@ -56225,7 +56305,8 @@ async function fetchJson(url,tries,ms,opts){
         let why="";try{const j=await r.json();why=String(j.error_description||j.error||j.message||"").slice(0,120);}catch(e){}
         last=new Error("refused ("+r.status+")"+(why?": "+why:""));break;}
       else return await r.json();
-    }catch(e){if(t)clearTimeout(t);last=e;}
+    }catch(e){last=e;}
+    finally{if(t)clearTimeout(t);}
     if(i<(tries||3)-1)await new Promise(s=>setTimeout(s,700*(i+1)));
   }
   throw last||new Error("no answer");
@@ -57412,9 +57493,13 @@ async function urlToDataURL(url,maxDim){
      for minutes, and this used to hold "Fetching…" hostage the whole time */
   const ac=typeof AbortController!=="undefined"?new AbortController():null;
   const t=ac?setTimeout(()=>ac.abort(),9000):null;
-  let r;try{r=await fetch(url,ac?{signal:ac.signal}:undefined);}finally{if(t)clearTimeout(t);}
-  if(!r.ok)throw new Error("cover fetch failed");
-  const bl=await r.blob();
+  /* the picture itself inside the nine seconds too — cleared on the headers,
+     a cover whose bytes stalled held it with no limit at all */
+  let bl;try{
+    const r=await fetch(url,ac?{signal:ac.signal}:undefined);
+    if(!r.ok)throw new Error("cover fetch failed");
+    bl=await r.blob();
+  }finally{if(t)clearTimeout(t);}
   if(!bl.type.startsWith("image/"))throw new Error("not an image");
   if(bl.size<1200)throw new Error("blank cover");   /* OL sends a 1px placeholder */
   return compressImage(bl,maxDim||COVER_MAX,.85);
@@ -57720,8 +57805,11 @@ function decodeOnCanvas(c){
   const hints=new Map();
   hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,[ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.UPC_A,ZXing.BarcodeFormat.EAN_8]);
   hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
+  /* decode(image, hints) sets the hints it is handed, and handed none it set
+     none: TRY_HARDER and the three formats were thrown away on every try.
+     decodeWithState reads with the hints already set. */
   const rd=new ZXing.MultiFormatReader();rd.setHints(hints);
-  return rd.decode(bm).getText();
+  return rd.decodeWithState(bm).getText();
 }
 async function readBarcode(file){
   if(!file||!/^image\//.test(file.type||""))throw new Error("That isn't a picture.");
