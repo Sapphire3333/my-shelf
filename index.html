@@ -10563,10 +10563,24 @@ async function pullAll(){
   let touched=false;
   try{
     const s=SYNC.supa,uid=SYNC.user.id;
+    /* the stamps are a line per book; written at the end only if they moved */
+    let seenWas="";try{seenWas=JSON.stringify(SYNC.seen);}catch(e){}
     // meta first (additive merge, local edits win)
     try{
       const {data:metaRows,error:me}=await s.from("meta").select("key,value").eq("user_id",uid);
       if(!me&&metaRows){
+        /* ---- A PULL WRITES THE LISTS THAT MOVED ----
+           Every pull wrote some eighteen lists back to the database whether
+           or not anything in them had changed — the cloud bin, which carries
+           whole books, among them — and each write told the other tab, which
+           redrew. Each is written now only when it differs from what it was
+           when this pull began. */
+        const metaWas={};
+        [["libArt",libArt],["kwCats",kwCats],["catColors",catColors],["metaTimes",metaTimes],["metaDel",metaDel],["metaAlive",metaAlive],
+         ["kwColors",kwColors],["trashCloud",trashCloud],["kwList",kwList],["genres",genres],["dnfReasons",dnfCustom],["audiences",audCustom],
+         ["deletions",deletions],["backgrounds",bgList],["padskins",padList],["fandoms",fandoms],["groupArt",groupArt]]
+          .forEach(([k,v])=>{try{metaWas[k]=JSON.stringify(v);}catch(e){}});
+        const metaPut=(k,v)=>{let j="";try{j=JSON.stringify(v);}catch(e){}if(j&&metaWas[k]===j)return;metaWas[k]=j;dbPut("meta",{k,v});};
         /* take the deletion record first, so nothing deleted elsewhere is re-added below */
         const mdRow=metaRows.find(r=>r.key==="metaDel");
         if(mdRow&&mdRow.value)for(const k in mdRow.value)metaDel[k]=Math.max(metaDel[k]||0,mdRow.value[k]);
@@ -10741,15 +10755,15 @@ async function pullAll(){
            the other devices, and is what the "cat:" prefix above was always for. */
         {const live=new Set(Object.values(kwCats).filter(Boolean));
          for(const c of Object.keys(catColors))if(!live.has(c)){delete catColors[c];markMetaDel("cat:"+c);}}
-        dbPut("meta",{k:"libArt",v:libArt});
-        dbPut("meta",{k:"kwCats",v:kwCats});dbPut("meta",{k:"catColors",v:catColors});
+        metaPut("libArt",libArt);
+        metaPut("kwCats",kwCats);metaPut("catColors",catColors);
         for(const k in rTimes)metaTimes[k]=Math.max(metaTimes[k]||0,rTimes[k]);
-        dbPut("meta",{k:"metaTimes",v:metaTimes});
-        dbPut("meta",{k:"metaDel",v:metaDel});dbPut("meta",{k:"metaAlive",v:metaAlive});dbPut("meta",{k:"kwColors",v:kwColors});dbPut("meta",{k:"trashCloud",v:trashCloud});
+        metaPut("metaTimes",metaTimes);
+        metaPut("metaDel",metaDel);metaPut("metaAlive",metaAlive);metaPut("kwColors",kwColors);metaPut("trashCloud",trashCloud);
         /* the tag list was joined above in memory only, so a word retired on
            the other device came back here at the next start, and one it added
            went missing until the next pull */
-        dbPut("meta",{k:"kwList",v:kwList});
+        metaPut("kwList",kwList);
         /* Our side of the four newcomers goes up whenever it says something
            the cloud's copy doesn't — including the very first time, when there
            is no cloud copy at all. Written to disk BEFORE it is queued: the
@@ -10769,7 +10783,7 @@ async function pullAll(){
         try{const eb=effectiveBg();if(eb&&bgList.some(c=>c.id===eb.id)&&!bgCache.get(eb.id))applyBg();}catch(e){}
         if(gameChanged)touched=true;
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
-        dbPut("meta",{k:"genres",v:genres});dbPut("meta",{k:"dnfReasons",v:dnfCustom});dbPut("meta",{k:"audiences",v:audCustom});dbPut("meta",{k:"deletions",v:deletions});dbPut("meta",{k:"backgrounds",v:bgList});dbPut("meta",{k:"padskins",v:padList});dbPut("meta",{k:"fandoms",v:fandoms});dbPut("meta",{k:"groupArt",v:groupArt});dbPut("meta",{k:"kwColors",v:kwColors});
+        metaPut("genres",genres);metaPut("dnfReasons",dnfCustom);metaPut("audiences",audCustom);metaPut("deletions",deletions);metaPut("backgrounds",bgList);metaPut("padskins",padList);metaPut("fandoms",fandoms);metaPut("groupArt",groupArt);dbPut("meta",{k:"kwColors",v:kwColors});
       }
     }catch(e){console.warn("[shelf] meta pull",e);}
     // books (per-book last-write-wins by `modified`)
@@ -10927,7 +10941,7 @@ async function pullAll(){
        — the same tidy boot does, on what has just arrived */
     {const lifted=await liftUnanimousGenres();
      if(lifted.length){touched=true;lifted.forEach(id=>enqueue({kind:"book",id}));}}
-    dbPut("meta",{k:"seenMod",v:SYNC.seen});
+    {let now="";try{now=JSON.stringify(SYNC.seen);}catch(e){}if(!now||now!==seenWas)dbPut("meta",{k:"seenMod",v:SYNC.seen});}
     setSync("synced");
     /* a pull that changed nothing leaves the screen alone. Coming back to the tab
        pulls, and on a phone that is every few minutes — each one used to rebuild
@@ -12837,6 +12851,9 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-20.9",lines:[
+    "<b>⚡ Faster on a big shelf.</b> Measured on a stand-in shelf of 4,335 books: 🏠 Today opens in about a third of a second instead of two, and 🧰 Shelf care in under a second instead of eight. Today's three cards, the tag lookalikes, the pet's pages and Insights all stopped re-reading the whole shelf for every card, pair or draw.",
+    "<b>☁️ Lighter syncing:</b> a pull writes only the lists that changed, and ↶ Undo sends up only what the step changed, not the cover and every picture the book has."]},
   {v:"2026-10-20.8",go:["tab:library"],lines:[
     "<b>📚 The Library's ⇅ Sort is ⇅ Sort &amp; layout</b> on the computer, and inside it says what each part is: how the shelf is laid out (its width, scrolling or pages, the spine width), the order, and the list printed or placed on your bookcases. Nothing moved.",
     "<b>📖 On a book's page,</b> 🖨 Print, 🧭 Find and 📱 Fit are under <b>⚙ View ▾</b> now, beside text size and cover size, so the bar keeps what you press every day. The 🔎 at the left says <i>Find a book</i>, so it isn't mistaken for 🔎 Auto-fill.",
@@ -16424,7 +16441,19 @@ async function applyOp(op,inv,quiet){
         try{if(await dbGet("trash",id)){await dbDel("trash",id);countTrash();}}catch(e){}
         if(trashCloud[id]){delete trashCloud[id];saveTrashCloud();}
       }
-      if(SYNC.on){if(unDelete(id))saveDeletions();enqueue({kind:"cover",id});fileKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));enqueue({kind:"book",id});}
+      /* ---- ↶ SENDS WHAT IT CHANGED ----
+         Every undo re-sent the cover and every file the book owns — a mark
+         taken back on a book with twenty scrapbook pictures and a reader
+         file was 23 uploads, pictures first. A book coming back from a
+         delete sends all of it; any other step sends the cover when it
+         carries one (op.cover) and the files that are on one side of the step
+         and not the other. op.imgs are sent where they are put back, above. */
+      if(SYNC.on){if(unDelete(id))saveDeletions();
+        if(op.t==="del"){enqueue({kind:"cover",id});fileKeysOf(clone).forEach(key=>enqueue({kind:"img",key}));}
+        else{if(op.cover)enqueue({kind:"cover",id});
+          const other=inv?op.after:op.before,had=new Set(other?fileKeysOf(other):[]);
+          fileKeysOf(clone).forEach(key=>{if(!had.has(key)&&!(op.imgs&&op.imgs[key]))enqueue({kind:"img",key});});}
+        enqueue({kind:"book",id});}
     }else{
       const gone=(op.t==="del"?op.body:op.after)||null;
       /* a book this step CREATED is un-created by ↶, not deleted: binning it
@@ -24705,15 +24734,20 @@ const TAROT_LINES={
   present:["{t} — you are closer to the end than you think.","Whatever {t} is doing to you, it is doing it on purpose.","The next chapter of {t} is shorter than it looks. Go on.","{t} has a trick in it you have not seen yet. Keep an eye on the quiet character.","Tonight, {t} and nothing else. The owl says so.","Half of {t} is behind you; the better half, probably, is ahead.","{t} will not read itself. The owl has checked.","A page of {t} before bed is worth two in the morning.","{t} is the book that will explain today, later.","Do not skip the slow part of {t}. The slow part is where it lives.","{t} is watching you put it down. It is patient, but not infinitely.","Something in {t} rhymes with something you finished. Listen for it.","The owl has seen your bookmark in {t}. It has been there a while.","{t} wants ten more pages from you. Then it will give you something back.","You are the right reader for {t}, right now, which is rarer than it sounds.","{t} is about to turn. Hold on.","Read {t} where there is a window. It wants to be read with weather.","The owl suspects you already know how {t} ends. Read it anyway.","{t} is a conversation you are halfway through. Do not leave the room.","Say a page in {t} today — the mountain notices.","{t} is heavier in the middle. Every good one is.","There is a line in {t} coming up that you will want to keep. Have the quote box ready.","{t} will be finished this week if you let it. Let it.","The owl does not know what happens next in {t} either. That is the point.","{t} is the present. It has a way of becoming the past faster than you expect.","You picked {t} for a reason you have half forgotten. The book remembers.","{t}: twenty pages, a cup of something, no phone. The owl's prescription.","Whatever you expected {t} to be, it has quietly become something else.","{t} is the kind of book that is better the second evening than the first.","There is a character in {t} who needs you to keep going. The owl will not say which.","{t} is doing its work. You are doing yours. Carry on.","The owl has a feeling about {t}. It is a good feeling.","{t} will give you one sentence to carry out of the house tomorrow.","You are in the middle of {t}, which is the only place a book is ever really read."],
   future:["{t} — small, and it will float.","{t} is waiting with more patience than you deserve. Start it.","{t} will be the one you talk about at the end of the year.","The owl has looked at {t}. It is not what the cover says.","{t} is three evenings long, however many pages it has.","You will start {t} on a day you are tired, and it will wake you.","{t} has been waiting for a particular mood. The mood is closer than you think.","Someone put {t} in your hands for a reason. Find out what.","{t} is the book under the book you think you want next.","{t} will teach you one thing and then pretend it didn't.","Read {t} before the year is out. The owl will not say why.","{t} is a door you keep walking past. It is unlocked.","The dust on {t} is only dust. Blow it off.","{t} will surprise you, which is more than most of the pile can promise.","{t} will not be what you expect. Expect that.","There is a reason {t} is on the shelf and not in the shop. Trust it.","{t} pairs well with rain.","The first page of {t} is the hardest. The owl has read the first page.","{t}: start it on a Sunday. It is a Sunday book.","{t} will make a liar of the mark you expect to give it, one way or the other.","If you start {t} tonight, the mountain gets a little smaller by morning.","{t} is the one the future you is already fond of.","There is a sentence in {t} that was written for you. It is somewhere after the middle.","{t} will change which book you reach for after it. That is how it goes.","The owl has turned this card twice. {t} both times.","{t} is cheaper than the thing you were about to buy instead, and lasts longer.","{t} will go faster than its page count says.","You will finish {t} and wonder what took you so long. The owl wonders already.","{t} is a promise you made to yourself in a shop. Keep it.","{t}: the owl would start with the first chapter. Radical, it knows.","{t} is waiting for a bookmark. Any bookmark.","Whatever you read next, {t} will still be here. That is not a reason to wait.","The owl sees {t} on your shelf and sees a good evening you have not had yet.","{t} knows your name already. Introduce yourself."]
 };
-function tarotStageOf(c){
-  const b=books.find(x=>x.id===c.id);if(!b)return "";
+/* ---- ONE LOOK-UP, NOT A WALK PER CARD ----
+   Each card found its book by walking the shelf, three times over for the
+   three slots — 1.7 s of Today's 2.4 at 4,335 books, measured. tarotDeal
+   hands a table made once. */
+function tarotStageOf(c,byId){
+  const b=byId?byId.get(c.id):books.find(x=>x.id===c.id);if(!b)return "";
   const en=c.en?(b.entries||[]).find(e=>e&&e.id===c.en):null;
   if(en)return entDnfOf(b,en)?"":entStatusOf(b,en);
   return b.dnf||holdOf(b)?"":statusOf(b);
 }
 function tarotDeal(day){
-  const pool=cardPool(),have=cardCounts();
-  const pick=(stage,slot)=>{const ok=pool.filter(c=>tarotStageOf(c)===stage);if(!ok.length)return null;
+  const pool=cardPool(),have=cardCounts(),byId=new Map(books.map(b=>[b.id,b]));
+  const stageOf=new Map(pool.map(c=>[c,tarotStageOf(c,byId)]));
+  const pick=(stage,slot)=>{const ok=pool.filter(c=>stageOf.get(c)===stage);if(!ok.length)return null;
     const own=ok.filter(c=>have[c.key]),list=own.length?own:ok;return list[strHash("tarot|"+day+"|"+slot)%list.length];};
   return [["past","Past","finished"],["present","Present","reading"],["future","Future","want"]].map(([slot,label,stage])=>({slot,label,c:pick(stage,slot)}));
 }
@@ -33901,8 +33935,11 @@ function tqWire(m){
     const [key,t]=TQ_BUILD[k](el.value);
     tqAsk(key,t);renderChallenges();});
   qa("[data-tqg]",m).forEach(b=>b.onclick=()=>{tqGuess(b.dataset.tqg);renderChallenges();});
-  const f=q("#tqFind",m);if(f){f.oninput=()=>{tqFind=f.value;const pos=f.selectionStart;renderChallenges();
-    const n=q("#tqFind");if(n){n.focus();try{n.setSelectionRange(pos,pos);}catch(e){}}};}
+  /* the whole tab is redrawn to show what fits, so it waits for a pause in
+     the typing rather than going once a letter */
+  const f=q("#tqFind",m);if(f){f.oninput=()=>{tqFind=f.value;const pos=f.selectionStart;clearTimeout(tqTypeT);
+    tqTypeT=setTimeout(()=>{renderChallenges();
+      const n=q("#tqFind");if(n){n.focus();try{n.setSelectionRange(pos,pos);}catch(e){}}},180);};}
 }
 
 /* ═══ 🎧 HEAR IT ═══════════════════════════════════════════════════════════
@@ -34758,7 +34795,7 @@ function cwSolve(s){
 }
 /* the word selected on the grid (cwWire's paint), so 💡 helps where you are
    rather than at the first unfinished clue, which may be off the screen */
-let cwCurWord=null;
+let cwCurWord=null,tqTypeT=null;
 function cwHint(s){
   const mine=(cwCurWord!=null&&s.words[cwCurWord]&&!(s.done||[]).includes(cwCurWord))?s.words[cwCurWord]:null;
   const w=mine||s.words.find((w,k)=>!(s.done||[]).includes(k));if(!w)return;
@@ -36662,7 +36699,19 @@ function petPages(){
   const c=petCfg();if(!c||!c.born)return 0;
   return pagesReadSince(String(c.born).slice(0,10));
 }
+/* ---- THE PET'S PAGES, ONCE PER CHANGE ----
+   Every tab's draw asked for them twice (the glow and the mood) and once a
+   minute besides, each a walk of every reading on the shelf. Kept until a
+   book changes (its `modified`), the shelf's size changes, or the day turns. */
+let prsMemo={k:"",v:0};
 function pagesReadSince(born){
+  if(!born)return 0;
+  let mx=0;for(const b of books)if((b.modified||0)>mx)mx=b.modified||0;
+  const key=born+"|"+books.length+"|"+mx+"|"+todayStr();
+  if(prsMemo.k===key)return prsMemo.v;
+  const v=pagesReadSinceNow(born);prsMemo={k:key,v};return v;
+}
+function pagesReadSinceNow(born){
   if(!born)return 0;
   const seen=new Set();
   let n=0;
@@ -39541,8 +39590,9 @@ async function renderHub(part){
      │ refresh.                                                                 │
      └──────────────────────────────────────────────────────────────────────────┘ */
   try{searchCoverIds=new Set((await dbAllKeys("covers")).map(String));}catch(e){}
-  const hubGapCounts=GAPS.map(g=>g[2]().filter(sKindOk).length);
-  const hubDeepCounts=DEEP_GAPS.map(g=>g[2]().filter(sKindOk).length);
+  /* Shelf care's alone — Today never draws them, and walked every gap list anyway */
+  const hubGapCounts=today?GAPS.map(()=>0):GAPS.map(g=>g[2]().filter(sKindOk).length);
+  const hubDeepCounts=today?DEEP_GAPS.map(()=>0):DEEP_GAPS.map(g=>g[2]().filter(sKindOk).length);
   /* offered only where there is something to switch between — a shelf of
      nothing but books has one answer and does not need asking */
   const hubKindCount={};KINDS.forEach(([k])=>hubKindCount[k]=books.filter(b=>kindOf(b)===k).length);
@@ -39955,7 +40005,7 @@ async function renderHub(part){
      The waits above (the cover keys) let another tab be opened meanwhile,
      and this then wrote Today's cards under a bar that said Library. Search
      has always asked; this asks too. */
-  if(!m.isConnected||view!==(today?"overview":"care"))return;
+  if(!m||!m.isConnected||view!==(today?"overview":"care"))return;
   m.innerHTML=today?todayHtml:careHtml;
   try{wirePet(m);}catch(e){}
 
@@ -42509,8 +42559,12 @@ function sameEnding(a,b){
 }
 /* what kind of likeness two words have, or "" for none. Shared by the tag
    pairs and the genre pairs so the card speaks with one voice. */
+/* each word's tidied forms, made once per word rather than once per pair
+   it is in — a shelf of 400 tags makes 80,000 pairs */
+const pairForms=new Map();
+const pairForm=s=>{let f=pairForms.get(s);if(!f){if(pairForms.size>20000)pairForms.clear();f=[tagNorm(s),tagPlain(s)];pairForms.set(s,f);}return f;};
 function pairHow(a,b){
-  const na=tagNorm(a),nb=tagNorm(b),pa=tagPlain(a),pb=tagPlain(b);
+  const [na,pa]=pairForm(a),[nb,pb]=pairForm(b);
   if(!na||!nb)return "";
   const squash=s=>s.replace(/ /g,"");
   if(na===nb||squash(na)===squash(nb))return "same word";
@@ -42576,13 +42630,22 @@ function repeatedWords(b){
 }
 function tagDupePairs(){
   const names=[...new Set(books.flatMap(allKeywordsOf))].filter(Boolean);
+  /* ---- EACH TAG'S BOOKS COUNTED ONCE ----
+     kwUsers walked the whole shelf for both words of every pair it found,
+     which on Shelf care was 7.7 s of 8.4 at 4,335 books and 400 tags. The
+     same count — books and stories carrying the word, in any capitals — is
+     made in one walk here. */
+  const uses=new Map();
+  const tally=list=>{new Set((list||[]).map(x=>String(x).toLowerCase())).forEach(k=>uses.set(k,(uses.get(k)||0)+1));};
+  for(const b of books){tally(b.keywords);if(isColl(b))for(const en of (b.entries||[]))tally(en.keywords);}
+  const usersOf=k=>uses.get(String(k).toLowerCase())||0;
   const out=[];
   for(let i=0;i<names.length;i++)for(let j=i+1;j<names.length;j++){
     const a=names[i],b=names[j];
     const fa=kwCats[a]||"",fb=kwCats[b]||"";
     if(fa&&fb&&fa!==fb)continue;                       /* filed apart on purpose */
     const how=pairHow(a,b);
-    if(how)out.push({a,b,how,na:kwUsers(a).length,nb:kwUsers(b).length});
+    if(how)out.push({a,b,how,na:usersOf(a),nb:usersOf(b)});
   }
   /* the surest kinds first, and the busiest pairs before the quiet ones */
   return out.sort((x,y)=>PAIR_RANK[x.how]-PAIR_RANK[y.how]||(y.na+y.nb)-(x.na+x.nb));
@@ -42836,10 +42899,12 @@ function refreshCapTags(){
 /* How many are in the bin, so the History tab can say so on its own button
    without reading the whole bin every time that tab is drawn. */
 let trashCount=0;
+/* by the keys alone: a bin record carries the book's cover and every picture,
+   and the count was loading all of them to read their ids */
 async function binIds(){
-  const local=await dbAll("trash");
-  const have=new Set(local.map(t=>t.id));
-  return [...local.map(t=>t.id),...Object.keys(trashCloud).filter(id=>!have.has(id)&&binLive(id))];
+  const local=(await dbAllKeys("trash")).map(String);
+  const have=new Set(local);
+  return [...local,...Object.keys(trashCloud).filter(id=>!have.has(id)&&binLive(id))];
 }
 async function countTrash(){
   try{trashCount=(await binIds()).length;}catch(e){}
@@ -44735,7 +44800,11 @@ async function printBooklet(y){
 }
 
 /* =============== insights — what your whole shelf says about you =============== */
-function renderInsights(){
+/* ---- ONE LIST OF READINGS PER DRAW ----
+   readUnits was built afresh by each card that wanted it, six times or more
+   for one Insights; ruHold keeps one for the length of the draw. */
+function renderInsights(){return ruHold(renderInsightsNow);}
+function renderInsightsNow(){
   const m=q("#main");
   if(!books.length){m.innerHTML='<div class="empty">📖<br>Add a few books first — then this page can tell you something about your reading.</div>';return;}
   /* the same units the ratings below use — see stageUnits — so "finished" and
