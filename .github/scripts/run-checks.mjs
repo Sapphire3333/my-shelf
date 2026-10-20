@@ -25,10 +25,10 @@ const browser = await chromium.launch({
     "--disable-renderer-backgrounding",
   ],
 });
-/* playwright is installed unpinned, so which one ran is not knowable from
-   the repo -- only from the run. Both versions go in the report, because a
-   check that starts failing without the app changing is a browser that
-   moved, and that is the first question to ask. */
+/* playwright is pinned in checks.yml, so a browser update is a change to that
+   file rather than a surprise. Both versions still go in the report: a check
+   that starts failing without the app changing is a browser that moved, and
+   that is the first question to ask. */
 let browserVersion = "";
 try { browserVersion = String(await browser.version()); } catch (e) { browserVersion = "unknown"; }
 const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
