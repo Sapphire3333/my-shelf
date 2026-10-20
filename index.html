@@ -6135,7 +6135,7 @@ const entWord=(coll,n)=>{
 /* the count as a heading says it: no word at all, because a heading does not
    have to choose one and every choice it made was wrong for somebody */
 const entCount=n=>`${n} inside`;
-const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre","Genre"],["keyword","Tags"],["quotes","Quotes"],["summary","Blurb"],["notes","Notes"],["lists","+/− lists"],["fandom","Fandom & characters"],["ships","Relationships"],
+const SCOPES=[["title","Title"],["author","Author"],["series","Series"],["genre","Genre"],["keyword","Tags"],["quotes","Quotes"],["summary","Blurb"],["isbn","ISBN"],["notes","Notes"],["lists","+/− lists"],["fandom","Fandom & characters"],["ships","Relationships"],
   ["from","Came from"],["lang","Read in"],["setin","Set in"],["loan","Lent or borrowed"]];
 /* surname even for "Marsh, A. K." style — used to spot the same author
    written differently, and to sort them. There was a second, simpler version of
@@ -8842,7 +8842,7 @@ const printDay=d=>d?new Date(d+"T12:00").toLocaleDateString(undefined,{day:"nume
 function printListBuild(){
   const old=q("#printList");if(old)old.remove();
   const list=libLastList||[];
-  const what={all:"",finished:"Finished",reading:"Reading",want:"Want to read",hold:"On hold",dnf:"Did not finish",unowned:"Don't have it yet"}[statusFilter]||"";
+  const what={all:"",finished:"Finished",reading:"Reading now",want:"Want to read",hold:"On hold",dnf:"Did not finish",unowned:"Don't have it yet",fav:"Favourites"}[statusFilter]||"";
   const fb=q("#libFind"),typed=fb&&fb.value.trim();
   const el=document.createElement("div");el.id="printList";
   el.innerHTML=`<h1>My Shelf${what?" — "+esc(what):""}${typed?` — “${esc(typed)}”`:""}</h1>
@@ -10631,7 +10631,7 @@ async function pullAll(){
           else if(row.key==="fandoms"){const rv=row.value||{};
             for(const f in rv){
               if(gone("fandom:"+f))continue;
-              fandoms[f]=[...new Set([...(rv[f]||[]),...(fandoms[f]||[])])];
+              fandoms[f]=[...new Set([...(rv[f]||[]),...(fandoms[f]||[])])].filter(c=>!gone("char:"+f+"|"+c));
             }}
           /* ---- A CHANGED PICTURE IS NEWER, NOT ONLY ANOTHER ----
              These two joined by adding what this device lacked, so a heading
@@ -12867,6 +12867,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-20.11",lines:["<b>📚 Lists you can see.</b> A medal's note has <b>📚 Its books</b>, the books that count toward it. Your own challenge has <b>Books that would fit</b> from what you haven't read yet. The reading timeline shows the books with no finish date.","<b>☰ More filters:</b> ♥ Favourites is a Library pill, stories you love included, and the format pill is remembered. Search has a button for each format and looks in ISBNs too, and ✨ Insights counts print, ebook and audio.","<b>✎ Put things right:</b> a loan's ✎ changes who, which way and since when. <b>✎ the sessions</b> under the reading clock lets you fix a session's minutes or remove one. Pins on your own map drag, a thing taken out of 🏠 Your room can go back where it stood, and a fic gets <b>➕ One more chapter</b>. ✎ Tidy the list can remove a mistyped character from a fandom. Merging an author's spellings brings your note and the found bio along, and 📝 What changed now lists tags, families and fandoms renamed, recoloured or removed."]},
   {v:"2026-10-20.10",lines:["<b>↶ Fewer questions.</b> Anything ↶ Undo can put back no longer asks first. It goes ahead and says what it did at the foot of the screen: setting ticked books to a stage, a new author name, moving a tag, tidying chapters, taking a story out, ✕ on a chapter or a story, pasting over a cover, replacing a blurb. What still asks is what undo can't reach, like deleting for good.","<b>🏷 One name each:</b> ✕ Did not finish everywhere (no more DNF, Set aside or Given up), Tags (not keywords), 🏅 Medals, 🎲 Challenges on the phone's bar too, 📖 Reading now, your runs, ♥ Favourite, Blurb, and Remove. The Library's sort pills say Mark and Stage."]},
   {v:"2026-10-20.9",lines:[
     "<b>⚡ Faster on a big shelf.</b> Measured on a stand-in shelf of 4,335 books: 🏠 Today opens in about a third of a second instead of two, and 🧰 Shelf care in under a second instead of eight. Today's three cards, the tag lookalikes, the pet's pages and Insights all stopped re-reading the whole shelf for every card, pair or draw.",
@@ -15075,7 +15076,10 @@ async function openGartFocus(key){
 /* ---- custom notepad looks ---- */
 const padKey=id=>"__pad|"+id;
 function savePadList(){dbPut("meta",{k:"padskins",v:padList});enqueue({kind:"meta",key:"padskins"});}
-function saveFandoms(){dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});}
+function saveFandoms(){
+  /* a name back in a cast clears the mark that kept it out — see data-chdel */
+  for(const f in fandoms)(fandoms[f]||[]).forEach(c=>unmarkMetaDel("char:"+f+"|"+c));
+  dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});}
 /* The one way a fandom joins the list. Three places used to do it by hand with
    `if(!fandoms[f])fandoms[f]=[]`, and every one of them forgot to clear the mark
    left by "Take it off your list" — which the merge reads on every pull and acts
@@ -16027,6 +16031,15 @@ function todayMarks(x){
 }
 const readToday=(before,after)=>{const was=todayMarks(before);
   for(const k of todayMarks(after))if(!was.has(k))return true;return false;};
+/* ---- A LINE FOR A LIST ----
+   What changed said it held every change and only ever heard about books: a
+   tag renamed, a family recoloured, a fandom taken off left nothing. A list
+   line has no book (id "") and `list` set, so the daily tasks, which read
+   these receipts, pass it by, and pressing it opens nothing. */
+function listNote(what){
+  try{histLog.unshift({t:Date.now(),id:"",list:true,title:"Your lists",what:[what],add:[],src:histSrc||"you",dev:histDev()});
+    if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;saveHistLog();}catch(e){}
+}
 function histNote(id,before,after,forced){
   const what=forced||diffWords(before,after);
   if(!what.length)return;
@@ -16580,6 +16593,11 @@ async function applyOp(op,inv,quiet){
        presses of ↶ Undo, with the new names still sitting in your genre list
        after the first. They ride here instead, and go back together. */
     for(const lb of (Array.isArray(op.label)?op.label:(op.label?[op.label]:[]))){
+      /* a cast changed in place, both ways round */
+      if(lb.kind==="cast"){const to=(inv?lb.before:lb.after)||[];fandoms[lb.name]=[...to];
+        to.forEach(c=>unmarkMetaDel("char:"+lb.name+"|"+c));
+        (inv?lb.after:lb.before).filter(c=>!to.includes(c)).forEach(c=>markMetaDel("char:"+lb.name+"|"+c));
+        dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});touchMeta("fandoms");continue;}
       const key=(lb.kind==="genre"?"genre:":lb.kind==="fandom"?"fandom:":"kw:")+lb.name;
       /* Which way round this entry goes. A merge's label names a word the op
          DELETED, so undoing puts it back. A bulk fill's names one the op
@@ -19845,6 +19863,26 @@ function renderAuthorPanel(name){
       moveLibArtGroup(ok,nk);
     });
     if(movedArt)saveGroupArt();
+    /* ---- THE NOTE AND THE BIO COME TOO ----
+       Both are filed by the name, so a merge left them under a spelling no
+       book carries any more. A note joins the kept one (both kept, if both
+       said something); the looked-up bio moves when the kept name has none.
+       The old note is marked gone, so the other device does not hand it
+       back at the next sync (authorNotes join by the newer `at`). */
+    try{
+      await authInfoLoad();let bioMoved=false,noteMoved=false;
+      quests.authorNotes=quests.authorNotes||{};
+      authVarSel.forEach(v=>{if(v===name)return;
+        const was=authorNote(v);
+        if(was){const now=authorNote(name);
+          quests.authorNotes[name]={t:(now&&now!==was?now+" · "+was:was).slice(0,120),at:Date.now()};
+          quests.authorNotes[v]={t:"",gone:true,at:Date.now()};noteMoved=true;}
+        const bi=authInfoMap&&authInfoMap[v];
+        if(bi&&!bi.none&&(!authInfoMap[name]||authInfoMap[name].none)){authInfoMap[name]=bi;delete authInfoMap[v];bioMoved=true;}
+      });
+      if(noteMoved)questSave();
+      if(bioMoved)authInfoSave();
+    }catch(e){}
     if(SYNC.on)flushQueue();
     /* keepPlace: the same book redrawn keeps its face and its scroll */
     if(view==="book"&&cur&&affected.some(b=>b.id===cur.id))await openBook(cur.id,false,true);else render();
@@ -19903,7 +19941,7 @@ const LIB_SORTS=["newest","waited","rating","favorites","title","author","status
 /* the words the sort pills wear: a book has a mark and a stage everywhere
    else, so the pills say so too — the keys underneath are unchanged */
 const SORT_SAY={rating:"Mark",favorites:"Favourites",status:"Stage"};
-const LIB_STAGES=["all","finished","reading","want","hold","dnf","unowned"];
+const LIB_STAGES=["all","finished","reading","want","hold","dnf","unowned","fav"];
 let libRestored=false,libKept=null;
 function libRestore(){
   const s=settings&&settings.lib;
@@ -19913,15 +19951,17 @@ function libRestore(){
     if(GROUPS.some(g=>g[0]===s.groupBy))groupBy=s.groupBy;
     if(s.layout==="grid"||s.layout==="list"||s.layout==="spines")layout=s.layout;
     if(LIB_STAGES.includes(s.statusFilter))statusFilter=s.statusFilter;
+    /* the format pill too — the kinds were already kept, by flipKind */
+    if(s.fmt==="print"||s.fmt==="ebook"||s.fmt==="audio")fmtFilter=s.fmt;
   }
   libKept=libArrSig();
 }
-const libArrSig=()=>[sortBy,sortRev?1:0,groupBy,layout,statusFilter].join("|");
+const libArrSig=()=>[sortBy,sortRev?1:0,groupBy,layout,statusFilter,fmtFilter].join("|");
 function libKeep(){
   const sig=libArrSig();
   if(sig===libKept)return;
   libKept=sig;
-  settings.lib={sortBy,sortRev:!!sortRev,groupBy,layout,statusFilter};
+  settings.lib={sortBy,sortRev:!!sortRev,groupBy,layout,statusFilter,fmt:fmtFilter};
   saveSettings();
 }
 function sortCmp(a,b){const r=sortCmpBase(a,b);return sortRev?-r:r;}
@@ -21210,6 +21250,12 @@ function renderLibrary(){
   const counts={all:(groupBy==="status"?countShelf:shelf).length,finished:plainSt("finished"),reading:plainSt("reading"),want:plainSt("want"),
     hold:countShelf.filter(b=>holdOf(b)).length,dnf:countShelf.filter(b=>b.dnf).length,
     unowned:countShelf.filter(b=>unownedOf(b)&&!b.dnf).length};
+  /* ---- ♥ FAVOURITES, A PILL ----
+     Not a stage but a lens, like ⌛: a book you love, a collection you love as
+     a whole, and every story you love inside one — each a row of its own,
+     which is what Search's ♥ has always opened. */
+  const favRows=[...books.filter(b=>b.favorite),...countShelf.filter(r=>r._story&&r.favorite)];
+  counts.fav=favRows.length;
   const kc={};KINDS.forEach(([k])=>kc[k]=books.filter(b=>kindOf(b)===k).length);
   repairGroupArt();
   const rawN=books.filter(isRaw).length;
@@ -21245,8 +21291,9 @@ function renderLibrary(){
     :statusFilter==="hold"?holdOf(b)
     :statusFilter==="dnf"?!!b.dnf
     :statusFilter==="unowned"?(unownedOf(b)&&!b.dnf)
+    :statusFilter==="fav"?true
     :(statusOf(b)===statusFilter&&!b.dnf&&!holdOf(b));
-  const list=((statusFilter!=="all"||groupBy==="status")?countShelf:shelf).filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
+  const list=(statusFilter==="fav"?favRows:(statusFilter!=="all"||groupBy==="status")?countShelf:shelf).filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
     &&(!fmtFilter||fmtOf(b)===fmtFilter)&&(!onlyRaw||isRaw(b))&&findHit(b)).sort(sortCmp);
   /* with something typed, the rows that carry the letters as typed stand
      first, folded matches next, typo matches last — each set in the sort's
@@ -21277,7 +21324,7 @@ function renderLibrary(){
        fold's state is REMEMBERED per device (leave it open and it stays
        open), and an active filter is always readable on the closed pill,
        with one press putting everything back to All. */
-    const stLabels={all:"All",finished:"Finished",reading:"Reading",want:"Want to read",hold:"⏸ On hold",dnf:"✕ Did not finish",unowned:"⌛ Don't have it yet"};
+    const stLabels={all:"All",finished:"Finished",reading:"Reading now",want:"Want to read",hold:"⏸ On hold",dnf:"✕ Did not finish",unowned:"⌛ Don't have it yet",fav:"♥ Favourites"};
     const filtOpen=!!settings.libFilt;
     /* ---- what you TYPE on top, what you PRESS under it
        ----
@@ -21339,7 +21386,7 @@ function renderLibrary(){
       drawers+=`<div class="filtbox">
         <div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading now"],["want","Want to read"],
           ...(counts.unowned?[["unowned","⌛ Don't have it yet"]]:[]),
-          ...(counts.hold?[["hold","⏸ On hold"]]:[]),...(counts.dnf?[["dnf","✕ Did not finish"]]:[])]
+          ...(counts.hold?[["hold","⏸ On hold"]]:[]),...(counts.dnf?[["dnf","✕ Did not finish"]]:[]),...(counts.fav?[["fav","♥ Favourites"]]:[])]
         .map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}"${id==="unowned"?' title="The ones you want and haven\'t got — they are counted under Want to read too, because wanting them is still true"':""}>${l} <b>${counts[id]}</b></button>`).join("")}</div>
         ${kindRow}${seriesRow}${(()=>{
           /* one format, once any book says which it is — see THE FORMAT LINE */
@@ -23314,6 +23361,41 @@ function achRows(){
     return {k,icon,name,plain,kind,tiers,val,tier,next:tiers.find(t=>val<t)||null};
   });
 }
+/* ---- A MEDAL'S BOOKS ----
+   Every counter returns a number and nothing else, so "Doorstopper 12" could
+   not say which twelve. Rather than teach fifty counters a second answer, the
+   counter is asked again about a shelf of one book at a time: a book that
+   counts on its own is one of them. Asked about an empty shelf first — a
+   medal that counts something other than books (the games, the dares) has
+   no list. Five medals count groups, where no single book counts alone (a
+   series finished whole, a month of three, an author read through), and say
+   so. `books` is swapped and put back inside one synchronous loop. */
+const ACH_GROUPED=new Set(["series","months","ficMonths","aiMonths","complete"]);
+let achBooksOpen=null;
+function achBooksOf(k){
+  const a=ACHS.find(x=>x[0]===k);if(!a||a[4]==="quest")return null;
+  if(ACH_GROUPED.has(k))return "grouped";
+  const fn=a[6],all=books,out=[];
+  const run=list=>{books=list;try{return +fn(achCtx())||0;}catch(e){return 0;}};
+  try{
+    if(run([])>0)return null;
+    for(const b of all)if(run([b])>0)out.push(b);
+  }finally{books=all;}
+  return out;
+}
+function achBooksHtml(r){
+  if(r.kind==="quest")return "";
+  const open=achBooksOpen===r.k;
+  const btn=`<button class="btn smallbtn" data-achbooks="${esc(r.k)}" style="margin-top:6px">${open?"▾ Hide its books":"📚 Its books"}</button>`;
+  if(!open)return "<br>"+btn;
+  const got=achBooksOf(r.k);
+  if(got==="grouped")return "<br>"+btn+`<div class="hint" style="margin:6px 0 0">This one counts groups — a series, a month, an author — not books one by one, so it has no single list.</div>`;
+  if(!got)return "";
+  const CAP=60;
+  return "<br>"+btn+(got.length?`<div style="margin-top:6px">${got.slice(0,CAP).map(b=>`<button class="rsn" data-achbk="${esc(b.id)}">${esc(b.title||"Untitled")}</button>`).join("")}${got.length>CAP?`<span class="hint" style="display:inline-block">…and ${got.length-CAP} more</span>`:""}</div>
+    <div class="hint" style="margin:4px 0 0">${got.length} book${got.length===1?" counts":"s count"} toward it. A collection stands for the stories inside it.</div>`
+    :`<div class="hint" style="margin:6px 0 0">No book counts toward it yet.</div>`);
+}
 /* first-seen stamps: how "earned on" is answered, and what keeps the corner
    note firing exactly once per medal. A shelf meeting this build for the
    first time records everything already earned in silence — thirty toasts
@@ -23809,7 +23891,7 @@ function achMedalHtml(r){
     ${st2?`Standing: <b>${esc(st2.label)}</b>. `:""}You're at <b>${esc(String(r.val))}</b>${
       r.next?`; ${(()=>{const n2=achStanding(r.tier+1);return n2?`<b>${esc(n2.label)}</b> comes`:"the first medal comes";})()} at <b>${esc(String(r.next))}</b>`
       :` — ${esc(ACH_METALS[ACH_METALS.length-1]+" "+ACH_STAGES[2])}, the top of the ladder`}.
-    ${(()=>{const first=achSeen&&achSeen[r.k+"|1"];return first?`<br><span class="hint">First earned ${esc(fmtEdited(first))}.</span>`:"";})()}
+    ${(()=>{const first=achSeen&&achSeen[r.k+"|1"];return first?`<br><span class="hint">First earned ${esc(fmtEdited(first))}.</span>`:"";})()}${achBooksHtml(r)}
     ${/* ---- A RUNNING TOTAL AND A SINGLE RUNG, TOLD APART ----
           This read "Paid 113 XP so far; the next rung pays 75", and the
           two numbers are not the same kind of thing: 113 is every rung
@@ -24196,7 +24278,7 @@ function roomCardHtml(){
     ${roomHtml(false)}
   </div></div>`;
 }
-let roomPick=null;
+let roomPick=null,roomLastGone=null;
 function roomArrange(){
   roomCheck();
   const old=document.getElementById("roomPanel");if(old&&old.__close)old.__close();
@@ -24211,6 +24293,7 @@ function roomArrange(){
         <button class="btn smallbtn" data-roomsize="-">− smaller</button><button class="btn smallbtn" data-roomsize="+">+ bigger</button>
         ${sel.k==="own"?"":`<button class="btn smallbtn" data-roomswap title="Your picture where the drawing is — it keeps the place and the size">🖼 ${sel.pic?"Another picture of mine":"Use a picture of mine"}</button>${sel.pic?`<button class="btn smallbtn" data-roomunswap>↺ The drawing back</button>`:""}`}
         <button class="btn smallbtn" data-roomremove>✕ Take it away (the token comes back)</button></div>`:""}
+      ${!sel&&roomLastGone?`<div class="hrow2" style="gap:6px;margin:8px 0 0"><button class="btn smallbtn" data-roomback${tk<=0?" disabled":""}>↶ Put ${esc(roomLastGone.k==="own"?"your picture":(n=>n.charAt(0).toLowerCase()+n.slice(1))((roomThing(roomLastGone.k)||{}).name||"it"))} back where it stood</button></div>`:""}
       <div class="hrow2" style="gap:6px;margin:10px 0 4px;flex-wrap:wrap;align-items:center"><span class="lbl">Wall</span>${Object.entries(ROOM_WALLS).map(([k,w])=>`<button class="pill${r.wall===k?" on":""}" data-roomwall="${k}">${w.name}</button>`).join("")}
         <span class="lbl" style="margin-left:8px">Floor</span>${Object.entries(ROOM_FLOORS).map(([k,f])=>`<button class="pill${r.floor===k?" on":""}" data-roomfloor="${k}">${f.name}</button>`).join("")}</div>
       <div class="hrow2" style="gap:8px;margin:12px 0 4px;flex-wrap:wrap;align-items:center"><button class="btn smallbtn pri" data-roomown${tk<=0?" disabled":""} title="${tk<=0?"Finish a book for a token":"Any picture — a photo, a drawing, something made for you"}">🖼 A picture of your own · one token</button>
@@ -24229,8 +24312,17 @@ function roomArrange(){
        the cloud, for good — the start-up sweep spares every "__" key */
     qa("[data-roomremove]",d).forEach(b=>b.onclick=()=>{if(!roomPick)return;
       const it=(r.items||[]).find(i=>i&&i.id===roomPick);
-      if(it&&it.pic)roomDropPic(it.pic);
+      /* ---- PUT BACK WHERE IT STOOD ----
+         The thing is kept, place, size and picture, until the room is shut
+         or another goes; its picture is let go only then. Taken-away ids
+         join across devices for good, so putting back places a copy under
+         a new id rather than un-taking the old one. */
+      if(roomLastGone&&roomLastGone.pic)roomDropPic(roomLastGone.pic);
+      roomLastGone=it?JSON.parse(JSON.stringify(it)):null;
       r.gone=[...(r.gone||[]),roomPick];roomPick=null;questSave();paint();});
+    qa("[data-roomback]",d).forEach(b=>b.onclick=()=>{if(!roomLastGone||roomTokens()<=0)return;
+      const id=uid();r.items=[...(r.items||[]),Object.assign({},roomLastGone,{id,at:Date.now()})];
+      roomLastGone=null;roomPick=id;questSave();paint();});
     qa("[data-roomswap]",d).forEach(b=>b.onclick=()=>{if(!roomPick)return;roomSwapFor=roomPick;q("#roomFile").click();});
     qa("[data-roomunswap]",d).forEach(b=>b.onclick=()=>{const it=(r.items||[]).find(i=>i&&i.id===roomPick);if(!it||!it.pic)return;
       roomDropPic(it.pic);delete it.pic;it.at=Date.now();questSave();paint();});
@@ -24240,7 +24332,8 @@ function roomArrange(){
     try{roomHydrate(d);}catch(e){}
   };
   document.body.appendChild(d);
-  const close=dismissable(d,()=>{if(view==="overview")try{renderHub("today");}catch(e){}});d.__close=close;
+  const close=dismissable(d,()=>{if(roomLastGone&&roomLastGone.pic)roomDropPic(roomLastGone.pic);roomLastGone=null;
+    if(view==="overview")try{renderHub("today");}catch(e){}});d.__close=close;
   paint();
 }
 /* drag a thing about the live room; a tap without a move picks it */
@@ -24413,10 +24506,18 @@ function loanLater(b){const l=loanOf(b);if(!l)return false;l.nag=dayBack(todaySt
 /* the loans Today nudges about: LOAN_WEEKS old and not put off */
 function loansDue(){const t=todayStr();return books.filter(b=>{const l=loanOf(b);return l&&loanDays(l)>=LOAN_WEEKS*7&&!(l.nag&&l.nag>t);}).sort((a,b)=>loanDays(loanOf(b))-loanDays(loanOf(a)));}
 const loanCan=b=>!!b&&!b._story&&kindOf(b)==="book";
+let loanEditFor=null,sessOpenFor=null;
 function loanHtml(b){
   if(!loanCan(b))return "";
   const l=loanOf(b),past=(b.loans||[]).length;
-  if(l)return `<div class="vloan"><span class="bst loan">${esc(loanSay(l))}</span><span class="hint" style="margin:0">${loanAge(l)}</span><button class="btn smallbtn" data-loan="back" title="It is back on the shelf — the loan goes into the book's history">✓ It's back</button></div>`;
+  /* ---- A LOAN CAN BE PUT RIGHT ----
+     It started today with the name typed into a prompt, and neither could be
+     changed after: ✎ opens the three of them — which way, who, since when. */
+  if(l&&loanEditFor===b.id)return `<div class="vloan" style="flex-wrap:wrap;gap:6px"><select class="field" id="loanK" style="padding:4px 8px"><option value="lent"${l.kind==="lent"?" selected":""}>📤 Lent to</option><option value="borrowed"${l.kind==="borrowed"?" selected":""}>📥 Borrowed from</option></select>
+    <input class="field" id="loanW" value="${esc(l.who)}" maxlength="60" style="width:150px;padding:4px 8px"> <span class="hint" style="margin:0">since</span>
+    <input class="field" id="loanD" type="date" value="${esc(String(l.at||todayStr()).slice(0,10))}" max="${todayStr()}" style="padding:4px 8px">
+    <button class="btn smallbtn pri" data-loan="save">Save</button><button class="btn smallbtn" data-loan="cancel">Cancel</button></div>`;
+  if(l)return `<div class="vloan"><span class="bst loan">${esc(loanSay(l))}</span><span class="hint" style="margin:0">${loanAge(l)}</span><button class="btn smallbtn" data-loan="edit" title="Who, which way, since when">✎</button><button class="btn smallbtn" data-loan="back" title="It is back on the shelf — the loan goes into the book's history">✓ It's back</button></div>`;
   return `<div class="vloan"><button class="btn smallbtn" data-loan="lent" title="Someone has borrowed it — say who, and the row wears a chip until it is back">📤 Lent to…</button><button class="btn smallbtn" data-loan="borrowed" title="It is someone else's — say whose">📥 Borrowed from…</button>${past?`<span class="hint" style="margin:0" title="${esc((b.loans||[]).slice(-5).map(x=>(x.kind==="lent"?"lent to ":"borrowed from ")+x.who+", "+x.at+" – "+x.back).join("; "))}">out ${past} time${past===1?"":"s"} before</span>`:""}</div>`;
 }
 function loansHtml(){
@@ -24486,7 +24587,15 @@ function sessionsLine(b){
   const pph=moved.length?moved.reduce((a,s)=>a+(s.to-s.from),0)/(moved.reduce((a,s)=>a+ +s.secs,0)/3600):0;
   const last=ss[ss.length-1];
   const tip=ss.slice(-6).reverse().map(s=>new Date(+s.at).toLocaleDateString(undefined,{day:"numeric",month:"short"})+" · "+minsSay(s.secs/60)+(s.to>s.from?" · p. "+s.from+" to "+s.to:"")).join("\n");
-  return said+`<div class="hint vpace" title="${esc("The last few:\n"+tip)}">⏱ ${ss.length} session${ss.length===1?"":"s"} · ${minsSay(secs/60)} in all${pph?` · about ${Math.round(pph)} pages an hour`:""} · last ${minsSay(last.secs/60)}</div>`;
+  /* ---- A SESSION CAN BE PUT RIGHT ----
+     A clock left running over dinner was an hour of reading for good. "the
+     sessions" opens every one of them: its minutes can be typed over, and ✕
+     takes one off. Each is found again by its `at`. */
+  const open=sessOpenFor===b.id;
+  return said+`<div class="hint vpace" title="${esc("The last few:\n"+tip)}">⏱ ${ss.length} session${ss.length===1?"":"s"} · ${minsSay(secs/60)} in all${pph?` · about ${Math.round(pph)} pages an hour`:""} · last ${minsSay(last.secs/60)} · <button class="btn smallbtn" data-sess="tog" style="padding:1px 8px">${open?"▾ hide":"✎ the sessions"}</button></div>`
+    +(open?`<div class="hcard" style="margin:4px 0 6px;padding:6px 10px">${ss.map(x=>`<div class="hrow2" style="gap:8px;margin:3px 0;flex-wrap:nowrap;font-size:13px"><span style="flex:1;min-width:0">${esc(new Date(+x.at).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"}))}${+x.to>+x.from?` · p. ${esc(String(x.from))} to ${esc(String(x.to))}`:""}</span>
+      <input class="field" type="number" min="1" max="${TIMER_MAX_H*60}" data-sessmin="${esc(String(x.at))}" value="${Math.max(1,Math.round((+x.secs||0)/60))}" style="width:70px;padding:3px 6px"> <span class="hint" style="margin:0">min</span>
+      <button class="lx" data-sessx="${esc(String(x.at))}" style="opacity:1" title="Remove this session">✕</button></div>`).join("")}</div>`:"");
 }
 const timerBtn=b=>timerOn(b)
   ?`<button class="btn smallbtn pri tmbtn" id="vTimer" title="Reading since ${esc(new Date(b.timing.since).toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"}))} — press to stop; it asks the page you reached">⏹ ${secsSay(timerSecs(b))}</button>`
@@ -25298,14 +25407,29 @@ function wireOwnMap(page){
   /* the picture goes with the map, here and in the cloud — it was left in both,
      a 1600-pixel picture for every map ever taken off — the way ✕ on the
      reader's file has always done it, and ↶ brings the two back together */
-  const x=q("#ownMapX",page);if(x)x.onclick=async e=>{e.stopPropagation();if(!confirm("Take the map off this page? Its pins go with it."))return;ownMapAdding=false;
+  const x=q("#ownMapX",page);if(x)x.onclick=async e=>{e.stopPropagation();undoSaid("The map is off this page, with its pins.");ownMapAdding=false;
     if(!cur)return;const key=(cur.ownMap&&cur.ownMap.pic)||ownMapKey(cur.id);
     let was=null;try{const r=await dbGet("images",key);was=r&&r.data||null;}catch(e2){}
     try{await dbDel("images",key);}catch(e2){}
     coverCache.delete(key);
     if(SYNC.on)enqueue({kind:"imgDel",key});
     quickEdit(bk=>{if(!bk.ownMap)return false;delete bk.ownMap;return true;},was?{imgs:{[key]:{before:was,after:null}}}:undefined);};
-  box.onclick=e=>{e.stopPropagation();
+  /* ---- A PIN MOVES ----
+     A pin stood where it was first tapped for good. Dragged now: a press that
+     moves more than a few pixels carries the pin and saves where it is let
+     go; one that does not is still a tap, which renames. */
+  let pinDrag=null,pinMoved=false;
+  box.addEventListener("pointerdown",e=>{const pin=e.target.closest&&e.target.closest("[data-mappin]");if(!pin)return;
+    pinDrag={id:pin.dataset.mappin,el:pin,x0:e.clientX,y0:e.clientY,moved:false};try{pin.setPointerCapture(e.pointerId);}catch(e2){}});
+  box.addEventListener("pointermove",e=>{if(!pinDrag)return;
+    if(!pinDrag.moved&&Math.hypot(e.clientX-pinDrag.x0,e.clientY-pinDrag.y0)<6)return;
+    pinDrag.moved=true;const r=box.getBoundingClientRect();
+    pinDrag.px=Math.max(0,Math.min(100,(e.clientX-r.left)/r.width*100));pinDrag.py=Math.max(0,Math.min(100,(e.clientY-r.top)/r.height*100));
+    pinDrag.el.style.left=pinDrag.px.toFixed(1)+"%";pinDrag.el.style.top=pinDrag.py.toFixed(1)+"%";});
+  const pinUp=()=>{if(!pinDrag)return;const d=pinDrag;pinDrag=null;if(!d.moved)return;pinMoved=true;setTimeout(()=>{pinMoved=false;},50);
+    quickEdit(bk=>{const p2=((bk.ownMap&&bk.ownMap.pins)||[]).find(z=>z.id===d.id);if(!p2)return false;p2.x=+d.px.toFixed(1);p2.y=+d.py.toFixed(1);return true;});};
+  box.addEventListener("pointerup",pinUp);box.addEventListener("pointercancel",pinUp);
+  box.onclick=e=>{e.stopPropagation();if(pinMoved)return;
     const pin=e.target.closest&&e.target.closest("[data-mappin]");
     if(pin){const id=pin.dataset.mappin,p=((cur.ownMap&&cur.ownMap.pins)||[]).find(z=>z.id===id);if(!p)return;
       const nm=prompt("A name for this pin — empty takes it off",p.label||"");if(nm===null)return;
@@ -25335,7 +25459,7 @@ function wireOwnMap(page){
    strip under the months; tap the name to rename it, an empty name takes
    it off. */
 const TL_MONTHS=3,TL_ROWS=120;
-let tlAll=false;
+let tlAll=false,histUndatedOpen=false;
 const tlMonths=()=>Math.max(3,Math.min(60,parseInt(settings&&settings.tlMonths)||TL_MONTHS));
 const tlEnd=()=>{const e=settings&&settings.tlEnd;return (e&&/^\d{4}-\d{2}-\d{2}$/.test(e)&&e<todayStr())?e:todayStr();};
 const tlStart=()=>{const d=new Date(tlEnd()+"T12:00");d.setMonth(d.getMonth()-tlMonths());return dayKeyOf(d);};
@@ -26479,6 +26603,8 @@ function renderAch(){
       if(say)say.textContent=medSizePct()+"%";if(w)w.style.setProperty("--medk",String(medSizePct()/100));};
     r.onchange=()=>saveSettings();});
   {const bo=q("#achBadgeOn",m);if(bo)bo.onclick=()=>{settings.badgePhone=true;saveSettings();applyLook();refreshBadge();renderAch();};}
+  qa("[data-achbooks]",m).forEach(b=>b.onclick=e=>{e.stopPropagation();achBooksOpen=achBooksOpen===b.dataset.achbooks?null:b.dataset.achbooks;renderAch();});
+  qa("[data-achbk]",m).forEach(b=>b.onclick=e=>{e.stopPropagation();openBook(b.dataset.achbk);});
   qa("[data-ownico]",m).forEach(b=>b.onclick=e=>{e.stopPropagation();ownIconSlot="medal:"+b.dataset.ownico;q("#iconFile").click();});
   qa("[data-ownicox]",m).forEach(b=>b.onclick=e=>{e.stopPropagation();ownIconSet("medal:"+b.dataset.ownicox,null);});
   qa("[data-achhow]",m).forEach(b=>b.onclick=e=>{e.stopPropagation();achHow=achHow===b.dataset.achhow?null:b.dataset.achhow;renderAch();});
@@ -27567,7 +27693,7 @@ function taskDoneToday(t,forDay,since){
   /* what was ADDED where the receipt says (see WHAT WAS ADDED). An import's
      fills count like any other: filling a book in from an export is filling
      it in. */
-  return histLog.some(e=>shelfDayOf(e.t)===day&&(!since||(e.t||0)>=since)
+  return histLog.some(e=>!e.list&&shelfDayOf(e.t)===day&&(!since||(e.t||0)>=since)
     &&t[2](Array.isArray(e.add)?e.add:(e.what||[]),e));
 }
 /* ---- the run of clear days, and what it is worth ----
@@ -35582,6 +35708,19 @@ function customCheck(){
 }
 const customUnit=h=>{const u=h.u,cov=u.en&&u.en.cover?u.book.id+"|"+u.en.id:"";
   return {title:(u.en&&u.en.title)||u.book.title||"Untitled",b:u.book,cov,view:u.en?{id:u.book.id,_cover:cov,title:u.en.title,author:entAuthorOf(u.book,u.en),genres:entGenresOf(u.book,u.en)}:u.book};};
+/* ---- WHAT ON THE SHELF WOULD FIT ----
+   The card counted what you had read and never said what you could. Books
+   and stories not finished and not given up, read against the same rule. */
+let customFitOpen=null;
+function customFitHtml(c){
+  const out=[];
+  stageUnits().forEach(u=>{if(u.dnf||u.status==="finished")return;
+    const x=Object.assign({},u,{pages:parseInt((u.en||u.book).pages)||0});
+    if(customFits(c,x))out.push(u);});
+  const CAP=40;
+  return `<div style="margin-top:6px">${out.length?out.slice(0,CAP).map(u=>`<button class="rsn" data-cfitgo="${esc(u.book.id)}"${u.en?` data-cfiten="${esc(u.en.id)}"`:""}>${esc((u.en&&u.en.title)||u.book.title||"Untitled")}</button>`).join("")
+    +(out.length>CAP?`<span class="hint" style="display:inline-block">…and ${out.length-CAP} more</span>`:""):`<span class="hint">Nothing waiting on the shelf fits it.</span>`}</div>`;
+}
 function customHtml(){
   const list=customList(),today=todayStr(),running=customRunning();
   const cards=list.map(c=>{
@@ -35592,8 +35731,8 @@ function customHtml(){
       <div class="hint" style="margin:2px 0 0">Read ${c.n} book${c.n===1?"":"s"} ${esc(customRuleSay(c))} by ${esc(printDay(c.by))} · +${CUSTOM_XP} a book, +${customFinXp(c.n)} at the finish</div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span class="prog" style="flex:1;max-width:260px;height:8px"><i style="width:${Math.round(n/c.n*100)}%"></i></span><span class="hint" style="margin:0"><b>${hits.length} of ${c.n}</b></span></div>
       ${hits.length?`<div class="recapcovs" style="margin-top:6px">${hits.slice(0,10).map(h=>{const u=customUnit(h);return `<span class="recapcov" data-cover="${esc(u.b.id)}"${u.cov?` data-covkey="${esc(u.cov)}"`:""} title="${esc(u.title)}">${coverInner(u.view,true)}</span>`;}).join("")}</div>`:""}
-      <div class="hrow2" style="gap:6px;margin-top:8px">${done?`<button class="btn smallbtn" data-custompic="${esc(c.id)}">⬇ Picture</button>`:""}<button class="btn smallbtn" data-customx="${esc(c.id)}" title="${done||ended?"Take the card away":"Give it up — the XP already paid stays"}">✕</button></div>
-    </div>`;}).join("");
+      <div class="hrow2" style="gap:6px;margin-top:8px">${done||ended?"":`<button class="btn smallbtn" data-customfit="${esc(c.id)}">${customFitOpen===c.id?"▾ Hide":"📚 Books that would fit"}</button>`}${done?`<button class="btn smallbtn" data-custompic="${esc(c.id)}">⬇ Picture</button>`:""}<button class="btn smallbtn" data-customx="${esc(c.id)}" title="${done||ended?"Take the card away":"Give it up — the XP already paid stays"}">✕</button></div>
+    ${customFitOpen===c.id?customFitHtml(c):""}</div>`;}).join("");
   return `${cards||`<div class="hint" style="margin:0 0 7px">A challenge of your own: read so many books of a kind — a genre, a tag, an author, a cover colour, a length, a mark, audiobooks, a language, who they came from, where they are set, or anything at all — by a day you choose. +${CUSTOM_XP} XP a book as you go, and more at the finish; a book counts for every challenge it fits. ${CUSTOM_MAX} can run at once.</div>`}
     <div class="hrow2" style="margin-top:${cards?10:4}px;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn pri" id="customGo"${running.length>=CUSTOM_MAX?" disabled":""}>🎯 Make one</button>${running.length>=CUSTOM_MAX?`<span class="hint" style="margin:0">${CUSTOM_MAX} running — finish or ✕ one first</span>`:""}</div>`;
 }
@@ -35987,6 +36126,8 @@ function wireMonth(m){
     if(!done&&c.by>=todayStr()&&!confirm("Give this one up? The XP already paid stays; the card goes."))return;
     c.gone=true;c.at=Date.now();questSave();renderChallenges();});
   qa("[data-custompic]",m).forEach(b=>b.onclick=()=>customPic(b.dataset.custompic));
+  qa("[data-customfit]",m).forEach(b=>b.onclick=()=>{customFitOpen=customFitOpen===b.dataset.customfit?null:b.dataset.customfit;renderChallenges();});
+  qa("[data-cfitgo]",m).forEach(b=>b.onclick=()=>openBook(b.dataset.cfitgo,false,false,b.dataset.cfiten||undefined));
 }
 /* all of the month's checks, from questCheck — each fenced, so one card
    failing never stops the others or the rest of the check */
@@ -38531,8 +38672,8 @@ function renderHistory(){
               esc(new Date(e2.t).toLocaleDateString(undefined,{weekday:"long",day:"numeric",month:"long",year:"numeric"}))}</h2>
               <span class="n">${n}</span><span class="ghline"></span></div>`;}
           const at=new Date(e2.t).toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
-          return head+`<div class="snap" data-hlog="${esc(e2.id)}" style="padding:6px 10px;cursor:pointer" title="Open the book">
-            <div style="min-width:0;flex:1"><div class="when" style="font-size:14px">${esc(e2.title)}</div>
+          return head+`<div class="snap"${e2.list?` style="padding:6px 10px"`:` data-hlog="${esc(e2.id)}" style="padding:6px 10px;cursor:pointer" title="Open the book"`}>
+            <div style="min-width:0;flex:1"><div class="when" style="font-size:14px">${e2.list?"🏷 ":""}${esc(e2.title)}</div>
               <div class="meta">${esc((e2.what||[]).join(" · "))||"changed"}</div>
               <div class="meta">${esc(e2.src||"you")}${e2.dev?` · ${e2.dev==="phone"?"📱 phone":"🖥 computer"}`:""} · ${esc(at)}</div></div></div>`;
         }).join("")+"</div>";
@@ -38563,10 +38704,12 @@ function renderHistory(){
         return head+rowHtml(rowFor(e2.u),false,"finished "+fmtEdited(e2.end+"T12:00"));
       }).join("")+"</div>";
       body=`<div class="hint" style="margin-bottom:4px">Every reading with a finish date, newest first — a book read twice appears twice.${
-        undated?` Another ${undated} you've read ${undated===1?"has":"have"} no finish date, so ${undated===1?"it's":"they're"} not here.`:""}</div>`+body;
+        undated?` Another ${undated} you've read ${undated===1?"has":"have"} no finish date, so ${undated===1?"it's":"they're"} not here — <button class="btn smallbtn" id="histUndated">${histUndatedOpen?"hide them":"show them"}</button>`:""}</div>`
+        +(undated&&histUndatedOpen?`<div class="hcard" style="margin:0 0 8px">${units.filter(u=>u.times>0&&!u.reads.some(r=>r.end)).map(u=>rowHtml(rowFor(u),false,"no finish date")).join("")}<div class="hint" style="margin:6px 0 0">A finish date goes on the book's page, on the line that says when you read it.</div></div>`:"")+body;
     }
   }
   m.innerHTML=pills+body;
+  {const hu=q("#histUndated",m);if(hu)hu.onclick=()=>{histUndatedOpen=!histUndatedOpen;renderHistory();};}
   qa("[data-hlog]",m).forEach(r=>r.onclick=()=>{
     const id=r.dataset.hlog;
     if(books.some(x=>x.id===id))openBook(id);
@@ -43727,6 +43870,8 @@ function renderSearchBody(){
     case "keyword":return (b.keywords||[]).some(k=>softHit(k,fq));
     case "quotes":return softHit(stripHtml((b.quotes||[]).join(" ")),fq);
     case "summary":return softHit(stripHtml((b.summary||"")+" "+(b.entries||[]).map(en=>en.summary||"").join(" ")),fq);
+    /* digits only on both sides, so 978-0-14 finds 9780140449136 */
+    case "isbn":{const d=x=>String(x||"").replace(/[^0-9x]/gi,"").toLowerCase(),n=d(fq);return n.length>=4&&d(b.isbn).includes(n);}
     case "notes":return softHit(stripHtml((b.canvasText||"")+" "+(b.entries||[]).map(en=>en.notes||"").join(" ")+" "+(b.pads||[]).map(p=>p.html||"").join(" ")),fq);
     case "lists":return softHit(stripHtml([...(b.pros||[]),...(b.cons||[]),...(b.meh||[])].join(" ")),fq);
     case "fandom":return [...(b.fandoms||[]),...(b.characters||[])].some(x=>softHit(x,fq));
@@ -43799,6 +43944,7 @@ function renderSearchBody(){
     else if(f.type==="hold")results=stUnits.filter(u=>u.hold).map(stRow);
     if(f.type==="status")results=stUnits.filter(u=>u.status===f.value&&!u.dnf&&!u.hold).map(stRow);
     if(f.type==="audience")results=pool.filter(b=>audsOf(b).indexOf(f.value)>=0);
+    if(f.type==="format")results=pool.filter(b=>fmtOf(b)===f.value);
     if(f.type==="pages"){
       /* stories one by one, as the buckets count them */
       const pu=pool.flatMap(b=>isColl(b)
@@ -44026,6 +44172,7 @@ function renderSearchBody(){
         <button class="colbtn w" data-cf="want" ${wantN?"":"disabled"}>★ Want to read <b>${wantN}</b></button>
         <button class="colbtn h" data-cf="hold" ${holdN?"":"disabled"}>⏸ On hold <b>${holdN}</b></button>
         <button class="colbtn d" data-cf="dnf" ${dnfN?"":"disabled"}><span class="bdnf" style="background:#57534e;color:#fff">✕</span> Did not finish <b>${dnfN}</b></button>
+        ${FORMATS.map(([k,l])=>{const n=pool.filter(b=>fmtOf(b)===k).length;return n?`<button class="colbtn" data-cf="fmt:${k}">${l} <b>${n}</b></button>`:"";}).join("")}
       </div>`;
       const audCounts={};pool.forEach(b=>audsOf(b).forEach(a=>audCounts[a]=(audCounts[a]||0)+1));
       const audAll=[...new Set([...DEFAULT_AUD,...audCustom,...Object.keys(audCounts)])];
@@ -44171,6 +44318,7 @@ function renderSearchBody(){
      is not a stage and stays a filter. */
   qa("[data-cf]",m).forEach(b=>b.onclick=()=>{const t=b.dataset.cf;
     if(t==="favorite"){pick({type:"favorite",label:"Favourites"});return;}
+    if(t.startsWith("fmt:")){const k=t.slice(4);pick({type:"format",value:k,label:(FORMATS.find(x=>x[0]===k)||[k,k])[1]});return;}
     S.stages=S.stages.includes(t)?S.stages.filter(x=>x!==t):[...S.stages,t];
     renderSearchBody();window.scrollTo(0,0);});
   qa("[data-ser]",m).forEach(b=>b.onclick=()=>pick({type:"series",value:b.dataset.ser,label:"Series: "+b.dataset.ser}));
@@ -45221,6 +45369,15 @@ function renderInsightsNow(){
     ${(()=>{try{return recapRowHtml();}catch(e){return "";}})()}
     ${(()=>{try{return atlasHtml();}catch(e){return "";}})()}
     ${(()=>{try{return tbrHtml();}catch(e){return "";}})()}
+    ${(()=>{
+      /* PRINT, EBOOK, AUDIO — the Format line, counted, once any book has one */
+      const by={};books.forEach(b=>{const f=fmtOf(b);if(!f)return;const x=by[f]=by[f]||{n:0,fin:0};x.n++;if(statusOf(b)==="finished"&&!b.dnf)x.fin++;});
+      if(!Object.keys(by).length)return "";
+      const hrs=books.filter(b=>fmtOf(b)==="audio"&&statusOf(b)==="finished"&&!b.dnf).reduce((a,b)=>a+(+b.audioMins||0),0);
+      return `<div class="sec" id="secFormats"><div class="heading"><h2 class="serif">Print, ebook, audio</h2></div>
+        <div class="hcard"><div style="font-size:14px">${FORMATS.filter(([k])=>by[k]).map(([k,l])=>`${l} <b>${by[k].n}</b>${by[k].fin?` (${by[k].fin===by[k].n?"all":by[k].fin} finished)`:""}`).join(" · ")}${hrs?` — ${minsSay(hrs)} of audiobooks finished`:""}</div>
+        <div class="hint" style="margin:8px 0 0">Counted off the Format line in ✎ Edit. Books with none said are left out.</div></div></div>`;
+    })()}
     ${(()=>{
       /* READ IN — the languages, once any book names one */
       const ls=langsUsed();if(!ls.length)return "";
@@ -47762,7 +47919,15 @@ function renderBookView(){
   qa("[data-loan]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
     const k=x.dataset.loan;
-    if(k==="back"){quickEdit(bk=>loanEnd(bk));return;}
+    if(k==="back"){loanEditFor=null;quickEdit(bk=>loanEnd(bk));return;}
+    if(k==="edit"){loanEditFor=cur.id;renderBookView();return;}
+    if(k==="cancel"){loanEditFor=null;renderBookView();return;}
+    if(k==="save"){
+      const kind=(q("#loanK",page)||{}).value,who=String((q("#loanW",page)||{}).value||"").trim().slice(0,60);
+      let at=String((q("#loanD",page)||{}).value||"");if(!/^\d{4}-\d{2}-\d{2}$/.test(at)||at>todayStr())at=todayStr();
+      loanEditFor=null;
+      if(!who){renderBookView();return;}
+      quickEdit(bk=>{const l=loanOf(bk);if(!l)return false;l.kind=kind==="borrowed"?"borrowed":"lent";l.who=who;l.at=at;return true;});return;}
     const who=prompt(k==="lent"?"Who has it?":"Whose is it?","");
     if(who==null||!String(who).trim())return;
     quickEdit(bk=>loanStart(bk,k,who));
@@ -47783,6 +47948,12 @@ function renderBookView(){
     });
   });
   q("#vFav").onclick=e=>{e.stopPropagation();quickEdit(bk=>{bk.favorite=!bk.favorite;});};
+  qa("[data-sess]",page).forEach(x=>x.onclick=e=>{e.stopPropagation();sessOpenFor=sessOpenFor===cur.id?null:cur.id;renderBookView();});
+  qa("[data-sessmin]",page).forEach(x=>{x.onclick=e=>e.stopPropagation();x.onchange=()=>{const at=x.dataset.sessmin,m=Math.max(1,Math.min(TIMER_MAX_H*60,parseInt(x.value)||0));
+    quickEdit(bk=>{const s2=(bk.sessions||[]).find(y=>String(y.at)===at);if(!s2)return false;s2.secs=m*60;return true;});};});
+  qa("[data-sessx]",page).forEach(x=>x.onclick=e=>{e.stopPropagation();const at=x.dataset.sessx;
+    undoSaid("The session is removed.");
+    quickEdit(bk=>{const n=(bk.sessions||[]).length;bk.sessions=(bk.sessions||[]).filter(y=>String(y.at)!==at);return bk.sessions.length!==n;});});
   {const va=q("#vApart",page);if(va)va.onclick=e=>{e.stopPropagation();quickEdit(bk=>{if(bk.apart)delete bk.apart;else bk.apart=true;});};}
   /* opening a chapter here only shows it — no redraw, so your place is kept */
   qa("[data-vch]",page).forEach(h=>h.onclick=e=>{
@@ -50655,6 +50826,7 @@ function renderEditor(){
             return (!looksLikeChapter(t)&&!HEAD_ANYWHERE.test(t))||splitChapterText(t).before;})
           ?`<button class="btn" id="chTidy" title="Move the replies that were never chapters to the discussion, and fold the working-out into the chapters it belongs to">✂ Tidy the chapters</button>`:""}
         ${ficCh?"":`<button class="btn" id="chSave" title="Save the chapters out as one file">⭳ Save as a file</button>`}
+        ${ficCh?`<button class="btn" id="chOneMore" title="An ongoing fic posted another — it is added at the end, numbered on">➕ One more chapter</button>`:""}
         <button class="btn" id="chCopy" title="Copy the numbered titles — small enough to paste into a chat and ask for parts">⧉ Copy the list</button>
         <button class="btn" id="chParts" title="Paste a list of parts back in — “1 Beginnings”, “5 Quarrels”">§ Parts from a list…</button></div>
       <div id="chPartsBox"></div>
@@ -50942,6 +51114,9 @@ function renderEditor(){
       cur.discussion=[...(cur.discussion||[]),...toDisc];
       renderChapters();scheduleSave();
     };
+    const om=q("#chOneMore",box);if(om)om.onclick=()=>{
+      cur.chapters=[...(cur.chapters||[]),{id:uid(),title:"Chapter "+((cur.chapters||[]).length+1),words:0}];
+      renderChapters();scheduleSave();};
     const cs=q("#chSave",box);if(cs)cs.onclick=()=>{
       const txt=(cur.chapters||[]).map((c,i)=>`${i+1}. ${c.title}\n\n${c.text}`).join("\n\n\n");
       downloadJson(txt,`${(cur.title||"story").replace(/[^\w -]/g,"")} — chapters.txt`,"text/plain;charset=utf-8");
@@ -51094,6 +51269,9 @@ function renderEditor(){
            the full name is what is stored and what the tooltip says */
         return [...on,...rest].map(c=>{const isOn=cur.characters.includes(c);
           const shown=stripFandomEcho(c,cur.fandoms);
+          /* in ✎ Tidy the list, a name of the cast wears ✕ — a mistyped
+             character could otherwise never leave it */
+          if(fdTidy&&pickable.includes(c))return `<span class="rsn" style="cursor:default">${esc(shown)} <button class="chmv" data-chdel="${esc(c)}" title="Remove it from the cast and from every story">✕</button></span>`;
           return `<button class="rsn ${isOn?"on":""}" data-ch="${esc(c)}"${shown!==c?` title="${esc(c)}"`:""}>${isOn?"✓ ":""}${esc(shown)}</button>`;}).join("");
       })()}
         ${firstF?`<input id="chIn" class="addin" style="width:200px;display:inline-block;margin:2px 0 0 2px" placeholder="Add to ${esc(firstF)}… (Enter)">`:""}</div>
@@ -51120,7 +51298,7 @@ function renderEditor(){
       /* the cast comes with it, and merges if the new name already had one */
       fandoms[newN]=[...new Set([...(fandoms[newN]||[]),...(fandoms[oldN]||[])])];
       delete fandoms[oldN];markMetaDel("fandom:"+oldN);unmarkMetaDel("fandom:"+newN);
-      saveFandoms();
+      saveFandoms();listNote(`Fandom “${oldN}” renamed “${newN}”`);
       if(items.length)pushOp({t:"bulk",items});
       if(SYNC.on)flushQueue();
       renderFF();scheduleSave();
@@ -51132,7 +51310,7 @@ function renderEditor(){
       const label={kind:"fandom",name:f,cast:[...(fandoms[f]||[])]};
       const items=[];
       await relabel("fandoms",f,"",items);
-      delete fandoms[f];markMetaDel("fandom:"+f);saveFandoms();
+      delete fandoms[f];markMetaDel("fandom:"+f);saveFandoms();listNote(`Fandom “${f}” removed from your list`);
       /* characters that belonged only to it have nowhere left to be filed —
          on EVERY book, not only the open one: the orphaned names rendered on
          every shelf row and could be neither picked nor removed anywhere.
@@ -51188,6 +51366,24 @@ function renderEditor(){
       /* drop characters that no longer belong to any chosen fandom */
       const ok=new Set(charsFor(cur.fandoms));
       cur.characters=cur.characters.filter(c=>ok.has(c));
+      renderFF();scheduleSave();
+    });
+    qa("[data-chdel]",w).forEach(x=>x.onclick=async()=>{
+      const c=x.dataset.chdel,items=[],label=[];
+      const used=books.filter(b=>(b.characters||[]).includes(c)).length;
+      undoSaid(`“${c}” is out of the cast${used?` and off ${used} ${used===1?"story":"stories"}`:""}.`);
+      for(const f in fandoms)if((fandoms[f]||[]).includes(c)){
+        label.push({kind:"cast",name:f,before:[...fandoms[f]],after:fandoms[f].filter(y=>y!==c)});
+        fandoms[f]=fandoms[f].filter(y=>y!==c);markMetaDel("char:"+f+"|"+c);}
+      saveFandoms();
+      for(const b of books){if(!(b.characters||[]).includes(c))continue;
+        const before=JSON.parse(JSON.stringify(b));b.characters=b.characters.filter(y=>y!==c);touchBook(b);
+        await dbPut("books",b);if(SYNC.on)enqueue({kind:"book",id:b.id});
+        items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});}
+      cur.characters=(cur.characters||[]).filter(y=>y!==c);
+      pushOp({t:"bulk",items,label});
+      listNote(`Character “${c}” removed from the cast`);
+      if(SYNC.on)flushQueue();
       renderFF();scheduleSave();
     });
     qa("[data-ch]",w).forEach(x=>x.onclick=()=>{
@@ -53028,6 +53224,9 @@ function renderEditor(){
     }
   }
   async function renameGenre(oldN,newN,color){
+    {const nn=String(newN||"").trim();
+     if(nn&&nn!==oldN)listNote(`Genre “${oldN}” renamed “${nn}”`);
+     else if(color&&color!==genres[oldN])listNote(`Genre “${oldN}” recoloured`);}
     newN=(newN||"").trim();
     const renaming=newN&&newN!==oldN;
     if(renaming){
@@ -53061,6 +53260,7 @@ function renderEditor(){
   async function renameKeyword(oldN,newN){
     newN=(newN||"").trim();
     if(!newN||newN===oldN)return;
+    listNote(`Tag “${oldN}” renamed “${newN}”`);
     const items=[];
     await relabel("keywords",oldN,newN,items);
     if(items.length)pushOp({t:"bulk",items});
@@ -53099,6 +53299,7 @@ function renderEditor(){
     const label=isG?{kind:"genre",name,color:genres[name]||""}
       :{kind:"kw",name,color:kwColors[name]||"",cat:kwCats[name]||""};
     const items=[];
+    listNote(`${isG?"Genre":"Tag"} “${name}” removed everywhere`);
     await relabel(isG?"genres":"keywords",name,"",items);   /* mapping to nothing drops it */
     markMetaDel((isG?"genre:":"kw:")+name);
     if(isG){
@@ -53188,7 +53389,7 @@ function renderEditor(){
     });
     const tp=q("#tePlain",box);
     if(tp)tp.onclick=async()=>{
-      if(kwColors[name]){delete kwColors[name];markMetaDel("kwcolor:"+name);}
+      if(kwColors[name]){delete kwColors[name];markMetaDel("kwcolor:"+name);listNote(`Tag “${name}” made plain`);}
       saveKwColors();
       box.hidden=true;box.innerHTML="";
       renderKw();renderKwSug();
@@ -53206,6 +53407,7 @@ function renderEditor(){
          colour — renamed it on every book and marked the old spelling gone */
       const typed=q("#teName",box).value.trim();
       const nn=typed===name?name:titleCase(typed);
+      const wasCol=kwColors[name]||"",wasCat=kwCats[name]||"";
       const wholeFamily=!!(q("#teCatCol",box)&&q("#teCatCol",box).checked);
       /* a family typed into the "New family…" box but never Entered was thrown
          away without a word — the placeholder says (Enter), and nobody reads a
@@ -53250,6 +53452,9 @@ function renderEditor(){
         }
         if(nn&&nn!==name)delete kwColors[name];
         saveKwColors();saveKwCats();
+        {const bits=[];if((kwColors[key]||"")!==wasCol)bits.push(kwColors[key]?"recoloured":"made plain");
+         if((kwCats[key]||"")!==wasCat)bits.push(kwCats[key]?`filed under “${kwCats[key]}”`:"taken out of its family");
+         if(bits.length)listNote(`Tag “${key}” ${bits.join(", ")}`);}
         await renameKeyword(name,nn);
         /* the pool too — its family groupings are the only place the change
            shows, and leaving it stale made a successful save look like nothing */
@@ -53295,6 +53500,8 @@ function renderEditor(){
       box.hidden=true;box.innerHTML="";
       const renaming=nn&&nn!==name;
       const target=renaming?nn:name;
+      {const bits=[];if(renaming)bits.push(`renamed “${nn}”`);if((color||"")!==(catColors[name]||""))bits.push(color?"recoloured":"made plain");
+       if(bits.length)listNote(`Family “${name}” ${bits.join(", ")}`);}
       if(renaming){
         for(const k of words){kwCats[k]=nn;unmarkMetaDel("kwcat:"+k);}
         /* the colour travels with the name — unless the family it is poured
@@ -53323,6 +53530,7 @@ function renderEditor(){
       box.hidden=true;box.innerHTML="";
       for(const k of words){delete kwCats[k];markMetaDel("kwcat:"+k);}
       delete catColors[name];markMetaDel("cat:"+name);
+      listNote(`Family “${name}” disbanded`);
       saveKwCats();
       if(SYNC.on)flushQueue();
       renderKw();renderKwSug();
