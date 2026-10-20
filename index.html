@@ -12820,6 +12820,12 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-20.4",lines:[
+    "<b>⭱ Two books that share only a subtitle are not one book.</b> “Alpha: A Novel” and “Beta: A Novel” by the same author were matched by “A Novel”, so Beta was called already on your shelf and ✓ Fill in wrote into Alpha; Beta is now offered as a maybe, and ReadEra's highlights stay with the right book too.",
+    "<b>⭱ Two books with one title by different authors</b> are both found: an export row for the second one is matched to it, not added again.",
+    "<b>📄 Your own spreadsheet comes back in as itself.</b> ⭳ Export as CSV, brought in again under Shelf care, keeps the mark out of ten, the stage (on hold, did not finish, don't have it yet), genres and tags apart, the series, favourite, language, came from, set in, a fic's fandoms and characters, and the day you started a book still being read. A collection's stories come in under its name, ready to be put back as one collection.",
+    "<b>＋ Add anyway</b> on an import row marked “already on your shelf”, for when the match is wrong.",
+    "<b>📕 With no connection,</b> the ISBN sheet and ⤓ Sharper say the book sites couldn't be reached, instead of saying nobody knows the book."]},
   {v:"2026-10-20.3",lines:[
     "<b>✍️ Unticking Fanfic asks first.</b> Turning a fic into a book takes its fandoms and characters off; one mis-tap used to do it with nothing said.",
     "<b>📖 A reading you started is not taken off without a word.</b> Putting a book back on Want to read, or a story back to “same as the collection”, asks before the reading and its start date go.",
@@ -40234,6 +40240,8 @@ function refreshImport(light){
           ? (fills.length
             ? `<button class="btn" data-impfill="${it.id}" title="Fill in only what's blank there — nothing you've written is touched">↳ Fill it in</button>`
             : `<button class="btn" data-impdrop="${it.id}" title="Take this row off the list — your book already has everything it holds">✕ Drop it</button>`)
+            /* the match is a guess, and a guess must never be the last word */
+            +`<button class="btn" data-impone="${it.id}" title="It isn't that book — add it to your shelf as a book of its own">＋ Add anyway</button>`
           : `${it.near&&fills.length?`<button class="btn" data-impfill="${it.id}" title="Treat it as the same thing: fill in only what's blank on “${esc(t.b.title||"Untitled")}”">↳ Fill it in</button>`:""}<button class="btn" data-impone="${it.id}">＋ Add</button>`}</div>
       </div>`;}).join("")}
       ${all.length>visible.length?(()=>{const left=all.length-visible.length;
@@ -40461,23 +40469,18 @@ let reFound=null,reWantProgress=true,reOpen=null,reFind="",reShelfFind="";
    again — which is what it used to do, and which also threw you to the top of
    the page — the answers are worked out afresh against the shelf as it now is.
    The file stays open until you close it. */
+/* the book a ReadEra title belongs to — through titleIndex, so two books
+   sharing only a subtitle no longer trade highlights, and the second of two
+   books with one name is found by its author */
 function reIndex(){
-  const byTitle=new Map();
-  const note=(k,v)=>{if(k&&!byTitle.has(k))byTitle.set(k,v);};
+  const idx=titleIndex();
   books.forEach(bk=>{
-    titleVariants(bk.title).forEach(v=>note(titleKey(v),{b:bk,en:null}));
+    idx.put(bk.title,{b:bk,en:null});
     if(!isColl(bk))return;
-    (bk.entries||[]).forEach(en=>titleVariants(en.title).forEach(v=>note(titleKey(v),{b:bk,en})));
+    (bk.entries||[]).forEach(en=>idx.put(en.title,{b:bk,en}));
   });
-  return (title,author)=>{
-    for(const v of titleVariants(title)){
-      const hit=byTitle.get(titleKey(v));
-      if(!hit)continue;
-      const who=hit.en?(entAuthorOf(hit.b,hit.en)||hit.b.author):hit.b.author;
-      if(authorsOverlap(author,who))return hit;
-    }
-    return null;
-  };
+  const who=h=>h.en?(entAuthorOf(h.b,h.en)||h.b.author):h.b.author;
+  return (title,author)=>idx.find(title,h=>authorsOverlap(author,who(h))).hit;
 }
 /* Re-ask every question this card had answered, then draw it where it was. */
 function reRematch(){
@@ -40926,22 +40929,8 @@ async function loadReadEraBlob(f,quiet){
        at books said it was not there at all. This walks the stories too, the
        way the Goodreads import has always done, and remembers which story it
        was as well as which book holds it. */
-    const byTitle=new Map();
-    const note=(k,v)=>{if(k&&!byTitle.has(k))byTitle.set(k,v);};
-    books.forEach(bk=>{
-      titleVariants(bk.title).forEach(v=>note(titleKey(v),{b:bk,en:null}));
-      if(!isColl(bk))return;
-      (bk.entries||[]).forEach(en=>titleVariants(en.title).forEach(v=>note(titleKey(v),{b:bk,en})));
-    });
-    const findBook=(title,author)=>{
-      for(const v of titleVariants(title)){
-        const hit=byTitle.get(titleKey(v));
-        if(!hit)continue;
-        const who=hit.en?(entAuthorOf(hit.b,hit.en)||hit.b.author):hit.b.author;
-        if(authorsOverlap(author,who))return hit;
-      }
-      return null;
-    };
+    /* the same index the card's own rematching uses — this was a copy of it */
+    const findBook=reIndex();
     /* ---- keep almost none of it ----
        A phone gave up on this: "Unable to complete previous operation due to
        low memory", and then Android threw the page away, which is what was
@@ -54929,7 +54918,9 @@ async function exportBackup(){
 const CSV_COLS=["Title","Author","ISBN13","My Rating","Number of Pages","Date Read","Date Started","Date Added",
   "Read Count","Exclusive Shelf","Bookshelves","My Review","Private Notes",
   "Rating (0-10)","Stage","Genres","Tags","Series","Series Number","Series Total","Collection","Kind","Favourite","Link",
-  "Format","Language","Came from","Set in"];
+  "Format","Language","Came from","Set in",
+  /* what makes a fic one — a "Kind: fanfic" row carried nothing of it */
+  "Fandoms","Characters","Relationships","Maturity"];
 function csvText(){
   const cell=v=>{const s=v==null?"":String(v);return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
   /* a tag stripped out leaves a space where it stood, which put one in front
@@ -54965,7 +54956,9 @@ function csvText(){
       "Stage":stage(st,b.dnf,hold,un),"Genres":gen.join("; "),"Tags":tags.join("; "),
       "Series":seriesShown(b)||"","Series Number":b.seriesNum||"","Series Total":b.seriesTotal||"",
       "Collection":"","Kind":isColl(b)?"collection":kindOf(b),"Favourite":b.favorite?"yes":"","Link":b.link||"",
-      "Format":fmtOf(b),"Language":langOf(b),"Came from":fromOf(b),"Set in":setInOf(b).join("; ")}));
+      "Format":fmtOf(b),"Language":langOf(b),"Came from":fromOf(b),"Set in":setInOf(b).join("; "),
+      "Fandoms":(b.fandoms||[]).join("; "),"Characters":(b.characters||[]).join("; "),
+      "Relationships":(b.ships||[]).join("; "),"Maturity":b.maturity||""}));
     /* every story on its own row, answering with the collection's word where
        it has none of its own — the same rule the shelf reads them by */
     if(isColl(b)){const entNum=entNumbers(b);(b.entries||[]).forEach(en=>{
@@ -55410,7 +55403,11 @@ function csvObjects(text){
   const head=rows[0].map(h=>h.trim());
   return {head,items:rows.slice(1).map(r=>{const o={};head.forEach((h,i)=>o[h]=(r[i]==null?"":String(r[i]).trim()));return o;})};
 }
-const csvSource=head=>head.includes("Exclusive Shelf")?"goodreads"
+/* this app's own spreadsheet first: it carries Goodreads' columns too, and
+   read as Goodreads' it lost the mark (7 out, 8 back), took genres back as
+   tags, and every story came back a book of its own */
+const csvSource=head=>(head.includes("Rating (0-10)")&&head.includes("Kind")&&head.includes("Stage"))?"myshelf"
+  :head.includes("Exclusive Shelf")?"goodreads"
   :(head.includes("Read Status")||head.includes("Star Rating"))?"storygraph"
   /* AO3Scraper's shape; work_id alone is the signature, the pair is the
      fallback for a tool that renames it */
@@ -55469,12 +55466,14 @@ function readingsFromRow(it){
   const dated=((it&&it.readings)||[]).filter(r=>r&&(r.start||r.end));
   /* the row's own stage, not a guess: a book the export says you are still on
      needs its open reading, exactly as it got one before this function existed */
-  if(!dated.length)return initialReadings({dateFinished:it.dateFinished,rereads:it.rereads,status:it.status||"finished",dnf:!!it.dnf});
+  /* the day a book still being read was started, where the file says it */
+  if(!dated.length){const rs=initialReadings({dateFinished:it.dateFinished,rereads:it.rereads,status:it.status||"finished",dnf:!!it.dnf});
+    const op=rs.find(r=>r.open);if(op&&it.openStart)op.start=it.openStart;return rs;}
   const out=dated.map(r=>({id:uid(),start:r.start||"",end:r.end||""}));
   const total=Math.max(out.length,Math.max(0,parseInt(it.rereads)||0)+1);
   while(out.length<total)out.unshift({id:uid(),start:"",end:""});
   /* a book the export says you are still in the middle of keeps an open one */
-  if(String(it.status||"")==="reading"&&!it.dnf)out.push({id:uid(),start:"",end:"",open:true});
+  if(String(it.status||"")==="reading"&&!it.dnf)out.push({id:uid(),start:it.openStart||"",end:"",open:true});
   return out;
 }
 
@@ -55526,6 +55525,49 @@ function fromGoodreads(o){
     format:fmtFromWord(o["Binding"]||o["Format"]),
     summary:o["My Review"]||"",notes:o["Private Notes"]||"",
     tags:splitTags(o["Bookshelves"]).filter(t=>!["read","to-read","currently-reading"].includes(t.toLowerCase()))};
+}
+/* ---- THE APP'S OWN SPREADSHEET, READ AS ITSELF ----
+   csvText's columns, read back by their own names on top of what
+   fromGoodreads reads: the mark out of ten, the stage in this app's words
+   (on hold, did not finish, don't have it yet), genres and tags apart, the
+   series and its total, the kind and a fic's fandoms, the favourite, link,
+   format, language, came from and set in, and the day started. A story's row
+   comes in under its collection's name as its series, numbered as it was —
+   the import's "one collection" step puts a set back together from that —
+   and the collection's own row stays out when its stories are in the file. */
+function fromMyShelf(o){
+  const it=fromGoodreads(o);
+  const list=k=>String(o[k]||"").split(/\s*;\s*/).map(x=>x.trim()).filter(Boolean);
+  const r=String(o["Rating (0-10)"]||"").trim();
+  it.rating=r===""?null:Math.max(0,Math.min(10,parseFloat(r)||0));
+  const stg=String(o["Stage"]||"").trim().toLowerCase();
+  it.dnf=stg==="did not finish";it.hold=stg==="on hold";it.unowned=stg==="don't have it yet";
+  it.status=stg==="reading now"?"reading":(stg==="want to read"||it.unowned)?"want":stg?"finished":it.status;
+  if(it.dnf||it.hold){const sh=String(o["Exclusive Shelf"]||"").toLowerCase();it.status=sh==="currently-reading"?"reading":sh==="to-read"?"want":"finished";}
+  it.stageGuess=false;
+  it.genres=list("Genres");it.tags=list("Tags");
+  const kind=String(o["Kind"]||"").trim().toLowerCase();
+  if(kind==="fanfic"||kind==="ai")it.kind=kind;
+  if(kind==="story"){const coll=String(o["Collection"]||"").trim();
+    if(coll){it.series=coll;it._inColl=coll;}
+    if(String(o["Series Number"]||"").trim())it.seriesNum=String(o["Series Number"]).trim();}
+  else{
+    if(String(o["Series"]||"").trim())it.series=String(o["Series"]).trim();
+    if(String(o["Series Number"]||"").trim())it.seriesNum=String(o["Series Number"]).trim();
+    if(String(o["Series Total"]||"").trim())it.seriesTotal=String(o["Series Total"]).trim();}
+  if(kind==="collection")it._isColl=true;
+  it.favorite=/^(yes|y|true|1|♥)$/i.test(String(o["Favourite"]||"").trim());
+  if(String(o["Link"]||"").trim())it.link=String(o["Link"]).trim();
+  if(String(o["Language"]||"").trim())it.lang=String(o["Language"]).trim();
+  if(String(o["Came from"]||"").trim())it.from=String(o["Came from"]).trim();
+  const si=list("Set in");if(si.length)it.setIn=si;
+  const fa=list("Fandoms"),ch=list("Characters"),sh=list("Relationships");
+  if(fa.length)it.fandoms=fa;if(ch.length)it.characters=ch;if(sh.length)it.ships=sh;
+  if(String(o["Maturity"]||"").trim())it.maturity=String(o["Maturity"]).trim();
+  const start=cleanDate(o["Date Started"]),end=cleanDate(o["Date Read"]);
+  if(it.status==="reading"&&!it.dnf)it.openStart=start;
+  else if(start||end)it.readings=[{start,end:it.status==="finished"||it.dnf?end:""}];
+  return it;
 }
 function fromStorygraph(o){
   const st=(o["Read Status"]||"").toLowerCase();
@@ -55756,8 +55798,43 @@ const stemOK=s=>{
   for(const ch of String(s||""))if(/[\p{L}\p{N}]/u.test(ch))n+=ch.codePointAt(0)>0x2e7f?2.5:1;
   return n>=10;
 };
+/* ---- A SUBTITLE IS NOT A TITLE ----
+   titleVariants offers the part after a colon as a name of its own, which is
+   right for "Alpha: A Novel" meeting a shelf that calls it "Alpha" — and
+   wrong when that part is all two books share: "Alpha: A Novel" and
+   "Beta: A Novel" by the same author were one book, so Beta was called
+   already on the shelf and ✓ Fill in wrote its dates into Alpha. A key that
+   only the colon gave is a TAIL; a match counts when at least one side met
+   it by a whole title, and two tails meeting are a "maybe" to offer. */
+function titleTails(t){
+  const norm=x=>String(x||"").toLowerCase().replace(/\s+/g," ").trim();
+  const base=norm(t),noParen=base.replace(/\s*\([^)]*\)\s*$/,"");
+  const strong=new Set([base,noParen]),out=new Set();
+  [base,noParen].forEach(x=>{const m=x.match(/^.*?#\s*\d+[^:]*:\s*(.+)$/);if(m)strong.add(norm(m[1]));});
+  [base,noParen].forEach(x=>{const c=x.indexOf(": ");if(c>0){const tail=norm(x.slice(c+2));if(!strong.has(tail))out.add(tail);}});
+  return out;
+}
+/* ---- EVERY BOOK UNDER A TITLE, NOT THE FIRST ----
+   The title maps kept the first book under each name, so of two books
+   called the same by different authors the second was never asked about,
+   and its export row came through as new. Every book is kept under the name,
+   and each is asked whether the hand is the same. `skip` holds the row's
+   own variants that may not decide (the halves of a dashed name). */
+function titleIndex(){
+  const m=new Map();
+  return {
+    put(t,v,skip){const tails=titleTails(t);
+      titleVariants(t).forEach(x=>{if(skip&&skip.has(x))return;const k=titleKey(x);if(!k)return;
+        let l=m.get(k);if(!l)m.set(k,l=[]);if(!l.some(e=>e.v===v))l.push({v,full:!tails.has(x)});});},
+    find(t,ok,skip){const tails=titleTails(t);let weak=null;
+      for(const x of titleVariants(t)){if(skip&&skip.has(x))continue;const whole=!tails.has(x);
+        for(const e of m.get(titleKey(x))||[]){if(!ok(e.v))continue;if(whole||e.full)return {hit:e.v,weak:null};if(!weak)weak=e.v;}}
+      return {hit:null,weak};},
+    any(x,ok){for(const e of m.get(titleKey(x))||[])if(ok(e.v))return e.v;return null;}
+  };
+}
 function markDupes(){
-  const byKey=new Map(),byIsbn=new Map(),byTitle=new Map(),byNear=new Map();
+  const byKey=new Map(),byIsbn=new Map(),byNear=new Map(),tIdx=titleIndex();
   const put=(m,k,v)=>{if(k&&!m.has(k))m.set(k,v);};
   /* A half of a dashed name is the weaker key — see titleHalves — so it is
      filed with the volume stems, which suggest and never skip, rather than with
@@ -55767,10 +55844,10 @@ function markDupes(){
     const halves=titleHalves(t);
     titleVariants(t).forEach(x=>{
       if(halves.has(x)){put(byNear,titleKey(x),v);return;}
-      put(byTitle,titleKey(x),v);
       const stem=volTrim(x);
       if(stemOK(stem))put(byNear,titleKey(stem),v);
     });
+    tIdx.put(t,v,halves);
   };
   for(const b of books){
     put(byKey,dupeKey(b.title,b.author),{b,en:null});
@@ -55804,11 +55881,8 @@ function markDupes(){
        the shelf's halves are not in this map at all: on its own it is not
        enough to call something a duplicate. It gets its turn below. */
     const rowHalves=titleHalves(it.title);
-    if(!hit)for(const v of titleVariants(it.title)){
-      if(rowHalves.has(v))continue;
-      const t=byTitle.get(titleKey(v));
-      if(t&&sameHand(it,t)){hit=t;break;}
-    }
+    let tailOnly=null;
+    if(!hit){const r=tIdx.find(it.title,t=>sameHand(it,t),rowHalves);hit=r.hit;tailOnly=r.weak;}
     /* Nothing matched outright. Ask the weaker question — is this an instalment
        of something on the shelf? — and if it is, say so rather than either
        adding a quiet duplicate or skipping a book you may not have. An exact
@@ -55825,9 +55899,13 @@ function markDupes(){
        "Hale - Lanterns at Dusk" arriving for a shelf that calls it
        "Lanterns at Dusk" is worth offering, and only offering */
     if(!hit&&!near)for(const v of rowHalves){
-      const t=byNear.get(titleKey(v))||byTitle.get(titleKey(v));
-      if(t&&sameHand(it,t)){near=t;break;}
+      const nb=byNear.get(titleKey(v));
+      const t=(nb&&sameHand(it,nb))?nb:tIdx.any(v,x=>sameHand(it,x));
+      if(t){near=t;break;}
     }
+    /* two books meeting only by their subtitles: worth offering, never
+       enough to skip (see A SUBTITLE IS NOT A TITLE) */
+    if(!hit&&!near&&tailOnly)near=tailOnly;
     it.dupe=!!hit;
     it.near=!hit&&!!near;
     const found=hit||near;
@@ -56436,9 +56514,13 @@ async function loadCsvFile(file){
   const {head,items}=csvObjects(text);
   const src=csvSource(head);
   if(!src)throw new Error("That doesn't look like a Goodreads, StoryGraph or AO3 export.");
-  const map=src==="goodreads"?fromGoodreads:src==="ao3"?fromAO3:fromStorygraph;
-  const staged=items.map(map).filter(it=>it.title);
-  const said={goodreads:"Goodreads export",ao3:"AO3 file",storygraph:"StoryGraph export"}[src]||"export";
+  const map=src==="myshelf"?fromMyShelf:src==="goodreads"?fromGoodreads:src==="ao3"?fromAO3:fromStorygraph;
+  let staged=items.map(map).filter(it=>it.title);
+  /* a collection whose stories are in the file comes in as them */
+  if(src==="myshelf"){const colls=new Set(staged.filter(x=>x._inColl).map(x=>x._inColl.toLowerCase()));
+    staged=staged.filter(x=>!(x._isColl&&colls.has(String(x.title).toLowerCase())));
+    staged.forEach(x=>{delete x._inColl;delete x._isColl;});}
+  const said={myshelf:"My Shelf spreadsheet",goodreads:"Goodreads export",ao3:"AO3 file",storygraph:"StoryGraph export"}[src]||"export";
   const res=Object.assign({src},stageImportRows(staged,said+(file&&file.name?" ("+file.name+")":"")));
   /* and the day you added each book, onto the ones already on your shelf */
   try{res.dated=await backfillAdded();}catch(e){res.dated=0;}
@@ -56706,6 +56788,12 @@ async function importOne(it,extra,steps){
     title:it.title,author:it.author,isbn:it.isbn||"",status:it.status,dnf:!!it.dnf,rating:it.rating,
     pages:it.pages,dateFinished:it.dateFinished,rereads:it.rereads||0,
     ...(it.series?{series:it.series}:{}),...(it.seriesNum?{seriesNum:it.seriesNum}:{}),
+    ...(it.seriesTotal?{seriesTotal:it.seriesTotal}:{}),
+    /* what the app's own spreadsheet carries — see THE APP'S OWN SPREADSHEET */
+    ...((it.genres||[]).length?{genres:it.genres.slice()}:{}),
+    ...(it.favorite?{favorite:true}:{}),...(it.hold?{hold:true}:{}),...(it.unowned?{unowned:true}:{}),
+    ...(it.lang?{lang:it.lang}:{}),...(it.from?{from:it.from}:{}),
+    ...((it.setIn||[]).length?{setIn:it.setIn.slice()}:{}),
     ...(it.progress?{progress:it.progress}:{}),
     ...(it.added?{added:it.added}:{}),
     ...(it.format?{format:it.format}:{}),
@@ -56721,6 +56809,7 @@ async function importOne(it,extra,steps){
     keywords:(it.tags||[]),imported:Date.now(),modified:Date.now()},extra||{});
   /* the fandom vocabulary learns what arrived, through its one door — the
      characters filed under the first fandom, the same way the editor does */
+  (b.genres||[]).forEach(g=>ensureGenre(g));
   if((b.fandoms||[]).length){
     let vocab=false;
     b.fandoms.forEach(f=>{if(addFandom(f))vocab=true;});
@@ -57980,10 +58069,10 @@ async function sharpenCover(b,en){
   const ask=String(who.isbn||"").trim(),title=String(who.title||"").trim();
   if(!ask&&!title){say(head+`<div class="hint">I need a title or an ISBN to look this up.</div>`);return;}
   say(head+`<div class="hint">Yours is ${wasTxt}. Looking…</div>`);
-  let info=null;
-  try{info=await fetchBookInfo(title,String(who.author||""),ask);}catch(e){}
+  let info=null,unreached=false;
+  try{info=await fetchBookInfo(title,String(who.author||""),ask);}catch(e){unreached=true;}
   const cand=((info&&info.covers)||[]).filter(Boolean);
-  if(!cand.length){say(head+`<div class="hint">Yours is ${wasTxt}. Nobody online has a cover for this one — yours stays as it is.</div>`);return;}
+  if(!cand.length){say(head+`<div class="hint">Yours is ${wasTxt}. ${unreached||!navigator.onLine?"The cover sites couldn't be reached — check the connection and try again.":"Nobody online has a cover for this one."} Yours stays as it is.</div>`);return;}
   /* every candidate, not the first that downloads: the point is the biggest,
      and the first host to answer is not reliably the one holding the big copy */
   let best=null;
@@ -58505,12 +58594,15 @@ function openIsbnAdd(){
     for(const c of S.codes){
       if(stop){S.stopped=true;break;}
       S.now=c.code;S.done++;drawProgress();
-      let info=null;
-      try{info=await fetchBookInfo("","",c.code);}catch(e){info=null;}
+      let info=null,unreached=false;
+      try{info=await fetchBookInfo("","",c.code);}catch(e){info=null;unreached=true;}
       const title=info?String(info.title||"").trim():"";
       if(!info||!title){
+        /* a lookup that could not get out is not a number nobody knows */
+        const off=unreached||!navigator.onLine;
         S.rows.push({code:c.code,dupe:c.dupe,info:null,on:false,
-          dead:c.dupe?"Already on your shelf.":"Neither site knows that number. Some books have no ISBN, and some backs carry a price barcode instead."});
+          dead:c.dupe?"Already on your shelf.":off?"The book sites couldn't be reached — check the connection and look this one up again."
+            :"Neither site knows that number. Some books have no ISBN, and some backs carry a price barcode instead."});
         continue;
       }
       S.rows.push({code:c.code,dupe:c.dupe,info,title,on:!c.dupe,
