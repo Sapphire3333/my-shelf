@@ -13,15 +13,39 @@
 # This hook only runs if git is told where to find it (once per machine):
 #   git config core.hooksPath .githooks
 
-d=$(date +%Y-%m-%d)
+# Builds are DATE.N: the date sorts as text, the run number as a number.
+newer_of() { printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1 -k2,2n | tail -1; }
+
+# The date is UTC's, on every machine. It was each machine's own: a commit on
+# a computer in Riga just after midnight was stamped with the new day, and a
+# cloud container's commit two hours later, running on UTC, with the old one
+# -- an OLDER name for a newer build, so phones never offered it.
+d=$(date -u +%Y-%m-%d)
 n=1
 cur=""
 if [ -f version.js ]; then
   cur=$(sed -n 's/.*APP_VERSION = "\([^"]*\)".*/\1/p' version.js)
-  case "$cur" in
-    "$d".*) n=$(( ${cur##*.} + 1 )) ;;
-  esac
 fi
+# And the stamp follows the newest build known here, not only this checkout's:
+# a branch cut from main before a cloud build landed counted from the older
+# number and gave the next build a name main had already shipped -- the same
+# worker address, so no browser installed it. origin/main is read as last
+# fetched; nothing here goes to the network.
+base="$cur"
+remote=$(git show origin/main:version.js 2>/dev/null | sed -n 's/.*APP_VERSION = "\([^"]*\)".*/\1/p')
+if [ -n "$remote" ]; then
+  if [ -z "$base" ]; then base="$remote"; else base=$(newer_of "$base" "$remote"); fi
+fi
+# never older than what came before, whatever the clock says
+if [ -n "$base" ]; then
+  bd=${base%.*}; bn=${base##*.}
+  if [ "$bd" = "$d" ]; then n=$(( bn + 1 ))
+  elif [ "$(printf '%s\n%s\n' "$bd" "$d" | sort | tail -1)" = "$bd" ]; then d="$bd"; n=$(( bn + 1 ))
+  fi
+fi
+# PRINT_STAMP=1 sh .githooks/pre-commit prints the stamp this commit would
+# get, for the What's new line, and changes nothing.
+if [ -n "$PRINT_STAMP" ]; then echo "$d.$n"; exit 0; fi
 
 # The newest entry in WHATS_NEW — the array is newest-first, so it is the first
 # v:"…" after the opening bracket.
@@ -30,9 +54,6 @@ if [ -f index.html ]; then
   news=$(sed -n '/const WHATS_NEW=\[/,$p' index.html \
     | grep -o 'v:"[0-9][0-9-]*\.[0-9][0-9]*"' | head -1 | sed 's/^v:"//;s/"$//')
 fi
-
-# Builds are DATE.N: the date sorts as text, the run number as a number.
-newer_of() { printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1 -k2,2n | tail -1; }
 
 if [ -n "$news" ] && [ -n "$cur" ] && [ "$(newer_of "$news" "$cur")" != "$news" ]; then
   echo "pre-commit: build $cur has already shipped and WHATS_NEW stops at $news." >&2

@@ -37,12 +37,24 @@ const SHARED_TEXT_KEY = "shared-text";
    see THE CODE AND ITS STAMP COME FROM THE SAME PLACE */
 let shellFromCacheAt = 0;
 
+// ---- A BUILD THAT DID NOT ARRIVE WHOLE DOES NOT TAKE OVER ----
+// Every file was asked for and the worker took over whatever came back, so a
+// build installed on one bar of signal could be missing config.js — and the
+// activate below then deleted the old cache that had it. The next open with no
+// connection had no settings file: no sign-in, no sync. The page and its two
+// small scripts must all be in the new cache now, or the install fails and the
+// old worker, with its whole cache, carries on until the next try. The icons
+// and the manifest may still fail; nothing breaks without them.
+const MUST = ["./", "./index.html", "./version.js", "./config.js"];
 self.addEventListener("install", e => {
   e.waitUntil(
     caches.open(CACHE)
       .then(c => Promise.allSettled(SHELL.map(u => c.add(new Request(u, {cache: "reload"})))))
+      .then(rs => {
+        if (rs.some((r, i) => r.status === "rejected" && MUST.includes(SHELL[i])))
+          throw new Error("the build did not arrive whole");
+      })
       .then(() => self.skipWaiting())
-      .catch(() => self.skipWaiting())
   );
 });
 
@@ -235,7 +247,12 @@ self.addEventListener("fetch", e => {
       return res;
     });
     const cached = await caches.match(key);
-    if (!cached) return net.catch(() => caches.match("./index.html"));
+    // The page is the fallback for a PAGE only. Handed back for any file, it
+    // arrived as the body of config.js or version.js — HTML read as a script —
+    // and the app started with no settings and a build named "dev".
+    if (!cached) return net.catch(async () => (shell || req.mode === "navigate")
+      ? (await caches.match("./index.html")) || Response.error()
+      : Response.error());
     // A 404 or a 500 is an answer, and the race used to accept it as the winner —
     // so a hiccup at the host, or a request landing mid-deploy, showed you an error
     // page while a perfectly good copy of the app sat in the cache unused. Only a

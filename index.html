@@ -5653,7 +5653,11 @@ function newBuildBar(live){
 }
 if("serviceWorker" in navigator&&location.protocol.indexOf("http")===0&&!/[?&]db=smoke(&|$)/.test(location.search)){
   window.addEventListener("load",()=>{
-    const reg=v=>navigator.serviceWorker.register("sw.js?v="+encodeURIComponent(v||"dev")).catch(()=>null);
+    /* never under a made-up name: a worker registered as "dev" — version.js
+       failed to load — named its cache my-shelf-dev and deleted the real one
+       when it took over. With no stamp, the check below registers the
+       server's own once it answers. */
+    const reg=v=>v?navigator.serviceWorker.register("sw.js?v="+encodeURIComponent(v)).catch(()=>null):Promise.resolve(null);
     reg(window.APP_VERSION);
     let askedAt=0;
     const check=()=>{
@@ -9630,9 +9634,20 @@ let TABS=null;
 try{TABS=new BroadcastChannel("my-shelf-tab");}catch(e){}
 const tabSay=m=>{try{if(TABS)TABS.postMessage(m);}catch(e){}};
 const st=(s,m)=>db.transaction(s,m).objectStore(s);
-const dbPut=(s,v)=>new Promise((res,rej)=>{const g=st(s,"readwrite").put(v);
-  g.onsuccess=()=>{tabSay({t:"put",s,k:v&&(v.id!=null?v.id:(v.k!=null?v.k:v.key))});res(true);};
-  g.onerror=()=>rej(g.error);});
+/* ---- A WRITE IS DONE WHEN ITS TRANSACTION IS ----
+   A full disk does not fail the put itself: the request reports success and
+   the transaction is aborted afterwards, with QuotaExceededError, while it
+   commits. Resolving on the request's success therefore answered "saved" for
+   a write the browser then threw away — every caller's "storage may be full"
+   branch was unreachable for the one failure it was written for. The promise
+   settles on the transaction now, and a refused write says so on screen once
+   (storeFullNote), whichever caller swallowed it. */
+const dbPut=(s,v)=>new Promise((res,rej)=>{
+  const tx=db.transaction(s,"readwrite");let g=null;
+  const fail=()=>{const e=tx.error||(g&&g.error)||new Error("write failed");storeFullNote(e);rej(e);};
+  tx.oncomplete=()=>{tabSay({t:"put",s,k:v&&(v.id!=null?v.id:(v.k!=null?v.k:v.key))});res(true);};
+  tx.onabort=fail;
+  try{g=tx.objectStore(s).put(v);}catch(e){storeFullNote(e);rej(e);}});
 const dbGet=(s,k)=>new Promise(res=>{const g=st(s,"readonly").get(k);g.onsuccess=()=>res(g.result||null);g.onerror=()=>res(null);});
 /* the same read, but a failure is a failure rather than "there's nothing there".
    Uploading uses this: a read that merely broke must leave the upload queued to
@@ -9642,6 +9657,7 @@ const dbDel=(s,k)=>new Promise(res=>{const g=st(s,"readwrite").delete(k);
   g.onsuccess=()=>{tabSay({t:"del",s,k});res();};g.onerror=()=>res();});
 const dbAll=s=>new Promise(res=>{const g=st(s,"readonly").getAll();g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
 const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
+const dbAllRange=(s,range)=>new Promise(res=>{const g=st(s,"readonly").getAll(range);g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
 
 /* =============== state =============== */
 let books=[],genres={},dnfCustom=[],audCustom=[];
@@ -10055,11 +10071,31 @@ function syncConfigured(){
   return !!(hcSettings()&&window.supabase&&typeof window.supabase.createClient==="function");
 }
 function setSync(s){SYNC.status=s;updateSyncUI();}
+/* ---- THE PILL SAYS WHY ----
+   "Sync paused — will retry" was all it ever said; the reason was known
+   (SYNC.lastErr) and printed only deep in ⚙ Settings. A few words of it go on
+   the pill now, and the whole of it in the pill's title. And a device used
+   "offline, no account" from the sign-in screen keeps its changes for the
+   next sign-in (the account check asks before they go anywhere) — the pill
+   was blank meanwhile, so nothing said that anything was waiting. */
+function syncWhy(){
+  const m=String((SYNC.lastErr&&SYNC.lastErr.msg)||"");
+  if(!navigator.onLine||/failed to fetch|network|load failed|timed? ?out/i.test(m))return "can't reach the cloud";
+  if(/jwt|token|auth|401|403|not authori[sz]ed|permission|row-level/i.test(m))return "the cloud refused the sign-in";
+  if(/quota|too large|payload|413|exceed|storage limit/i.test(m))return "the cloud is out of room";
+  return m?"the cloud refused a change":"";
+}
 function updateSyncUI(){
   const el=q("#syncStat");if(!el)return;
   const map={synced:["Synced ✓","ok"],syncing:["Syncing…","no"],offline:["Offline — will sync","no"],error:["Sync paused — will retry","no"],local:["",""]};
-  const [t,c]=map[SYNC.status]||["",""];
-  el.textContent=t;el.className="syncstat "+c;
+  let [t,c]=map[SYNC.status]||["",""];
+  let tip="";
+  if(SYNC.status==="error"){const why=syncWhy();if(why)t="Sync paused: "+why+" — will retry";
+    if(SYNC.lastErr)tip="Last trouble "+new Date(SYNC.lastErr.at).toLocaleString()+": "+SYNC.lastErr.msg;}
+  if(SYNC.on&&!SYNC.user&&!SYNC.onHold&&SYNC.queue.length){
+    t=`Not signed in — ${SYNC.queue.length} change${SYNC.queue.length===1?"":"s"} wait here`;c="no";
+    tip="They go up the next time you sign in on this device; if that is a different account, you are asked first.";}
+  el.textContent=t;el.className="syncstat "+c;el.title=tip;
 }
 function dataURLtoBlob(dataURL){
   const [head,b64]=String(dataURL).split(",");
@@ -10296,6 +10332,8 @@ async function runOp(op){
              overwrites this same row instead of piling up copies */
           await dbPut("trash",{id:op.id+"~sync"+(full.modified||0),at:Date.now(),
             conflict:true,book:JSON.parse(JSON.stringify(cb)),cover:null,images:{}});
+          /* said, unless the page already said it while the book stood open */
+          if(!deviceClashed.has(op.id))syncBinnedNote(cb);
         }
       }
     }catch(e){/* the safety net must never block the save itself */}
@@ -10345,7 +10383,11 @@ async function runOp(op){
       const {data:row,error:re}=await s.from("meta").select("value").eq("user_id",uid).eq("key",op.key).maybeSingle();
       if(re)throw re;
       const cv=(row&&row.value&&typeof row.value==="object")?row.value:{},joined=Object.assign({},cv);
-      if(op.key==="kwList"){for(const k in value)joined[k]=value[k];for(const k in joined)if(metaGone("kw:"+k))delete joined[k];}
+      /* the cloud's spelling of a word stands; this device's other capitals
+         of the same word do not go up beside it (see the join in pullAll) */
+      if(op.key==="kwList"){const low=new Set(Object.keys(joined).map(k=>k.toLowerCase()));
+        for(const k in value)if(joined[k]||!low.has(k.toLowerCase())){joined[k]=value[k];low.add(k.toLowerCase());}
+        for(const k in joined)if(metaGone("kw:"+k))delete joined[k];}
       else for(const k in value){const l=value[k],c=joined[k];if(!c||((l&&l.at)||0)>=((c&&c.at)||0))joined[k]=l;}
       value=joined;
     }
@@ -10608,8 +10650,13 @@ async function pullAll(){
           /* the tag list joins by keeping whatever either device knows, minus
              anything retired — a word invented on the phone is a word here too,
              and a word deleted for good here does not come back from there */
+          /* …and joins by the word, not by its capitals: rememberKw refuses a
+             word already known as "Humorous" when it arrives as "humorous",
+             and the join did not, so two devices that each met it first
+             ended with both chips everywhere. The spelling here stays. */
           else if(row.key==="kwList"){const rv=row.value||{};
-            for(const k in rv)if(!kwList[k]&&!gone("kw:"+k))kwList[k]=rv[k];}
+            const low=new Set(Object.keys(kwList).map(k=>k.toLowerCase()));
+            for(const k in rv)if(!kwList[k]&&!low.has(k.toLowerCase())&&!gone("kw:"+k)){kwList[k]=rv[k];low.add(k.toLowerCase());}}
           else if(row.key==="catColors"){
             if(cloudNewer("catColors"))catColors=takeWhole(row.value,catColors,"cat:");
             else{const rv=row.value||{};for(const c in rv)if(!catColors[c])catColors[c]=rv[c];}}
@@ -10734,7 +10781,19 @@ async function pullAll(){
        tell us, whatever the timestamps say — clocks on two devices rarely agree.
        Same for the book open in the editor: those edits are still being typed. */
     const pending=new Set(SYNC.queue.filter(o=>o.kind==="book"&&o.id).map(o=>o.id));
-    const heldBack=id=>pending.has(id)||(view==="book"&&cur&&cur.id===id);
+    const openHere=id=>view==="book"&&cur&&cur.id===id;
+    /* deletions still keep off the open book whatever it holds — see below */
+    const heldBack=id=>pending.has(id)||openHere(id);
+    /* ---- THE OPEN BOOK IS TAKEN WHEN NOTHING ON IT IS UNSAVED ----
+       see openDirty. Held, it is held as before and the page says so; taken,
+       the page is rebuilt from the cloud's copy straight away. The question
+       is asked twice — here and again when the row's body has arrived — so
+       typing that starts during the download is not rebuilt away. */
+    const holdRow=id=>pending.has(id)||(openHere(id)&&openDirty());
+    const holdOpen=id=>{const rm=(heads.find(h=>h.id===id)||{}).modified||0;
+      if(rm>(SYNC.held[id]||0))SYNC.held[id]=rm;
+      if(heldNewer(id))deviceClashNote(id);};
+    let openTaken=null;
     const wanted=[];
     for(const h of heads){
       remoteIds.add(h.id);
@@ -10745,8 +10804,17 @@ async function pullAll(){
         continue;}
       /* a held-back row is remembered apart — see SYNC.held. Marking it `seen`
          here is what used to cost the other device its conflict copy. */
-      if(heldBack(h.id)){
+      if(holdRow(h.id)){
         if(rm>(SYNC.held[h.id]||0))SYNC.held[h.id]=rm;
+        if(openHere(h.id)&&heldNewer(h.id))deviceClashNote(h.id);
+        continue;}
+      /* the open book, taken: `seen` waits for the second look below, because
+         a row marked seen and then held after all would let this device's next
+         save go up over it with no copy kept */
+      if(openHere(h.id)){
+        const lb=localMap.get(h.id);
+        if(!lb||rm>(lb.modified||0)||!rm)wanted.push(h.id);
+        else{if(rm>(SYNC.seen[h.id]||0))SYNC.seen[h.id]=rm;delete SYNC.held[h.id];}
         continue;}
       /* this row we either take or already outrank — the next edit must beat it */
       if(rm>(SYNC.seen[h.id]||0))SYNC.seen[h.id]=rm;
@@ -10762,23 +10830,34 @@ async function pullAll(){
       if(e2){setSync(navigator.onLine?"error":"offline");return;}
       for(const row of rows||[]){
       const rb=row.data||{};rb.id=row.id;rb.modified=row.modified||rb.modified||rb.created||0;
+      /* the second look at the open book — something may have been typed */
+      if(openHere(row.id)&&openDirty()){holdOpen(row.id);continue;}
       if((rb.modified||0)>(SYNC.seen[row.id]||0))SYNC.seen[row.id]=rb.modified||0;
+      delete SYNC.held[row.id];
       const lb=localMap.get(row.id);
       if(!lb||(rb.modified||0)>(lb.modified||0)){
         /* same scrub a backup file gets: cloud rows are the only other input
            that arrives from outside this page and is rendered as rich HTML */
         try{sanitizeBook(rb);}catch(e){}
+        const open=openHere(row.id);
         await dbPut("books",rb);
         const i=books.findIndex(b=>b.id===row.id);
         if(i>=0)books[i]=rb;else books.push(rb);
         coverCache.delete(row.id);SYNC.triedCover.delete(row.id);
         changed.push(rb);
+        /* rebuilt at once, while it is still the same untouched page. The
+           shelf copy is the new one now, so "untouched" is read off the save
+           line: a key pressed during the write shows Saving… there */
+        if(open&&openHere(row.id)&&!savePending()){openTaken=row.id;try{await rebaseOpenBook(row.id);}catch(e){}}
       }
       }
     }
     /* covers & pictures a few at a time — one by one made a first sync crawl */
     for(let i=0;i<changed.length;i+=4)
       await Promise.all(changed.slice(i,i+4).map(syncBookAssets));
+    /* the open book's cover and pictures have arrived too — drawn now, if
+       nothing has been started on the page in the meantime */
+    if(openTaken&&openHere(openTaken)&&!openDirty()){try{await rebaseOpenBook(openTaken);}catch(e){}}
     // apply remote deletions locally
     for(const id of Object.keys(deletions)){
       if(heldBack(id))continue;
@@ -10794,12 +10873,35 @@ async function pullAll(){
        if(lb&&binLive(k)&&(lb.modified||0)>((trashCloud[k]&&trashCloud[k].at)||0)){delete trashCloud[k];binStale=true;}
      }
      if(binStale)saveTrashCloud();}
-    // push up any local-only books the cloud hasn't seen yet (e.g. made offline or before first sync)
+    /* ---- GONE FROM THE CLOUD, AND NOT NEW HERE ----
+       A book the cloud lacks was either made here and not sent yet, or
+       deleted on another device. The second kind is told apart by its
+       tombstone — and tombstones are dropped after ninety days, so a device
+       that had not synced for longer than that sent every book deleted
+       meanwhile back up, on every device. This device remembers which books
+       it has seen in the cloud (SYNC.seen, kept for every book on the shelf):
+       one it has seen, unchanged here since, that the cloud no longer holds,
+       was deleted elsewhere. It goes to Recently deleted here, for thirty
+       days, and nothing is sent. Never when the cloud is empty — a new or
+       wiped project wants everything sent — and never for a book waiting to
+       go up, which this device has changed. */
+    const goneElsewhere=[];
     for(const b of books){
       if(!remoteIds.has(b.id)&&!(deletions[b.id]>=(b.modified||0))){
+        const seen=SYNC.seen[b.id]||0;
+        if(heads.length&&seen&&(b.modified||0)<=seen&&!pending.has(b.id)&&!openHere(b.id)){goneElsewhere.push(b);continue;}
         enqueue({kind:"cover",id:b.id});fileKeysOf(b).forEach(key=>enqueue({kind:"img",key}));
         enqueue({kind:"book",id:b.id});
       }
+    }
+    if(goneElsewhere.length){
+      let n=0;
+      for(const b of goneElsewhere){
+        if(!(await toTrash(b)))continue;
+        await dbDel("books",b.id);books=books.filter(x=>x.id!==b.id);delete SYNC.seen[b.id];n++;
+      }
+      if(n){touched=true;
+        bannerNote(`${n} book${n===1?" was":"s were"} deleted on another device while this one was away. ${n===1?"It is":"They are"} in Recently deleted here for thirty days, if that was wrong.`,14000);}
     }
     /* the other device may have written a collection's words onto its stories
        — the same tidy boot does, on what has just arrived */
@@ -10831,11 +10933,25 @@ async function syncBookAssets(b){
      to an already-downloaded picture still reach other devices */
   const wants=[...((b.images)||[]).map(im=>({key:b.id+"|"+im.id,v:im.cut||0})),
     ...((b.entries)||[]).filter(en=>en.cover).map(en=>({key:b.id+"|"+en.id,v:en.coverV||0}))];
-  for(const {key,v} of wants){
+  /* ---- A FILE GIVEN AGAIN ON THE OTHER DEVICE ----
+     The reader's file and a map of your own keep one key per book, so a new
+     one replaces the old under the same name — and this list never named
+     them, so the device that had opened the old file went on opening it
+     under the new file's name, for good. They are versioned by the stamp on
+     the book (readFile.at, ownMap.at) and refreshed only where a copy is
+     already kept: a device that never opened the file still fetches it the
+     first time it is asked for, as before, and is not sent a whole EPUB
+     because a mark changed on the other device. */
+  const lazy=[];
+  if(b.readFile&&b.readFile.at)lazy.push({key:"__read|"+b.id,v:b.readFile.at});
+  if(b.ownMap&&b.ownMap.pic&&b.ownMap.at)lazy.push({key:b.ownMap.pic,v:b.ownMap.at});
+  for(const {key,v} of [...wants,...lazy]){
     const rec=await dbGet("images",key);
     if(rec&&(rec.v||0)>=v)continue;
+    if(!rec&&lazy.some(x=>x.key===key))continue;
     try{const {data,error}=await s.storage.from("shelf").download(imgPath(key));
-      if(!error&&data)await dbPut("images",{key,data:await blobToDataURL(data),v});}catch(e){}
+      if(!error&&data){await dbPut("images",{key,data:await blobToDataURL(data),v});
+        coverCache.delete(key);if(key.startsWith("__read|"))rdCache.delete(b.id);}}catch(e){}
   }
 }
 /* local first, then pull from Storage if this device hasn't got it yet */
@@ -10946,6 +11062,10 @@ async function checkAccount(user){
         await signOut();return false;
       }
     }
+    /* what this device saw in the other account's cloud says nothing about
+       this one's — kept, every merged book would read as "seen there and gone
+       since" (see GONE FROM THE CLOUD, AND NOT NEW HERE) and go to the bin */
+    if(last&&last!==user.id){SYNC.seen={};SYNC.held={};dbPut("meta",{k:"seenMod",v:{}}).catch(()=>{});}
     dbPut("meta",{k:"lastUser",v:user.id});
   }catch(e){}
   return true;
@@ -11337,11 +11457,56 @@ async function tabCatchUp(){
 function tabClashNote(){
   if(!tabClashed.size||window.__tabNote)return;
   window.__tabNote=true;
-  const w=document.createElement("div");
-  w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:500;background:#78350f;color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:calc(90vw/var(--uiz,1));text-align:center;zoom:var(--uiz,1)";
-  w.textContent="This book was changed in another tab while you had it open. What you do here is what will be kept — the other version is saved in Recently deleted.";
+  bannerNote("This book was changed in another tab while you had it open. What you do here is what will be kept — the other version is saved in Recently deleted.",9000,
+    ()=>{window.__tabNote=false;tabClashed.clear();});
+}
+/* One note at the foot of the window, for the things that must be said
+   without stopping you: a clash with another tab or device, a refused write.
+   The words are the app's own, never a title off the shelf except where the
+   note is about that book. A second note waits for the first to go. */
+let bannerBusy=false;const bannerQ=[];
+function bannerNote(text,ms,done){
+  if(!document.body)return;
+  if(bannerBusy){bannerQ.push([text,ms,done]);return;}
+  bannerBusy=true;
+  const w=document.createElement("div");w.className="bannernote";w.setAttribute("role","status");
+  /* above the phone's tab bar, as every other thing at the foot is */
+  const foot=document.documentElement.dataset.phone==="1"?"var(--tabbarh,58px) + 14px":"14px";
+  /* width:max-content, because a box placed at left:50% may otherwise only
+     use the half of the window right of its left edge — on a 412px phone
+     the note came out 206px wide, five lines of it */
+  w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);width:max-content;bottom:calc("+foot+" + env(safe-area-inset-bottom,0px));z-index:500;background:#78350f;color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:calc(90vw/var(--uiz,1));text-align:center;zoom:var(--uiz,1);cursor:pointer";
+  w.textContent=text;
+  let gone=false;
+  const shut=()=>{if(gone)return;gone=true;w.remove();bannerBusy=false;try{done&&done();}catch(e){}
+    const nx=bannerQ.shift();if(nx)bannerNote(nx[0],nx[1],nx[2]);};
+  w.onclick=shut;
   document.body.appendChild(w);
-  setTimeout(()=>{w.remove();window.__tabNote=false;tabClashed.clear();},9000);
+  setTimeout(shut,ms||9000);
+}
+/* the refused write, said once a minute at most — every caller that swallows
+   its own rejection (.catch(()=>{})) is covered by this one line in dbPut */
+function storeFullNote(e){
+  const n=String(e&&e.name||""),m=String(e&&e.message||"");
+  if(n!=="QuotaExceededError"&&!/quota/i.test(m))return;
+  if(Date.now()-(storeFullNote.at||0)<60000)return;
+  storeFullNote.at=Date.now();
+  bannerNote("This device's storage is full, so the last change was not kept. ⚙ Settings → You and your things → Storage shows what is using the room.",14000);
+}
+/* ---- THE BOOK OPEN HERE WAS CHANGED ON ANOTHER DEVICE ----
+   The tab version of this note existed; the device version did not, so a
+   book written in on the phone while it stood open in the editor here lost
+   to this device's next save with nothing said until a bin row turned up.
+   Said once per book per visit to its page. */
+const deviceClashed=new Set();
+function deviceClashNote(id){
+  if(deviceClashed.has(id))return;deviceClashed.add(id);
+  bannerNote("This book was changed on another device while you were working on it here. What you save here is what will be kept — the other device's version goes to Recently deleted.",12000);
+}
+/* A newer copy from another device was set aside for this device's edit.
+   One line per book, so the bin row is not the first anyone hears of it. */
+function syncBinnedNote(b){
+  bannerNote("“"+String((b&&b.title)||"A book").slice(0,80)+"” had a newer version from another device; this device's edit was saved over it, and that version is in Recently deleted.",12000);
 }
 if(TABS)TABS.onmessage=e=>{
   const m=e.data;
@@ -12638,6 +12803,14 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-20.1",lines:[
+    "<b>🔄 A book left open on one device no longer wins over the other device's newer edits.</b> If its page is only being read, the newer copy arrives on it straight away; if you are writing in it, a note at the foot says so, your save is kept and the other version goes to Recently deleted, with a line saying that too.",
+    "<b>💾 A full device says so.</b> When storage is full, a change the browser refused used to look saved; a note at the foot of the window now says it was not kept, whichever part of the app made it.",
+    "<b>🗂 Opening the wrong file under Import backup</b> now says it isn't a My Shelf backup and changes nothing — it no longer blamed your storage, or used up one of the two safety copies first.",
+    "<b>📦 The daily backups are lighter:</b> the copies inside the browser, the daily folder file and the Downloads file leave out the books you gave 📖 Read it here. Those files stay on this device; ⭳ Export backup file still carries everything.",
+    "<b>📖 A new file for a book, or a new map of your own,</b> now reaches the other device in place of the old one, and taking a map off the page removes its picture too.",
+    "<b>☁️ The sync line says why it paused</b> — no connection, the sign-in, or the cloud refusing a change — and, used offline without an account, how many changes are waiting for your next sign-in.",
+    "<b>🧹 Smaller sync fixes:</b> two open windows no longer make two daily backups and drop yesterday's; a tag spelt with other capitals on each device is kept once; and a device that comes back after months puts books deleted elsewhere meanwhile into Recently deleted rather than sending them back to every device."]},
   {v:"2026-10-19.12",lines:[
     "<b>⛶ Your bookcases show where each book stands again.</b> Since the atlas learned the US states, the bookcases drew every shelf empty and every book's page offered “📍 Put it on a bookcase…” — two parts of the app answered to one name, and the atlas's won. Where you had put each book was kept all along; it shows again, and the app's own check now looks for a clash like that.",
     "<b>🔍 Search in four more places:</b> <i>Came from</i>, <i>Read in</i>, <i>Set in</i> and <i>Lent or borrowed</i> are chips beside Title, Author and Series — a name finds the book someone lent you, or lent back.",
@@ -24005,6 +24178,8 @@ function loansHtml(){
 /* a change to a shelf book from a button that is not on its page — the
    road setFav takes: an undo step, the write, the cloud, the redraw */
 async function shelfMut(id,mut){
+  /* the same fetch as quickEdit's, for the book open on screen */
+  if(cur&&cur.id===id&&view==="book"&&heldNewer(id)&&!openDirty())await rdFreshen(id);
   const b=books.find(x=>x.id===id);if(!b)return false;
   const before=JSON.parse(JSON.stringify(b));
   if(mut(b)===false)return false;
@@ -24844,11 +25019,11 @@ async function ownMapAdd(file){
   if(!file||!String(file.type||"").startsWith("image/")||!cur)return;
   const id=cur.id;
   let data;try{data=await petEncode(await shrinkData(await pngResize(file,1600),1600));}catch(e){alert("That picture couldn't be read.");return;}
-  const key=ownMapKey(id);
-  try{await dbPut("images",{key,data});}catch(e){alert("That picture couldn't be kept — the browser's storage may be full.");return;}
+  const key=ownMapKey(id),at=Date.now();
+  try{await dbPut("images",{key,data,v:at});}catch(e){alert("That picture couldn't be kept — the browser's storage may be full.");return;}
   coverCache.set(key,data);
   if(SYNC.on)enqueue({kind:"img",key});
-  const mut=bk=>{bk.ownMap={pic:key,pins:[]};return true;};
+  const mut=bk=>{bk.ownMap={pic:key,pins:[],at};return true;};
   if(view==="book"&&cur&&cur.id===id)quickEdit(mut);else shelfMut(id,mut);
 }
 function wireOwnMap(page){
@@ -24857,7 +25032,16 @@ function wireOwnMap(page){
   const box=q("#ownMap",page);if(!box)return;
   try{roomHydrate(page);}catch(e){}
   const pinB=q("#ownMapPin",page);if(pinB)pinB.onclick=e=>{e.stopPropagation();ownMapAdding=!ownMapAdding;renderBookView();};
-  const x=q("#ownMapX",page);if(x)x.onclick=e=>{e.stopPropagation();if(!confirm("Take the map off this page? Its pins go with it."))return;ownMapAdding=false;quickEdit(bk=>{delete bk.ownMap;return true;});};
+  /* the picture goes with the map, here and in the cloud — it was left in both,
+     a 1600-pixel picture for every map ever taken off — the way ✕ on the
+     reader's file has always done it, and ↶ brings the two back together */
+  const x=q("#ownMapX",page);if(x)x.onclick=async e=>{e.stopPropagation();if(!confirm("Take the map off this page? Its pins go with it."))return;ownMapAdding=false;
+    if(!cur)return;const key=(cur.ownMap&&cur.ownMap.pic)||ownMapKey(cur.id);
+    let was=null;try{const r=await dbGet("images",key);was=r&&r.data||null;}catch(e2){}
+    try{await dbDel("images",key);}catch(e2){}
+    coverCache.delete(key);
+    if(SYNC.on)enqueue({kind:"imgDel",key});
+    quickEdit(bk=>{if(!bk.ownMap)return false;delete bk.ownMap;return true;},was?{imgs:{[key]:{before:was,after:null}}}:undefined);};
   box.onclick=e=>{e.stopPropagation();
     const pin=e.target.closest&&e.target.closest("[data-mappin]");
     if(pin){const id=pin.dataset.mappin,p=((cur.ownMap&&cur.ownMap.pins)||[]).find(z=>z.id===id);if(!p)return;
@@ -25150,15 +25334,17 @@ async function rdImport(file){
   }
   const words=(stripHtml(html).match(/\S+/g)||[]).length;
   if(words<30){alert("There was hardly any text in that file — is it the story itself?");return;}
-  const key=rdKey(id),data="data:text/html;base64,"+rdB64(html);
+  const key=rdKey(id),data="data:text/html;base64,"+rdB64(html),at=Date.now();
   let was=null;try{const r=await dbGet("images",key);was=r&&r.data||null;}catch(e){}
-  try{await dbPut("images",{key,data});}catch(e){alert("The file couldn't be kept — the browser's storage may be full.");return;}
+  /* stored under the same stamp the book carries (readFile.at), so the other
+     device can tell a file given again — see A FILE GIVEN AGAIN */
+  try{await dbPut("images",{key,data,v:at});}catch(e){alert("The file couldn't be kept — the browser's storage may be full.");return;}
   rdCache.set(id,html);
   if(SYNC.on)enqueue({kind:"img",key});
   /* written to the book the file was given to: a long EPUB takes a while,
      and quickEdit writes whichever book is open by then — another book got
      the note of a file and lost its place */
-  const mut=bk=>{bk.readFile={name,words,at:Date.now()};delete bk.readPos;return true;};
+  const mut=bk=>{bk.readFile={name,words,at};delete bk.readPos;return true;};
   if(view==="book"&&cur&&cur.id===id)await quickEdit(mut,{imgs:{[key]:{before:was,after:data}}});else await shelfMut(id,mut);
 }
 async function rdLoad(id){
@@ -25254,8 +25440,11 @@ async function rdFreshen(id){
     const i=books.findIndex(b=>b.id===id),lb=books[i];
     if(i<0||(rb.modified||0)<=(lb.modified||0))return;
     try{sanitizeBook(rb);}catch(e){}
-    await dbPut("books",rb);books[i]=rb;
+    await dbPut("books",rb);books[i]=rb;delete SYNC.held[id];
+    coverCache.delete(id);SYNC.triedCover.delete(id);
     if(cur&&cur.id===id)await rebaseOpenBook(id);
+    /* its cover and pictures follow, not waited for: a press is waiting */
+    syncBookAssets(rb).then(()=>{if(cur&&cur.id===id&&view==="book"&&!openDirty())return rebaseOpenBook(id);}).catch(()=>{});
   }catch(e){}
 }
 async function rdSave(final,sitting){
@@ -38727,6 +38916,7 @@ function renderSettings(){
           </label>
         </div>
         <div class="hint" style="margin:9px 0 0">Backups live inside this browser. Restoring merges one back in — books you've added since are kept. For a copy you can keep somewhere safe, use Export above.</div>
+        <div class="hint" style="margin:5px 0 0">These copies, and the daily file in a folder or in Downloads, leave out the books you gave 📖 Read it here: the files stay on this device and a restore never removes them. ⭳ Export backup file carries them too.</div>
         <div class="hint" style="margin:5px 0 0">Every backup holds the covers as well as the words, so one weighs about what all your pictures weigh — a shelf of four thousand covers makes a backup of a hundred and fifty megabytes or so, where the words on their own would be three or four. That is on purpose: a backup without the pictures can't put them back. It is also why the number kept is a small one.</div>
         <div id="bkDirBox"></div>
         <div id="snapList"></div>
@@ -45280,6 +45470,34 @@ let edPend=null;
 function edPendFor(){if(!cur)return null;if(!edPend||edPend.id!==cur.id)edPend={id:cur.id,imgs:{}};return edPend;}
 function edPendCover(before,after){const p=edPendFor();if(!p)return;if(p.cover)p.cover.after=after||null;else p.cover={before:before||null,after:after||null};}
 function edPendImg(key,before,after){const p=edPendFor();if(!p)return;if(p.imgs[key])p.imgs[key].after=after||null;else p.imgs[key]={before:before||null,after:after||null};}
+/* ---- WHETHER THE OPEN BOOK HOLDS ANYTHING NOT YET SAVED ----
+   The pull used to keep its hands off the book on screen whatever the page
+   was doing, because edits might be half-typed. Most of the time they are
+   not: the page is being read, and the cloud's newer copy — quotes added on
+   the other device that morning — sat unshown until the next tap here wrote
+   the old copy over it. Only a page with something unsaved needs holding. The
+   reader's place (readPos) is left out: it is written to the shelf quietly
+   and does not make a page "being edited". */
+/* readsOf fills a missing readings list in on first use, with fresh ids, so
+   the open copy gains one the shelf copy may not have yet — the list each
+   would have, without its ids, is what is compared, for the book and for each
+   of its stories */
+const sigReads=o=>(Array.isArray(o.readings)?o.readings:initialReadings(o)).map(r=>{const x={...r};delete x.id;return x;});
+const bookSig=o=>{const c={...o};delete c.modified;delete c.edited;delete c.touched;delete c.readPos;
+  c.readings=sigReads(o);
+  if(Array.isArray(c.entries))c.entries=c.entries.map(en=>Object.assign({},en,{readings:sigReads(en)}));
+  for(const k in c)if(Array.isArray(c[k])&&!c[k].length)delete c[k];return JSON.stringify(c);};
+const savePending=()=>{const el=q("#saveMsg");return !!el&&/Saving/.test(el.textContent||"");};
+function openDirty(){
+  if(!cur)return false;
+  if(isNew)return true;
+  if(savePending())return true;
+  if(typeof edPend!=="undefined"&&edPend&&edPend.id===cur.id)return true;
+  const b=books.find(x=>x.id===cur.id);if(!b)return true;
+  return bookSig(b)!==bookSig(cur);
+}
+/* the cloud has a newer copy of this book than any this device took */
+const heldNewer=id=>(SYNC.held[id]||0)>(SYNC.seen[id]||0);
 async function commitCur(){
   if(!cur){setSaved(true);return;}
   const after=JSON.parse(JSON.stringify(cur));
@@ -46058,6 +46276,10 @@ function openTagDownPanel(b,k){
    ONE press is ONE op, so it goes on the book's op rather than pushing a
    second one of its own. */
 async function quickEdit(mut,extra){
+  /* a newer copy from another device was noticed while this page stood open
+     and could not be taken then — fetched now, before this press is written
+     on top of it (see THE OPEN BOOK IS TAKEN WHEN NOTHING ON IT IS UNSAVED) */
+  if(cur&&heldNewer(cur.id)&&!openDirty()){await rdFreshen(cur.id);if(!cur)return;}
   const stored=books.find(x=>x.id===cur.id);
   /* Gone from the shelf while this page was open — deleted here in another tab,
      or on another device whose deletion has just arrived. The form has guarded
@@ -54417,9 +54639,26 @@ function mergePrefs(rv){
 function saveSettings(){dbPut("meta",{k:"settings",v:settings});prefsNote();}
 
 /* one shared shape for export, snapshots and import — keeps the old file compatible */
-async function buildBackup(){
+/* ---- THE DAILY COPIES LEAVE THE READER'S FILES OUT ----
+   A book given to 📖 Read it here is kept whole in the images store (__read|,
+   see THE READER), and every backup took that store whole — so each daily
+   copy inside the browser, each of the thirty folder files and each copy
+   taken before a restore carried every EPUB ever opened, again and again. The
+   automatic ones (`lean`) leave those files out: a restore never deletes a
+   file that is already here, the book keeps its note of the file and its
+   place, and the file can be given again. ⭳ Export backup file still carries
+   everything, so the one copy made by hand is the one that can rebuild it all. */
+const leanSkip=k=>String(k).startsWith("__read|");
+async function buildBackup(opts){
+  const lean=!!(opts&&opts.lean);
   const covers={};(await dbAll("covers")).forEach(c=>covers[c.id]=c.data);
-  const images={};(await dbAll("images")).forEach(i=>images[i.key]=i.data);
+  const images={};
+  /* the store is ordered by key, so the reader's files are one run of it and
+     a lean copy reads the two stretches either side — never loading them */
+  const got=lean?[...await dbAllRange("images",IDBKeyRange.upperBound("__read|",true)),
+                  ...await dbAllRange("images",IDBKeyRange.lowerBound("__read|￿",true))]
+                :await dbAll("images");
+  got.forEach(i=>{if(!(lean&&leanSkip(i.key)))images[i.key]=i.data;});
   return {app:"my-shelf",version:1,exported:new Date().toISOString(),
     index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
     backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,kwCats,catColors,libArt,covers,images,
@@ -54573,12 +54812,14 @@ function sanitizeBook(b){
   (b.entries||[]).forEach(en=>{en.summary=cleanHtml(en.summary);en.notes=cleanHtml(en.notes);});
 }
 /* merges a backup in: existing books kept, matching ones updated */
+/* look the whole file over before writing a word of it. A book missing its id
+   used to be found halfway through, leaving the shelf half-restored and the
+   message saying only that the file couldn't be read. Asked by the file
+   picker too, before it takes a safety copy for a file it cannot use. */
+const backupShapeOk=data=>!!data&&data.app==="my-shelf"&&Array.isArray(data.books)
+  &&!data.books.some(b=>!b||typeof b!=="object"||!b.id);
 async function applyBackup(data){
-  if(!data||data.app!=="my-shelf"||!Array.isArray(data.books))throw new Error("not a shelf backup");
-  /* look the whole file over before writing a word of it. A book missing its id
-     used to be found halfway through, leaving the shelf half-restored and the
-     message saying only that the file couldn't be read. */
-  if(data.books.some(b=>!b||typeof b!=="object"||!b.id))throw new Error("not a shelf backup");
+  if(!backupShapeOk(data))throw new Error("not a shelf backup");
   /* stamp restored books as edited-now: "restore wins" then holds on every device,
      instead of losing a last-write race against newer cloud copies */
   const now=Date.now();
@@ -58393,7 +58634,7 @@ async function dropSnapshot(id){
    two newest of its kind are kept apart from the daily ones. */
 const SNAP_KEEP_RESTORE=2;
 async function makeSnapshot(auto,why){
-  const json=JSON.stringify(await buildBackup());
+  const json=JSON.stringify(await buildBackup({lean:true}));
   const snap={id:uid(),at:Date.now(),auto:!!auto&&!why,size:json.length,nbooks:books.length,data:json};
   if(why)snap.why=why;
   /* read before the new one is stored, so it isn't taken for a lost one and read back whole */
@@ -58413,7 +58654,10 @@ async function pruneSnapshots(){
 }
 async function maybeAutoBackup(){
   if(!settings.autoBackup||!books.length)return;
-  const last=(await snapIndex()).filter(s=>s.auto).sort((a,b)=>b.at-a.at)[0];
+  /* read afresh, as make and prune do: a second window holding the list it
+     loaded at start did not know the first had made today's copy, made
+     another, and the prune then dropped yesterday's to keep two */
+  const last=(await snapIndexFresh()).filter(s=>s.auto).sort((a,b)=>b.at-a.at)[0];
   if(last&&Date.now()-last.at<24*3600*1000)return;
   try{await makeSnapshot(true);window.__backupFail=0;}
   catch(e){console.warn("[shelf] auto-backup skipped",e);window.__backupFail=Date.now();}
@@ -58440,7 +58684,7 @@ async function writeFolderBackup(){
   const name=`my-shelf-auto-backup-${todayStr()}.json`;
   const fh=await bkDir.getFileHandle(name,{create:true});
   const w=await fh.createWritable();               /* writes land whole: a crash mid-write leaves the old file, not half a new one */
-  await w.write(JSON.stringify(await buildBackup()));
+  await w.write(JSON.stringify(await buildBackup({lean:true})));
   await w.close();
   /* tidy: only OUR dated files are ever touched — nothing else in the folder */
   const mine=[];
@@ -58493,7 +58737,7 @@ async function maybeFileBackup(){
   const sig=libSig();
   if(sig===lastFileSig)return;                   /* nothing has changed since the last one — another copy of it is just clutter */
   try{
-    downloadJson(JSON.stringify(await buildBackup()),`my-shelf-auto-backup-${todayStr()}.json`);
+    downloadJson(JSON.stringify(await buildBackup({lean:true})),`my-shelf-auto-backup-${todayStr()}.json`);
     lastFileBk=Date.now();lastFileSig=sig;fileBkCount++;
     dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:fileBkCount}});
     renderDirUi();
@@ -58502,16 +58746,26 @@ async function maybeFileBackup(){
 
 q("#importFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
+  /* ---- THE FILE IS READ BEFORE ANYTHING IS DONE FOR IT ----
+     A wrong file — any other JSON — used to get the safety copy written for
+     it first (14 MB, and pushing out one of the two kept restore copies),
+     then failed inside the restore, where the only message was the one for a
+     full disk. Read and looked over first now: a file that is not a shelf
+     backup is told so, and nothing is written. */
+  const notOurs="That file isn't a My Shelf backup — it isn't the kind of file ⭳ Export backup file makes, so nothing was changed.";
+  let data;
+  try{data=JSON.parse(await f.text());}
+  catch(err){alert(notOurs);return;}
+  if(!backupShapeOk(data)){alert(notOurs);return;}
   /* the snapshot-restore button warns and takes a safety copy first; opening a
      file is the same rewind and deserves the same care — an old export opened
      "just to look" would otherwise turn back every matching book, everywhere */
-  if(books.length&&!confirm(`Bring in “${f.name}”?\n\nBooks only in the file are added. A book that is both on your shelf and in the file goes back to the file's version — on every device.\n\nA backup of right now is taken first, so you can undo this.`))return;
+  const inFile=data.books.length;
+  if(books.length&&!confirm(`Bring in “${f.name}”? It holds ${inFile} book${inFile===1?"":"s"}.\n\nBooks only in the file are added. A book that is both on your shelf and in the file goes back to the file's version — on every device.\n\nA backup of your shelf as it is now is taken first; ⚙ Settings → Backups can put it back.`))return;
   const msg=q("#busyMsg");if(msg)msg.textContent="Restoring from backup…";
-  /* Three different things can go wrong here and all three used to come back as
-     "that file couldn't be read", which is a lie about two of them — and the
-     likeliest of the three is the safety copy failing because storage is full,
-     where the file is perfectly good and the restore never even started. Each
-     step now says what it was doing when it failed. */
+  /* Two things can still go wrong, and each says what it was doing: the
+     safety copy failing because storage is full (the file is fine and the
+     restore has not started), and the writing itself running out of room. */
   try{
     if(books.length){
       try{await makeSnapshot(false,"restore");}
@@ -58520,10 +58774,6 @@ q("#importFile").addEventListener("change",async e=>{
           {if(q("#busyMsg"))q("#busyMsg").textContent="";return;}
       }
     }
-    let data;
-    try{data=JSON.parse(await f.text());}
-    catch(err){alert("That file couldn't be read as a shelf backup — it isn't the kind of file this makes.");
-      if(q("#busyMsg"))q("#busyMsg").textContent="";return;}
     const {n,failedPics}=await applyBackup(data);
     render();
     alert(`Restored ${n} book${n===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`

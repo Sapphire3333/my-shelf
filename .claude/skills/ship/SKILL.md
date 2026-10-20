@@ -75,10 +75,12 @@ About two minutes. Then close the tab.
 last looked" card on Today. It is the only place a build announces itself; a
 build without a line looks, from outside, exactly like nothing changed.
 
-- Newest first. Stamp `v:` with the build this commit is ABOUT to become: read
-  `version.js` — if its date is today, its number + 1, otherwise today's date
-  `.1`. The pre-commit hook writes version.js after staging, so it cannot be
-  read off afterwards.
+- Newest first. Stamp `v:` with the build this commit is ABOUT to become —
+  ask the hook, which works it out the way it will write it (UTC's date, never
+  older than `version.js` or the last fetched `origin/main`'s):
+  `PRINT_STAMP=1 sh .githooks/pre-commit`. Fetch first, so a cloud build that
+  landed on main is counted. The hook writes version.js after staging, so the
+  stamp cannot be read off afterwards.
 - Shape: `{v:"2026-10-05.1",go:["tab:library"],lines:["<b>📚 One-line headline.</b> What changed and where to find it…"]}`.
   `go` is optional: `"tab:<view>"` or `"el:<view>:<selector>"` to jump there.
 - Voice: speak to the reader ("your shelf", "you"), say what is different and
