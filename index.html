@@ -7409,6 +7409,7 @@ function markStatus(b,what){
     if(what==="hold"){b.hold=!b.hold;if(b.hold)b.dnf=false;return true;}
     if(what==="unowned"){b.unowned=!b.unowned;return true;}
   }
+  if(what==="want"&&!startDropOk(b,"want"))return false;
   let again=false;
   if(what==="reading"&&!b.dnf&&statusOf(b)!=="reading"&&!openRead(b)){
     const done=readsOf(b).filter(r=>!r.open).length;
@@ -7944,6 +7945,19 @@ function finishProgress(x){
   if(!openRead(x)){x.progress=total;if(x.pct)x.pct="";return true;}
   setProgress(x,total);
   return true;
+}
+/* ---- A START DATE IS NOT DROPPED WITHOUT A WORD ----
+   Back to Want to read, or a story handed back to its collection ("unmarked",
+   ↩ Same as collection), takes the reading that was open off the list — by
+   design, since nothing was started after all — and with it the day it was
+   started, on one press, with nothing said. Asked first now, on the single
+   presses only (a bulk change of four hundred books does not ask four
+   hundred times). */
+function startDropOk(x,what){
+  if(what!=="want"&&what!=="")return true;
+  const o=openRead(x);if(!o||!o.start)return true;
+  const nm=String((x&&x.title)||"").trim()||"this";
+  return confirm(`Put “${nm}” back as not started?\n\nThe reading you began on ${printDay(o.start)} comes off with it. ↶ Undo brings it back.`);
 }
 function markEntStatus(coll,en,what){
   const finWas=en.status==="finished"&&!en.dnf;
@@ -9937,6 +9951,9 @@ let kwDupTicks={};
 const isRaw=b=>!!b.imported&&!b.touched;
 let fandoms={};                                /* fandom -> [characters], shared across books */
 let cur=null,curCover=null,curImgs={},curEnt={},saveTimer=null,isNew=false;
+/* the shelf copy `cur` was last taken from or saved as — see AN EDIT NOT YET
+   SAVED SURVIVES A WRITE FROM OUTSIDE */
+let curBase=null;
 /* one editor mode at a time: write | arrange | draw | tag */
 let mode="write";
 /* fit-to-screen: stack the free-canvas items readably instead of free placement */
@@ -12803,6 +12820,14 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-20.3",lines:[
+    "<b>✍️ Unticking Fanfic asks first.</b> Turning a fic into a book takes its fandoms and characters off; one mis-tap used to do it with nothing said.",
+    "<b>📖 A reading you started is not taken off without a word.</b> Putting a book back on Want to read, or a story back to “same as the collection”, asks before the reading and its start date go.",
+    "<b>🖌 A change still being saved survives a change from elsewhere.</b> A picture dragged and then Up next pressed straight after — or news from your other device arriving in that moment — kept both, where the drag used to be lost.",
+    "<b>📚 In a collection:</b> typing the collection's own author into a story, or ticking exactly its genres, means “same as the collection” and follows it; unticking the collection, or ticking Part of a series on it, asks before its stories leave the shelf and keeps the series name; and the Pages box says it is the stories' total while it is one.",
+    "<b>🏷 A tag typed in ☑ Select books or the ISBN sheet</b> takes a capital on its first letter only, like everywhere else — no more “Slow Burn” beside “Slow burn”.",
+    "<b>⭱ Imported blurbs and reviews keep their paragraphs</b> (ReadEra, Goodreads, StoryGraph), and a Kindle highlight that begins “Note that…” is no longer taken for a note.",
+    "<b>🖍 The highlighter</b> is put down when you open another book, and <b>✕ Drop it</b> and <b>Clear the list</b> on the import list can be undone with ↶."]},
   {v:"2026-10-20.2",lines:[
     "<b>☑ A collection ticked with other books takes the collection's rules.</b> 📖 Reading now starts its next story, and ✓ Finished says what its unmarked stories mean — it no longer turned every story unread, or wrote a reading onto the collection itself.",
     "<b>🧩 The jigsaw and 📰 the crossword</b> count what the 💡 put in: a board the hints placed half or more of is finished rather than won, as in the other games, and a crossword word the hints filled is not paid.",
@@ -16260,6 +16285,8 @@ async function applyOp(op,inv,quiet){
     }
     saveImportQueue();
   }
+  /* rows taken off the import list and nothing else — Drop it, Clear the list */
+  if(op.t==="impq"){if(!quiet){try{refreshImport();}catch(e){}}refreshHistBtns();return;}
   /* several books deleted in one press, undone in one press. It walks the same
      path a single delete does, one book at a time, so there is only ever one
      description of what deleting means. */
@@ -18849,7 +18876,11 @@ function splitBlurb(text){
    how the two should travel: it is kept with its quote rather than swept into
    the book's notes, so deleting the quote takes the note with it. */
 const K_HEAD=/^(?:(?:yellow|blue|pink|orange|red|green|purple)\s+highlight|highlight)\s*(?:\(([^)]*)\))?\s*(?:[|\-–—·:]\s*)?(.*)$/i;
-const K_NOTE=/^note\s*(?:[|\-–—:]\s*)?(.*)$/i;
+/* a note's heading is "Note" alone, or "Note" with a separator and where it
+   is — "Note:Page: 12", "Note - Location 145". A highlight whose own words
+   begin "Note that…" read as a note, and lost its first line to it. */
+const K_NOTE=/^note\s*([|\-–—:])?\s*(.*)$/i;
+const kNoteHead=nt=>!!nt&&(!nt[2].trim()||(!!nt[1]&&!!kindleWhere(nt[2])));
 /* "Page: 12", "Page 12", "Location 1,234", "loc. 145" — page wins where both
    are given, because a page is a place a person can find again */
 function kindleWhere(tail){
@@ -18881,8 +18912,8 @@ function parseKindleNotes(raw){
       items.push(cur);into="text";continue;
     }
     const nt=ln.match(K_NOTE);
-    if(nt&&/^note\b/i.test(ln)){
-      const w=kindleWhere(nt[1]||"");
+    if(nt&&/^note\b/i.test(ln)&&kNoteHead(nt)){
+      const w=kindleWhere(nt[2]||"");
       /* a note with no highlight above it is a note on its own — kept as a
          quote of its own rather than thrown away, since it is still something
          they wrote down about this book */
@@ -20107,7 +20138,22 @@ async function rebaseOpenBook(id){
   if(typeof cur==="undefined"||!cur||view!=="book"||cur.id!==id)return;
   const fresh=books.find(x=>x.id===id);
   if(!fresh)return;
-  cur=JSON.parse(JSON.stringify(fresh));
+  /* ---- AN EDIT NOT YET SAVED SURVIVES A WRITE FROM OUTSIDE ----
+     Edits wait 0.7 s before they are saved, and this handover took the
+     shelf's copy whole — so a picture dragged, then Up next pressed (or the
+     other device's change arriving) inside that wait, lost the drag. With a
+     save still waiting, the fields this page changed since `curBase` are
+     kept on top of the fresh copy, the outside writer's on the rest, and the
+     save goes ahead with both. */
+  const next=JSON.parse(JSON.stringify(fresh));
+  if(savePending()&&curBase&&curBase.id===id){
+    const a=JSON.parse(bookSig(cur)),z=JSON.parse(bookSig(curBase));
+    for(const k of new Set([...Object.keys(a),...Object.keys(z)])){
+      if(JSON.stringify(a[k])===JSON.stringify(z[k]))continue;
+      if(k in cur)next[k]=JSON.parse(JSON.stringify(cur[k]));else delete next[k];
+    }
+    cur=next;curBase=JSON.parse(JSON.stringify(fresh));scheduleSave();
+  }else{cur=next;curBase=JSON.parse(JSON.stringify(fresh));}
   for(const en of (cur.entries||[]).filter(e=>e.cover)){
     if(!curEnt[en.id]){
       const d=coverCache.get(id+"|"+en.id)||await loadImgData(id+"|"+en.id);
@@ -21798,7 +21844,9 @@ function renderLibrary(){
       qa("[data-selopt]",panel).forEach(b=>b.onclick=()=>{panel.innerHTML="";onPick(b.dataset.selopt);});
       const ni=q("#selNew",panel);
       if(ni)ni.addEventListener("keydown",e=>{
-        if(e.key==="Enter"&&e.target.value.trim()){const v=titleCase(e.target.value.trim());panel.innerHTML="";onPick(v);}});
+        if(e.key==="Enter"&&e.target.value.trim()){
+          /* a tag takes the first letter only, as everywhere else it is typed; genres and audiences keep Title Case */
+          const v=(allowNew==="tag"?sentenceCase:titleCase)(e.target.value.trim());panel.innerHTML="";onPick(v);}});
       q("#selCancel",panel).onclick=()=>{panel.innerHTML="";};
     };
     const sg=q("#selGen",m);
@@ -21891,7 +21939,7 @@ function renderLibrary(){
     if(sk)sk.onclick=()=>openApply("Which keyword",[...new Set(books.flatMap(allKeywordsOf))].sort((a,b)=>a.localeCompare(b)),k=>{
       unmarkMetaDel("kw:"+k);   /* its two neighbours above do; a standing mark strips the word's colour and family on every pull */
       applyToSel(b=>{b.keywords=b.keywords||[];if(!b.keywords.some(x=>x.toLowerCase()===k.toLowerCase()))b.keywords.push(k);});
-    },true);
+    },"tag");
     /* everything the shelf is showing, which is not the same as everything on
        it — a status pill or the find box is how you say what "all" means */
     const sAll=q("#selAll",m);
@@ -39901,7 +39949,9 @@ async function renderHub(part){
    const sd=q("#scanDirBtn");if(sd)sd.onclick=()=>q("#scanDir").click();
    drawScan();}
   {const ic=q("#impClear");if(ic)ic.onclick=()=>{
-    if(!confirm("Clear the import list? Nothing already added to your shelf is affected."))return;
+    if(!confirm("Clear the import list? Nothing already added to your shelf is affected. ↶ Undo brings the list back."))return;
+    /* the rows ride on the step (op.impq), as they do when a collection takes them */
+    if(importQueue.length)pushOp({t:"impq",impq:JSON.parse(JSON.stringify(importQueue))});
     importQueue=[];saveImportQueue();refreshImport();
   };}
   /* the bin has moved to History; Overview only needs to know how many are in
@@ -40348,6 +40398,8 @@ function refreshImport(light){
     importWhy(it);
   });
   qa("[data-impdrop]",box).forEach(b=>b.onclick=()=>{
+    const gone=importQueue.filter(x=>x.id===b.dataset.impdrop);
+    if(gone.length)pushOp({t:"impq",impq:JSON.parse(JSON.stringify(gone))});
     importQueue=importQueue.filter(x=>x.id!==b.dataset.impdrop);
     saveImportQueue();refreshImport();
   });
@@ -40483,7 +40535,7 @@ function reFillable(b,it){
 }
 function reFillInto(b,it,what){
   const did=new Set(what.map(w=>w[0]));
-  if(did.has("summary"))b.summary=esc(it.summary);
+  if(did.has("summary"))b.summary=importHtml(it.summary);
   if(did.has("tags"))b.keywords=(it.tags||[]);
   if(did.has("series")){b.series=it.series;if(it.seriesNum&&!String(b.seriesNum||"").trim())b.seriesNum=it.seriesNum;}
   if(did.has("pages"))b.pages=it.pages;
@@ -45530,6 +45582,11 @@ async function openBook(id,fresh,keepPlace,goToStory){
   /* stepping along the walk keeps the face you were on */
   if(hold&&found)bookMode=hold.face;
   cur=Object.assign(blankBook(id),found?JSON.parse(JSON.stringify(found)):{});
+  curBase=found?JSON.parse(JSON.stringify(found)):null;
+  /* the highlighter is put down with the book it was picked up in: left on,
+     every selection in every book's editor was coloured, a sentence chosen
+     only to copy it included */
+  hlOn=false;
   const c=await dbGet("covers",id);curCover=c?c.data:null;
   curImgs={};curEnt={};
   /* a few at a time, the way syncBookAssets already loads — one by one, a
@@ -45600,7 +45657,12 @@ const bookSig=o=>{const c={...o};delete c.modified;delete c.edited;delete c.touc
   c.readings=sigReads(o);
   if(Array.isArray(c.entries))c.entries=c.entries.map(en=>Object.assign({},en,{readings:sigReads(en)}));
   for(const k in c)if(Array.isArray(c[k])&&!c[k].length)delete c[k];return JSON.stringify(c);};
-const savePending=()=>{const el=q("#saveMsg");return !!el&&/Saving/.test(el.textContent||"");};
+/* a save waiting to happen, kept as a count rather than read off the save
+   line: a redraw of the page puts a fresh #saveMsg there with nothing in it,
+   and the edit still waiting then read as saved (scheduleSave raises it,
+   the commit it leads to lowers it, unless another edit came meanwhile) */
+let saveSeq=0,saveWaiting=false;
+const savePending=()=>{if(saveWaiting)return true;const el=q("#saveMsg");return !!el&&/Saving/.test(el.textContent||"");};
 function openDirty(){
   if(!cur)return false;
   if(isNew)return true;
@@ -45612,6 +45674,11 @@ function openDirty(){
 /* the cloud has a newer copy of this book than any this device took */
 const heldNewer=id=>(SYNC.held[id]||0)>(SYNC.seen[id]||0);
 async function commitCur(){
+  const seq=saveSeq;
+  try{return await commitCurNow();}
+  finally{if(seq===saveSeq)saveWaiting=false;}
+}
+async function commitCurNow(){
   if(!cur){setSaved(true);return;}
   const after=JSON.parse(JSON.stringify(cur));
   const i=books.findIndex(b=>b.id===cur.id);
@@ -45656,7 +45723,7 @@ async function commitCur(){
      `edited` differed from the shelf's, and the next save — leaving the page,
      a second press — made a step of ↶ that changed nothing but the stamp */
   if(same){cur.touched=true;cur.modified=after.modified;cur.edited=after.edited;}
-  try{await dbPut("books",after);}
+  try{await dbPut("books",after);if(same&&cur&&cur.id===id)curBase=JSON.parse(JSON.stringify(after));}
   catch(e){
     const el=q("#saveMsg");if(el){el.textContent="Couldn't save!";el.className="savemsg no";}
     if(Date.now()-(commitCur.warned||0)>60000){commitCur.warned=Date.now();
@@ -45677,6 +45744,7 @@ async function commitCur(){
   setSaved(true);
 }
 function scheduleSave(){
+  saveSeq++;saveWaiting=true;
   setSaved(false);clearTimeout(saveTimer);
   saveTimer=setTimeout(commitCur,700);
 }
@@ -46419,7 +46487,7 @@ async function quickEdit(mut,extra){
      Putting it back on the shelf here would undo the same guard from underneath. */
   const i=books.findIndex(x=>x.id===cur.id);
   if(i<0){renderBookView();return;}
-  books[i]=after;
+  books[i]=after;curBase=JSON.parse(JSON.stringify(after));
   if(SYNC.on){enqueue({kind:"book",id:cur.id});flushQueue();}
   renderBookView();
 }
@@ -47893,6 +47961,7 @@ function renderBookView(){
     const id=x.dataset.evst.slice(0,i),v=x.dataset.evst.slice(i+1);
     vEntStatus=null;
     quickEdit(bk=>{const en=findEn(bk,id);if(!en)return false;
+      if(!startDropOk(en,v))return false;
       /* set aside is a flag beside the status, not one of them: choosing it
          clears any status, and choosing a status clears it. Choosing one also
          opens or closes a reading of this story, the way it does for a book. */
@@ -50697,7 +50766,14 @@ function renderEditor(){
     q("#kindRow").innerHTML=KINDS.filter(([id])=>id!=="fanfic"||ficsOn()||kindOf(cur)==="fanfic").map(([id,l])=>
       `<label class="chk"><input type="checkbox" data-kind="${id}" ${kindOf(cur)===id?"checked":""}> ${l}</label>`).join("");
     qa("[data-kind]").forEach(x=>x.onchange=()=>{
-      cur.kind=x.checked?x.dataset.kind:"book";      /* exactly one, book is the default */
+      const to=x.checked?x.dataset.kind:"book";      /* exactly one, book is the default */
+      /* ---- A MIS-TAP ON THE KIND DOES NOT EMPTY TWO LISTS ----
+         Becoming a book takes the fandoms and characters off — a book carries
+         none, and several screens count them wherever they stand — and that
+         happened on one tap, saved, with nothing said. It asks now. */
+      const nF=(cur.fandoms||[]).length,nC=(cur.characters||[]).length;
+      if(to==="book"&&(nF||nC)&&!confirm(`Make it a book?\n\nIts ${[nF?nF+" fandom"+(nF===1?"":"s"):"",nC?nC+" character"+(nC===1?"":"s"):""].filter(Boolean).join(" and ")} come off with the kind. ↶ Undo brings them back.`)){renderKind();return;}
+      cur.kind=to;
       /* the link stays whatever the kind — a copy in Drive is worth keeping */
       if(cur.kind==="book"){cur.fandoms=[];cur.characters=[];}
       renderKind();renderFF();scheduleSave();
@@ -50977,15 +51053,24 @@ function renderEditor(){
     w.innerHTML=`<div class="linkbox">🔗 Linked with ${sibs.length} other${sibs.length===1?"":"s"} in <b>${esc(cur.series)}</b>: ${sibs.map(b=>`<a data-go="${b.id}">${b.seriesNum?"#"+esc(b.seriesNum)+" ":""}${esc(b.title)||"Untitled"}</a>`).join(" · ")}</div>`;
     qa("[data-go]",w).forEach(a=>a.onclick=()=>finishSaveThen(()=>openBook(a.dataset.go,false)));
   }
+  /* ---- A TICK THAT TAKES STORIES OFF THE SHELF SAYS SO ----
+     Ticking "Part of a series" on a collection, or unticking the collection,
+     made it a plain book: every story inside stood off the shelf with nothing
+     said (they are kept, and come back with the tick), and the unticking
+     emptied the series name as well. Both ask now, and the name stays. */
+  const storiesLeave=box=>{const n=isColl(cur)?(cur.entries||[]).length:0;if(!n)return true;
+    if(confirm(`Make it a single book?\n\nIts ${n} stor${n===1?"y":"ies"} stay inside it, but leave the shelf until you tick “A whole series / collection” again.`))return true;
+    box.checked=!box.checked;return false;};
   q("#cbSeries").onchange=e=>{
+    if(e.target.checked&&!storiesLeave(e.target))return;
     cur.type=e.target.checked?"series":"standalone";
     if(!e.target.checked){cur.series="";cur.seriesNum="";cur.seriesTotal="";}
     renderSeries();renderEntries();scheduleSave();
   };
   q("#cbColl").onchange=e=>{
-    cur.type=e.target.checked?"collection":"standalone";
+    if(!e.target.checked&&!storiesLeave(e.target))return;
+    cur.type=e.target.checked?"collection":(String(cur.series||"").trim()?"series":"standalone");
     if(e.target.checked){cur.seriesNum="";cur.seriesTotal="";cur.entries=cur.entries||[];}
-    else cur.series="";
     /* ---- the offer, made once, at the only moment it can be made ----
        Only on the way IN, only where there is nothing inside yet, and only
        where the book has something of its own to move — asking about a blank
@@ -51043,6 +51128,10 @@ function renderEditor(){
     const ens=isColl(cur)?(cur.entries||[]):[];
     const complete=ens.length&&ens.every(en=>parseInt(en.pages)>0);
     if(note)note.hidden=!complete;
+    /* while every story has its pages, the total is theirs: a number typed
+       here lasted until the next tap in the story list put the sum back, so
+       the box takes none while that holds */
+    {const box=q("#fPages");if(box){box.readOnly=!!complete;box.title=complete?"Added up from the stories' own pages — change those to change this":"";}}
     if(!complete)return;
     const total=ens.reduce((s,en)=>s+parseInt(en.pages),0);
     if(String(cur.pages)===String(total))return;
@@ -51211,7 +51300,9 @@ function renderEditor(){
        same as pressing Cancel, which is what it has always meant */
     let close=()=>wrap.remove();
     const apply=()=>{
-      const list=[...sel];
+      /* exactly the collection's genres ticked is "the collection's" — kept as
+         a list of its own, it stopped following the collection's */
+      const list=sameWordSet([...sel],collVoice(cur))?[]:[...sel];
       en.genres=list;
       also.forEach(i=>{const o=(cur.entries||[]).find(x=>x.id===i);if(o)o.genres=[...list];});
       close();renderEntries();scheduleSave();
@@ -51560,6 +51651,7 @@ function renderEditor(){
       /* choosing a stage for a story opens or closes a reading of it, the same
          way choosing one for a book does */
       const en0=find(el.dataset.est);
+      if(en0&&!startDropOk(en0,el.value)){renderEntries();return;}
       markEntStatus(cur,en0,el.value);
       sayIfAutoDated();
       /* a tale of a split volume moves its neighbours too (pinTales gives the
@@ -51602,6 +51694,16 @@ function renderEditor(){
         syncReads(en);renderEntReads(en.id);scheduleSave();});
     }
     qa("[data-enrw]",list).forEach(w=>wireEntReads(w,find(w.dataset.enrw)));
+    /* ---- THE COLLECTION'S OWN NAME, TYPED INTO A STORY, IS "SAME" ----
+       The box kept whatever was typed, so the collection's author typed in
+       full was a copy of the story's own, and a later rename of the
+       collection's author left that story behind. Auto-fill and ✂ Split
+       already turned the same case back into "same"; leaving the box does
+       too now. */
+    qa("[data-eau]",list).forEach(el=>el.addEventListener("change",()=>{
+      const en=find(el.dataset.eau);if(!en)return;
+      const n=t=>String(t||"").trim().replace(/\s+/g," ").toLowerCase();
+      if(n(el.value)&&n(el.value)===n(cur.author)){delete en.author;el.value="";scheduleSave();}}));
     qa("[data-eau]",list).forEach(el=>el.addEventListener("input",()=>{
       find(el.dataset.eau).author=el.value;scheduleSave();}));
     qa("[data-eisbn]",list).forEach(el=>el.addEventListener("input",()=>{
@@ -54918,6 +55020,22 @@ function cleanHtml(h){
   });
   return t.innerHTML;
 }
+/* ---- AN IMPORTED BLURB KEEPS ITS PARAGRAPHS ----
+   A ReadEra annotation, a Goodreads review or StoryGraph notes arrive as
+   plain text and were written escaped and nothing more, so the line breaks
+   were lost — a review of three paragraphs became one — and a Goodreads
+   review's own <br/> showed as text. Every other writer of a blurb turns
+   lines into <br>; imports do the same now, a review's own line breaks
+   become lines, and any other tag in it is left out. */
+function importHtml(t){
+  let s=String(t||"");
+  if(/<[a-z!\/][^>]*>/i.test(s)){
+    s=s.replace(/<br\s*\/?>/gi,"\n").replace(/<\/p\s*>/gi,"\n\n").replace(/<[^>]+>/g,"");
+    const ta=document.createElement("textarea");ta.innerHTML=s;s=ta.value;
+  }
+  s=s.replace(/\r\n?/g,"\n").replace(/\n{3,}/g,"\n\n").trim();
+  return esc(s).replace(/\n/g,"<br>");
+}
 function sanitizeBook(b){
   b.summary=cleanHtml(b.summary);b.canvasText=cleanHtml(b.canvasText);
   ["pros","cons","meh","quotes"].forEach(k=>{if(Array.isArray(b[k]))b[k]=b[k].map(cleanHtml);});
@@ -56272,7 +56390,7 @@ function applyImportFills(it,b,en,fills){
     else if(f.k==="rating"){T.rating=it.rating;if(en)syncCollRating(b);}
     else if(f.k==="pages")T.pages=parseInt(it.pages);
     else if(f.k==="isbn")T.isbn=it.isbn;
-    else if(f.k==="summary")T.summary=esc(it.summary);
+    else if(f.k==="summary")T.summary=importHtml(it.summary);
     else if(f.k==="notes"){if(en)en.notes=esc(it.notes);else b.canvasText=esc(it.notes);}
     else if(f.k==="author")T.author=String(it.author||"").trim();
     else if(f.k==="progress")T.progress=String(f.v);
@@ -56599,7 +56717,7 @@ async function importOne(it,extra,steps){
     ...((it.characters||[]).length?{characters:it.characters.slice()}:{}),
     ...((it.ships||[]).length?{ships:it.ships.slice()}:{}),
     readings:readingsFromRow(it),
-    summary:it.summary?esc(it.summary):"",canvasText:it.notes?esc(it.notes):"",
+    summary:it.summary?importHtml(it.summary):"",canvasText:it.notes?importHtml(it.notes):"",
     keywords:(it.tags||[]),imported:Date.now(),modified:Date.now()},extra||{});
   /* the fandom vocabulary learns what arrived, through its one door — the
      characters filed under the first fandom, the same way the editor does */
@@ -56669,7 +56787,7 @@ async function importIntoCollection(items,coll,wasBefore){
       /* quiet only where its stage is what an unmarked book there means, and
          never given up — see A COLLECTION IS ITS BOOKS */
       status:(it.status===collSt&&!it.dnf)?"":(it.status||""),dnf:!!it.dnf,
-      summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):"",
+      summary:it.summary?importHtml(it.summary):"",notes:it.notes?importHtml(it.notes):"",
       /* everything else the row holds that a story can keep. The ISBN, the
          tags and a different author were left on the row, so a second row
          for the same book (a list loaded from two files holds one) arrived
@@ -56718,7 +56836,7 @@ async function importCollection(items,name){
       title:it.title,rating:it.rating,pages:it.pages,
       dateFinished:it.dateFinished||"",readings:readingsFromRow(it),
       status:(it.status===status&&!it.dnf)?"":(it.status||""),dnf:!!it.dnf,
-      summary:it.summary?esc(it.summary):"",notes:it.notes?esc(it.notes):"",
+      summary:it.summary?importHtml(it.summary):"",notes:it.notes?importHtml(it.notes):"",
       /* the tags all went onto the collection above; the number and a
          different author are each story's own — see importIntoCollection */
       isbn:cleanIsbn(it.isbn)||"",author:storyOwnAuthor({author:items[0].author||""},it.author)}))),
@@ -58398,7 +58516,7 @@ function openIsbnAdd(){
       S.rows.push({code:c.code,dupe:c.dupe,info,title,on:!c.dupe,
         chips:[...(info.genres||[]).slice(0,8).map(n=>({name:titleCase(n),kind:"genre",on:false})),
                ...(info.tags||[]).slice(0,10).filter(n=>!(info.genres||[]).some(g=>g.toLowerCase()===n.toLowerCase()))
-                  .map(n=>({name:titleCase(n),kind:"tag",on:false}))],
+                  .map(n=>({name:sentenceCase(n),kind:"tag",on:false}))],
         dead:c.dupe?`Already on your shelf as “${c.dupe.title||"Untitled"}”.`:""});
       await new Promise(r=>setTimeout(r,150));
     }
