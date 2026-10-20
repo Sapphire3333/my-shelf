@@ -29,6 +29,18 @@ const ART_CACHE = "my-shelf-art";
    fetch, as before, so a newer "@2" still lands. */
 const LIB_CACHE = "my-shelf-lib";
 const LIB_HOSTS = ["cdn.jsdelivr.net", "unpkg.com", "tessdata.projectnaptha.com"];
+/* what a library address is, with its version taken out — two addresses with
+   the same key are the same file at two versions. npm paths lose "@x.y.z"
+   after the package name (scoped names keep their scope); the language files
+   lose the "/4.0.0/" folder. "" for an address it cannot read. */
+function libKey(href) {
+  try {
+    const u = new URL(href), p = u.pathname;
+    if (u.hostname === "tessdata.projectnaptha.com") return u.hostname + p.replace(/\/\d+(\.\d+)*(_\w+)?\//, "/");
+    const m = p.match(/^\/(?:npm\/)?((?:@[^/]+\/)?[^/@]+)@[^/]+(\/.*)?$/);
+    return m ? u.hostname + "/" + m[1] + (m[2] || "") : "";
+  } catch (e) { return ""; }
+}
 const SHARED_KEY = "shared-backup";
 /* a share with no file in it — a line selected in a reader, a link to a
    book's page — is kept here as JSON and the app is sent on with ?shared=t */
@@ -171,7 +183,18 @@ self.addEventListener("fetch", e => {
     e.respondWith(
       caches.match(req).then(hit => {
         const net = fetch(req).then(res => {
-          if (res && res.ok) { const copy = res.clone(); caches.open(LIB_CACHE).then(c => c.put(req, copy)); }
+          if (res && res.ok) {
+            const copy = res.clone();
+            /* An older version of the same file goes when a newer one is put
+               away, the way ART_CACHE drops an old fingerprint: before this,
+               every library and language file ever fetched stayed for good,
+               and a reading-text language file is tens of MB. */
+            caches.open(LIB_CACHE).then(async c => {
+              const me = libKey(req.url);
+              if (me) for (const old of await c.keys()) if (old.url !== req.url && libKey(old.url) === me) await c.delete(old);
+              await c.put(req, copy);
+            }).catch(() => {});
+          }
           return res;
         }).catch(() => hit);
         return hit || net;
