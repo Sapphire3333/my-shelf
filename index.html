@@ -7448,7 +7448,7 @@ function markStatus(b,what){
        Pages already read stay counted — a bookmark going back is never a
        page read, only a page reached is. */
     if(what==="reading"&&again){b.progress="";b.pct="";delete b.readPos;}
-    if(what==="finished"){finishProgress(b);if(!finWas){finFxSoon();
+    if(what==="finished"){finishProgress(b);if(!finWas){finNoteBegin(b.title);finFxSoon();
       try{packGrant("fin:"+b.id,"finish","“"+(b.title||"Untitled")+"”");}catch(e){}
       try{owlNudge(b);}catch(e){}
       setTimeout(()=>{try{guessCheck();}catch(e){}},900);}}}
@@ -7998,7 +7998,7 @@ function markEntStatus(coll,en,what){
        (under the volume's own id) when the tale that completes it is marked */
     if(what==="finished"&&!finWas){
       const split=isSplitTale(coll,en),h=markHolder(coll,en);
-      if(!split||volState(coll,h).status==="finished"){finFxSoon();
+      if(!split||volState(coll,h).status==="finished"){finNoteBegin((split?h:en).title);finFxSoon();
         try{packGrant("fin:"+coll.id+"|"+(split?h.id:en.id),"finish","“"+((split?h:en).title||"Untitled")+"”");}catch(e){}}}
     if(what==="finished"){
       if(!isSplitTale(coll,en))finishProgress(en);
@@ -12823,6 +12823,11 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-20.6",go:["tab:overview"],lines:[
+    "<b>🏠 Today puts your books first.</b> Reading now is at the top, then Up next and the series you're part-way through, loans and letters; the room, the scratch card, today's three and the owl's story come after them, and this news is one folded line near the foot, above Storage.",
+    "<b>📚 Series you're part-way through</b> is one card where there were four — Continue with?, Next in line, ⌛ Waiting to get hold of and Waiting for the next one: what you can start first, then what isn't here yet.",
+    "<b>✓ Finishing a book is one note.</b> The booster pack, the owl's questions, the XP and the next book in Up next arrive together on one card at the foot, each with its own button — no more five corner notes and a dialog. A medal still gets its own.",
+    "<b>Or quietly:</b> ⚙ Settings → How it looks → the corner note → <i>Marking a book finished</i> → Quietly. No burst and no note; the pack and the XP are still yours."]},
   {v:"2026-10-20.5",lines:[
     "<b>🔍 Search shows a collection as one row whichever way you ask.</b> Ticking only ★ Want to read listed every one of its stories on a row of its own; it is one row now, opening onto those stories, and each stage's number says how many rows it will leave — before you tick it and after.",
     "<b>🏠 Today stays on Today.</b> Opening another tab while Today was still loading could put Today's cards under it.",
@@ -17856,9 +17861,59 @@ async function upNextReorder(id,beforeId){
 }
 /* a book has just been finished: the head of the queue is offered, once,
    after the finish has landed. Saying no leaves the queue as it was. */
+/* ---- ONE NOTE FOR A FINISH ----
+   Marking a book finished was five interruptions: the burst, a corner note
+   for the booster pack, another for the owl's questions, the XP notes a
+   second later, and a browser dialog offering the next book in Up next. A
+   finish now opens finNote for a moment; the pack's, the owl's and every XP
+   note that lands meanwhile are written into it rather than shown, the Up
+   next offer becomes a button on it, and it is shown once, as one card, with
+   a way to each. A medal earned keeps its own note — that is news of its
+   own. ⚙ Settings → The corner note → "Marking a book finished: quietly"
+   (settings.quietFinish) keeps the burst and the card away; the pack, XP and
+   medals are still given, without a word. */
+let finNote=null;
+const finQuiet=()=>!!(settings&&settings.quietFinish);
+function finNoteBegin(title){
+  if(finNote&&!finNote.shown)clearTimeout(finNote.t);
+  finNote={title:String(title||"").trim()||"Untitled",lines:[],next:null,shown:false,t:setTimeout(finNoteShow,2300)};
+}
+/* achToast asks here first: true means the note took it */
+function finNoteTake(r,t,isXp){
+  if(!finNote||finNote.shown||!r)return false;
+  if(!isXp&&r.tiers&&r.tiers.length)return false;   /* a medal is its own news */
+  if(r.act)return false;   /* a note with its own button ("Finished today") must keep it */
+  finNote.lines.push({icon:r.icon||"",name:r.name||"",plain:r.plain||"",go:r.go||"",xp:!!isXp});
+  return true;
+}
+function finNoteShow(){
+  const n=finNote;if(!n||n.shown)return;n.shown=true;
+  if(finQuiet()||(!n.lines.length&&!n.next)||!document.body)return;
+  const old=document.getElementById("finNote");if(old)old.remove();
+  const xp=n.lines.filter(l=>l.xp),rest=n.lines.filter(l=>!l.xp);
+  const sum=xp.reduce((a,l)=>a+(parseInt(String(l.name).replace(/[^0-9]/g,""))||0),0);
+  const row=(i,icon,main,small,act)=>`<button class="finrow" data-finl="${i}" style="display:flex;gap:8px;align-items:baseline;width:100%;text-align:left;background:none;border:0;color:inherit;font:inherit;padding:4px 0;cursor:pointer"><span>${icon}</span><span style="min-width:0"><b>${esc(main)}</b>${small?` <span style="opacity:.8">${esc(small)}</span>`:""}</span>${act?`<span style="margin-left:auto;white-space:nowrap;text-decoration:underline">${act}</span>`:""}</button>`;
+  const acts=[];
+  let h=`<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px"><b style="font-size:15px">✓ Finished “${esc(n.title.slice(0,70))}”</b><button data-finx style="margin-left:auto;background:none;border:0;color:inherit;font-size:16px;cursor:pointer" aria-label="Close">✕</button></div>`;
+  if(sum){acts.push(xp[0].go);h+=row(acts.length-1,"⚡","+"+sum+" XP",xp.map(l=>l.plain).filter(Boolean).slice(0,3).join(" · "),"");}
+  rest.forEach(l=>{acts.push(l.go);h+=row(acts.length-1,l.icon,l.name,l.plain,l.go?"open":"");});
+  if(n.next){acts.push("start:"+n.next.id);h+=row(acts.length-1,"⏭","Next in Up next: “"+String(n.next.title||"Untitled").slice(0,60)+"”","","📖 Start it");}
+  const w=document.createElement("div");w.id="finNote";w.setAttribute("role","status");
+  const foot=document.documentElement.dataset.phone==="1"?"var(--tabbarh,58px) + 14px":"14px";
+  w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);width:max-content;bottom:calc("+foot+" + env(safe-area-inset-bottom,0px));z-index:500;background:#134e4a;color:#fff;padding:10px 14px;border-radius:12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:calc(92vw/var(--uiz,1));min-width:min(280px,90vw);zoom:var(--uiz,1)";
+  w.innerHTML=h;document.body.appendChild(w);
+  const shut=()=>{clearTimeout(w.__t);w.remove();};
+  w.__t=setTimeout(shut,16000);
+  w.onmouseenter=()=>clearTimeout(w.__t);
+  w.querySelector("[data-finx]").onclick=shut;
+  w.querySelectorAll("[data-finl]").forEach(b=>b.onclick=()=>{const go=acts[+b.dataset.finl];shut();
+    if(!go)return;if(go.startsWith("start:"))setStatus(go.slice(6),"reading");else goTo(go);});
+}
 function offerUpNext(finishedId){
   const h=upNextList().filter(b=>b.id!==finishedId&&statusOf(b)!=="reading"&&!b.dnf)[0];
   if(!h)return;
+  /* on the finish's note, not a browser dialog in front of everything */
+  if(finNote&&!finNote.shown){finNote.next=h;return;}
   setTimeout(()=>{
     if(confirm(`Start “${h.title||"Untitled"}” — next in your Up next queue?`))setStatus(h.id,"reading");
   },60);
@@ -23387,6 +23442,7 @@ function achFlushWaiting(){
 }
 document.addEventListener("visibilitychange",achFlushWaiting);
 function achToast(r,t,isXp){
+  if(finNoteTake(r,t,isXp))return;   /* see ONE NOTE FOR A FINISH */
   if(isXp&&achOpt("xp")==="off")return;
   /* held over rather than spent on an empty room */
   if(document.hidden){
@@ -36115,7 +36171,7 @@ function shelfNameTile(w){
 const FIN_FX={confetti:{name:"Confetti",icon:"🎊"},petals:{name:"Petals",icon:"🌸"},stars:{name:"Stars",icon:"⭐"},planes:{name:"Paper planes",icon:"✈️"}};
 const FIN_MS=2600;
 const finFxNow=()=>{const k=settings&&settings.finFx;return FIN_FX[k]&&shopOwned("fx:"+k)?k:"";};
-function finFxSoon(){const k=finFxNow();if(k)setTimeout(()=>finFx(k),150);}
+function finFxSoon(){if(finQuiet())return;const k=finFxNow();if(k)setTimeout(()=>finFx(k),150);}
 function finFx(kind){
   if(!FIN_FX[kind])return;
   const old=document.getElementById("finFx");if(old)old.remove();
@@ -39035,6 +39091,9 @@ function renderSettings(){
           <div class="hrow2" style="flex-wrap:wrap;margin-top:4px"><span class="lbl">The ⚡ XP ones:</span>
             ${[["same","Same as the medals"],["quiet","Smaller and quicker"],["off","Not at all"]].map(([k,l])=>
               `<button class="pill ${achOpt("xp")===k?"on":""}" data-achxp="${k}">${l}</button>`).join("")}</div>
+          <div class="hrow2" style="flex-wrap:wrap;margin-top:4px"><span class="lbl">Marking a book finished:</span>
+            ${[["note","The burst, and one note"],["quiet","Quietly — no burst, no note"]].map(([k,l])=>
+              `<button class="pill ${(settings.quietFinish?"quiet":"note")===k?"on":""}" data-finq="${k}">${l}</button>`).join("")}</div>
           <div class="hrow2" style="margin-top:6px"><button class="btn" id="achTry">Show me one</button>
             <span class="none" style="font-size:12px">A browser won't make a sound until you've touched the page once, so a medal landing the moment the app opens is silent — and on the phone the ringer switch decides. Remembered per device, like the text size.</span></div>
         </div>
@@ -39292,6 +39351,8 @@ function wireSettings(m){
      qa("[data-achsnd]",m).forEach(x=>x.classList.toggle("on",x===b));
      achPlay(b.dataset.achsnd);
    });
+   qa("[data-finq]",m).forEach(b=>b.onclick=()=>{settings.quietFinish=b.dataset.finq==="quiet";saveSettings();
+     qa("[data-finq]",m).forEach(x=>x.classList.toggle("on",x===b));});
    qa("[data-achxp]",m).forEach(b=>b.onclick=()=>{
      put("xp",b.dataset.achxp);
      qa("[data-achxp]",m).forEach(x=>x.classList.toggle("on",x===b));
@@ -39588,8 +39649,8 @@ async function renderHub(part){
      either way; the rest are drawn now and folded, so the button unfolds them
      where they stand without a redraw — the On-this-day rule, for the same
      reason: the page must not move under you. */
-  const partwayCard=(id,title,list,cls,moreBtn,moreSay,foot)=>`<div class="sec" id="${id}">
-    <div class="heading"><h2 class="serif">${title}</h2>${list.length>1?`<span class="n">(${list.length})</span>`:""}</div>
+  const partwayCard=(id,title,list,cls,moreBtn,moreSay,foot)=>`<div class="serpart" id="${id}">
+    <div class="lbl" style="margin:12px 0 4px">${title}${list.length>1?` (${list.length})`:""}</div>
     <div class="hcard" style="padding:6px 12px">${list.map((b,i)=>{
         const {nxt}=collNext(b);
         return rnRow(b,collBody(b),nxt&&nxt.id).replace('class="rnrow"',`class="rnrow${i>=6?" "+cls:""}"${i>=6?" hidden":""}`);}).join("")}
@@ -39597,7 +39658,7 @@ async function renderHub(part){
       <div class="hint" style="margin:6px 0 4px">${foot}</div>
     </div>
   </div>`;
-  const continueHtml=today&&partway.length?partwayCard("secContinue","Continue with?",partway,"cwx","cwMore",
+  const continueHtml=today&&partway.length?partwayCard("secContinue","Collections — the next story",partway,"cwx","cwMore",
     "more part-way through",
     "Collections you are part-way through without having set them to Reading now. A row opens at the next story."):"";
   const waitCollHtml=today&&waitColl.length?partwayCard("secWaitColl","⌛ Waiting to get hold of",waitColl,"wcx","wcMore",
@@ -39621,8 +39682,8 @@ async function renderHub(part){
   const nextWaitHtml=nextWait.length?`<div class="hint" style="margin:2px 0 6px">⌛ Waiting to get hold of the next in ${nextWait.map(b=>
       `<button class="linkbtn" data-open="${b.id}" title="${esc(b.title||"Untitled")} — take the ⌛ off when you have it">${esc(seriesShown(b))}${b.seriesNum?" #"+esc(String(b.seriesNum)):""}</button>`).join(", ")
     } — the series comes back here when the mark is off.</div>`:"";
-  const nextLineHtml=today&&(nextLine.length||nextWait.length)?`<div class="sec" id="secNextLine">
-    <div class="heading"><h2 class="serif">Next in line</h2>${nextLine.length>1?`<span class="n">(${nextLine.length})</span>`:""}</div>
+  const nextLineHtml=today&&(nextLine.length||nextWait.length)?`<div class="serpart" id="secNextLine">
+    <div class="lbl" style="margin:12px 0 4px">Series — the next book${nextLine.length>1?` (${nextLine.length})`:""}</div>
     ${nextLine.slice(0,5).map(b=>rowHtml(b,false)+`<div class="hrow2" style="margin:-4px 0 8px 4px"><button class="btn smallbtn" data-setst="${b.id}|reading" title="Mark it Reading now — it moves up to Reading now">📖 Start it</button>
       <span class="hint" style="margin:0">the next unread in ${esc(seriesShown(b))}</span></div>`).join("")}
     ${nextLine.length>5?`<div class="hint" style="margin:0 0 4px">…and ${nextLine.length-5} more series with a next one waiting — 🔗 Series overview in the Library lists them all.</div>`:""}
@@ -39649,25 +39710,47 @@ async function renderHub(part){
       <div class="hint" style="margin:6px 0 0">Finishing a book offers the first one here. Starting one takes it off the list.</div>`
       :`<div class="hcard"><div class="hint" style="margin:0">Nothing queued. <b>⏭ Up next</b> on any row's stage list — or on a book's own stage list — puts it here, five at most, in the order you choose.</div></div>`}
   </div>`:"";
-  const todayHtml=`
-    ${(()=>{try{return roomCardHtml();}catch(e){return "";}})()}
-    ${today?(()=>{try{return recapHtml();}catch(e){return "";}})():""}
-    ${news.length?`<div class="sec">
-      <div class="hcard" id="newsCard">
-        <div class="hrow2"><b>Since you last looked</b>
-          <button class="btn" id="newsX" style="margin-left:auto;padding:3px 10px" title="Put the card away — it comes back when something new arrives">✕ Got it</button></div>
-        <ul id="newsList">${news.slice(0,NEWS_SHOWN).flatMap(newsLis).join("")}</ul>
-        <div class="hrow2" style="gap:6px">${news.length>NEWS_SHOWN?`<button class="btn" id="newsAll">▸ ${news.length-NEWS_SHOWN} earlier update${news.length-NEWS_SHOWN===1?"":"s"}</button>`:""}
-          <button class="btn" id="newsLogGo" title="Every change there has ever been — ⚙ Settings → How it works">📜 Everything that's changed</button></div>
+  /* ---- TODAY, YOUR BOOKS FIRST ----
+     On a phone the first book stood 6,300 pixels down: the room, six builds
+     of news, the scratch card, today's three and the owl's story all came
+     above Reading now. The order is: what you are reading and will read
+     next (Reading now, Up next, the series you are part-way through, loans,
+     letters), then the month's and the year's notes, then the day's cards
+     and the room, then the quotes and the calendar, and the news last, as one
+     folded line above Storage, which stays at the foot. */
+  const nextUpHtml=nextUp.length?`<div class="serpart" id="secNext">
+      <div class="lbl" style="margin:12px 0 4px">⌛ Waiting for the next one to come out${nextUp.length>1?` (${nextUp.length})`:""}</div>
+      ${nextUp.map(b=>rowHtml(b,false)+[b.serial?serialLine(b.serial):"",b.nextOut?nextOutLine(b.nextOut):""].filter(Boolean).map(t=>`<div class="hint" style="margin:-4px 0 8px 4px">${esc(t)}</div>`).join("")).join("")}
+      <div class="hrow2" style="margin-top:4px;flex-wrap:wrap;gap:6px">
+        <button class="btn smallbtn" id="nextAsk" title="Ask AniList (comics) and Kitsu (novels) whether each series is finished or still going, and Hardcover when the next book comes out — each says so when it doesn't know one">↻ Ask about these</button>
+        <span class="hint" style="margin:0">Put on hold until the next part is out. Worth a glance now and then — when it has arrived, 📖 Reading now takes the book off this list.</span>
       </div>
-    </div>`:""}
+    </div>`:"";
+  /* ---- SERIES YOU'RE PART-WAY THROUGH ----
+     Four cards answered one question — Continue with? (collections),
+     Next in line (series of separate books), ⌛ Waiting to get hold of, and
+     Waiting for the next one — each with its own heading and hint. One card
+     now: what you can start first, then what is not here yet, each part
+     keeping its rows, buttons and ids as they were (the wiring finds them). */
+  const serN=(today?partway.length+nextLine.length+waitColl.length:0)+nextUp.length;
+  const seriesHtml=(continueHtml||nextLineHtml||waitCollHtml||nextUpHtml)?`<div class="sec" id="secSeries">
+    <div class="heading"><h2 class="serif">Series you're part-way through</h2>${serN>1?`<span class="n">(${serN})</span>`:""}</div>
+    ${continueHtml}${nextLineHtml}${waitCollHtml}${nextUpHtml}
+  </div>`:"";
+  const todayHtml=`
+    ${readingNowHtml}
+    ${upNextHtml}
+    ${seriesHtml}
+    ${today?loansHtml():""}
+    ${today?(()=>{try{return lettersHtml();}catch(e){return "";}})():""}
+    ${today?(()=>{try{return recapHtml();}catch(e){return "";}})():""}
     ${(()=>{try{return wrapNoteHtml();}catch(e){return "";}})()}
+    ${(()=>{try{return ruHold(bdayCardHtml);}catch(e){return "";}})()}
+    ${(()=>{try{return roomCardHtml();}catch(e){return "";}})()}
     ${(()=>{try{return petCardHtml("today");}catch(e){return "";}})()}
     ${today?(()=>{try{return scratchHtml();}catch(e){return "";}})():""}
     ${today?(()=>{try{return tarotHtml();}catch(e){return "";}})():""}
     ${today?(()=>{try{storyCheck();return storyHtml();}catch(e){return "";}})():""}
-    ${readingNowHtml}
-    ${(()=>{try{return ruHold(bdayCardHtml);}catch(e){return "";}})()}
     ${qod?`<div class="sec">
       <div class="hcard qod" data-qodb="${qod.b.id}" role="button" tabindex="0" title="Tap to open the book it came from">
         <div class="qtxt"><span class="qm">“</span><div>${qod.t}</div></div>
@@ -39692,12 +39775,7 @@ async function renderHub(part){
           ${qApart.length>1?`<button class="btn dayagain" id="qod2Next" title="Show me a different one — it stays this one until tomorrow">↻ Another</button>`:""}</div>
       </div>
     </div>`:""}
-    ${upNextHtml}
-    ${today?loansHtml():""}
-    ${today?(()=>{try{return lettersHtml();}catch(e){return "";}})():""}
     ${today?(()=>{try{return dustyHtml();}catch(e){return "";}})():""}
-    ${continueHtml}
-    ${waitCollHtml}
     ${onThis.length?`<div class="sec"><div class="hcard" id="otdCard">
       ${onThis.map((x,i)=>`<div class="li otd${i>2?" otdx":""}"${i>2?" hidden":""}><span class="otdcov" data-cover="${x.id}"${x.en?` data-covkey="${esc(x.id+"|"+x.en)}"`:""} title="Open ${esc(x.t)||"this book"}"><a class="tgo" href="${esc(bookHash(x.id,x.en))}" data-otd="${x.id}" data-otden="${esc(x.en)}" tabindex="-1" aria-hidden="true"></a></span>
         <div>${x.yrs===1?"A year":x.yrs+" years"} ago today you finished
@@ -39726,15 +39804,16 @@ async function renderHub(part){
     </div>
     ${(()=>{let g="";try{g=ruHold(()=>yearGhostHtml(true));}catch(e){}
       return g?`<div class="sec"><div class="heading"><h2 class="serif">👻 Last year's you</h2></div><div class="hcard">${g}</div></div>`:"";})()}
-    ${nextLineHtml}
-    ${nextUp.length?`<div class="sec" id="secNext">
-      <div class="heading"><h2 class="serif">Waiting for the next one</h2>${nextUp.length>1?`<span class="n">(${nextUp.length})</span>`:""}</div>
-      ${nextUp.map(b=>rowHtml(b,false)+[b.serial?serialLine(b.serial):"",b.nextOut?nextOutLine(b.nextOut):""].filter(Boolean).map(t=>`<div class="hint" style="margin:-4px 0 8px 4px">${esc(t)}</div>`).join("")).join("")}
-      <div class="hrow2" style="margin-top:4px;flex-wrap:wrap;gap:6px">
-        <button class="btn smallbtn" id="nextAsk" title="Ask AniList (comics) and Kitsu (novels) whether each series is finished or still going, and Hardcover when the next book comes out — each says so when it doesn't know one">↻ Ask about these</button>
-        <span class="hint" style="margin:0">Put on hold until the next part is out. Worth a glance now and then — when it has arrived, 📖 Reading now takes the book off this list.</span>
+    ${news.length?`<details class="sec newsfold" id="secNews">
+      <summary style="cursor:pointer;padding:6px 2px;color:var(--mut);font-size:14px">📰 Since you last looked · ${Math.min(news.length,NEWS_SHOWN)}${news.length>NEWS_SHOWN?"+":""} update${news.length===1?"":"s"} to read</summary>
+      <div class="hcard" id="newsCard">
+        <div class="hrow2"><b>Since you last looked</b>
+          <button class="btn" id="newsX" style="margin-left:auto;padding:3px 10px" title="Put the card away — it comes back when something new arrives">✕ Got it</button></div>
+        <ul id="newsList">${news.slice(0,NEWS_SHOWN).flatMap(newsLis).join("")}</ul>
+        <div class="hrow2" style="gap:6px">${news.length>NEWS_SHOWN?`<button class="btn" id="newsAll">▸ ${news.length-NEWS_SHOWN} earlier update${news.length-NEWS_SHOWN===1?"":"s"}</button>`:""}
+          <button class="btn" id="newsLogGo" title="Every change there has ever been — ⚙ Settings → How it works">📜 Everything that's changed</button></div>
       </div>
-    </div>`:""}
+    </details>`:""}
     <!-- the storage READING stays on the first page, at its foot: how much
          room the shelf takes is a thing glanced at on the way in. The
          machinery — backups, the breakdown — is Settings' and stays there. -->
