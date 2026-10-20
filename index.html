@@ -7328,7 +7328,7 @@ function applyReading(x,st,dnf,flag){
      wrote down is not a reading; it is nothing, and nothing is what it gets. */
   if(nowReading&&!open)reads.push({id:uid(),start:todayStr(),end:"",open:true});
   if(!nowReading&&open){
-    if(st==="finished"&&!dnf){delete open.open;if(!open.end)open.end=todayStr();}
+    if(st==="finished"&&!dnf){delete open.open;if(!open.end){open.end=todayStr();if(!flag)finArm={x,rid:open.id,was:"today",at:Date.now()};}}
     /* Back to the pile means you had not started after all. A story handed back
        to its collection — the blank stage — takes back the reading it opened for
        the same reason: going quiet cannot leave a reading behind that is still
@@ -7362,12 +7362,102 @@ function applyReading(x,st,dnf,flag){
        applyReading itself is called by the importers too, and a few thousand
        books arriving must not put a few thousand notes on the screen. */
     autoDated={x,rid:guess.id,at:Date.now()};
+    finArm={x,rid:guess.id,was:"none",at:Date.now()};
   }
   return syncReads(x);
 }
-let autoDated=null;
+let autoDated=null,finArm=null,finWhenOn=null;
+/* ┌─ FINISHED WHEN? ────────────────────────────────────────────────────────┐
+   │ ✓ Finish it dated the reading today, and a book read last week needed  │
+   │ the readings fold afterwards — the step the help had to teach. The     │
+   │ press still finishes it at once; then a line asks nothing and offers:  │
+   │ Today · Yesterday · 📅 Another day…, Today chosen. A tap re-dates the  │
+   │ reading (redateReading — one undo step); ignoring it changes nothing.  │
+   │ A book finished without ever being started has no date to give           │
+   │ (READ, AND WHEN IS NOT KNOWN), so its line starts on "No date" and the │
+   │ old "Finished today" note is this line now. finArm is set by           │
+   │ applyReading for a single press only (`flag` is the importers'); the   │
+   │ book's page draws the line under its stage (finWhenHtml, finWhenOn);   │
+   │ anywhere else — a Library row, the editor — it is a note at the foot    │
+   │ of the screen (finWhenNote).                                            │
+   └─────────────────────────────────────────────────────────────────────────┘ */
+const finHolds=(bk,rid)=>[bk,...((bk&&bk.entries)||[])].find(y=>(y&&y.readings||[]).some(r=>r&&r.id===rid));
+const finReadOf=(bk,rid)=>{const y=finHolds(bk,rid);return y?{y,r:y.readings.find(r=>r.id===rid)}:null;};
+function finWhenChoices(r,was){
+  const t=todayStr(),yd=dayBack(t,1),e=String(r.end||"");
+  const on=k=>k==="none"?!e:k==="today"?e===t:k==="yday"?e===yd:!!e&&e!==t&&e!==yd;
+  const pill=(k,l)=>`<button class="pill${on(k)?" on":""}" data-finwhen="${k}">${l}</button>`;
+  const min=String(r.start||"").slice(0,10);
+  return (was==="none"?pill("none","No date"):"")+pill("today","Today")+pill("yday","Yesterday")
+    +(on("other")?`<button class="pill on" data-finwhen="pick">📅 ${esc(printDay(e))}</button>`:pill("pick","📅 Another day…"))
+    +`<input type="date" class="field" data-finday hidden max="${t}"${min?` min="${esc(min)}"`:""} value="${esc(e||t)}" style="padding:3px 8px">`;
+}
+function finWhenHtml(b){
+  if(!finWhenOn||!b||finWhenOn.id!==b.id)return "";
+  const f=finReadOf(b,finWhenOn.rid);if(!f||!f.r)return "";
+  const who=f.y!==b?`“${esc(f.y.title||"The story")}” finished`:"Finished";
+  return `<div class="hrow2 finwhen" style="gap:6px;margin:8px 0 2px;align-items:center;flex-wrap:wrap"><span class="hint" style="margin:0">${who}</span>${finWhenChoices(f.r,finWhenOn.was)}</div>`;
+}
+/* a choice made, wherever the line or the note stands */
+function finWhenPick(k,box,rid,after){
+  const t=todayStr();
+  if(k==="pick"){const d=q("[data-finday]",box);if(d){d.hidden=false;try{d.showPicker&&d.showPicker();}catch(e){}d.focus();}return;}
+  const end=k==="none"?"":k==="today"?t:k==="yday"?dayBack(t,1):k;
+  redateReading(rid,end).then(()=>{try{after&&after();}catch(e){}});
+}
+function wireFinWhen(box,rid,after){
+  qa("[data-finwhen]",box).forEach(x=>x.onclick=e=>{e.stopPropagation();finWhenPick(x.dataset.finwhen,box,rid,after);});
+  const d=q("[data-finday]",box);if(d){d.onclick=e=>e.stopPropagation();d.onchange=()=>{const v=d.value;if(/^\d{4}-\d{2}-\d{2}$/.test(v)&&v<=todayStr())finWhenPick(v,box,rid,after);};}
+}
+function finWhenNote(a){
+  const old=document.getElementById("finWhenNote");if(old)old.remove();
+  const f=finReadOf(books.find(b=>finHolds(b,a.rid))||a.x,a.rid);if(!f||!f.r)return;
+  const w=document.createElement("div");w.id="finWhenNote";w.className="bannernote";w.setAttribute("role","status");
+  const foot=document.documentElement.dataset.phone==="1"?"var(--tabbarh,58px) + 14px":"14px";
+  w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 24px);bottom:calc("+foot+" + env(safe-area-inset-bottom,0px));z-index:500;background:var(--card);color:var(--ink);border:1px solid var(--line);padding:9px 12px;border-radius:12px;box-shadow:0 6px 22px rgba(0,0,0,.18);font-size:14px";
+  let timer=0;const shut=()=>{clearTimeout(timer);w.remove();};
+  const paint=()=>{const g=finReadOf(books.find(b=>finHolds(b,a.rid))||a.x,a.rid);if(!g||!g.r){shut();return;}
+    w.innerHTML=`<div class="hrow2" style="gap:6px;align-items:center;flex-wrap:wrap"><span style="min-width:0"><b>“${esc(g.y.title||"It")}”</b> finished</span>${finWhenChoices(g.r,a.was)}<button class="btn smallbtn" data-finx style="padding:2px 8px">✕</button></div>`
+      +(a.was==="none"&&!g.r.end?`<div class="hint" style="margin:4px 0 0">It had no dates, so it counts as read but not as read on any day. Pick a day if you know it.</div>`:"");
+    wireFinWhen(w,a.rid,()=>{paint();clearTimeout(timer);timer=setTimeout(shut,6000);});
+    const x=q("[data-finx]",w);if(x)x.onclick=shut;};
+  paint();document.body.appendChild(w);
+  timer=setTimeout(shut,14000);
+  w.addEventListener("focusin",()=>clearTimeout(timer));
+}
+/* a reading's end, set from the line or the note through whichever save the
+   book is open in — the editor's, the reading page's, or the shelf's (the
+   road guessIsToday always took). "" puts an undated finish back to no date. */
+async function redateReading(rid,end){
+  const fix=bk=>{const f=finReadOf(bk,rid);if(!f||!f.r)return false;const r=f.r;
+    if(String(r.end||"")===end)return false;
+    if(end&&r.start&&String(r.start).slice(0,10)>end)return false;
+    if(end){r.end=end;delete r.auto;}else{r.end="";r.auto=true;}
+    syncReads(f.y);return true;};
+  if(view==="book"&&cur&&finHolds(cur,rid)){
+    if(bookMode==="edit"){if(fix(cur)){scheduleSave();const place=bookPlace();renderBook();if(place)setTimeout(()=>restoreBookPlace(place),0);}return;}
+    await quickEdit(bk=>fix(bk)?undefined:false);return;
+  }
+  const b=books.find(bk=>finHolds(bk,rid));if(!b)return;
+  const before=JSON.parse(JSON.stringify(b));
+  if(!fix(b))return;
+  touchBook(b);
+  pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+  await dbPut("books",b);
+  if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+  try{renderMain();}catch(e){}
+}
 /* called by the press handlers, never by an import */
 function sayIfAutoDated(){
+  /* the line or the note says it now, for a dated finish and an undated one
+     alike — see FINISHED WHEN? */
+  {const a=finArm;finArm=null;
+   if(a&&a.at&&Date.now()-a.at<=8000){autoDated=null;
+     if(view==="book"&&cur&&bookMode==="view"&&finHolds(cur,a.rid)){finWhenOn={id:cur.id,rid:a.rid,was:a.was};try{renderBookView();}catch(e){}}
+     /* the finish's own note, when one is on its way — ONE NOTE FOR A FINISH */
+     else if(finNote&&!finNote.shown)finNote.when=a;
+     else finWhenNote(a);
+     return;}}
   if(!autoDated)return;
   const {x,rid,at}=autoDated;autoDated=null;
   /* a note armed by a bulk stage change or an import — which never say it —
@@ -7384,24 +7474,7 @@ function sayIfAutoDated(){
 }
 /* the note's button: the undated guess becomes today's, through whichever
    save the book is open in — the editor's, the reading page's, or the shelf's */
-async function guessIsToday(rid){
-  const holds=bk=>[bk,...((bk&&bk.entries)||[])].find(y=>(y&&y.readings||[]).some(r=>r&&r.id===rid));
-  const fix=bk=>{const y=holds(bk);if(!y)return false;
-    const r=y.readings.find(r=>r.id===rid);if(!r||r.end)return false;
-    r.end=todayStr();delete r.auto;syncReads(y);return true;};
-  if(view==="book"&&cur&&holds(cur)){
-    if(bookMode==="edit"){if(fix(cur)){scheduleSave();const place=bookPlace();renderBook();if(place)setTimeout(()=>restoreBookPlace(place),0);}return;}
-    await quickEdit(bk=>fix(bk)?undefined:false);return;
-  }
-  const b=books.find(bk=>holds(bk));if(!b)return;
-  const before=JSON.parse(JSON.stringify(b));
-  if(!fix(b))return;
-  touchBook(b);
-  pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
-  await dbPut("books",b);
-  if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
-  try{renderMain();}catch(e){}
-}
+async function guessIsToday(rid){return redateReading(rid,todayStr());}
 /* Re-reads go unquestioned on purpose — see the note above readListHtml — with
    one exception, which is the only press here that is genuinely ambiguous:
    "Reading now" on something you have already finished. It might mean you are
@@ -12812,7 +12885,7 @@ function showHelpSheet(){
     <dl>
       <dt>Recently edited</dt><dd>Your books and collections, the ones you last changed first — only real changes count, not just opening one. Changes made on your other device show here too.</dd>
       <dt>What changed</dt><dd>One line per change rather than one per book, gathered by the day it happened: which fields changed, and whether it was you, a bulk fill or the picture scanner. The last 200, from both your devices — each line says which.</dd>
-      <dt>The timeline</dt><dd>Every reading with a finish date, newest first — a book read twice appears twice. “Finished” records today's date; older ones you can type in on the book's own page.</dd>
+      <dt>The timeline</dt><dd>Every reading with a finish date, newest first — a book read twice appears twice. “Finished” records today's date, and the line it shows straight after offers Yesterday or 📅 Another day; any reading takes a date on the book's own page.</dd>
       <dt>Recently deleted</dt><dd>Deleted books wait here for 30 days — covers and pictures kept — and can be put back with one press before they go for good.</dd>
     </dl>
     <h3 id="hs-book">On a book's page</h3>
@@ -12867,6 +12940,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-20.12",lines:["<b>📅 Finished when?</b> ✓ Finish it still finishes the book in one press, dated today. Right after, a line offers <b>Today · Yesterday · 📅 Another day…</b>, and a tap moves the date. On a book's page the line sits under its stage. Anywhere else, it is in the ✓ Finished note at the foot of the screen. A book finished without ever being started begins on No date, so you can give it the day you really read it."]},
   {v:"2026-10-20.11",lines:["<b>📚 Lists you can see.</b> A medal's note has <b>📚 Its books</b>, the books that count toward it. Your own challenge has <b>Books that would fit</b> from what you haven't read yet. The reading timeline shows the books with no finish date.","<b>☰ More filters:</b> ♥ Favourites is a Library pill, stories you love included, and the format pill is remembered. Search has a button for each format and looks in ISBNs too, and ✨ Insights counts print, ebook and audio.","<b>✎ Put things right:</b> a loan's ✎ changes who, which way and since when. <b>✎ the sessions</b> under the reading clock lets you fix a session's minutes or remove one. Pins on your own map drag, a thing taken out of 🏠 Your room can go back where it stood, and a fic gets <b>➕ One more chapter</b>. ✎ Tidy the list can remove a mistyped character from a fandom. Merging an author's spellings brings your note and the found bio along, and 📝 What changed now lists tags, families and fandoms renamed, recoloured or removed."]},
   {v:"2026-10-20.10",lines:["<b>↶ Fewer questions.</b> Anything ↶ Undo can put back no longer asks first. It goes ahead and says what it did at the foot of the screen: setting ticked books to a stage, a new author name, moving a tag, tidying chapters, taking a story out, ✕ on a chapter or a story, pasting over a cover, replacing a blurb. What still asks is what undo can't reach, like deleting for good.","<b>🏷 One name each:</b> ✕ Did not finish everywhere (no more DNF, Set aside or Given up), Tags (not keywords), 🏅 Medals, 🎲 Challenges on the phone's bar too, 📖 Reading now, your runs, ♥ Favourite, Blurb, and Remove. The Library's sort pills say Mark and Stage."]},
   {v:"2026-10-20.9",lines:[
@@ -17973,7 +18047,10 @@ function finNoteTake(r,t,isXp){
 }
 function finNoteShow(){
   const n=finNote;if(!n||n.shown)return;n.shown=true;
-  if(finQuiet()||(!n.lines.length&&!n.next)||!document.body)return;
+  if(!document.body)return;
+  /* the day it was finished asks for a choice, so it is shown even when the
+     note itself is turned quiet — on its own (finWhenNote) */
+  if(finQuiet()||(!n.lines.length&&!n.next)){if(n.when)finWhenNote(n.when);return;}
   const old=document.getElementById("finNote");if(old)old.remove();
   const xp=n.lines.filter(l=>l.xp),rest=n.lines.filter(l=>!l.xp);
   const sum=xp.reduce((a,l)=>a+(parseInt(String(l.name).replace(/[^0-9]/g,""))||0),0);
@@ -17986,7 +18063,15 @@ function finNoteShow(){
   const w=document.createElement("div");w.id="finNote";w.setAttribute("role","status");
   const foot=document.documentElement.dataset.phone==="1"?"var(--tabbarh,58px) + 14px":"14px";
   w.style.cssText="position:fixed;left:50%;transform:translateX(-50%);width:max-content;bottom:calc("+foot+" + env(safe-area-inset-bottom,0px));z-index:500;background:#134e4a;color:#fff;padding:10px 14px;border-radius:12px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:calc(92vw/var(--uiz,1));min-width:min(280px,90vw);zoom:var(--uiz,1)";
-  w.innerHTML=h;document.body.appendChild(w);
+  w.innerHTML=h;
+  /* Finished when? — see FINISHED WHEN? */
+  if(n.when){const box=document.createElement("div");box.style.cssText="margin:6px 0 2px";w.insertBefore(box,w.children[1]||null);
+    const paintW=()=>{const g=finReadOf(books.find(b=>finHolds(b,n.when.rid))||n.when.x,n.when.rid);if(!g||!g.r){box.innerHTML="";return;}
+      box.innerHTML=`<div class="hrow2" style="gap:6px;align-items:center;flex-wrap:wrap"><span style="opacity:.85;font-size:13px">Finished</span>${finWhenChoices(g.r,n.when.was)}</div>`
+        +(n.when.was==="none"&&!g.r.end?`<div style="font-size:12px;opacity:.85;margin:3px 0 0;max-width:46ch">It had no dates, so it counts as read but not on any day. Pick a day if you know it.</div>`:"");
+      wireFinWhen(box,n.when.rid,()=>{clearTimeout(w.__t);paintW();});};
+    paintW();box.addEventListener("pointerdown",()=>clearTimeout(w.__t));}
+  document.body.appendChild(w);
   const shut=()=>{clearTimeout(w.__t);w.remove();};
   w.__t=setTimeout(shut,16000);
   w.onmouseenter=()=>clearTimeout(w.__t);
@@ -38687,7 +38772,7 @@ function renderHistory(){
     const undated=units.filter(u=>u.times>0&&!u.reads.some(r=>r.end)).length;
     if(!ev.length){
       body=`<div class="none" style="text-align:center;padding:36px 0">Nothing dated yet.<br>
-        <span class="hint">A book joins this timeline once one of its readings has a finish date. Choosing “Finished” records today's; older ones you can type in on the book's own page.</span></div>`;
+        <span class="hint">A book joins this timeline once one of its readings has a finish date. Choosing “Finished” records today's, or the day you pick on the line it shows; older ones you can type in on the book's own page.</span></div>`;
     }else{
       const rowFor=u=>u.en?storyProxy(u.book,u.en):u.book;
       let curY="",curM="";
@@ -45962,6 +46047,7 @@ const backLabel=()=>{const k=cameFrom==="pick"?"challenges":cameFrom;
    the pen and jumping to the top of the page, so you were looking at a different
    screen when you went to check. */
 async function openBook(id,fresh,keepPlace,goToStory){
+  if(finWhenOn&&finWhenOn.id!==id)finWhenOn=null;
   if(view!=="book"){
     cameFrom=view;keepMyPlace();lastOpenedId=id;lastOpenedEn=goToStory||"";
   }   /* so Back can bring you here again */
@@ -47569,6 +47655,7 @@ function renderBookView(){
              on a wide screen and hides the title marks on a phone, where at
              half a 20px title they were 10px — too small to read, let alone
              name. See .vlooks beside the tiny/micro head rules. -->
+        ${finWhenHtml(b)}
         ${sugHtml(b,"")}
         ${guessHtml(b)}
         ${loanHtml(b)}
@@ -47915,6 +48002,7 @@ function renderBookView(){
     const letter=(q("#owlLetter",page)||{}).value;
     owlOpen=null;owlDraft=null;quickEdit(bk=>owlKeep(bk,ans,letter));
   });
+  {const fw=q(".finwhen",page);if(fw&&finWhenOn)wireFinWhen(fw,finWhenOn.rid);}
   /* the loan line — see LOANS; quickEdit redraws the page */
   qa("[data-loan]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
