@@ -6066,9 +6066,7 @@ function wireRegroup(scope){
     if(!runs.length)return;
     const n=runs.reduce((s,r)=>s+r.parts.length,0);
     const was=(b.entries||[]).length,now=was-n;
-    if(!confirm(`Count these as their volumes?\n\n`
-      +runs.map(r=>`• ${r.name} — ${r.parts.length+1} pieces`).join("\n")
-      +`\n\nWhat's inside would say ${now} instead of ${was}: the pieces of a volume count as that volume, not as more books. Nothing is moved, renamed or thrown away — and their ratings still count one each.\n\n↶ Undo puts it back.`))return;
+    undoSaid(`What's inside counts ${now} instead of ${was} now: the pieces count as their volumes.`);
     /* WHICH COPY TO WRITE ON. With the editor open, the book on the shelf is
        not the one being looked at — cur is — and writing to the shelf's copy
        behind an open editor is the oldest trap in this file. The reading face
@@ -9300,20 +9298,18 @@ function openFamiliesPanel(){
     if(sc)sc.onclick=()=>{
       const mine=Object.keys(genres).filter(g=>SHELF_SECTIONS[g]&&genres[g]!==SHELF_SECTIONS[g]);
       if(!mine.length){alert("Your genres already wear that scheme — nothing to change.");return;}
-      if(!confirm(`Give ${mine.length} of your genres the Shelf sections colours?\n\n`
-        +mine.slice(0,8).join(", ")+(mine.length>8?`, and ${mine.length-8} more`:"")
-        +`\n\nGenres the scheme has no colour for are left alone, and one press of ↶ Undo puts the old palette back.`))return;
+      undoSaid(`${mine.length} genre${mine.length===1?"":"s"} wear the Shelf sections colours now.`);
       mine.forEach(g=>{genres[g]=SHELF_SECTIONS[g];unmarkMetaDel("genre:"+g);});
       saveMeta();
       if(SYNC.on)flushQueue();
-      draw();render();
+      draw();renderKeepPlace();
     };
     qa("[data-famc]",wrap).forEach(inp=>{
       inp.onchange=()=>{
         const f=inp.dataset.famc;
         catColors[f]=inp.value;unmarkMetaDel("cat:"+f);
         saveKwCats();if(SYNC.on)flushQueue();
-        draw();render();
+        draw();renderKeepPlace();
       };
     });
     /* ---- every tag, grouped, out and back again ----
@@ -9425,7 +9421,7 @@ function openFamiliesPanel(){
         const hits=parse();if(!hits.length)return;
         hits.forEach(([f,c])=>{catColors[f]=c;unmarkMetaDel("cat:"+f);});
         saveKwCats();if(SYNC.on)flushQueue();
-        draw();render();
+        draw();renderKeepPlace();
       };
     };
   };
@@ -11004,7 +11000,7 @@ async function pullAll(){
     /* a pull that changed nothing leaves the screen alone. Coming back to the tab
        pulls, and on a phone that is every few minutes — each one used to rebuild
        the page whether or not a single word had changed anywhere. */
-    if((changed.length||touched||shape()!==wasShape)&&view!=="book")render();
+    if((changed.length||touched||shape()!==wasShape)&&view!=="book")renderKeepPlace();
     /* the pet's face is cheap to ask about and is not redrawn on a book's page
        otherwise — see THE FACE KEEPS UP WITHOUT A RELOAD */
     else if(changed.length||touched)petNudge();
@@ -12917,6 +12913,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-20.17",go:["tab:care"],lines:["<b>🧰 Shelf care keeps your place.</b> After a tidy-up, the sync that follows used to redraw the whole page and drop you at the top. It now puts you back where you were, there and on Today, and merging an author's spellings does too. Ten more tidy-ups that ↶ Undo can put back stop asking first: merging lookalike tags, tidying tags that repeat a genre, giving tags a capital letter, making a word a genre or a tag everywhere, unfolding a collection, and a few more. The Kindle pages card is gone, its repair done."]},
   {v:"2026-10-20.15",lines:["<b>🧹 Tidier inside.</b> A tag or genre's menu no longer offers ◀ Move it left or ▶ Move it right: the chips are always drawn in alphabetical order, so a move never showed. The help sheet points the right way again: Export & import is in ⚙ Settings, the pills are under ☰ Filters, the quotes are on ❝ Quotes, and there are eight medal walls. The app installed on a phone opens on its cream page instead of a flash of teal, and the offline copy of the app lets go of old versions of the libraries it downloads."]},
   {v:"2026-10-20.14",lines:["<b>📅 When a book came out.</b> ✎ Edit has a <b>Published</b> box beside the ISBN, and 🔎 Auto-fill offers the year its lookup found. The year shows under the title. The Library can sort by <b>Published</b>, oldest first, with the year on each row. ✨ Insights counts your books <b>By decade</b> and names the oldest. The app's spreadsheet carries the year both ways, and a Goodreads export brings its original publication year."]},
   {v:"2026-10-20.13",go:["el:overview:#secYear"],lines:["<b>📏 Aim for pages too.</b> The year card on 🏠 Today has <b>＋ Aim for pages too</b>. Give it a number and you get a second bar beside the books one, with the pace and the pages a day still to go. A book counts at its full length the day you finish it, re-reads included, and the aim follows you to your other devices."]},
@@ -17406,7 +17403,7 @@ function render(){
      how wide the window is */
   measureTabsRow();
   applyLibWidth();
-  renderView();
+  const drew=renderView();
   {const bar=document.getElementById("tabbar");if(bar)bar.hidden=false;}
   drawTabBar();
   closeFabMenu();   /* a jump list from the previous page would point at nothing */
@@ -17414,6 +17411,7 @@ function render(){
   syncHistory();
   /* how long the drawing itself took, apart from the pictures — see covLogKeep */
   coverStats.r=Math.round(performance.now()-drawT0);
+  return drew;
 }
 /* which screen goes under the tabs. Written out twice before, once here and
    once in renderMain, so adding a tab meant remembering both. */
@@ -17424,9 +17422,12 @@ function renderView(){
      click on one of them ticked the book into the library's selection instead of
      opening it, with nothing to say so but a teal outline. */
   document.documentElement.setAttribute("data-selmode",libTicking()?"1":"0");
+  /* the two hub faces draw after an await (the cover keys), so the promise is
+     handed back — see A REDRAW YOU DID NOT ASK FOR KEEPS YOUR PLACE */
+  let drew=null;
   if(view==="library")renderLibrary();
-  else if(view==="overview"){renderHub("today");setTimeout(owlOnToday,900);}
-  else if(view==="care")renderHub("care");
+  else if(view==="overview"){drew=renderHub("today");setTimeout(owlOnToday,900);}
+  else if(view==="care")drew=renderHub("care");
   else if(view==="history")renderHistory();
   else if(view==="insights")renderInsights();
   else if(view==="quotes")renderQuotes();
@@ -17436,6 +17437,21 @@ function renderView(){
   else renderSearchView();
   /* the dragon belongs to every room now, not to the Library alone */
   dragonRefresh();
+  return drew;
+}
+/* ---- A REDRAW YOU DID NOT ASK FOR KEEPS YOUR PLACE ----
+   render() rebuilds the page from the header down, and for a moment the page
+   is short, so the browser clamps the scroll: measured on Shelf care, 700 px
+   down to 0 in the first 30 ms. A press that redraws on purpose can live with
+   that; a sync arriving after a tidy-up cannot — the merge goes up, the other
+   device's rows come back, pullAll redraws, and you are at the top of a long
+   page you were halfway down. This waits for the screen to finish (renderView
+   hands back the hub's promise) and puts you back, as keepPlaceAfterRedraw
+   does after its own redraws. Only if you are still on the same screen. */
+async function renderKeepPlace(){
+  const y=window.scrollY,v=view;
+  try{await render();}catch(e){}
+  if(y&&view===v)keepPlaceAfterRedraw(y);
 }
 /* redraw only what sits under the tabs. Opening the little stage disc on a
    cover used to rebuild the entire page — header, tabs and all — twice per
@@ -19950,7 +19966,7 @@ function renderAuthorPanel(name){
     }catch(e){}
     if(SYNC.on)flushQueue();
     /* keepPlace: the same book redrawn keeps its face and its scroll */
-    if(view==="book"&&cur&&affected.some(b=>b.id===cur.id))await openBook(cur.id,false,true);else render();
+    if(view==="book"&&cur&&affected.some(b=>b.id===cur.id))await openBook(cur.id,false,true);else await renderKeepPlace();
     renderAuthorPanel(name);
   };
   q("#apColl",box).onclick=async()=>{
@@ -40205,7 +40221,7 @@ async function renderHub(part){
         <div id="genDupBox"></div>
         <div id="tagDupBox"></div>
         <div id="capBox"></div>
-        <div id="kindleFixBox"></div></div>
+</div>
     </div>
     <div class="sec">
       <div class="heading"><h2 class="serif">Read a ReadEra backup</h2></div>
@@ -40412,7 +40428,7 @@ async function renderHub(part){
   };
   /* the housekeeping half's wiring — every refresher looks its box up and
      returns when it is not on the page, and the two buttons are guarded here */
-  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshKindleFix();
+  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
   qa("[data-grshelf]",m).forEach(b=>b.onclick=()=>importGoodreadsFeed(b.dataset.grshelf));
   {const ga=q("#grAdd",m);
@@ -41305,9 +41321,7 @@ function renderReadEra(){
     if(!want.length)return;
     const what={};
     want.forEach(r=>r.fill.forEach(x=>{what[x[1]]=(what[x[1]]||0)+1;}));
-    if(!confirm("Fill in "+want.length+" book"+(want.length===1?"":"s")+" you already have?\n\n"
-      +Object.keys(what).map(k=>what[k]+" × "+k).join("\n")
-      +"\n\nNothing already written is changed — only blanks are filled. One Undo puts it all back."))return;
+    undoSaid(`${want.length} book${want.length===1?"":"s"} filled in, only where ${want.length===1?"it was":"they were"} blank.`);
     fillBtn.disabled=true;fillBtn.textContent="Filling in…";
     const items=[];let full=false;
     for(const r of want){
@@ -42154,81 +42168,6 @@ function refreshNameDupes(){
   });
 }
 
-/* ┌─ KINDLE PAGES ONE QUOTE LATE (pastes made 2026-09-07 to 10-09) ──────────┐
-   │ From the day pushQuote began padding quotesFrom itself until the Kindle  │
-   │ paste was fixed, that paste pushed each highlight's page AFTER the slot  │
-   │ pushQuote had already made: the first highlight of a paste showed no     │
-   │ page and every later one the page of the one before. What it left can   │
-   │ be found: a run of quotes kept on one day, the first with no place and   │
-   │ the rest with a place in the paste's own form ("p. 12", "loc. 145") —    │
-   │ and often one place too many at the end of quotesFrom, which is the last │
-   │ highlight's own page. Nothing changes until a button is pressed, and one │
-   │ ↶ Undo puts it back. This can go once no shelf has a run left.           │
-   └──────────────────────────────────────────────────────────────────────────┘ */
-const KINDLE_PLACE=/^t:(?:p|loc)\. [0-9ivxlcdm]+$/i;
-function kindleLateRuns(b){
-  const n=(b.quotes||[]).length,qf=b.quotesFrom||[],qa=b.quotesAt||[];
-  const runs=[];
-  for(let i=0;i<n;i++){
-    const day=String(qa[i]||"");
-    if(String(qf[i]||"")!==""||day<"2026-09-07"||day>"2026-10-09")continue;
-    let j=i;
-    while(j+1<n&&qa[j+1]===day&&KINDLE_PLACE.test(String(qf[j+1]||"")))j++;
-    const extra=(j===n-1&&KINDLE_PLACE.test(String(qf[n]||"")))?String(qf[n]):"";
-    if(j>i||extra){runs.push({i,j,extra});i=j;}
-  }
-  return runs;
-}
-/* each page moves back onto the line it belongs to; the last line of a run
-   takes the stray page past the end where there is one, else none */
-function kindleLateFix(b){
-  const runs=kindleLateRuns(b);if(!runs.length)return 0;
-  const qf=(b.quotesFrom||[]).slice();let moved=0;
-  for(const {i,j,extra} of runs){
-    for(let k=i;k<j;k++)qf[k]=qf[k+1];
-    qf[j]=extra;moved+=j-i+1;
-  }
-  qf.length=(b.quotes||[]).length;
-  b.quotesFrom=qf;
-  return moved;
-}
-function refreshKindleFix(){
-  const box=q("#kindleFixBox");if(!box)return;
-  const found=books.map(b=>({b,runs:kindleLateRuns(b)})).filter(x=>x.runs.length);
-  if(!found.length){box.innerHTML="";return;}
-  const place=s=>String(s||"").replace(/^t:/,"")||"no page";
-  const snip=t=>{const s=stripHtml(t||"").replace(/\s+/g," ").trim();return s.length>70?s.slice(0,64).replace(/\s+\S*$/,"")+"…":s;};
-  box.innerHTML=`<div class="grouphead" style="margin:16px 0 8px"><h2 class="serif" style="margin:0;font-size:15px">Kindle pages one quote late</h2>
-      <span class="n">${found.length}</span><span class="ghline"></span></div>
-    <div class="hint" style="margin:0 0 8px">Highlights pasted from Kindle between 7 September and 9 October were each given the page of the highlight before them, and the first of each paste got none. These look like those. Each button moves the pages back onto their own lines; ↶ Undo puts them as they were.</div>`
-    +found.map(({b,runs},n)=>{
-      const lines=runs.reduce((s,r)=>s+r.j-r.i+1,0);
-      const r0=runs[0],qs=b.quotes||[],qf=b.quotesFrom||[];
-      const ex=[r0.i,r0.i+1].filter(k=>k<=r0.j).map(k=>`<div class="meta">“${esc(snip(qs[k]))}” — shows <b>${esc(place(qf[k]))}</b>, should show <b>${esc(place(k<r0.j?qf[k+1]:r0.extra))}</b></div>`).join("");
-      return `<div class="snap" style="align-items:flex-start"><div style="flex:1;min-width:0">
-        <div class="when">${esc(b.title||"Untitled")} <span class="rr">${lines} highlight${lines===1?"":"s"}</span></div>${ex}</div>
-        <button class="btn" data-kfix="${n}" style="flex:none">Put the pages right</button></div>`;}).join("")
-    +(found.length>1?`<div class="hrow2" style="margin-top:8px"><button class="btn" data-kfix="all">Put all ${found.length} right</button></div>`:"");
-  qa("[data-kfix]",box).forEach(btn=>btn.onclick=async()=>{
-    const list=btn.dataset.kfix==="all"?found.map(x=>x.b):[found[+btn.dataset.kfix].b];
-    const items=[];let full=false;
-    for(const b0 of list){
-      const b=books.find(x=>x.id===b0.id);if(!b)continue;
-      const before=JSON.parse(JSON.stringify(b));
-      if(!kindleLateFix(b))continue;
-      touchBook(b);
-      if(!(await putOrRestore(b,before))){full=true;break;}
-      if(SYNC.on)enqueue({kind:"book",id:b.id});
-      items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
-    }
-    if(items.length)pushOp({t:"bulk",items});
-    if(SYNC.on)flushQueue();
-    if(full)alert(items.length+" put right. "+STORE_FULL_STOP);
-    if(cur&&items.some(it=>it.id===cur.id))await rebaseOpenBook(cur.id);
-    refreshKindleFix();
-  });
-}
-
 /* A keyword that repeats one of your genres mostly says nothing the genre didn't
    — but only where the book actually HAS that genre, and often it hasn't. Taking
    the word off one of those threw the fact away: a book tagged "Islands" with no
@@ -42526,10 +42465,7 @@ function refreshTagDupes(){
     const p=pairs[+i];if(!p)return;
     const keep=side==="a"?p.a:p.b,drop=side==="a"?p.b:p.a;
     const users=kwUsers(drop);
-    if(!confirm(`Put everything tagged “${drop}” under “${keep}” instead?\n\n`
-      +`${users.length===1?"1 thing carries":users.length+" things carry"} “${drop}”: `
-      +users.slice(0,6).map(u=>u.title||"Untitled").join(", ")+(users.length>6?`, and ${users.length-6} more`:"")
-      +`\n\n“${drop}” then leaves your list of words. One press of Undo puts all of it back.`))return;
+    undoSaid(`Everything tagged “${drop}” is under “${keep}” now, and “${drop}” is off your list.`);
     b.disabled=true;b.textContent="Merging…";
     const where=window.scrollY;
     await mergeTag(drop,keep);
@@ -42704,11 +42640,7 @@ function refreshKwDupes(){
     const addN=chosen.reduce((n,h)=>n+h.miss,0);
     const offN=chosen.reduce((n,h)=>n+h.bks.length,0);
     const stN=chosen.reduce((n,h)=>n+h.sts.length,0);
-    if(!confirm(`Tidy ${plu(chosen.length,"tag")}?\n\n${chosen.map(h=>h.k).join(", ")}\n\n`
-      +(addN?`${plu(addN,"book")} ${addN===1?"hasn't":"haven't"} got the matching genre — ${addN===1?"it is":"they are"} given it first.\n`:"")
-      +`Then the ${chosen.length===1?"word comes":"words come"} off ${plu(offN,"book")}.\n`
-      +(stN?`${plu(stN,"story")} inside ${stN===1?"a collection keeps":"collections keep"} the word — stories are left alone.\n`:"")
-      +`\nThe genres themselves aren't touched, and Undo puts all of it back.`))return;
+    undoSaid(`${plu(chosen.length,"tag")} tidied: ${chosen.map(h=>h.k).join(", ")}.`);
     const where=window.scrollY;
     const gone=new Set(chosen.map(h=>h.k));
     const items=[],touched=new Map(),was=new Map();
@@ -43141,10 +43073,7 @@ function refreshCapTags(){
   if(go)go.onclick=async()=>{
     const list=lowercaseTags().filter(w=>!capSkip.has(w));
     if(!list.length)return;
-    if(!confirm(`Give ${list.length} tag${list.length===1?"":"s"} a capital letter, on every book that carries ${list.length===1?"it":"them"}?\n\n`
-      +list.slice(0,6).map(w=>`“${w}” → “${sentenceCase(w)}”`).join("\n")
-      +(list.length>6?`\n…and ${list.length-6} more`:"")
-      +`\n\nOne press of Undo puts all of it back.`))return;
+    undoSaid(`${list.length} tag${list.length===1?"":"s"} given a capital letter.`);
     go.disabled=true;go.textContent="Tidying…";
     const where=window.scrollY;
     await capitaliseTags(list.map(w=>[w,sentenceCase(w)]));
@@ -46852,12 +46781,7 @@ function chipMoveMenu(b,kind,name){
          own without giving up its collection's, so this word can only become a
          genre by going on the whole collection — every story in it, not the one
          or two it is actually about. Said plainly, and asked. */
-      if(!confirm(`Make “${name}” a genre?\n\n`
-        +`It is a tag on ${row.on.length===1?"one story":row.on.length+" of "+ens.length+" stories"}`
-        +` — ${row.on.map(en=>en.title||"Untitled").join(", ")}.\n\n`
-        +`A story can't be filed under its own genre without giving up the collection's, so this puts “${gn}” on `
-        +`“${b.title||"the collection"}” and all ${ens.length} of its stories, and takes the tag off.\n\n`
-        +`Undo puts it back.`))return;
+      undoSaid(`“${gn}” is a genre on “${b.title||"the collection"}” and its ${ens.length} stories now, and the tag is off.`);
       ensureGenre(gn);
       await quickEdit(bk=>{
         bk.genres=bk.genres||[];
@@ -46894,9 +46818,7 @@ function chipMoveMenu(b,kind,name){
       const n=books.filter(bk=>toGenre
         ?(bk.keywords||[]).some(w=>w.toLowerCase()===low)
         :hasWord(bk.genres,name)).length;
-      if(!confirm(toGenre
-        ?`Make “${name}” a genre everywhere?\n\n${n} book${n===1?"":"s"} carr${n===1?"ies":"y"} it as a tag — on ${n===1?"it":"them"} it becomes the genre “${gn}”.\n\nA word on a story inside a collection is left as a tag: a story can't hold a genre of its own without giving up its collection's.\n\nUndo puts all of it back.`
-        :`Make “${name}” a tag everywhere?\n\nIt comes off ${n} book${n===1?"":"s"} as a genre and goes on ${n===1?"it":"them"} as a tag, and it stops being one of your genres altogether.\n\nUndo puts all of it back.`))return;
+      undoSaid(toGenre?`“${name}” is the genre “${gn}” on ${n} book${n===1?"":"s"} now.`:`“${name}” is a tag on ${n} book${n===1?"":"s"} now, and no longer one of your genres.`);
       const res=await moveWordEverywhere(name,toGenre);
       renderBookView();
       if(res.storiesLeft)alert(`Done on ${res.n} book${res.n===1?"":"s"}.\n\n${res.storiesLeft} stor${res.storiesLeft===1?"y":"ies"} inside collections still carr${res.storiesLeft===1?"ies":"y"} it as a tag, and ${res.storiesLeft===1?"was":"were"} left alone.`);
@@ -52441,11 +52363,7 @@ function renderEditor(){
      if(uf)uf.onclick=()=>{
        const n=(cur.entries||[]).length;
        const name=(seriesShown(cur)||String(cur.title||"").trim())||"this series";
-       if(!confirm(`Unfold “${cur.title||"this collection"}” into a series?\n\n`
-         +`All ${n} of them become their own book on the shelf, and all ${n} are linked under the series name “${name}”. Each keeps its rating, tags, pages, dates, cover, writing and the quotes marked as its own.\n\n`
-         +`This collection's own page goes to Recently deleted, where it waits ${TRASH_DAYS} days.\n\n`
-         +`To divide one of them into its own stories afterwards: tick “a whole series / collection as one shelf item” on it — it offers to make itself the first story — then press ✂ Split.\n\n`
-         +`↶ Undo puts all of it back.`))return;
+       undoSaid(`“${cur.title||"The collection"}” is unfolded into ${n} books in the series “${name}”; its own page waits in Recently deleted.`);
        finishSaveThen(async()=>{
          const coll=books.find(x=>x.id===cur.id);if(!coll)return;
          let made=0;
@@ -53740,9 +53658,7 @@ function renderEditor(){
         const n=books.filter(bk=>toGenre
           ?(bk.keywords||[]).some(w=>w.toLowerCase()===low)
           :hasWord(bk.genres,name)).length;
-        if(!confirm(toGenre
-          ?`Make “${name}” a genre everywhere?\n\n${n} book${n===1?"":"s"} carr${n===1?"ies":"y"} it as a tag — on ${n===1?"it":"them"} it becomes the genre “${gn}”.\n\nA word on a story inside a collection is left as a tag: a story can't hold a genre of its own without giving up its collection's.\n\nUndo puts all of it back.`
-          :`Make “${name}” a tag everywhere?\n\nIt comes off ${n} book${n===1?"":"s"} as a genre and goes on ${n===1?"it":"them"} as a tag, and it stops being one of your genres altogether.\n\nUndo puts all of it back.`))return;
+        undoSaid(toGenre?`“${name}” is the genre “${gn}” on ${n} book${n===1?"":"s"} now.`:`“${name}” is a tag on ${n} book${n===1?"":"s"} now, and no longer one of your genres.`);
         /* anything half-typed is written down first — moveWordEverywhere ends by
            re-cloning `cur` from the shelf, and an unsaved title would go with it */
         finishSaveThen(async()=>{
