@@ -58,7 +58,9 @@ javascript    (repeat until done — each ~26 s call also keeps the page awake)
               : document.getElementById("prog").textContent
 ```
 
-About two minutes. Then close the tab.
+About four minutes: 266 cells, nineteen screens at fourteen widths, the
+games column dealing every game a stand-in shelf of two dozen books can. Then
+close the tab.
 
 - **One sweep per tab.** A tab that has already swept starts timing whole
   passes out. A whole pass failing at once ("gave up after 60s — still

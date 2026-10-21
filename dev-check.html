@@ -79,7 +79,11 @@ const PASSES=[
    wrong name. Now that the cabinet is two tabs, both are named outright: the
    drawn cards on "challenges" and the medal wall on "ach", which would
    otherwise have gone unswept the moment they parted company. */
-const VIEWS=["overview","library","insights","challenges","ach","history","timeline","search","settings","reading","editing","collection"];
+/* the last seven were never opened by anything here: the quotes wall, Shelf
+   care, the shelf as spines, the bookcases panel, a medal's note with its
+   book list, every game the stand-in shelf can deal, and the reader */
+const VIEWS=["overview","library","insights","challenges","ach","history","timeline","search","settings","reading","editing","collection",
+  "quotes","care","spines","bookcases","medal","games","reader"];
 const results={};   /* "label|view" -> {ok,offenders} */
 
 const frame=document.getElementById("frame");
@@ -174,13 +178,31 @@ const SWEEP=`
       author:"Devcheck Author",status:"finished",
       entries:[Object.assign(blankEntry(),{title:"First story",rating:7}),
                Object.assign(blankEntry(),{title:"Second story with a longer title",rating:9})]}));
+    /* ---- A SHELF BIG ENOUGH TO PLAY ON ----
+       Two books unlocked nothing: every game needs six, eight or twelve
+       finished books, and Insights, the atlas and the quotes wall had nothing
+       to lay out. Two dozen invented ones, memory only like the two above —
+       finished across two years, marked, with pages, tags, a quote, a series
+       of three and a place, so the games deal and the cards fill. */
+    const W=["Lantern","Harbour","Orchard","Ember","Meridian","Salt","Willow","Cinder","Atlas","Hollow","Marrow","Quill"];
+    for(let i=0;i<24;i++){
+      const y=i%2?2025:2026,m=String(1+(i%9)).padStart(2,"0"),d=String(3+i).padStart(2,"0");
+      books.push(Object.assign(blankBook("devcheck-s"+i),{title:"The "+W[i%12]+(i>=12?" Again":"")+" Stand-In",
+        author:"Writer "+["Aster","Bellamy","Corwin","Dorran","Ellery","Faraday"][i%6],status:"finished",
+        pages:120+i*37,rating:5+(i%6),genres:[],keywords:["sea","road","night","winter"].slice(0,1+i%4),
+        summary:"An invented blurb for stand-in number "+(i+1)+", long enough to wrap at the narrow widths and give a game a line to quote.",
+        quotes:i%3?[]:["A stand-in line kept from book "+(i+1)+", long enough to be dealt as a quote and wrap twice."],
+        ...(i<3?{series:"The Stand-In Series",seriesNum:String(i+1),seriesTotal:"3"}:{}),
+        ...(i%5===0?{setIn:["Lyon, France"]}:{}),
+        readings:[{id:"rs"+i,start:y+"-"+m+"-01",end:y+"-"+m+"-"+d}],created:Date.now()-i*864e5}));
+    }
   }
   await wait(400);
   const out={};
   const CW=()=>document.documentElement.clientWidth;
-  const look=async name=>{
+  const look=async(name,ms)=>{
     step("measuring "+name);
-    await wait(450);
+    await wait(ms||450);
     const over=[...document.querySelectorAll("body *")].filter(e=>{
       const q=e.getBoundingClientRect();return q.width>0&&q.right>CW()+3;});
     const set=new Set(over);
@@ -201,6 +223,9 @@ const SWEEP=`
       if(txt.length<4)return false;
       const r=e.getBoundingClientRect();
       if(!r.width||!r.height)return false;
+      /* words set sideways on purpose — a spine's title, a bookcase's books,
+         the journal's tabs — are tall and narrow by design, not crushed */
+      if(r.width<40&&/^vertical/.test(getComputedStyle(e).writingMode||""))return false;
       return r.width<40&&r.height>60&&r.height>r.width*3;
     });
     out[name]={ok:document.documentElement.scrollWidth<=CW()+3&&!squeezed.length,
@@ -223,6 +248,33 @@ const SWEEP=`
       render();await look(v);
     }catch(e){out[v]={ok:false,offenders:["view crashed: "+e.message]};}
   }
+  /* the screens nothing used to open — see VIEWS */
+  const tryView=async(k,fn)=>{try{step("opening "+k);await fn();}catch(e){out[k]={ok:false,offenders:[k+" crashed: "+e.message]};}};
+  await tryView("quotes",async()=>{view="quotes";render();await look("quotes");});
+  await tryView("care",async()=>{view="care";await render();await look("care");});
+  await tryView("spines",async()=>{const was=layout;layout="spines";view="library";render();await look("spines");layout=was;});
+  await tryView("bookcases",async()=>{view="library";render();openBookcases();await look("bookcases");
+    const p=document.querySelector("#bcPanel");if(p&&p.__close)p.__close();});
+  await tryView("medal",async()=>{view="ach";achOpen=ACHS[0][0];achBooksOpen=achOpen;render();await look("medal");
+    achOpen=null;achBooksOpen=null;});
+  /* every tile in the games room, one after another, into one cell — a tile
+     the stand-in shelf cannot deal still draws its "needs" card */
+  await tryView("games",async()=>{
+    const wasR=settings.chRoom,wasG=settings.chGame,wasA=settings.arcGame;
+    settings.chRoom="games";view="challenges";const merged={ok:true,offenders:[]};
+    for(const t of chTiles()){
+      settings.chGame=t.k;if(t.kind==="arc")settings.arcGame=t.k;
+      step("drawing the game "+t.k);render();await look("g:"+t.k,250);
+      const r=out["g:"+t.k];delete out["g:"+t.k];
+      if(r&&!r.ok){merged.ok=false;merged.offenders.push(...(r.offenders||[]).slice(0,3).map(o=>"["+t.k+"] "+o));}
+    }
+    settings.chRoom=wasR;settings.chGame=wasG;settings.arcGame=wasA;
+    out.games=merged;});
+  /* the reader opens a file kept in the pictures store; here it is handed a
+     stand-in text in memory instead, and closed again */
+  await tryView("reader",async()=>{
+    const real=rdLoad;rdLoad=async()=>"<h2>Chapter One</h2>"+"<p>A stand-in paragraph for the reader, long enough to wrap across the page at every width the sweep runs. </p>".repeat(30);
+    try{view="library";render();await openReader(books[0].id);await look("reader");closeReader(true);}finally{rdLoad=real;}});
   const bk=books[0];
   const col=books.find(b=>(b.entries||[]).length>1);
   if(bk){
