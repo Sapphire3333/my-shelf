@@ -197,6 +197,19 @@ key: [console.cloud.google.com](https://console.cloud.google.com) → create a p
 paste it into `googleBooksKey` in `config.js`. Restrict the key to your site
 (Websites → `https://<your-username>.github.io/*`) and it's safe to commit.
 
+### Optional — Claude reads your photos
+
+⚡ *From photo* and the 📷 beside *Add a quote* read photos with a text reader
+inside the browser. With sync on, they can ask Claude instead, which looks at
+the picture itself and fills in the title, author, series, number, ISBN and
+blurb, or the passage and its page. It uses your own Anthropic API key, kept in
+your Supabase project: deploy `claude-function.ts` as an Edge Function named
+`claude` and add two secrets, `ANTHROPIC_API_KEY` and `ALLOWED_EMAILS` (the
+email you sign in with; without it the function answers nobody). The steps are
+at the top of the file. **⚙ Settings → How it works → Check Claude** then says
+whether it works, or which step to look at. Signed out, offline or not set up,
+the browser's reader does it as before.
+
 ### Put it on your phone's home screen
 
 Open your URL in the phone's browser and choose **Add to Home Screen** (Share menu
@@ -288,7 +301,7 @@ open it in a browser, done.
 | `version.js` | Build stamp, rewritten by the pre-commit hook. The app shows it, and the offline cache is named after it. |
 | `dev-check.html` | Developer tool, not part of the app — opens every screen at a row of widths and fails loudly if anything scrolls sideways. |
 | `CLAUDE.md` | Standing instructions for Claude sessions working on the repo — how to ask, and how a change made in a cloud session is pushed, merged and checked. Not part of the app. |
-| `goodreads-function.ts`, `hardcover-function.ts` | Two small Supabase edge functions, pasted in once: one reads a Goodreads shelf's feed, the other asks Hardcover for a book. Each file says how to set it up. Optional. |
+| `goodreads-function.ts`, `hardcover-function.ts`, `claude-function.ts` | Three small Supabase edge functions, pasted in once: one reads a Goodreads shelf's feed, one asks Hardcover for a book, one asks Claude to read a photo. Each file says how to set it up. Optional. |
 | `.github/` | The `checks` workflow: after every push to `main` it runs the smoke test and the layout sweep from `dev-check.html` in a browser and keeps the report. |
 | `.claude/` | Hooks and skills for Claude sessions working on the repo. Not part of the app. |
 | `.githooks/pre-commit` | Stamps `version.js`. Run `git config core.hooksPath .githooks` once per clone or it never fires. |

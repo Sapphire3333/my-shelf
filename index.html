@@ -12951,6 +12951,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-22.1",go:["set:how:#claudeCheck"],lines:["<b>📷 Claude can read your photos.</b> Once the <b>claude</b> function is set up in your Supabase with your own API key, ⚡ From photo fills in the title, author, series, number, ISBN and blurb straight off a cover, and 📷 beside ❝ Add a quote gives the passage and its page. ⚙ Settings → How it works → <b>Check Claude</b> says whether it is working, or which setup step to look at. Until then, and whenever you are signed out or offline, the reader in this browser does it as before."]},
   {v:"2026-10-21.3",lines:["<b>? Help lives in one place.</b> The <b>i</b> on 🎲 Challenges and 🏅 Medals opens the ? sheet at their part, where what the two pages are for now leads. <b>📜 What's changed</b>, every update there has ever been, is the last part of the ? sheet instead of a card in ⚙ Settings, and the sheet's find box searches it too. The owl no longer talks over the sheet when you press ?."]},
   {v:"2026-10-21.2",go:["tab:care"],lines:["<b>🧰 Merging lookalike tags keeps your place, for real this time.</b> Each merge's note in 📝 What changed went up to the cloud joined with your other device's notes, and that joining redrew the whole page at the top. New notes now redraw nothing unless you are on 🕘 History, and anything else that joins in redraws where you are."]},
   {v:"2026-10-20.17",go:["tab:care"],lines:["<b>🧰 Shelf care keeps your place.</b> After a tidy-up, the sync that follows used to redraw the whole page and drop you at the top. It now puts you back where you were, there and on Today, and merging an author's spellings does too. Ten more tidy-ups that ↶ Undo can put back stop asking first: merging lookalike tags, tidying tags that repeat a genre, giving tags a capital letter, making a word a genre or a tag everywhere, unfolding a collection, and a few more. The Kindle pages card is gone, its repair done."]},
@@ -25051,6 +25052,45 @@ function wireTarot(m){
    through pushQuote like every other road, with the page as the typed
    source ("p. 112"), so the lists and the picture say where it came
    from. The reader is fetched when first used, as it is for a cover. */
+/* ┌─ CLAUDE READS THE PHOTO ────────────────────────────────────────────────┐
+   │ Both photo roads — ⚡ From photo (quickOcr) and 📷 beside ❝ Add a quote  │
+   │ (quotePhoto) — ask Claude first, through the `claude` edge function in │
+   │ the reader's own Supabase (claude-function.ts holds the key and the     │
+   │ allowed emails; setting it up is the comment at its top). Claude looks  │
+   │ at the picture itself and answers in the boxes each road fills: title,  │
+   │ author, series, number, ISBN and blurb, or a passage and its page. Any  │
+   │ failure — signed out, offline, the function not deployed, a secret not  │
+   │ set, Claude declining — says why in one line and falls back to the text  │
+   │ reader in this browser, exactly as before. settings.photoClaude (this    │
+   │ device) turns it off; ⚙ Settings → 📷 Reading text in photos → Check     │
+   │ Claude asks a one-word question and shows the answer or the error, so a │
+   │ setup step that went wrong names itself. The photo is shrunk to 1400 px  │
+   │ before it goes, and goes only when a photo is given.                     │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const claudeOn=()=>!!(settings&&settings.photoClaude!==false&&SYNC.supa&&SYNC.user&&String(CFG.url||"").trim());
+async function claudeAsk(body){
+  if(!SYNC.supa||!SYNC.user)throw new Error("sign in to My Shelf to use Claude for photos");
+  if(navigator.onLine===false)throw new Error("this device is offline");
+  let tok="";try{const {data}=await SYNC.supa.auth.getSession();tok=(data&&data.session&&data.session.access_token)||"";}catch(e){}
+  if(!tok)throw new Error("not signed in on this device");
+  const base=String(CFG.url||"").replace(/\/+$/,"");
+  const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),90000);
+  let r;
+  try{r=await fetch(base+"/functions/v1/claude",{method:"POST",signal:ctl.signal,
+    headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+tok},body:JSON.stringify(body)});}
+  catch(e){throw new Error(e&&e.name==="AbortError"?"no answer in 90 seconds":"Supabase could not be reached");}
+  finally{clearTimeout(t);}
+  let j=null;try{j=await r.json();}catch(e){}
+  if(r.status===404)throw new Error("the claude function is not in Supabase yet — step 2 in claude-function.ts");
+  if(!r.ok||!j||!j.ok)throw new Error(String((j&&(j.error||j.message||j.msg))||("Supabase answered "+r.status)).slice(0,200));
+  return j;
+}
+async function claudeReadPhoto(kind,file){
+  const url=await compressImage(file,1400,.85);
+  const data=String(url||"").split(",")[1]||"";
+  if(!data)throw new Error("the photo could not be read");
+  return claudeAsk({kind,media_type:"image/jpeg",data});
+}
 function quoteTidy(raw){
   const lines=String(raw||"").split(/\r?\n/).map(l=>l.replace(/\s+/g," ").trim());
   const isPage=l=>/^(?:p(?:age)?\.?\s*)?\d{1,4}$/i.test(l);
@@ -25070,10 +25110,12 @@ async function quotePhotoRead(file){
 function quotePhotoPanel(raw,busy,forId){
   const old=document.getElementById("qphotoPanel");if(old&&old.__close)old.__close();
   const d=document.createElement("div");d.id="qphotoPanel";d.className="ratepanel";
-  const t=busy?{text:"",page:""}:quoteTidy(raw);
+  /* raw is the browser reader's text, or Claude's answer already in its two
+     boxes ({text,page,by}) — see CLAUDE READS THE PHOTO */
+  const t=busy?{text:"",page:""}:(raw&&typeof raw==="object")?raw:quoteTidy(raw);
   d.innerHTML=`<div class="hrow2" style="margin-bottom:8px"><b style="font-size:14px">📷 A quote off the page</b><button class="btn" id="qphX" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
     ${busy?`<div class="hint" id="qphMsg" style="margin:0">${esc(busy)}</div>`:`
-    <div class="hint" style="margin:0 0 6px">Read off the photo — fix what the reading got wrong, then keep it.</div>
+    <div class="hint" style="margin:0 0 6px">${t.by?"Read by Claude":"Read off the photo"}${t.why?" in this browser ("+esc(t.why)+")":""} — fix what the reading got wrong, then keep it.</div>
     <textarea class="field" id="qphText" rows="6" style="width:100%;font-family:Georgia,serif;font-size:14px">${esc(t.text)}</textarea>
     <div class="hrow2" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap"><span class="hint" style="margin:0">p.</span><input class="field" id="qphPage" inputmode="numeric" value="${esc(t.page)}" placeholder="–" style="width:70px;text-align:center">
       <span class="hint" style="margin:0">${t.page?"seen on the photo":"no page number seen — type it if you like"}</span>
@@ -25091,14 +25133,24 @@ function quotePhotoPanel(raw,busy,forId){
 }
 async function quotePhoto(file){
   const forId=cur&&cur.id;
-  const d=quotePhotoPanel("","Reading the photo — this can take a little while on a phone…",forId);
+  let why="";
+  if(claudeOn()){
+    const d0=quotePhotoPanel("","Claude is reading the page…",forId);
+    try{
+      const j=await claudeReadPhoto("quote",file);
+      if(!d0.isConnected)return;
+      if(String(j.text||"").trim()){quotePhotoPanel({text:String(j.text).trim(),page:String(j.page||"").trim(),by:"Claude"},null,forId);return;}
+      why="Claude found no text on it";
+    }catch(e){if(!d0.isConnected)return;why="Claude couldn't read it — "+((e&&e.message)||"no answer");}
+  }
+  const d=quotePhotoPanel("",(why?why+". ":"")+"Reading the photo in this browser — this can take a little while on a phone…",forId);
   let text="";
   try{text=await quotePhotoRead(file);}
   catch(e){const m=q("#qphMsg",d);if(m)m.textContent=(e&&e.message)||"That photo couldn't be read.";return;}
   /* closed while it was reading: nothing more to show */
   if(!d.isConnected)return;
   if(!text.trim()){const m=q("#qphMsg",d);if(m)m.textContent="No readable text found in that photo — a sharper, closer shot works best.";return;}
-  quotePhotoPanel(text,null,forId);
+  quotePhotoPanel(why?Object.assign(quoteTidy(text),{why}):text,null,forId);
 }
 /* ---- THE OWL'S THREE QUESTIONS, AND THE SEALED LETTER ----
    A book just finished gets a card on its page (owlHtml): the owl's three
@@ -39358,6 +39410,11 @@ function renderSettings(){
       <div class="hcard">
         <div class="hrow2" style="flex-wrap:wrap;gap:8px;align-items:center;margin:0"><span class="lbl">English and</span>
           <select id="ocrExtra" style="font:inherit;font-size:13px;padding:4px 6px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:9px;max-width:100%">${ocrExtraOptions()}</select></div>
+        <div class="hrow2" style="flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 0">
+          <label class="hint" style="margin:0;display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="photoClaude"${settings.photoClaude!==false?" checked":""}> Claude reads photos first</label>
+          <button class="btn smallbtn" id="claudeCheck">Check Claude</button>
+          <span class="hint" id="claudeSay" style="margin:0"></span></div>
+        <div class="hint" style="margin:4px 0 0">Through the <b>claude</b> function in your Supabase, with your own API key — claude-function.ts says how to set it up. Only a photo you give is sent. Signed out, offline or not set up, the reader in this browser does it instead.</div>
         <div class="hint" style="margin:6px 0 0">A photo of a page (📷 beside ❝ Add a quote…) or of a cover (⚡ From photo) is read in English and the language picked here — and a page of a book is also read in the language its Read in box names. Each language is a one-time download, kept on this device.</div>
       </div>
     </div>
@@ -39776,6 +39833,14 @@ function wireSettings(m){
      saveDayLine();if(SYNC.on)flushQueue();redraw();
    });
    {const oe=q("#ocrExtra",m);if(oe)oe.onchange=()=>{settings.ocrExtra=oe.value;saveSettings();};}
+   {const pc=q("#photoClaude",m);if(pc)pc.onchange=()=>{settings.photoClaude=pc.checked;saveSettings();};
+    const cc=q("#claudeCheck",m),cs=q("#claudeSay",m);
+    if(cc&&cs)cc.onclick=async()=>{cc.disabled=true;cs.textContent="Asking…";
+      const t0=performance.now();
+      try{const j=await claudeAsk({kind:"check"});
+        cs.textContent=`✓ Claude answered (${j.model||"?"}, ${((performance.now()-t0)/1000).toFixed(1)} s) — photos will be read by Claude.`;}
+      catch(e){cs.textContent="✗ "+((e&&e.message)||"no answer");}
+      finally{cc.disabled=false;}};}
    const zs=q("#dlZone",m);
    if(zs)zs.onchange=()=>{dayLine.tz=zs.value||deviceZone()||"UTC";saveDayLine();if(SYNC.on)flushQueue();redraw();};}
   {const fb=q("#famPanelBtn",m);if(fb)fb.onclick=()=>openFamiliesPanel();}
@@ -59322,6 +59387,22 @@ function openQuickAdd(){
 async function quickOcr(file){
   if(!file||!file.type.startsWith("image/"))return;
   const msg=t=>{const e=q("#qaMsg");if(e)e.textContent=t||"";};
+  /* Claude first — see CLAUDE READS THE PHOTO */
+  let why="";
+  if(claudeOn()){
+    msg("Claude is reading the photo…");
+    try{
+      const j=await claudeReadPhoto("book",file);
+      const title=[j.title,j.subtitle].map(x=>String(x||"").trim()).filter(Boolean).join(": ");
+      if(title||j.author){
+        msg("Read by Claude — check what it found below:");
+        showQuickPreview({title,author:String(j.author||"").trim(),series:String(j.series||"").trim(),
+          seriesNum:String(j.seriesNum||"").trim(),pages:"",summary:String(j.blurb||"").trim(),isbn:String(j.isbn||"").replace(/[^0-9Xx]/g,"")});
+        return;
+      }
+      why="Claude saw no title on it";
+    }catch(e){why="Claude couldn't read it — "+((e&&e.message)||"no answer");}
+  }
   try{
     msg("Loading the text reader…");
     await loadOcr();
@@ -59334,7 +59415,7 @@ async function quickOcr(file){
     finally{try{worker.terminate();}catch(e){}}
     if(!text.trim()){msg("No readable text found in that photo — a sharper, closer shot works best.");return;}
     const ta=q("#qaText");if(ta)ta.value=(ta.value.trim()?ta.value+"\n\n":"")+text.trim();
-    msg("Read it — check what it found below:");
+    msg("Read it"+(why?" in this browser ("+why+")":"")+" — check what it found below:");
     showQuickPreview(parseBookText(q("#qaText")?q("#qaText").value:text));
   }catch(e){msg(e.message||"That photo couldn't be read.");}
 }
