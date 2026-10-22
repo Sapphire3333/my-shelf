@@ -60,9 +60,11 @@ const BOOK_SCHEMA = {
     series: { type: "string" },
     seriesNum: { type: "string" },
     isbn: { type: "string" },
+    pages: { type: "string" },
+    year: { type: "string" },
     blurb: { type: "string" },
   },
-  required: ["title", "subtitle", "author", "series", "seriesNum", "isbn", "blurb"],
+  required: ["title", "subtitle", "author", "series", "seriesNum", "isbn", "pages", "year", "blurb"],
   additionalProperties: false,
 };
 const QUOTE_SCHEMA = {
@@ -76,10 +78,12 @@ const QUOTE_SCHEMA = {
 };
 const ASK = {
   book:
-    "This is a photo of a book: its cover, spine, title page or back cover. Read only what is printed. " +
+    "This is a photo of a book: its cover, spine, title page or back cover, or a screenshot of the " +
+    "book's page on a shop or catalogue site. Read only what is shown. " +
     "Return the title, any subtitle, the author or authors as printed (several joined with a comma), " +
-    "the series name and the number in the series if printed, the ISBN if printed (digits only), and " +
-    "the blurb if there is one (a back cover or flap), as one paragraph. Use an empty string for " +
+    "the series name and the number in the series if printed, the ISBN if printed (digits only), the " +
+    "number of pages if shown (digits only), the year it was published if shown (four digits), and " +
+    "the blurb if there is one (a back cover, flap or description), as one paragraph. Use an empty string for " +
     "anything the photo does not show. Do not fill anything in from what you know about the book.",
   quote:
     "This is a photo of a page of a book. Return the passage as it reads: join the lines of a paragraph, " +
