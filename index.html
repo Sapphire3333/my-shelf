@@ -12968,6 +12968,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-23.11",lines:["<b>🔎 No more same-titled strangers.</b> Auto-fill could fill a book — most often a story inside a collection — from a different book that only shared its title: Hardcover and AniList went by the title alone, and filling several at once checked the author on books but never on stories. Both now want the author too, and a story whose lookup names somebody else is left unticked with the two names side by side."]},
   {v:"2026-10-23.10",go:["tab:insights"],lines:["<b>✨ Something to read.</b> On ✨ Insights, under your taste: pick moods, your own genres, or say what you want in words — or nothing, and Claude goes by your taste alone. <b>✨ Suggest five</b> searches the web so every book is real and says where it found it, with why it suits you, Goodreads and StoryGraph, and ★ Want to read to put it on your shelf. Or choose <b>My Want to read</b> and it picks five you already have, with ⏭ Up next. ＋ 5 more and ↻ A fresh set never repeat a book they've shown you."]},
   {v:"2026-10-23.9",go:["tab:insights"],lines:["<b>✨ Your taste, as Claude reads it.</b> On ✨ Insights, under You, as a reader, <b>✨ Read my shelf</b> has Claude read every book you have marked, ♥'d, given up on or written about, and write down what you love, what makes you rate high, what makes you quit, the authors and tropes that keep coming back — and what your own tags mean, by the books that carry them. It is kept there: ✎ Edit it to put it right, ↻ to read the shelf again as it grows, ↶ for the one before. The line under it says what a new read would cost."]},
   {v:"2026-10-23.8",lines:["<b>✨ A blurb for a whole series.</b> On a collection's page, under Blurb, <b>✨ A blurb for the whole collection</b> has Claude write one back-cover blurb for the lot — its world, its themes, what its people struggle with, no plot and no spoilers. A book in a series of separate books has the same under <b>…, as a whole</b>. You see it first: Use it, ↻ Another, or No thanks.","<b>✨ Your month in a paragraph</b> on Today's 📅 card, written from that month's books, marks and pages — and kept once you say so.","<b>✨ With Claude</b> on 🎲 Challenges' prompt card weaves two or three things off your own shelf — a genre, a tag, someone from your fics — into a story seed, and says which.","<b>🌐 In English</b> beside a blurb or a quote in another language puts Claude's translation under the original, and keeps it."]},
@@ -20638,15 +20639,19 @@ async function openBulkFill(ids){
        matters, because the second one is worth simply running again */
     if(info.blurbMissed&&!info.summary&&S.fields.blurb)
       notes.push("The blurb is the one thing that needs a request of its own, and that request didn't answer — running this book again is likely to get it.");
-    if(doubtful||info.loose)notes.push("Left unticked on purpose.");
-    if(!en){const d=doubt(b,info);if(d)notes.push(d);}
+    /* the author test on a story too, against the author it SHOWS (its own,
+       or the collection's) — it was a book's alone, so a story filled from a
+       same-titled book by someone else was ticked and written */
+    const dAuth=doubt(en?{author:entAuthorOf(b,en)||b.author}:b,info);
+    if(doubtful||info.loose||dAuth)notes.push("Left unticked on purpose.");
+    if(dAuth)notes.push(dAuth);
     return {info,want,found,newTags,newGen,chips:[],renamed,byIsbn:!!byIsbn,
             note:notes.join(" "),
             dead:found.length?"":"Nothing on it that this one is missing.",
             /* Neither an unconfirmed match nor a differently-titled one is ever
                ticked for you — which is also what keeps "just fill them in" from
                writing one, since that writes exactly what is ticked. */
-            on:found.length>0&&!info.loose&&!doubtful};
+            on:found.length>0&&!info.loose&&!doubtful&&!dAuth};
   }
   /* An answer can be confidently wrong. Open Library files The Glass Orchard
      under the author's legal name, not the one on the cover — so where a book
@@ -58284,9 +58289,16 @@ async function fetchHardcover(title,author,isbn){
   /* the hit has to BE the book asked about — by number that means carrying
      the number, by title that means answering to the title. Moods and
      warnings from somebody else's book are worse than none. */
+  /* and by title, written by the author asked about, where one was asked: a
+     same-titled book by somebody else answered first and claimed the cover,
+     the ISBN and the blurb, on stories inside a collection above all. With no
+     hit by that author, fetchBookInfo's ask without the author still finds
+     the title — marked loose, which nothing ticks for you. */
+  const titled=wanted?[]:hits.filter(d=>titleSame(title,String(d.title||"")));
   const doc=wanted
     ?hits.find(d=>strs(d.isbns).some(x=>cleanIsbn(x)===wanted))
-    :hits.find(d=>titleSame(title,String(d.title||"")));
+    :titled.find(d=>!author||authorNear(author,strs(d.author_names).join(" ")));
+  if(!doc&&titled.length)return {ok:false,why:"only had “"+String(titled[0].title||"").slice(0,60)+"” by "+(strs(titled[0].author_names).join(", ")||"someone else")+" — a different author, refused"};
   if(!doc)return {ok:false,why:"only offered “"+String((hits[0]||{}).title||"").slice(0,60)+"” — a different book, refused"};
   const fs=doc.featured_series||{};
   const sName=String(fs.series_name||(fs.series&&fs.series.name)||fs.name
@@ -58546,6 +58558,8 @@ async function fetchAniList(title,author,isbn){
   if(!m)return {ok:false,why:"only offered “"+(names(hits[0])[0]||"").slice(0,60)+"” — a different book, refused"};
   const people=((m.staff&&m.staff.edges)||[]).filter(e=>e&&e.node&&e.node.name&&/story|art|author|original/i.test(String(e.role||"")))
     .map(e=>String(e.node.name.full||"").trim()).filter((x,i,a)=>x&&a.indexOf(x)===i);
+  /* the same title by other people is another book — see fetchHardcover */
+  if(author&&people.length&&!authorNear(author,people.join(" ")))return {ok:false,why:"only had “"+(names(m)[0]||"").slice(0,60)+"” by "+people.slice(0,2).join(", ")+" — a different author, refused"};
   const tags=((m.tags)||[]).filter(x=>x&&x.name&&!x.isMediaSpoiler&&(x.rank||0)>=40).sort((a,b)=>(b.rank||0)-(a.rank||0)).map(x=>String(x.name).trim()).slice(0,12);
   const ci=m.coverImage||{};
   const st=String(m.status||"");
