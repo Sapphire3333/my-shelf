@@ -12951,6 +12951,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-23.1",go:["set:how:#claudeMeter"],lines:["<b>📷 See what Claude costs.</b> Under <b>Check Claude</b> in ⚙ Settings → How it works, a line now counts this month's photos, questions and web searches on this device, with a rough price, and last month's beside it; the exact bill for every device is on the Console's Usage page. Check Claude also tries one web search and tells you if the claude function in your Supabase is an older copy — paste the new claude-function.ts over it once more and Deploy, and it carries everything Claude will do in the app from here on without being pasted again."]},
   {v:"2026-10-22.2",lines:["<b>📷 Claude reads the page count and year too.</b> ⚡ From photo now fills the pages box and the year published when the photo shows them — a copyright page, or a screenshot of the book on a shop or catalogue site. Open the <b>claude</b> function in your Supabase, paste the new claude-function.ts over its code and Deploy; until then it reads everything else as before."]},
   {v:"2026-10-22.1",go:["set:how:#claudeCheck"],lines:["<b>📷 Claude can read your photos.</b> Once the <b>claude</b> function is set up in your Supabase with your own API key, ⚡ From photo fills in the title, author, series, number, ISBN and blurb straight off a cover, and 📷 beside ❝ Add a quote gives the passage and its page. ⚙ Settings → How it works → <b>Check Claude</b> says whether it is working, or which setup step to look at. Until then, and whenever you are signed out or offline, the reader in this browser does it as before."]},
   {v:"2026-10-21.3",lines:["<b>? Help lives in one place.</b> The <b>i</b> on 🎲 Challenges and 🏅 Medals opens the ? sheet at their part, where what the two pages are for now leads. <b>📜 What's changed</b>, every update there has ever been, is the last part of the ? sheet instead of a card in ⚙ Settings, and the sheet's find box searches it too. The owl no longer talks over the sheet when you press ?."]},
@@ -25069,6 +25070,41 @@ function wireTarot(m){
    │ before it goes, and goes only when a photo is given.                     │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const claudeOn=()=>!!(settings&&settings.photoClaude!==false&&SYNC.supa&&SYNC.user&&String(CFG.url||"").trim());
+/* The function the app needs: FN_VERSION in claude-function.ts. Check Claude
+   names an older copy in Supabase, which answers photos but not the rest. */
+const CLAUDE_FN_NEED=2;
+/* ---- WHAT CLAUDE HAS COST, ON THIS DEVICE ----
+   Every answer from the function carries its usage (tokens in and out, cache
+   reads and writes, web searches); claudeMeterAdd prices it at Opus 5.5's
+   list rates and keeps this month's sum and last month's in localStorage, so
+   it is this device's count only and resets with the month. The exact bill,
+   every device together, is the Console's Usage page — the line under Check
+   Claude (claudeMeterLine) says so rather than pretending to be it. */
+const CLAUDE_METER_KEY="myShelf.claudeMeter";
+const CLAUDE_PRICE={input:4,output:20,cacheRead:.2,cacheWrite:5,search:.01};  /* $ per million tokens; $ per search */
+function claudeMeter(){
+  let m=null;try{m=JSON.parse(localStorage.getItem(CLAUDE_METER_KEY)||"null");}catch(e){}
+  const now=monthKeyOf(new Date());
+  if(!m||typeof m!=="object")m={m:now,photo:0,ask:0,check:0,searches:0,usd:0,prev:null};
+  if(m.m!==now)m={m:now,photo:0,ask:0,check:0,searches:0,usd:0,prev:{m:m.m,usd:m.usd||0}};
+  return m;
+}
+function claudeMeterAdd(kind,u){
+  const m=claudeMeter(),P=CLAUDE_PRICE;
+  const slot=kind==="book"||kind==="quote"?"photo":kind==="check"?"check":"ask";
+  m[slot]=(m[slot]||0)+1;
+  m.searches=(m.searches||0)+(u.searches||0);
+  m.usd=(m.usd||0)+((u.input||0)*P.input+(u.output||0)*P.output+(u.cacheRead||0)*P.cacheRead+(u.cacheWrite||0)*P.cacheWrite)/1e6+(u.searches||0)*P.search;
+  try{localStorage.setItem(CLAUDE_METER_KEY,JSON.stringify(m));}catch(e){}
+  const el=q("#claudeMeter");if(el)el.innerHTML=claudeMeterLine();
+}
+function claudeMeterLine(){
+  const m=claudeMeter(),n=(k,one,many)=>m[k]?`${m[k]} ${m[k]===1?one:many}`:"";
+  const usd=x=>x<.005?"under 1¢":x<1?`about ${Math.round(x*100)}¢`:`about $${x.toFixed(2)}`;
+  const did=[n("photo","photo","photos"),n("ask","question","questions"),n("searches","web search","web searches"),n("check","check","checks")].filter(Boolean);
+  return `${did.length?`This month on this device: ${did.join(", ")} — ${usd(m.usd)}.`:"Nothing asked of Claude on this device this month."}`
+    +`${m.prev&&m.prev.usd?` Last month: ${usd(m.prev.usd)}.`:""} The exact total for every device is on <a href="https://console.anthropic.com/usage" target="_blank" rel="noopener">console.anthropic.com → Usage</a>.`;
+}
 async function claudeAsk(body){
   if(!SYNC.supa||!SYNC.user)throw new Error("sign in to My Shelf to use Claude for photos");
   if(navigator.onLine===false)throw new Error("this device is offline");
@@ -25082,6 +25118,7 @@ async function claudeAsk(body){
   catch(e){throw new Error(e&&e.name==="AbortError"?"no answer in 90 seconds":"Supabase could not be reached");}
   finally{clearTimeout(t);}
   let j=null;try{j=await r.json();}catch(e){}
+  if(j&&j.usage)claudeMeterAdd(body.kind,j.usage);
   if(r.status===404)throw new Error("the claude function is not in Supabase yet — step 2 in claude-function.ts");
   if(!r.ok||!j||!j.ok)throw new Error(String((j&&(j.error||j.message||j.msg))||("Supabase answered "+r.status)).slice(0,200));
   return j;
@@ -39415,6 +39452,7 @@ function renderSettings(){
           <label class="hint" style="margin:0;display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="photoClaude"${settings.photoClaude!==false?" checked":""}> Claude reads photos first</label>
           <button class="btn smallbtn" id="claudeCheck">Check Claude</button>
           <span class="hint" id="claudeSay" style="margin:0"></span></div>
+        <div class="hint" id="claudeMeter" style="margin:6px 0 0">${claudeMeterLine()}</div>
         <div class="hint" style="margin:4px 0 0">Through the <b>claude</b> function in your Supabase, with your own API key — claude-function.ts says how to set it up. Only a photo you give is sent. Signed out, offline or not set up, the reader in this browser does it instead.</div>
         <div class="hint" style="margin:6px 0 0">A photo of a page (📷 beside ❝ Add a quote…) or of a cover (⚡ From photo) is read in English and the language picked here — and a page of a book is also read in the language its Read in box names. Each language is a one-time download, kept on this device.</div>
       </div>
@@ -39838,8 +39876,10 @@ function wireSettings(m){
     const cc=q("#claudeCheck",m),cs=q("#claudeSay",m);
     if(cc&&cs)cc.onclick=async()=>{cc.disabled=true;cs.textContent="Asking…";
       const t0=performance.now();
-      try{const j=await claudeAsk({kind:"check"});
-        cs.textContent=`✓ Claude answered (${j.model||"?"}, ${((performance.now()-t0)/1000).toFixed(1)} s) — photos will be read by Claude.`;}
+      try{const j=await claudeAsk({kind:"check",web:true});
+        const secs=((performance.now()-t0)/1000).toFixed(1);
+        if(!(j.version>=CLAUDE_FN_NEED))cs.textContent=`✓ Claude answered (${j.model||"?"}, ${secs} s), but the claude function in Supabase is an older copy: photos work, nothing newer will. Paste claude-function.ts over it again and Deploy (step 2).`;
+        else cs.textContent=`✓ Claude answered (${j.model||"?"}, ${secs} s)${j.web&&j.web.sources?`, and its web search found ${j.web.sources} page${j.web.sources===1?"":"s"}`:" — but its web search found nothing"}. Photos will be read by Claude.`;}
       catch(e){cs.textContent="✗ "+((e&&e.message)||"no answer");}
       finally{cc.disabled=false;}};}
    const zs=q("#dlZone",m);
