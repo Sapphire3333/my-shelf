@@ -12951,6 +12951,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-23.5",lines:["<b>🦉 The owl asks only about a fresh finish.</b> Its three questions — one word, who you'd hand it to, what you'll remember — now come up only for a book finished in the last two weeks, not on the page of every book you finished long ago.","<b>✨ Claude isn't offered twice.</b> In 🔎 Auto-fill, once Claude has answered, the button doesn't come back asking for what it just said it couldn't find, and each site it read is listed once."]},
   {v:"2026-10-23.4",lines:["<b>✨ No paid search for a series that isn't there.</b> Once Hardcover has answered for a book and named no series, 🔎 Auto-fill stops offering to ask Claude for one — that was a search on every standalone you own, coming back empty. And when Claude does find nothing, it now says what it looked for."]},
   {v:"2026-10-23.3",lines:["<b>✨ Claude says what it couldn't find, too.</b> In 🔎 Auto-fill, Claude's line under the sources now ends with what it was asked for and came back without — “genres, nothing found for tags, a series and its number” — and it may take genres and tags from how readers and shops describe the book, not only from the book's own pages."]},
   {v:"2026-10-23.2",lines:["<b>✨ Claude fills in what Auto-fill couldn't find.</b> After 🔎 Auto-fill has asked its six sources, <b>✨ Ask Claude for what's still missing</b> sends Claude to search the web for whatever the book still lacks — the author, a blurb, pages, the year, genres, tags, its series — and its answers join the others in the same panel, with the pages it read under Read more about it. When the six find nothing at all, <b>✨ Ask Claude instead</b> does the same. Nothing changes until you press Use.","<b>✨ The rest of a series, from Claude.</b> Open the series name on a book's page and press <b>✨ The missing ones, from Claude</b>: it lists the series and, on your yes, adds what you haven't got as ⌛ Don't have it yet, numbered. In a collection's editor, 📋 The rest of the series… has <b>✨ Ask Claude</b>, which writes the list into the box for you. The series name is now a door on a book that is alone in its series too, so the first book is enough to ask from."]},
@@ -25104,7 +25105,11 @@ function claudeGapsOf(b,en,info){
      its answer without one means a standalone — and asking Claude to confirm
      that is a paid search for nothing, on every standalone you own */
   if(!en&&!isColl(b)&&!String(b.series||"").trim()&&!has("series")&&!(info&&(info.source||[]).includes("Hardcover")))g.push("series");
-  return g;
+  /* what Claude was already sent for on this answer and came back without is
+     not offered again — the redrawn panel asked for the page count a second
+     time, straight under the line saying it had found none */
+  const tried=(info&&info.__claudeTried)||[];
+  return g.filter(k=>!tried.includes(k));
 }
 async function claudeBookGaps({title,author,isbn,en,gaps}){
   const S={type:"string"},L={type:"array",items:{type:"string"}};
@@ -25129,6 +25134,7 @@ function claudeMergeGaps(base,r,gaps){
       source:[...(base.source||[])],per:[...(base.per||[])],links:[...(base.links||[])]})
     :{title:"",author:"",summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
       blurbs:[],genres:[],gCovers:[],hcCover:"",alCover:"",anilist:null,series:null,per:[]};
+  info.__claudeTried=[...((base&&base.__claudeTried)||[]),...gaps];
   const j=r.json||{},str=k=>String(j[k]||"").trim(),list=(k,n)=>(Array.isArray(j[k])?j[k]:[]).map(x=>String(x||"").trim()).filter(Boolean).slice(0,n);
   const bits=[];
   if(!base&&str("found_title"))info.title=str("found_title");
@@ -25145,10 +25151,12 @@ function claudeMergeGaps(base,r,gaps){
     const got={author:"the author",blurb:"a blurb",pages:"pages",year:"year",genres:"genres",tags:"tags",series:"series"};
     const none=gaps.filter(k=>!bits.includes(got[k])).map(k=>CLAUDE_GAP_SAY[k]);
     info.source.push("Claude");info.per.push({src:"Claude",bits:none.length?[...bits,"nothing found for "+none.join(", ")]:bits});
-    const seen=new Set(info.links.map(l=>l.url));
-    r.sources.slice(0,4).forEach(s=>{if(!s.url||seen.has(s.url))return;seen.add(s.url);
-      let host="";try{host=new URL(s.url).hostname.replace(/^www\./,"");}catch(e){}
-      info.links.push({name:"Claude read: "+(host||"a page"),url:s.url});});
+    /* one link per site — two pages of books.apple.com were two identical buttons */
+    const hostOf=u=>{try{return new URL(u).hostname.replace(/^www\./,"");}catch(e){return "";}};
+    const seen=new Set(info.links.map(l=>hostOf(l.url)));
+    let added=0;
+    r.sources.forEach(s=>{const host=hostOf(s.url);if(!host||seen.has(host)||added>=3)return;seen.add(host);added++;
+      info.links.push({name:"Claude read: "+host,url:s.url});});
   }
   return {info,found:bits.length>0};
 }
@@ -25296,7 +25304,15 @@ let owlOpen=null;   /* the book whose put-off card is open again, this visit */
    and the card was drawn empty each time, so three answers and a letter went
    with the first tap of anything else. */
 let owlDraft=null;
-const owlCan=b=>!!b&&!b._story&&!isColl(b)&&!isFic(b)&&statusOf(b)==="finished"&&!b.dnf;
+/* "before it fades" means a finish this fortnight: asked of every finished
+   book with no answers, it stood on the page of books read years ago, imports
+   and all, asking what you will remember — of a book already half
+   forgotten. A finish with no date is never asked. */
+const OWL_FRESH_DAYS=14;
+const owlFresh=b=>{const d=String(lastEnd(b)||b.dateFinished||"").slice(0,10);
+  if(!/^\d{4}-\d\d-\d\d$/.test(d))return false;
+  return Date.parse(todayStr()+"T00:00:00Z")-Date.parse(d+"T00:00:00Z")<=OWL_FRESH_DAYS*864e5;};
+const owlCan=b=>!!b&&!b._story&&!isColl(b)&&!isFic(b)&&statusOf(b)==="finished"&&!b.dnf&&owlFresh(b);
 /* A book ticked into "a whole series as one shelf item" became a collection
    still holding its owl answers, its letter, its questions and its file to
    read — and every one of these lines said nothing for a collection, so they
