@@ -3344,6 +3344,7 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .tasteprof{font-size:14px;line-height:1.6;max-width:72ch}
   .tastelist{margin:0;padding-left:20px;font-size:14px;line-height:1.5}
   .tastelist li{margin:0 0 2px}
+  .recrow{border-top:1px solid var(--line);padding:9px 0 8px}
   .fpcovmark{position:absolute;left:0;right:0;bottom:0;display:none;font-style:normal;
     font-size:10px;font-weight:700;text-align:center;padding:1px 0;border-radius:0 0 6px 6px}
   .fpcovbox.trying{outline:2px solid var(--amber);border-radius:8px}
@@ -12967,6 +12968,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-23.10",go:["tab:insights"],lines:["<b>✨ Something to read.</b> On ✨ Insights, under your taste: pick moods, your own genres, or say what you want in words — or nothing, and Claude goes by your taste alone. <b>✨ Suggest five</b> searches the web so every book is real and says where it found it, with why it suits you, Goodreads and StoryGraph, and ★ Want to read to put it on your shelf. Or choose <b>My Want to read</b> and it picks five you already have, with ⏭ Up next. ＋ 5 more and ↻ A fresh set never repeat a book they've shown you."]},
   {v:"2026-10-23.9",go:["tab:insights"],lines:["<b>✨ Your taste, as Claude reads it.</b> On ✨ Insights, under You, as a reader, <b>✨ Read my shelf</b> has Claude read every book you have marked, ♥'d, given up on or written about, and write down what you love, what makes you rate high, what makes you quit, the authors and tropes that keep coming back — and what your own tags mean, by the books that carry them. It is kept there: ✎ Edit it to put it right, ↻ to read the shelf again as it grows, ↶ for the one before. The line under it says what a new read would cost."]},
   {v:"2026-10-23.8",lines:["<b>✨ A blurb for a whole series.</b> On a collection's page, under Blurb, <b>✨ A blurb for the whole collection</b> has Claude write one back-cover blurb for the lot — its world, its themes, what its people struggle with, no plot and no spoilers. A book in a series of separate books has the same under <b>…, as a whole</b>. You see it first: Use it, ↻ Another, or No thanks.","<b>✨ Your month in a paragraph</b> on Today's 📅 card, written from that month's books, marks and pages — and kept once you say so.","<b>✨ With Claude</b> on 🎲 Challenges' prompt card weaves two or three things off your own shelf — a genre, a tag, someone from your fics — into a story seed, and says which.","<b>🌐 In English</b> beside a blurb or a quote in another language puts Claude's translation under the original, and keeps it."]},
   {v:"2026-10-23.7",go:["tab:care"],lines:["<b>📷 A whole shelf from one photo.</b> Give ⚡ Quick add a photo of a row of spines, a pile, a list — or a screenshot of a library, a shelf, a receipt, a message of recommendations — and Claude reads every book on it into 🧰 Shelf care's import list, to tick and add like a Goodreads file; the ones you already have are marked. Shelf care's import card has <b>📷 Books from a photo</b> for the same.","<b>📷 A fic from its AO3 page.</b> A screenshot or photo of a fic's page in ⚡ Quick add comes in as a fic, with its fandom, relationships, characters, tags, rating and link — the way an AO3 file brings them."]},
@@ -25401,6 +25403,138 @@ function wireTaste(){
       tags:lines("#tsT").map(s=>{const m=s.split(/\s+[—–-]\s+/);return {tag:(m[0]||"").trim(),means:m.slice(1).join(" — ").trim()};}).filter(x=>x.tag&&x.means),edited:true});
     saveSettings();tasteEditing=false;redraw();};
   const bk=q("#tsBack");if(bk)bk.onclick=()=>{const p=settings.tastePrev;settings.tastePrev=settings.taste;settings.taste=p;saveSettings();redraw();};
+}
+/* ┌─ SOMETHING TO READ, BY MOOD ─────────────────────────────────────────────┐
+   │ On Insights under the taste profile: mood chips, your own genres, a box │
+   │ for plain words, and where from — books new to you, or your Want to     │
+   │ read. New books are asked for with web search (recsAsk, three searches  │
+   │ at most) so each is a real, published book with a page Claude found it  │
+   │ on; seven are asked for and any already on the shelf (titleKey) is      │
+   │ dropped, so five are shown. From Want to read, the list goes numbered   │
+   │ and Claude answers by number, with no search. Each card: the pitch, why │
+   │ it suits you (read off settings.taste, or off your highest marks when   │
+   │ there is no profile yet), where it was found, Goodreads and StoryGraph, │
+   │ and ★ Want to read (a new book, added as ⌛ Don't have it yet, one undo │
+   │ step) or Open / ⏭ Up next (one you have). ＋ 5 more adds five unseen;   │
+   │ ↻ A fresh set replaces them — every title shown since the last fresh    │
+   │ set is named as one not to suggest again. The last set is kept on this │
+   │ device in settings.recs.                                                 │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const REC_MOODS=["cozy","funny","creepy","magical","fast-paced","tear-jerker","dark","short"];
+let recPick=null;   /* this visit's chips and words, before an ask keeps them */
+const recState=()=>{if(!recPick){const r=settings.recs||{};recPick={moods:(r.moods||[]).slice(),genres:(r.genres||[]).slice(),words:r.words||"",from:r.from||"new"};}return recPick;};
+function recTaste(){
+  const T=settings.taste;
+  if(T&&T.profile)return `Their taste, as written from their shelf:\n${T.profile}\nRate high: ${(T.high||[]).join("; ")}\nMakes them quit: ${(T.quit||[]).join("; ")}\nKeeps coming back: ${(T.again||[]).join("; ")}`
+    +((T.tags||[]).length?`\nTheir own tags: ${T.tags.map(x=>x.tag+" = "+x.means).join("; ")}`:"");
+  const top=books.filter(b=>Number(b.rating)>=8&&!b.apart).sort((a,c)=>Number(c.rating)-Number(a.rating)).slice(0,40);
+  return `They have no written profile yet. Books they marked highest: ${top.map(b=>`${b.title}${b.author?" by "+b.author:""} (${b.rating}/10)`).join("; ")||"none yet"}.`;
+}
+function recWant(p){
+  const bits=[p.moods.length?"moods: "+p.moods.join(", "):"",p.genres.length?"genres: "+p.genres.join(", "):"",p.words.trim()?`in their words: “${p.words.trim()}”`:""].filter(Boolean);
+  return bits.length?`What they want now — ${bits.join("; ")}.`:"Nothing in particular now: go by their taste.";
+}
+const recWantList=()=>books.filter(b=>b&&!b.apart&&!isFic(b)&&statusOf(b)==="want"&&!b.dnf)
+  .sort((a,c)=>(Date.parse(c.added||"")||c.created||0)-(Date.parse(a.added||"")||a.created||0)).slice(0,300);
+async function recsAsk(more){
+  const p=recState(),prev=settings.recs&&settings.recs.from===p.from?settings.recs:null;
+  /* everything shown since the source last changed is not suggested again —
+     ＋ 5 more and ↻ A fresh set alike, so a fresh set is five you have not seen */
+  let seen=prev?(prev.seen||[]):[];
+  const S={type:"string"};
+  if(p.from==="want"){
+    const list=recWantList();
+    if(!list.length)throw new Error("there is nothing on your Want to read");
+    let left=list.filter(b=>!seen.includes(b.id));
+    /* all of it suggested once: start the round again */
+    if(!left.length){left=list;if(settings.recs)settings.recs.seen=[];}
+    const schema={type:"object",properties:{books:{type:"array",items:{type:"object",properties:{n:S,pitch:S,why:S},required:["n","pitch","why"],additionalProperties:false}}},required:["books"],additionalProperties:false};
+    const text=`${recTaste()}\n\n${recWant(p)}\n\nFrom the books on their Want to read below, pick the five that suit them best right now. For each give n (its number in the list), pitch (one or two sentences on what it is, no spoilers) and why (one sentence tying it to their taste).\n\n`
+      +left.map((b,i)=>`${i+1}. ${b.title}${b.author?" — "+b.author:""}${(b.genres||[]).length?" | "+b.genres.slice(0,3).join(", "):""}${cwBlurbOf(b)?" | "+cwBlurbOf(b).slice(0,160):""}`).join("\n");
+    const j=await claudeAsk({kind:"ask",text,schema,effort:"low",max_tokens:2500});
+    return ((j.json&&j.json.books)||[]).map(x=>{const b=left[(parseInt(x.n)||0)-1];return b?{id:b.id,title:b.title,author:b.author||"",pitch:String(x.pitch||""),why:String(x.why||"")}:null;}).filter(Boolean).slice(0,5);
+  }
+  const have=new Set(books.map(b=>titleKey(b.title)));
+  const loved=books.filter(b=>Number(b.rating)>=8||b.favorite).slice(0,60).map(b=>b.title);
+  const authors=Object.entries(books.reduce((m,b)=>{const a=String(b.author||"").trim();if(a)m[a]=(m[a]||0)+1;return m;},{})).sort((a,c)=>c[1]-a[1]).slice(0,25).map(x=>x[0]);
+  const schema={type:"object",properties:{books:{type:"array",items:{type:"object",properties:{title:S,author:S,pitch:S,why:S,url:S},required:["title","author","pitch","why","url"],additionalProperties:false}}},required:["books"],additionalProperties:false};
+  const text=`${recTaste()}\n\n${recWant(p)}\n\nSuggest seven books for them. Search the web so that every one is a real, published book, and give the address of a page about it (a publisher, a shop, a library or Goodreads) as url. `
+    +`Not these, which they have or have already been shown: ${[...loved,...seen].join("; ")||"none"}. They already read a lot by ${authors.join(", ")||"no one in particular"} — prefer other authors unless one of theirs has a book they would clearly want. `
+    +`For each: title, author, pitch (one or two sentences on what it is, no spoilers) and why (one sentence tying it to their taste, naming what in it they will like).`;
+  const j=await claudeAsk({kind:"ask",text,schema,web:3,effort:"low",max_tokens:4000});
+  return ((j.json&&j.json.books)||[]).map(x=>({title:String(x.title||"").trim(),author:String(x.author||"").trim(),pitch:String(x.pitch||""),why:String(x.why||""),url:/^https?:\/\//.test(String(x.url||""))?String(x.url):""}))
+    .filter(x=>x.title&&!have.has(titleKey(x.title))&&!seen.includes(x.title)).slice(0,5);
+}
+async function recsRun(more,btn){
+  const p=recState();
+  if(btn){btn.disabled=true;btn.textContent="✨ Claude is choosing…";}
+  const got=await recsAsk(more);
+  if(!got.length)throw new Error("nothing came back that isn't already on your shelf — try other moods or words");
+  const prev=settings.recs&&settings.recs.from===p.from?settings.recs:null;
+  const items=more&&prev?[...prev.items,...got]:got;
+  settings.recs={at:todayStr(),from:p.from,moods:p.moods.slice(),genres:p.genres.slice(),words:p.words,items,
+    seen:[...((prev&&prev.seen)||[]),...got.map(x=>x.id||x.title)]};
+  saveSettings();
+}
+async function recAdd(x){
+  const b=blankBook(uid());
+  Object.assign(b,{title:x.title,author:x.author||"",status:"want",unowned:true,modified:Date.now(),
+    ...(x.pitch?{summary:esc(x.pitch)}:{})});
+  try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");return null;}
+  books.unshift(b);
+  pushOp({t:"bulk",items:[{id:b.id,before:null,after:JSON.parse(JSON.stringify(b))}]});
+  if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+  x.id=b.id;saveSettings();
+  return b;
+}
+function recsHtml(){
+  const R=settings.recs,ready=claudeReady();
+  if(!ready&&!(R&&R.items&&R.items.length))return "";
+  const p=recState();
+  const gs=Object.entries(books.reduce((m,b)=>{(b.genres||[]).forEach(g=>{m[g]=(m[g]||0)+1;});return m;},{})).sort((a,c)=>c[1]-a[1]).slice(0,8).map(x=>x[0]);
+  const pill=(attr,v,on,label)=>`<button class="pill${on?" on":""}" ${attr}="${esc(v)}">${esc(label||v)}</button>`;
+  const host=u=>{try{return new URL(u).hostname.replace(/^www\./,"");}catch(e){return "";}};
+  const card=(x,i)=>{
+    const b=x.id&&books.find(y=>y.id===x.id);
+    const q2=encodeURIComponent((x.title+" "+(x.author||"")).trim());
+    return `<div class="recrow">
+      <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b class="serif" style="font-size:16px">${esc(x.title)}</b>${x.author?`<span class="hint" style="margin:0">${esc(x.author)}</span>`:""}
+        ${x.url?`<a class="chip" href="${esc(x.url)}" target="_blank" rel="noopener" style="background:var(--card);border-color:var(--line);color:var(--teal-ink);font-size:11px;text-decoration:none">✓ found on ${esc(host(x.url))}</a>`:""}</div>
+      ${x.pitch?`<div style="font-size:14px;margin-top:3px">${esc(x.pitch)}</div>`:""}
+      ${x.why?`<div class="hint" style="margin:3px 0 0"><b>Why you:</b> ${esc(x.why)}</div>`:""}
+      <div class="hrow2" style="margin-top:5px;gap:6px;flex-wrap:wrap;align-items:center">
+        ${b?`<button class="btn smallbtn" data-recopen="${esc(b.id)}">Open it</button>${statusOf(b)==="want"?`<button class="btn smallbtn${inUpNext(b)?" on":""}" data-recnext="${esc(b.id)}">${inUpNext(b)?"✓ ":""}⏭ Up next</button>`:""}`
+          :`<button class="btn smallbtn" data-recadd="${i}">★ Want to read</button>`}
+        <span class="hint" style="margin:0"><a href="https://www.goodreads.com/search?q=${q2}" target="_blank" rel="noopener" style="color:var(--teal-ink)">Goodreads</a> · <a href="https://app.thestorygraph.com/browse?search_term=${q2}" target="_blank" rel="noopener" style="color:var(--teal-ink)">StoryGraph</a></span></div></div>`;
+  };
+  const cost=p.from==="want"?"about 2–4¢":"about 15–25¢";
+  return `<div class="sec" id="secRecs"><div class="heading"><h2 class="serif">✨ Something to read</h2></div><div class="hcard">
+    ${ready?`<div class="pills" style="margin:0 0 6px">${REC_MOODS.map(m=>pill("data-recmood",m,p.moods.includes(m))).join("")}</div>
+    ${gs.length?`<div class="pills" style="margin:0 0 6px">${gs.map(g=>pill("data-recgen",g,p.genres.includes(g))).join("")}</div>`:""}
+    <input class="field" id="recWords" placeholder="Or say it in words — a quiet book about a family, no romance…" value="${esc(p.words)}" style="margin-bottom:6px">
+    <div class="pills" style="margin:0 0 8px"><span class="lbl">From:</span>${pill("data-recfrom","new",p.from!=="want","Books new to me")}${pill("data-recfrom","want",p.from==="want","My Want to read")}</div>
+    <button class="btn pri" id="recGo">✨ Suggest five</button> <span class="hint" style="margin:0" id="recSay">${cost}${settings.taste?"":" · read your taste first above, and these get sharper"}</span>`:""}
+    ${R&&R.items&&R.items.length?`<div style="margin-top:8px">${R.items.map(card).join("")}</div>
+      ${ready?`<div class="hrow2" style="margin-top:6px;gap:6px"><button class="btn smallbtn" id="recMore">＋ 5 more</button><button class="btn smallbtn" id="recFresh">↻ A fresh set</button></div>`:""}
+      <div class="hint" style="margin:6px 0 0">Suggested ${esc(printDay(R.at))}${R.from==="want"?" from your Want to read":""}${R.moods&&R.moods.length?" · "+esc(R.moods.join(", ")):""}${R.words?` · “${esc(R.words)}”`:""}</div>`:""}
+  </div></div>`;
+}
+function wireRecs(){
+  const redraw=()=>{const s=q("#secRecs");if(s){s.outerHTML=recsHtml();wireRecs();}};
+  const p=recState();
+  qa("[data-recmood]").forEach(b=>b.onclick=()=>{const v=b.dataset.recmood;p.moods=p.moods.includes(v)?p.moods.filter(x=>x!==v):[...p.moods,v];redraw();});
+  qa("[data-recgen]").forEach(b=>b.onclick=()=>{const v=b.dataset.recgen;p.genres=p.genres.includes(v)?p.genres.filter(x=>x!==v):[...p.genres,v];redraw();});
+  qa("[data-recfrom]").forEach(b=>b.onclick=()=>{p.from=b.dataset.recfrom;redraw();});
+  const w=q("#recWords");if(w)w.oninput=()=>{p.words=w.value;};
+  const run=(more,btn)=>async()=>{try{await recsRun(more,btn);redraw();}
+    catch(e){if(btn){btn.disabled=false;btn.textContent="✨ Try again";}const s=q("#recSay");if(s)s.textContent="Claude couldn't — "+((e&&e.message)||"no answer");}};
+  const go=q("#recGo");if(go)go.onclick=run(false,go);
+  const mo=q("#recMore");if(mo)mo.onclick=run(true,mo);
+  const fr=q("#recFresh");if(fr)fr.onclick=run(false,fr);
+  qa("[data-recadd]").forEach(b=>b.onclick=async()=>{const x=settings.recs.items[+b.dataset.recadd];if(!x)return;b.disabled=true;
+    if(await recAdd(x))redraw();else b.disabled=false;});
+  qa("[data-recopen]").forEach(b=>b.onclick=()=>openBook(b.dataset.recopen,false));
+  qa("[data-recnext]").forEach(b=>b.onclick=async()=>{await upNextToggle(b.dataset.recnext,true);redraw();});
 }
 /* The function the app needs: FN_VERSION in claude-function.ts. Check Claude
    names an older copy in Supabase, which answers photos but not the rest. */
@@ -45854,6 +45988,7 @@ function renderInsightsNow(){
       </div>
     </div>
     ${tasteHtml()}
+    ${recsHtml()}
     <div class="sec"><div class="heading"><h2 class="serif">The numbers</h2></div>
       ${(()=>{
         /* Nine identical cards in a column, every figure shouting equally,
@@ -46093,7 +46228,7 @@ function renderInsightsNow(){
   {const tb=q("#secTbr",m);if(tb)try{roomHydrate(tb);}catch(e){}}
   qa("[data-atlastagsx]",m).forEach(el=>el.onclick=()=>{settings.atlasTagsOff=true;saveSettings();renderInsights();});
 
-  wireTaste();
+  wireTaste();wireRecs();
   q("#anaGo").onclick=()=>{
     const text=buildAnalysis();
     const out=q("#anaOut");
