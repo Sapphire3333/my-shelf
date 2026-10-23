@@ -12951,6 +12951,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-23.2",lines:["<b>✨ Claude fills in what Auto-fill couldn't find.</b> After 🔎 Auto-fill has asked its six sources, <b>✨ Ask Claude for what's still missing</b> sends Claude to search the web for whatever the book still lacks — the author, a blurb, pages, the year, genres, tags, its series — and its answers join the others in the same panel, with the pages it read under Read more about it. When the six find nothing at all, <b>✨ Ask Claude instead</b> does the same. Nothing changes until you press Use.","<b>✨ The rest of a series, from Claude.</b> Open the series name on a book's page and press <b>✨ The missing ones, from Claude</b>: it lists the series and, on your yes, adds what you haven't got as ⌛ Don't have it yet, numbered. In a collection's editor, 📋 The rest of the series… has <b>✨ Ask Claude</b>, which writes the list into the box for you. The series name is now a door on a book that is alone in its series too, so the first book is enough to ask from."]},
   {v:"2026-10-23.1",go:["set:how:#claudeMeter"],lines:["<b>📷 See what Claude costs.</b> Under <b>Check Claude</b> in ⚙ Settings → How it works, a line now counts this month's photos, questions and web searches on this device, with a rough price, and last month's beside it; the exact bill for every device is on the Console's Usage page. Check Claude also tries one web search and tells you if the claude function in your Supabase is an older copy — paste the new claude-function.ts over it once more and Deploy, and it carries everything Claude will do in the app from here on without being pasted again."]},
   {v:"2026-10-22.2",lines:["<b>📷 Claude reads the page count and year too.</b> ⚡ From photo now fills the pages box and the year published when the photo shows them — a copyright page, or a screenshot of the book on a shop or catalogue site. Open the <b>claude</b> function in your Supabase, paste the new claude-function.ts over its code and Deploy; until then it reads everything else as before."]},
   {v:"2026-10-22.1",go:["set:how:#claudeCheck"],lines:["<b>📷 Claude can read your photos.</b> Once the <b>claude</b> function is set up in your Supabase with your own API key, ⚡ From photo fills in the title, author, series, number, ISBN and blurb straight off a cover, and 📷 beside ❝ Add a quote gives the passage and its page. ⚙ Settings → How it works → <b>Check Claude</b> says whether it is working, or which setup step to look at. Until then, and whenever you are signed out or offline, the reader in this browser does it as before."]},
@@ -25070,6 +25071,78 @@ function wireTarot(m){
    │ before it goes, and goes only when a photo is given.                     │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const claudeOn=()=>!!(settings&&settings.photoClaude!==false&&SYNC.supa&&SYNC.user&&String(CFG.url||"").trim());
+/* Claude for anything but photos: signed in, with a Supabase to ask through.
+   settings.photoClaude is the photo roads' own switch and does not gate these,
+   since every one of them is a button that says it asks Claude. */
+const claudeReady=()=>!!(SYNC.supa&&SYNC.user&&String(CFG.url||"").trim());
+/* ┌─ CLAUDE FILLS THE GAPS ─────────────────────────────────────────────────┐
+   │ 🔎 Auto-fill asks its six sources first, as always. What none of them   │
+   │ gave and the book still lacks (claudeGapsOf) is offered as one button,  │
+   │ ✨ Ask Claude for what's still missing — or, when nothing was found at  │
+   │ all, ✨ Ask Claude instead. Claude searches the web (two searches at    │
+   │ most) for those fields alone (claudeBookGaps), and claudeMergeGaps puts │
+   │ its answers into the same `info` the panel draws from, as one more      │
+   │ source called Claude: a blurb beside the others, genres and tags in the │
+   │ ticking rows, the pages, the year, the series. The pages it read become │
+   │ links under Read more about it. openFetchPanel(en, info) draws the      │
+   │ merged answer without asking anyone again, and nothing on the book      │
+   │ changes until a button there is pressed — the panel's rule, unchanged.  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const CLAUDE_GAP_SAY={author:"the author",blurb:"a blurb",pages:"the page count",year:"the year it came out",genres:"genres",tags:"tags",series:"a series and its number"};
+function claudeGapsOf(b,en,info){
+  const t=en||b,has=k=>!!info&&(Array.isArray(info[k])?info[k].length>0:!!info[k]);
+  const g=[];
+  if(!(en?(entAuthorOf(b,en)||""):(b.author||"")).trim()&&!has("author"))g.push("author");
+  if(!stripHtml(t.summary||"").trim()&&!has("blurbs")&&!has("summary"))g.push("blurb");
+  if(!t.pages&&!has("pages"))g.push("pages");
+  if(!en&&!pubYearOf(b)&&!has("year"))g.push("year");
+  if(!en&&!(b.genres||[]).length&&!has("genres"))g.push("genres");
+  if(!(en?entKeywordsOf(b,en):(b.keywords||[])).length&&!has("tags"))g.push("tags");
+  if(!en&&!isColl(b)&&!String(b.series||"").trim()&&!has("series"))g.push("series");
+  return g;
+}
+async function claudeBookGaps({title,author,isbn,en,gaps}){
+  const S={type:"string"},L={type:"array",items:{type:"string"}};
+  const props={found_title:S};
+  gaps.forEach(k=>{if(k==="series"){props.series=S;props.seriesNum=S;}else props[k]=(k==="genres"||k==="tags")?L:S;});
+  const schema={type:"object",properties:props,required:Object.keys(props),additionalProperties:false};
+  const what=kindOf(en||cur)==="fic"?"fan fiction work":"book";
+  const rule={author:"author: the author or authors as credited, several joined with a comma.",
+    blurb:"blurb: the publisher's description, or a faithful summary of it, as one paragraph — no spoilers beyond what it says.",
+    pages:"pages: the print page count, digits only.",year:"year: the year it was first published, four digits.",
+    genres:"genres: up to four broad genres in English, such as Fantasy or Romance.",
+    tags:"tags: up to eight short tropes or themes readers use, such as found family or slow burn.",
+    series:"series: the series name, without the word series or the number; seriesNum: this one's number in it."};
+  const text=`Find this ${what} on the web: “${title}”${author?` by ${author}`:""}${isbn?`, ISBN ${isbn}`:""}${en?`, a story inside the collection “${cur.title||""}”`:""}.\n`
+    +`Fill in only these: ${gaps.map(k=>CLAUDE_GAP_SAY[k]).join(", ")}. Use only what pages about this exact ${what} say — the same title and the same author. Leave a field empty ("" or []) when you can't be sure of it.\n`
+    +gaps.map(k=>"- "+rule[k]).join("\n")+`\n- found_title: the title as the page you relied on gives it.`;
+  const j=await claudeAsk({kind:"ask",web:2,effort:"low",max_tokens:3000,schema,text});
+  return {json:j.json||{},sources:Array.isArray(j.sources)?j.sources:[]};
+}
+function claudeMergeGaps(base,r,gaps){
+  const info=base?Object.assign({},base,{blurbs:[...(base.blurbs||[])],genres:[...(base.genres||[])],tags:[...(base.tags||[])],
+      source:[...(base.source||[])],per:[...(base.per||[])],links:[...(base.links||[])]})
+    :{title:"",author:"",summary:"",tags:[],pages:"",olCover:"",olCovers:[],isbn:"",year:"",source:[],covers:[],links:[],
+      blurbs:[],genres:[],gCovers:[],hcCover:"",alCover:"",anilist:null,series:null,per:[]};
+  const j=r.json||{},str=k=>String(j[k]||"").trim(),list=(k,n)=>(Array.isArray(j[k])?j[k]:[]).map(x=>String(x||"").trim()).filter(Boolean).slice(0,n);
+  const bits=[];
+  if(!base&&str("found_title"))info.title=str("found_title");
+  if(gaps.includes("author")&&str("author")){info.author=str("author");bits.push("the author");}
+  if(gaps.includes("blurb")&&str("blurb").length>40){info.blurbs.push({text:str("blurb"),from:"Claude"});if(!info.summary)info.summary=str("blurb");bits.push("a blurb");}
+  if(gaps.includes("pages")&&parseInt(str("pages").replace(/\D/g,""))){info.pages=parseInt(str("pages").replace(/\D/g,""));bits.push("pages");}
+  if(gaps.includes("year")&&/\b\d{4}\b/.test(str("year"))){info.year=str("year").match(/\b\d{4}\b/)[0];bits.push("year");}
+  if(gaps.includes("genres")&&list("genres",4).length){info.genres.push(...list("genres",4));bits.push("genres");}
+  if(gaps.includes("tags")&&list("tags",8).length){info.tags.push(...list("tags",8));bits.push("tags");}
+  if(gaps.includes("series")&&str("series")){info.series={name:str("series"),pos:str("seriesNum").replace(/^#/,""),from:"Claude"};bits.push("series");}
+  if(bits.length){
+    info.source.push("Claude");info.per.push({src:"Claude",bits});
+    const seen=new Set(info.links.map(l=>l.url));
+    r.sources.slice(0,4).forEach(s=>{if(!s.url||seen.has(s.url))return;seen.add(s.url);
+      let host="";try{host=new URL(s.url).hostname.replace(/^www\./,"");}catch(e){}
+      info.links.push({name:"Claude read: "+(host||"a page"),url:s.url});});
+  }
+  return {info,found:bits.length>0};
+}
 /* The function the app needs: FN_VERSION in claude-function.ts. Check Claude
    names an older copy in Supabase, which answers photos but not the rest. */
 const CLAUDE_FN_NEED=2;
@@ -25120,6 +25193,7 @@ async function claudeAsk(body){
   let j=null;try{j=await r.json();}catch(e){}
   if(j&&j.usage)claudeMeterAdd(body.kind,j.usage);
   if(r.status===404)throw new Error("the claude function is not in Supabase yet — step 2 in claude-function.ts");
+  if(r.status===400&&j&&/unknown kind/i.test(String(j.error||"")))throw new Error("the claude function in Supabase is an older copy — paste claude-function.ts over it again and Deploy (step 2)");
   if(!r.ok||!j||!j.ok)throw new Error(String((j&&(j.error||j.message||j.msg))||("Supabase answered "+r.status)).slice(0,200));
   return j;
 }
@@ -47322,6 +47396,7 @@ function seriesPanelHtml(b){
       <button class="btn smallbtn" id="vSerAll" title="Show every book under this name in Search">🔎 All of them together</button>
       ${hardcoverOn()?`<button class="btn smallbtn" id="vSerHc" title="Ask Hardcover for the books of this series and add the ones you haven't got as ⌛ Don't have it yet — it asks first">📙 The missing ones, from Hardcover</button>
         <button class="btn smallbtn" id="vSerNext" title="Ask Hardcover when the book after the last one you have comes out">📅 When's the next one?</button>`:""}
+      ${claudeReady()?`<button class="btn smallbtn" id="vSerCl" title="Claude searches the web for this series and adds the ones you haven't got as ⌛ Don't have it yet — it asks first">✨ The missing ones, from Claude</button>`:""}
     </div>
   </div>`;
 }
@@ -47415,9 +47490,11 @@ function renderBookView(){
      title printed that title again immediately under itself */
   const sName=seriesShown(b);
   /* the name is a door wherever there is anywhere to go — see seriesPanelHtml.
-     One book alone under a name has nothing to open, so it stays plain text
-     rather than becoming a button that admits it can do nothing. */
-  const sDoor=sName&&seriesMates(b).length>1
+     One book alone under a name stays plain text, unless Hardcover or Claude
+     can be asked for the rest of it: the first book of a series, alone on the
+     shelf, is the one that most needs 📙 / ✨ The missing ones, and the door
+     was the only way to them. */
+  const sDoor=sName&&(seriesMates(b).length>1||hardcoverOn()||claudeReady())
     ?`<button class="serdoor" id="vSerTog" title="The books in this series — where you are, and what you have left">${esc(sName)} ${vSeriesOpen?"▴":"▾"}</button>`
     :(sName?esc(sName):"");
   const seriesLine=isColl(b)
@@ -48365,6 +48442,8 @@ function renderBookView(){
    };
    const hb=q("#vSerHc");
    if(hb)hb.onclick=e=>{e.stopPropagation();fetchSeriesMissing(b);};
+   const cb2=q("#vSerCl");
+   if(cb2)cb2.onclick=e=>{e.stopPropagation();fetchSeriesMissing(b,"claude");};
    /* Hardcover's date for the next book, kept on this one (nextOut) */
    const hn=q("#vSerNext");
    if(hn)hn.onclick=async e=>{e.stopPropagation();hn.disabled=true;hn.textContent="📅 Asking Hardcover…";
@@ -50162,7 +50241,10 @@ function renderEditor(){
   const timeLine=t=>t.skip
     ?`${t.what} — ${t.note}`
     :`${t.what} ${t.ok?"answered":"didn't answer"} in ${(t.ms/1000).toFixed(1)}s${t.note?" — "+t.note:""}`;
-  async function openFetchPanel(en){
+  /* `given`: an answer already in hand (the six sources' with Claude's gaps
+     merged in, or Claude's alone) — drawn as it is, nothing asked again.
+     See CLAUDE FILLS THE GAPS */
+  async function openFetchPanel(en,given){
     const box=q("#fetchPanel");
     const head=`<div class="hrow2" style="margin-bottom:9px"><b style="font-size:13px">🔎 Auto-fill${en?" — "+esc(en.title||"this story"):""}</b>
       <button class="btn" id="fpClose" style="margin-left:auto;padding:4px 10px">Close</button></div>`;
@@ -50180,20 +50262,45 @@ function renderEditor(){
     box.hidden=false;
     box.innerHTML=head+`<div class="none">Looking up ${askIsbn?`by its number ${esc(askIsbn)}`:`“${esc(title)}”${cur.author?" by "+esc(cur.author):""}`}…</div>`;
     wireClose();
-    let info=null,unreachable=false;
-    const probe={};
-    try{info=await fetchBookInfo(title,(cur.author||"").trim(),askIsbn,probe);}
-    catch(e){unreachable=true;}
+    let info=given||null,unreachable=false;
+    const probe=(given&&given.__probe)||{};
+    if(!given){
+      try{info=await fetchBookInfo(title,(cur.author||"").trim(),askIsbn,probe);}
+      catch(e){unreachable=true;}
+    }
     if(box.hidden||!box.isConnected||!cur||cur.id!==forId)return;   /* closed, or left, while we were fetching */
+    /* the gaps button, drawn in both the found and the not-found panel */
+    const claudeBtn=(gaps,lead)=>claudeReady()&&gaps.length?`<div style="margin:12px 0 0">
+        <button class="btn" id="fpClaude">✨ ${lead}</button>
+        <div class="hint" id="fpClaudeSay" style="margin:4px 0 0">Claude searches the web for ${esc(gaps.map(g=>CLAUDE_GAP_SAY[g]).join(", "))}, and says where it found them. Nothing changes until you press a button.</div></div>`:"";
+    const wireClaude=(base,gaps)=>{
+      const cb=q("#fpClaude",box);if(!cb)return;
+      cb.onclick=async()=>{
+        cb.disabled=true;cb.textContent="✨ Claude is looking…";
+        const said=q("#fpClaudeSay",box);
+        try{
+          const r=await claudeBookGaps({title:title||(base&&base.title)||"",author:curAuthorNow(),isbn:askIsbn,en,gaps});
+          if(box.hidden||!box.isConnected||!cur||cur.id!==forId)return;
+          const merged=claudeMergeGaps(base,r,gaps);
+          if(!merged.found){cb.textContent="✨ Claude found nothing more";if(said)said.textContent=r.sources.length?`It looked at ${r.sources.length} page${r.sources.length===1?"":"s"} and couldn't be sure of anything.`:"It found no page about this book.";return;}
+          merged.info.__probe=probe;
+          openFetchPanel(en,merged.info);
+        }catch(e){cb.disabled=false;cb.textContent="✨ Try Claude again";if(said)said.textContent="Claude couldn't answer — "+((e&&e.message)||"no answer");}
+      };
+    };
+    const curAuthorNow=()=>(en?(entAuthorOf(cur,en)||""):(cur.author||"")).trim();
     if(!info){
+      const gaps=claudeGapsOf(cur,en,null);
       box.innerHTML=head+`<div class="none">${unreachable
         ? "Couldn't reach the book sites just now — they're free and sometimes busy. Your connection may also be down."
         : "Nothing found under that title. Try a shorter title, or check the spelling."}</div>
         ${(probe.asked||[]).length?`<div class="hint" style="margin:7px 0 0">This is what was asked:<br>${probe.asked.map(a=>esc(a)).join("<br>")}</div>`:""}
         ${(probe.times||[]).length?`<div class="hint" style="margin:7px 0 0">${probe.times.map(t=>esc(timeLine(t))).join(" · ")}</div>`:""}
-        <button class="btn pri" id="fpRetry" style="margin-top:9px">Try again</button>`;
+        <button class="btn pri" id="fpRetry" style="margin-top:9px">Try again</button>
+        ${claudeBtn(gaps,"Ask Claude instead")}`;
       wireClose();
       q("#fpRetry",box).onclick=()=>openFetchPanel(en);
+      wireClaude(null,gaps);
       return;
     }
     /* the Hardcover slug is the ISBN's twin: never shown, but it turns the
@@ -50332,7 +50439,7 @@ function renderEditor(){
         <button class="btn" id="fpPlaces" style="margin-top:6px" disabled>Add ticked as places</button>
         <div class="hint" style="margin:4px 0 0">A country pins the book on the atlas; anywhere else is kept as words.</div>`:""}
       ${info.series&&!en&&!isColl(cur)&&!String(cur.series||"").trim()?`<div style="margin-top:11px">
-        <div class="lbl" style="display:block;margin-bottom:3px">Series — Hardcover's answer</div>
+        <div class="lbl" style="display:block;margin-bottom:3px">Series — ${esc(info.series.from||"Hardcover")}'s answer</div>
         <div style="font-size:13px;margin-bottom:5px;overflow-wrap:anywhere">${esc(info.series.name)}${info.series.pos?` · book ${esc(info.series.pos)}`:""}</div>
         <button class="btn" id="fpSer">Use as series</button></div>`:""}
       <div class="hint" style="margin:11px 0 0">Found via ${info.source.join(" & ")}${info.year?` · first published ${esc(info.year)}`:""}. Nothing about the book changes until you press a button; only its address on Hardcover and whether a serial is still coming out are kept.${
@@ -50345,8 +50452,10 @@ function renderEditor(){
         (info.per||[]).length>1?`<br>${info.per.map(p=>esc(`${p.src}: ${p.bits.join(", ")||"nothing the others lacked"}`)).join("<br>")}`:""}</div>
       ${(info.links||[]).length?`<div class="lbl" style="display:block;margin:9px 0 4px">Read more about it</div>
         <div style="display:flex;flex-wrap:wrap;gap:6px">${info.links.map(l=>
-          `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener" style="text-decoration:none;padding:4px 10px;font-size:12px">${esc(l.name)} ↗</a>`).join("")}</div>`:""}`;
+          `<a class="btn" href="${esc(l.url)}" target="_blank" rel="noopener" style="text-decoration:none;padding:4px 10px;font-size:12px">${esc(l.name)} ↗</a>`).join("")}</div>`:""}
+      ${claudeBtn(claudeGapsOf(cur,en,info),"Ask Claude for what's still missing")}`;
     wireClose();
+    wireClaude(info,claudeGapsOf(cur,en,info));
     const ag=q("#fpAgain",box);
     if(ag)ag.onclick=()=>openFetchPanel(en);
     /* a candidate that won't even display is no use — drop it from the row, and
@@ -52658,7 +52767,8 @@ function renderEditor(){
     wrap.innerHTML=`
       <div class="hrow2" style="margin-bottom:6px"><b style="font-size:13px">The rest of the series</b>
         <button class="btn" id="spX" style="margin-left:auto;padding:4px 10px">Cancel</button></div>
-      <div class="hint" style="margin:0 0 8px">Ask Claude for the missing books, one per line as <b>#4 The Title</b>, and paste the answer here. Chatter around the list is ignored, stories you already have are skipped, and everything new arrives marked ★ Want to read.</div>
+      <div class="hint" style="margin:0 0 8px">${claudeReady()?"Press <b>✨ Ask Claude</b> and its list lands in the box — or ask":"Ask"} in a chat for the missing books, one per line as <b>#4 The Title</b>, and paste the answer here. Chatter around the list is ignored, stories you already have are skipped, and everything new arrives marked ⌛ Don't have it yet.</div>
+      ${claudeReady()?`<button class="btn" id="spCl" style="margin-bottom:9px;margin-right:6px" title="Claude searches the web for this series and writes its list into the box below — the ones you have are skipped the same way">✨ Ask Claude</button>`:""}
       <button class="btn" id="spAsk" style="margin-bottom:9px">📋 Copy a message that asks for exactly this</button>
       ${hardcoverOn()?`<button class="btn" id="spHc" style="margin-bottom:9px;margin-left:6px" title="Hardcover's own list of this series, written into the box below — the ones you have are skipped the same way">📙 Ask Hardcover instead</button>`:""}
       <textarea id="spText" placeholder="#4 The next book&#10;#5 The one after"></textarea>
@@ -52705,6 +52815,18 @@ function renderEditor(){
     };
     /* Hardcover's list into the same box, so the same parser and the same
        skipping of what is already inside do the filing — see fetchHardcoverSeries */
+    /* and Claude's, the same way — see fetchClaudeSeries */
+    const cl=q("#spCl",wrap);
+    if(cl)cl.onclick=async()=>{
+      cl.disabled=true;cl.textContent="✨ Claude is looking…";
+      try{
+        const r=await fetchClaudeSeries(sName,by,have);
+        if(!r.ok){cl.textContent="✨ Claude "+r.why;cl.disabled=false;return;}
+        ta.value=r.books.map(x=>(x.pos?"#"+x.pos+" ":"")+x.title).join("\n");
+        refresh();
+        cl.textContent=`✨ Claude lists ${r.books.length} in “${r.name}”`+(r.sources.length?` · from ${r.sources.length} page${r.sources.length===1?"":"s"}`:"");
+      }catch(e){cl.disabled=false;cl.textContent="✨ Claude didn't answer: "+String(e&&e.message||e).slice(0,70);}
+    };
     const hb=q("#spHc",wrap);
     if(hb)hb.onclick=async()=>{
       hb.disabled=true;hb.textContent="📙 Asking Hardcover…";
@@ -57797,6 +57919,32 @@ async function fetchHardcoverSeries(name,author){
     if(isFinite(x)&&isFinite(y)&&x!==y)return x-y;if(isFinite(x)!==isFinite(y))return isFinite(x)?-1:1;return a.title.localeCompare(b.title);});
   return {ok:true,name:String(pick.name||nm),count:parseInt(pick.primary_books_count||pick.books_count)||list.length,books:list,thin,editions:raw.length};
 }
+/* A series' books from Claude, searched on the web, in the shape
+   fetchHardcoverSeries answers in ({ok, name, count, books:[{pos, title,
+   year, …}]}) so both doors file it the same way: the book page's ✨ The
+   missing ones, from Claude (fetchSeriesMissing) and the collection's ✨ Ask
+   Claude (openSeriesPaste). `have` names what the shelf holds, so the titles
+   come back in the same language; nothing is left out on that account here —
+   telling what you have is still the filing's job. No covers: Claude gives
+   none. */
+async function fetchClaudeSeries(name,author,have){
+  const S={type:"string"};
+  const schema={type:"object",properties:{series:S,total:S,books:{type:"array",items:{type:"object",
+    properties:{pos:S,title:S,year:S},required:["pos","title","year"],additionalProperties:false}}},
+    required:["series","total","books"],additionalProperties:false};
+  const mine=(have||[]).map(t=>String(t||"").trim()).filter(Boolean).slice(0,40);
+  const text=`List every book of the “${name}” series${author?` by ${author}`:""}, in series order. Search the web first, so that the list is complete and is this author's series, not another one with the same name.\n`
+    +`Count the numbered books; add a novella only where the series gives it a number (such as 2.5). Leave out translations, box sets and omnibus editions.\n`
+    +(mine.length?`The books of it I have, to match their language and spelling: ${mine.join("; ")}.\n`:"")
+    +`- series: the series name as it is usually written.\n- total: how many books the series has, or is announced to have, digits only.\n`
+    +`- books: each one's pos (its number, like 1 or 2.5, or "" if it has none), title, and year (first published, four digits, or "" if it is not out yet).`;
+  const j=await claudeAsk({kind:"ask",web:3,effort:"low",max_tokens:4000,schema,text});
+  const o=j.json||{};
+  const books=(Array.isArray(o.books)?o.books:[]).map(x=>({pos:String(x&&x.pos||"").replace(/^#/,"").trim(),title:String(x&&x.title||"").replace(/\s+/g," ").trim(),
+    year:(String(x&&x.year||"").match(/\b\d{4}\b/)||[""])[0],author:"",pages:"",cover:"",slug:"",foreign:false})).filter(x=>x.title);
+  if(!books.length)return {ok:false,why:"found no list for that series"};
+  return {ok:true,name:String(o.series||name).trim()||name,count:parseInt(o.total)||books.length,books,sources:Array.isArray(j.sources)?j.sources:[]};
+}
 /* The missing books of a SERIES — separate books linked by name — brought
    onto the shelf from Hardcover's list as ⌛ Don't have it yet, numbered, with
    their covers where Hardcover has them, after a confirm that names them.
@@ -57805,16 +57953,23 @@ async function fetchHardcoverSeries(name,author){
    copy of a book you have. One press, one bulk op; ↶ Undo takes them all
    back. The books already on the shelf are not touched — a number or a total
    written by hand is never overwritten (the rule the series editor keeps). */
-async function fetchSeriesMissing(b){
+/* `from` "claude": the same filing, with Claude's list (fetchClaudeSeries) in
+   place of Hardcover's — the ✨ button beside the 📙 one */
+async function fetchSeriesMissing(b,from){
   const s=seriesShown(b);if(!s)return;
-  const btn=q("#vSerHc");
+  const C=from==="claude"
+    ?{btn:"#vSerCl",ico:"✨",who:"Claude",idle:"✨ The missing ones, from Claude",asking:"✨ Claude is looking…",
+      get:()=>fetchClaudeSeries(s,b.author,seriesMates(b).map(x=>x.title))}
+    :{btn:"#vSerHc",ico:"📙",who:"Hardcover",idle:"📙 The missing ones, from Hardcover",asking:"📙 Asking Hardcover…",
+      get:()=>fetchHardcoverSeries(s,b.author)};
+  const btn=q(C.btn);
   const say=t=>{if(btn)btn.textContent=t;};
   if(btn)btn.disabled=true;
-  say("📙 Asking Hardcover…");
+  say(C.asking);
   let r;
-  try{r=await fetchHardcoverSeries(s,b.author);}
-  catch(e){say("📙 Hardcover didn't answer: "+String(e&&e.message||e).slice(0,80));return;}
-  if(!r.ok){say("📙 Hardcover "+r.why);return;}
+  try{r=await C.get();}
+  catch(e){say(`${C.ico} ${C.who} didn't answer: `+String(e&&e.message||e).slice(0,80));if(btn)btn.disabled=false;return;}
+  if(!r.ok){say(`${C.ico} ${C.who} `+r.why);return;}
   const mates=seriesMates(b);
   /* and the books INSIDE a mate that is a collection — a set kept as one
      collection of four with the fifth standing alone offered the four back as
@@ -57830,10 +57985,10 @@ async function fetchSeriesMissing(b){
   /* a likely translation is named, not added — see `foreign` in fetchHardcoverSeries */
   const held=notHere.filter(x=>x.foreign),missing=notHere.filter(x=>!x.foreign);
   const heldNote=held.length?`\n\nLeft out as ${held.length===1?"a likely translation":"likely translations"} (other names beside the author's): ${held.map(x=>(x.pos?"#"+x.pos+" ":"")+x.title).join("; ")}`:"";
-  if(!missing.length){say(`📙 Hardcover lists ${r.books.length} in “${r.name}” — you have them all`+(held.length?` · ${held.length} left out as ${held.length===1?"a likely translation":"likely translations"}`:""));return;}
+  if(!missing.length){say(`${C.ico} ${C.who} lists ${r.books.length} in “${r.name}” — you have them all`+(held.length?` · ${held.length} left out as ${held.length===1?"a likely translation":"likely translations"}`:""));return;}
   const lines=missing.map(x=>(x.pos?"#"+x.pos+" ":"")+x.title).join("\n");
-  if(!confirm(`Hardcover lists ${r.books.length} in “${r.name}”. Add these ${missing.length} to the shelf as ⌛ Don't have it yet, in “${s}”?\n\n${lines}${heldNote}`)){
-    say("📙 The missing ones, from Hardcover");if(btn)btn.disabled=false;return;
+  if(!confirm(`${C.who} lists ${r.books.length} in “${r.name}”. Add these ${missing.length} to the shelf as ⌛ Don't have it yet, in “${s}”?\n\n${lines}${heldNote}`)){
+    say(C.idle);if(btn)btn.disabled=false;return;
   }
   say(`📙 Adding ${missing.length}, fetching covers…`);
   const author=String(b.author||"").trim();
