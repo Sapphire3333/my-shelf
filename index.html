@@ -12956,6 +12956,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-23.7",go:["tab:care"],lines:["<b>📷 A whole shelf from one photo.</b> Give ⚡ Quick add a photo of a row of spines, a pile, a list — or a screenshot of a library, a shelf, a receipt, a message of recommendations — and Claude reads every book on it into 🧰 Shelf care's import list, to tick and add like a Goodreads file; the ones you already have are marked. Shelf care's import card has <b>📷 Books from a photo</b> for the same.","<b>📷 A fic from its AO3 page.</b> A screenshot or photo of a fic's page in ⚡ Quick add comes in as a fic, with its fandom, relationships, characters, tags, rating and link — the way an AO3 file brings them."]},
   {v:"2026-10-23.6",lines:["<b>🔎 A tidier Auto-fill.</b> ✨ Ask Claude now sits at the top of the panel instead of after everything. Each thing on offer — author, cover, blurb, genres, tags, pages, year, series — has a box of its own, with its button beside it where it fits. The long report of how every source answered is folded under <b>How each source answered</b>, along with the pages Claude read, and the sites to read more on are one line of links."]},
   {v:"2026-10-23.5",lines:["<b>🦉 The owl asks only about a fresh finish.</b> Its three questions — one word, who you'd hand it to, what you'll remember — now come up only for a book finished in the last two weeks, not on the page of every book you finished long ago.","<b>✨ Claude isn't offered twice.</b> In 🔎 Auto-fill, once Claude has answered, the button doesn't come back asking for what it just said it couldn't find, and each site it read is listed once."]},
   {v:"2026-10-23.4",lines:["<b>✨ No paid search for a series that isn't there.</b> Once Hardcover has answered for a book and named no series, 🔎 Auto-fill stops offering to ask Claude for one — that was a search on every standalone you own, coming back empty. And when Claude does find nothing, it now says what it looked for."]},
@@ -25219,6 +25220,59 @@ async function claudeAsk(body){
   if(r.status===400&&j&&/unknown kind/i.test(String(j.error||"")))throw new Error("the claude function in Supabase is an older copy — paste claude-function.ts over it again and Deploy (step 2)");
   if(!r.ok||!j||!j.ok)throw new Error(String((j&&(j.error||j.message||j.msg))||("Supabase answered "+r.status)).slice(0,200));
   return j;
+}
+/* ┌─ ONE PHOTO, THREE ANSWERS ───────────────────────────────────────────────┐
+   │ ⚡ From photo (quickOcr) and Shelf care's 📷 Books from a photo ask one │
+   │ question of a picture (claudeReadAny, through the function's "ask"):   │
+   │ is it ONE book, ONE fic, or MANY books? One book fills the quick-add   │
+   │ boxes as before. A fic — an AO3 page, photographed or screenshotted —  │
+   │ becomes a row in the AO3 file's shape (ficRowOf) and is created through │
+   │ importOne, so its fandoms, ships, characters, tags, maturity and link  │
+   │ land exactly as an AO3 import's do. Many — a shelf of spines, a list, a │
+   │ library screenshot, a receipt, a message of recommendations — are       │
+   │ staged with stageImportRows under "Photo read by Claude", where the     │
+   │ import list's ticks, duplicate marks and ＋ Add take over; nothing is   │
+   │ on the shelf until one of those is pressed. Only what the picture shows │
+   │ is asked for, never what Claude knows of the book.                       │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+async function claudeReadAny(file,hint){
+  const url=await compressImage(file,1600,.85);
+  const data=String(url||"").split(",")[1]||"";
+  if(!data)throw new Error("the photo could not be read");
+  const S={type:"string"},L={type:"array",items:S};
+  const obj=(p)=>({type:"object",properties:p,required:Object.keys(p),additionalProperties:false});
+  const schema=obj({what:{type:"string",enum:["book","fic","many"]},
+    book:obj({title:S,subtitle:S,author:S,series:S,seriesNum:S,isbn:S,pages:S,year:S,blurb:S}),
+    fic:obj({title:S,author:S,fandoms:L,ships:L,characters:L,tags:L,rating:S,link:S,summary:S}),
+    books:{type:"array",items:obj({title:S,author:S,series:S,seriesNum:S})}});
+  const text=`Look at this picture and decide what it shows.\n`
+    +`- "book": one book — its cover, spine, title page or back cover, or one book's page on a shop or catalogue site. Fill \`book\`.\n`
+    +`- "fic": one fan fiction work's page, such as AO3's (it names a fandom, relationships or a word count). Fill \`fic\`.\n`
+    +`- "many": several books — a shelf or pile of spines, a list, a screenshot of a library or a shelf, a receipt, a message recommending books. Fill \`books\`, one entry for every book whose title you can read, in the order they appear.\n`
+    +(hint==="many"?"It most likely shows several books.\n":"")
+    +`Leave the parts that don't apply empty ("" for text, [] for lists). Read only what is shown; never fill anything in from what you know about a book.\n`
+    +`book: the title, any subtitle, the author or authors as printed (several joined with a comma), the series name and number if printed, the ISBN if printed (digits only), the number of pages and the year published if shown (digits), and the blurb if there is one, as one paragraph.\n`
+    +`fic: the title; the author or authors (several joined with a comma); fandoms, ships (relationships as written, like A/B or A & B), characters and tags (the additional tags) as lists; the rating as written (General Audiences, Teen And Up Audiences, Mature, Explicit, Not Rated); the work's address if shown; the summary as one paragraph.\n`
+    +`books: each title as shown, the author if shown, and the series and number if shown.`;
+  return claudeAsk({kind:"ask",images:[{media_type:"image/jpeg",data}],schema,text,effort:"low",max_tokens:8000});
+}
+/* a fic read off a picture, in fromAO3's shape — see ONE PHOTO, THREE ANSWERS */
+function ficRowOf(f){
+  const s=k=>String(f&&f[k]||"").trim(),l=k=>(Array.isArray(f&&f[k])?f[k]:[]).map(x=>String(x||"").trim()).filter(Boolean);
+  return {id:uid(),title:s("title"),author:s("author"),isbn:"",status:"want",dnf:false,rating:null,
+    pages:"",progress:"",dateFinished:"",readings:[],rereads:0,summary:s("summary"),notes:"",
+    tags:l("tags"),kind:"fanfic",link:/^https?:\/\//.test(s("link"))?s("link"):(s("link")?"https://"+s("link").replace(/^\/+/,""):""),
+    maturity:s("rating"),fandoms:l("fandoms"),characters:l("characters"),ships:l("ships")};
+}
+/* several books read off a picture, staged for the import list to take over */
+function stagePhotoBooks(list){
+  const rows=(list||[]).map(x=>({id:uid(),title:String(x&&x.title||"").trim(),author:String(x&&x.author||"").trim(),
+    isbn:"",status:"want",stageGuess:true,dnf:false,rating:null,pages:"",progress:"",dateFinished:"",readings:[],rereads:0,
+    summary:"",notes:"",tags:[],
+    ...(String(x&&x.series||"").trim()?{series:String(x.series).trim()}:{}),
+    ...(String(x&&x.seriesNum||"").trim()?{seriesNum:String(x.seriesNum).replace(/^#/,"").trim()}:{})})).filter(r=>r.title);
+  if(!rows.length)return null;
+  return stageImportRows(rows,"Photo read by Claude");
 }
 async function claudeReadPhoto(kind,file){
   const url=await compressImage(file,1400,.85);
@@ -40501,7 +40555,10 @@ async function renderHub(part){
       <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph${ficsOn()?" / AO3":""}</h2><span class="n" id="impN"></span></div>
       <div class="hcard">
         <div class="hrow2"><button class="btn pri" id="csvBtn">⭱ Choose an export file</button>
+          ${claudeReady()?`<button class="btn" id="impPhoto" title="A shelf of spines, a list, a screenshot of a library, a receipt — Claude reads every book on it into the list below">📷 Books from a photo</button>
+          <input type="file" id="impPhotoFile" accept="image/*" hidden>`:""}
           <button class="btn" id="impClear" hidden>Clear the list</button></div>
+        ${claudeReady()?`<div class="hint" id="impPhotoSay" style="margin:6px 0 0">📷 A photo of a shelf, a pile or a list — or a screenshot of one — and Claude reads every book on it into the list below, to tick like an export's.</div>`:""}
         ${hcSettings()?`<div class="hrow2" style="margin-top:9px;flex-wrap:wrap;gap:6px">
           <span class="lbl" title="Read straight from Goodreads through your own Supabase — see goodreads-function.ts">📚 Straight from Goodreads:</span>
           ${GR_SHELVES.map(([k,l])=>`<button class="btn smallbtn" data-grshelf="${k}">${l}</button>`).join("")}
@@ -40673,6 +40730,20 @@ async function renderHub(part){
      returns when it is not on the page, and the two buttons are guarded here */
   refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
+  /* many books off one picture — see ONE PHOTO, THREE ANSWERS */
+  {const pb=q("#impPhoto"),pf=q("#impPhotoFile"),ps=q("#impPhotoSay");
+   if(pb&&pf){pb.onclick=()=>pf.click();
+    pf.onchange=async()=>{const f=pf.files[0];pf.value="";if(!f)return;
+      pb.disabled=true;pb.textContent="📷 Claude is reading it…";
+      try{
+        const r=await claudeReadAny(f,"many");const o=r.json||{};
+        const list=o.what==="many"?(o.books||[]):o.what==="book"&&o.book&&String(o.book.title||"").trim()?[{title:o.book.title,author:o.book.author,series:o.book.series,seriesNum:o.book.seriesNum}]:[];
+        const res=stagePhotoBooks(list);
+        if(!res){if(ps)ps.textContent="📷 Claude found no book title it could read on that picture — a closer, straighter shot works best.";}
+        else{refreshImport();
+          if(ps)ps.textContent=`📷 Claude read ${res.n} book${res.n===1?"":"s"} off the picture: ${res.fresh} new on the list below${res.updated?`, ${res.updated} already there`:""}. Tick the ones you want on your shelf.`;}
+      }catch(e){if(ps)ps.textContent="📷 Claude couldn't read it — "+((e&&e.message)||"no answer");}
+      finally{pb.disabled=false;pb.textContent="📷 Books from a photo";}};}}
   qa("[data-grshelf]",m).forEach(b=>b.onclick=()=>importGoodreadsFeed(b.dataset.grshelf));
   {const ga=q("#grAdd",m);
    if(ga)ga.onclick=()=>{
@@ -59593,7 +59664,7 @@ function openQuickAdd(){
       <button class="btn" id="qaClose" style="margin-left:auto;padding:4px 10px">Close</button></div>
     <div class="hint" style="margin:0 0 7px">Paste anything — a blurb, a shop page, “Title by Author” — or give it a photo of the cover or back, and the details are filled in for you to check.</div>
     <textarea class="field" id="qaText" rows="6" placeholder="Paste text about the book here…"></textarea>
-    <div class="bgdrop" id="qaDrop" style="margin-top:8px">📷 Drop, paste or choose a photo — the text is read off it (needs internet the first time)</div>
+    <div class="bgdrop" id="qaDrop" style="margin-top:8px">📷 Drop, paste or choose a photo — ${claudeOn()?"a cover, a fic's AO3 page, or a whole shelf of books, and Claude reads it":"the text is read off it (needs internet the first time)"}</div>
     <div class="hint" id="qaMsg" style="margin:7px 0 0;min-height:16px"></div>
     <button class="btn pri" id="qaGo" style="margin-top:8px">Read the details</button>
     <div id="qaPrev" style="margin-top:10px"></div>`;
@@ -59617,7 +59688,16 @@ async function quickOcr(file){
   if(claudeOn()){
     msg("Claude is reading the photo…");
     try{
-      const j=await claudeReadPhoto("book",file);
+      /* a book, a fic, or several books — see ONE PHOTO, THREE ANSWERS */
+      const r=await claudeReadAny(file);
+      const o=r.json||{},j=o.book||{};
+      if(o.what==="many"&&(o.books||[]).length){
+        const res=stagePhotoBooks(o.books);
+        if(res){msg("");showQuickMany(o.books.filter(x=>String(x&&x.title||"").trim()),res);return;}
+      }
+      if(o.what==="fic"&&o.fic&&String(o.fic.title||"").trim()){
+        msg("Read by Claude — a fic. Check what it found below:");showQuickFic(ficRowOf(o.fic));return;
+      }
       const title=[j.title,j.subtitle].map(x=>String(x||"").trim()).filter(Boolean).join(": ");
       if(title||j.author){
         msg("Read by Claude — check what it found below:");
@@ -59644,6 +59724,48 @@ async function quickOcr(file){
     msg("Read it"+(why?" in this browser ("+why+")":"")+" — check what it found below:");
     showQuickPreview(parseBookText(q("#qaText")?q("#qaText").value:text));
   }catch(e){msg(e.message||"That photo couldn't be read.");}
+}
+/* several books off one photo: already staged (stagePhotoBooks), so this
+   only says which and leads to the import list, where they are picked */
+function showQuickMany(list,res){
+  const w=q("#qaPrev");if(!w)return;
+  w.innerHTML=`<div class="lbl" style="display:block;margin-bottom:4px">Claude read ${list.length} book${list.length===1?"":"s"} off the photo</div>
+    <div class="hint" style="margin:0 0 6px;max-height:160px;overflow:auto">${list.map(x=>`${esc(String(x.title).trim())}${String(x.author||"").trim()?` — ${esc(String(x.author).trim())}`:""}`).join("<br>")}</div>
+    <div class="hint" style="margin:0 0 8px">${res.fresh?`${res.fresh} new on the import list`:"All of them were already on the import list"}${res.updated?` · ${res.updated} already there, read again`:""}. Nothing is on your shelf yet: tick the ones you want there, and the books you already have are marked.</div>
+    <button class="btn pri" id="qmGo">Open them in 🧰 Shelf care</button>`;
+  q("#qmGo").onclick=()=>{closeQuickAdd();view="care";render();
+    setTimeout(()=>{const l=q("#impList");if(l)l.scrollIntoView({block:"start"});},120);};
+}
+/* one fic off one photo, in the AO3 file's shape (ficRowOf); Create goes
+   through importOne, so it lands the way an AO3 import's fic does */
+function showQuickFic(row){
+  const w=q("#qaPrev");if(!w)return;
+  const list=a=>esc((a||[]).join(", "));
+  w.innerHTML=`
+    <div class="lbl" style="display:block;margin-bottom:4px">Check &amp; fix, then create:</div>
+    <input class="field" id="qfT" placeholder="Title" value="${esc(row.title)}" style="margin-bottom:6px">
+    <input class="field" id="qfA" placeholder="Author" value="${esc(row.author)}" style="margin-bottom:6px">
+    <input class="field" id="qfF" placeholder="Fandoms, with commas" value="${list(row.fandoms)}" style="margin-bottom:6px">
+    <input class="field" id="qfS" placeholder="Relationships, with commas" value="${list(row.ships)}" style="margin-bottom:6px">
+    <div class="hint" style="margin:0 0 6px">${[row.characters.length?row.characters.length+" character"+(row.characters.length===1?"":"s"):"",
+      row.tags.length?row.tags.length+" tag"+(row.tags.length===1?"":"s"):"",row.maturity,row.link?"a link to the work":""].filter(Boolean).map(esc).join(" · ")||"No characters, tags or link on the picture."}</div>
+    <select id="qfSt" class="field" style="margin-bottom:6px">
+      <option value="want">Want to read</option><option value="reading">Reading now</option><option value="finished">Finished</option>
+    </select>
+    <textarea class="field" id="qfSum" rows="4" placeholder="Summary…">${esc(row.summary)}</textarea>
+    <button class="btn pri" id="qfMake" style="margin-top:8px">＋ Create the fic</button>`;
+  q("#qfMake").onclick=async()=>{
+    const title=q("#qfT").value.trim();
+    if(!title){alert("It needs at least a title.");return;}
+    const split=v=>String(v||"").split(/\s*,\s*/).map(x=>x.trim()).filter(Boolean);
+    Object.assign(row,{title,author:q("#qfA").value.trim(),fandoms:split(q("#qfF").value),ships:split(q("#qfS").value),
+      status:q("#qfSt").value,summary:q("#qfSum").value.trim()});
+    try{await importOne(row);}catch(e){alert("Couldn't save — storage may be full.");return;}
+    if(SYNC.on)flushQueue();
+    const b=books[0];
+    closeQuickAdd();
+    if(b)openBook(b.id,false);
+  };
 }
 function showQuickPreview(p){
   const w=q("#qaPrev");if(!w)return;
