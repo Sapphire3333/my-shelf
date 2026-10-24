@@ -3345,6 +3345,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .tastelist{margin:0;padding-left:20px;font-size:14px;line-height:1.5}
   .tastelist li{margin:0 0 2px}
   .recrow{border-top:1px solid var(--line);padding:9px 0 8px}
+  .verdict{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--bg)}
+  .vfit,.vend{background:var(--card);border-color:var(--line);font-size:12px}
+  .vfit.great,.vfit.good{border-color:var(--teal);color:var(--teal-ink)}
+  .vend.hated{border-color:var(--rose);color:var(--rose)}
+  #vdSug button{display:block;width:100%;text-align:left;border:0;background:none;padding:7px 11px;font:inherit;font-size:14px;cursor:pointer;color:inherit}
+  #vdSug button:hover{background:var(--bg)}
   .fpcovmark{position:absolute;left:0;right:0;bottom:0;display:none;font-style:normal;
     font-size:10px;font-weight:700;text-align:center;padding:1px 0;border-radius:0 0 6px 6px}
   .fpcovbox.trying{outline:2px solid var(--amber);border-radius:8px}
@@ -12968,6 +12974,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-24.1",go:["tab:insights"],lines:["<b>✨ Would I like it?</b> On ✨ Insights, under Something to read: type a title — your own books and Open Library's are suggested as you type — and <b>✨ Judge it</b>. Claude reads what the book is, its pace, what readers praise and complain about, and how it ends, spoilers and all, and gives you a fit and a score out of ten against your taste: why it would work for you, what to watch out for, and whether the ending is one you'd hate, which holds the score to 4 however well the rest fits. Every verdict is kept to reopen from the line under the card."]},
   {v:"2026-10-23.11",lines:["<b>🔎 No more same-titled strangers.</b> Auto-fill could fill a book — most often a story inside a collection — from a different book that only shared its title: Hardcover and AniList went by the title alone, and filling several at once checked the author on books but never on stories. Both now want the author too, and a story whose lookup names somebody else is left unticked with the two names side by side."]},
   {v:"2026-10-23.10",go:["tab:insights"],lines:["<b>✨ Something to read.</b> On ✨ Insights, under your taste: pick moods, your own genres, or say what you want in words — or nothing, and Claude goes by your taste alone. <b>✨ Suggest five</b> searches the web so every book is real and says where it found it, with why it suits you, Goodreads and StoryGraph, and ★ Want to read to put it on your shelf. Or choose <b>My Want to read</b> and it picks five you already have, with ⏭ Up next. ＋ 5 more and ↻ A fresh set never repeat a book they've shown you."]},
   {v:"2026-10-23.9",go:["tab:insights"],lines:["<b>✨ Your taste, as Claude reads it.</b> On ✨ Insights, under You, as a reader, <b>✨ Read my shelf</b> has Claude read every book you have marked, ♥'d, given up on or written about, and write down what you love, what makes you rate high, what makes you quit, the authors and tropes that keep coming back — and what your own tags mean, by the books that carry them. It is kept there: ✎ Edit it to put it right, ↻ to read the shelf again as it grows, ↶ for the one before. The line under it says what a new read would cost."]},
@@ -25540,6 +25547,121 @@ function wireRecs(){
     if(await recAdd(x))redraw();else b.disabled=false;});
   qa("[data-recopen]").forEach(b=>b.onclick=()=>openBook(b.dataset.recopen,false));
   qa("[data-recnext]").forEach(b=>b.onclick=async()=>{await upNextToggle(b.dataset.recnext,true);redraw();});
+}
+/* ┌─ WOULD I LIKE IT? ───────────────────────────────────────────────────────┐
+   │ On Insights under Something to read: a title (suggested as you type —    │
+   │ your own books first, then Open Library's, which is free), and ✨ Judge │
+   │ it. Claude searches the web (verdictAsk, four searches at most) for what │
+   │ the book is, how it is paced, what readers praise and complain about,   │
+   │ and how it ENDS — in full, spoilers and all, since you read the last    │
+   │ chapter first — and weighs it against your taste (recTaste). The card:  │
+   │ a fit and a score out of ten, the kind of ending and whether it is one  │
+   │ you would hate (which holds the score to 4 whatever else fits), why it  │
+   │ would work for you, what to watch out for, and the pages it read. Every │
+   │ verdict is kept, newest first, in settings.verdicts (twenty, synced),   │
+   │ and reopens from the line under the card.                                │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const VERDICT_MAX=20;
+let verdictOpen=0,verdictSug=[],verdictT=null;
+async function verdictAsk(title,author){
+  const S={type:"string"},L={type:"array",items:S};
+  const schema={type:"object",properties:{found_title:S,author:S,what:S,pacing:S,praise:L,complaints:L,ending:S,
+    ending_kind:{type:"string",enum:["happy","bittersweet","sad","open","dark"]},ending_hated:{type:"boolean"},ending_fit:S,
+    fit:{type:"string",enum:["great","good","mixed","poor"]},score:S,works:L,watch:L},
+    required:["found_title","author","what","pacing","praise","complaints","ending","ending_kind","ending_hated","ending_fit","fit","score","works","watch"],additionalProperties:false};
+  const text=`${recTaste()}\n\nJudge this book for them: “${title}”${author?` by ${author}`:""}. Search the web for what it is, how it is paced, what readers praise and complain about, and how it ends.\n`
+    +`- what: one or two sentences on what the book is.\n- pacing: one sentence.\n- praise, complaints: what readers say, a few short lines each.\n`
+    +`- ending: how it actually ends, in full — they read the last chapter first and want the spoilers: who ends up with whom, who dies, how it resolves. Two to five sentences. If you could not find how it ends, say so plainly rather than guessing.\n`
+    +`- ending_kind, and ending_hated: true if, from their taste, this is an ending they would hate; ending_fit: one sentence on how the ending sits with their taste.\n`
+    +`- fit and score (a whole number out of 10). An ending they would hate keeps the score at 4 or below however well the rest fits.\n`
+    +`- works: why it would work for them; watch: specific things to watch out for, from their own dislikes.\n- found_title and author: as the pages you relied on give them.`;
+  const j=await claudeAsk({kind:"ask",text,schema,web:4,effort:"low",max_tokens:4000});
+  const o=j.json||{},s=k=>String(o[k]||"").trim(),l=k=>(Array.isArray(o[k])?o[k]:[]).map(x=>String(x||"").trim()).filter(Boolean).slice(0,8);
+  let score=Math.max(1,Math.min(10,Math.round(parseFloat(s("score"))||0)||1));
+  /* an ending you would hate holds the score down, and the fit word with it —
+     "Good fit · 4/10" said two things at once */
+  let fit=s("fit");
+  if(o.ending_hated){score=Math.min(score,4);if(fit==="great"||fit==="good")fit="mixed";}
+  return {at:todayStr(),asked:title,title:s("found_title")||title,author:s("author")||author||"",what:s("what"),pacing:s("pacing"),
+    praise:l("praise"),complaints:l("complaints"),ending:s("ending"),endingKind:s("ending_kind"),endingHated:!!o.ending_hated,endingFit:s("ending_fit"),
+    fit,score,works:l("works"),watch:l("watch"),
+    sources:(Array.isArray(j.sources)?j.sources:[]).slice(0,4).map(x=>({url:String(x.url||""),title:String(x.title||"")})).filter(x=>/^https?:/.test(x.url))};
+}
+function verdictCardHtml(v){
+  const on=books.find(b=>titleKey(b.title)===titleKey(v.title)||titleKey(b.title)===titleKey(v.asked));
+  const host=u=>{try{return new URL(u).hostname.replace(/^www\./,"");}catch(e){return "";}};
+  const fitWord={great:"Great fit",good:"Good fit",mixed:"Mixed fit",poor:"Poor fit"}[v.fit]||"Fit";
+  const list=(lbl,a)=>a&&a.length?`<div class="lbl" style="display:block;margin:10px 0 3px">${lbl}</div><ul class="tastelist">${a.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:"";
+  return `<div class="verdict">
+    <div style="display:flex;gap:8px 10px;align-items:center;flex-wrap:wrap"><b class="serif" style="font-size:17px">${esc(v.title)}</b>${v.author?`<span class="hint" style="margin:0">${esc(v.author)}</span>`:""}
+      <span class="chip vfit ${esc(v.fit)}">${fitWord} · ${v.score}/10</span>
+      ${v.endingKind?`<span class="chip vend${v.endingHated?" hated":""}">${esc(v.endingKind[0].toUpperCase()+v.endingKind.slice(1))} ending${v.endingHated?" — one you'd hate":""}</span>`:""}</div>
+    ${v.what?`<div style="font-size:14px;margin-top:6px">${esc(v.what)}</div>`:""}
+    ${v.pacing?`<div class="hint" style="margin:3px 0 0">${esc(v.pacing)}</div>`:""}
+    ${v.ending?`<div class="lbl" style="display:block;margin:10px 0 3px">How it ends — spoilers</div><div style="font-size:14px;line-height:1.55">${esc(v.ending)}</div>`:""}
+    ${v.endingFit?`<div class="hint" style="margin:4px 0 0">${esc(v.endingFit)}</div>`:""}
+    ${list("Why it would work for you",v.works)}${list("Watch out for",v.watch)}
+    ${(v.praise.length||v.complaints.length)?`<details style="margin:8px 0 0"><summary class="hint" style="cursor:pointer;margin:0">What readers say</summary>${list("They praise",v.praise)}${list("They complain about",v.complaints)}</details>`:""}
+    <div class="hrow2" style="margin-top:9px;gap:6px;flex-wrap:wrap;align-items:center">
+      ${on?`<button class="btn smallbtn" data-recopen="${esc(on.id)}">Open it</button>`:`<button class="btn smallbtn" id="vdAdd">★ Want to read</button>`}
+      ${(v.sources||[]).length?`<span class="hint" style="margin:0">Read on: ${v.sources.map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener" style="color:var(--teal-ink)">${esc(host(s.url))}</a>`).join(" · ")}</span>`:""}</div>
+  </div>`;
+}
+function verdictHtml(){
+  const V=settings.verdicts||[],ready=claudeReady();
+  if(!ready&&!V.length)return "";
+  const cur2=V[verdictOpen]||null;
+  return `<div class="sec" id="secVerdict"><div class="heading"><h2 class="serif">✨ Would I like it?</h2></div><div class="hcard">
+    ${ready?`<div class="hrow2" style="gap:6px;flex-wrap:wrap;position:relative"><span style="position:relative;flex:1;min-width:200px"><input class="field" id="vdTitle" placeholder="A book's title…" autocomplete="off">
+      <div class="sug" id="vdSug" hidden></div></span><button class="btn pri" id="vdGo">✨ Judge it</button></div>
+    <div class="hint" style="margin:4px 0 10px" id="vdSay">Searches the web for what readers say and how it ends — spoilers included · about 20–35¢</div>`:""}
+    ${cur2?verdictCardHtml(cur2):""}
+    ${V.length>1||(V.length&&!cur2)?`<div class="hint" style="margin:9px 0 0">Judged before: ${V.map((v,i)=>i===verdictOpen?`<b>${esc(v.title)}</b>`:`<button class="linkbtn" data-vdopen="${i}">${esc(v.title)}</button>`).join(" · ")}</div>`:""}
+  </div></div>`;
+}
+function wireVerdict(){
+  const redraw=()=>{const s=q("#secVerdict");if(s){s.outerHTML=verdictHtml();wireVerdict();}};
+  const inp=q("#vdTitle"),sug=q("#vdSug"),go=q("#vdGo"),say=q("#vdSay");
+  let picked=null;
+  const show=()=>{
+    if(!verdictSug.length){sug.hidden=true;return;}
+    sug.innerHTML=verdictSug.map((x,i)=>`<button data-vds="${i}">${x.own?"📚 ":""}${esc(x.title)}${x.author?` <span class="hint" style="margin:0">— ${esc(x.author)}</span>`:""}</button>`).join("");
+    sug.hidden=false;
+    qa("[data-vds]",sug).forEach(b=>b.onmousedown=()=>{picked=verdictSug[+b.dataset.vds];inp.value=picked.title;sug.hidden=true;});
+  };
+  if(inp){
+    inp.oninput=()=>{
+      picked=null;const v=inp.value.trim(),f=softFold(v);clearTimeout(verdictT);
+      if(v.length<2){verdictSug=[];show();return;}
+      const own=books.filter(b=>softFold(b.title).includes(f)).slice(0,4).map(b=>({title:b.title,author:b.author||"",own:true}));
+      verdictSug=own;show();
+      /* the books you don't have, from Open Library — free, and asked only
+         once typing has paused */
+      verdictT=setTimeout(async()=>{
+        try{const j=await fetchJson("https://openlibrary.org/search.json?limit=6&fields=title,author_name&q="+encodeURIComponent(v),1,5000);
+          if(inp.value.trim()!==v)return;
+          const seen=new Set(own.map(x=>titleKey(x.title)+"|"+softFold(x.author)));
+          const ol=((j&&j.docs)||[]).map(d=>({title:String(d.title||"").trim(),author:String((d.author_name||[])[0]||"").trim()}))
+            .filter(x=>x.title&&!seen.has(titleKey(x.title)+"|"+softFold(x.author)));
+          verdictSug=[...own,...ol].slice(0,8);show();}catch(e){}
+      },450);
+    };
+    inp.onblur=()=>setTimeout(()=>{if(sug)sug.hidden=true;},150);
+    inp.onkeydown=e=>{if(e.key==="Enter"&&go)go.click();};
+  }
+  if(go)go.onclick=async()=>{
+    const title=String(inp.value||"").trim();if(!title){inp.focus();return;}
+    const author=picked&&picked.title===title?picked.author:((books.find(b=>titleKey(b.title)===titleKey(title))||{}).author||"");
+    go.disabled=true;go.textContent="✨ Claude is reading about it…";
+    try{const v=await verdictAsk(title,author);
+      settings.verdicts=[v,...(settings.verdicts||[]).filter(x=>titleKey(x.title)!==titleKey(v.title))].slice(0,VERDICT_MAX);
+      saveSettings();verdictOpen=0;redraw();}
+    catch(e){go.disabled=false;go.textContent="✨ Try again";if(say)say.textContent="Claude couldn't — "+((e&&e.message)||"no answer");}
+  };
+  qa("[data-vdopen]").forEach(b=>b.onclick=()=>{verdictOpen=+b.dataset.vdopen;redraw();});
+  const add=q("#vdAdd");if(add)add.onclick=async()=>{const v=(settings.verdicts||[])[verdictOpen];if(!v)return;add.disabled=true;
+    const x={title:v.title,author:v.author,pitch:v.what};if(await recAdd(x))redraw();else add.disabled=false;};
+  qa("#secVerdict [data-recopen]").forEach(b=>b.onclick=()=>openBook(b.dataset.recopen,false));
 }
 /* The function the app needs: FN_VERSION in claude-function.ts. Check Claude
    names an older copy in Supabase, which answers photos but not the rest. */
@@ -45994,6 +46116,7 @@ function renderInsightsNow(){
     </div>
     ${tasteHtml()}
     ${recsHtml()}
+    ${verdictHtml()}
     <div class="sec"><div class="heading"><h2 class="serif">The numbers</h2></div>
       ${(()=>{
         /* Nine identical cards in a column, every figure shouting equally,
@@ -46233,7 +46356,7 @@ function renderInsightsNow(){
   {const tb=q("#secTbr",m);if(tb)try{roomHydrate(tb);}catch(e){}}
   qa("[data-atlastagsx]",m).forEach(el=>el.onclick=()=>{settings.atlasTagsOff=true;saveSettings();renderInsights();});
 
-  wireTaste();wireRecs();
+  wireTaste();wireRecs();wireVerdict();
   q("#anaGo").onclick=()=>{
     const text=buildAnalysis();
     const out=q("#anaOut");
@@ -56034,7 +56157,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","recapWords","taste","tastePrev"];
+const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","recapWords","taste","tastePrev","verdicts"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
