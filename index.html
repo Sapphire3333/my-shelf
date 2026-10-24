@@ -1448,6 +1448,9 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .rsn{border:1px solid #d6d3d1;background:#fff;border-radius:999px;font-size:12px;padding:3px 10px;color:#57534e;margin:2px}
   .rsn.on{background:#44403c;border-color:#57534e;color:#fff}
   .asprow{display:flex;flex-wrap:wrap;gap:2px 7px;align-items:flex-start;margin:4px 0}
+  /* a word Claude read in your notes, not yet ticked */
+  .rsn.aspsug{border:1.5px dashed var(--teal);color:var(--teal-ink)}
+  .asprow.aspnote{align-items:center;gap:6px;margin-top:6px}
   .asplab{font-size:12px;color:var(--mut);flex:none;width:82px;padding-top:5px}
   /* narrower than the label + a long chip, the chips drop under the label
      instead of pushing the page sideways */
@@ -1616,6 +1619,9 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
 
   /* search page */
   .searchbox{position:relative;margin-bottom:4px}
+  /* ✨ Ask your shelf in words — see ASK YOUR SHELF IN WORDS */
+  .askrow{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 6px}
+  .askrow .field{flex:1;min-width:min(220px,100%);font-size:14px}
   .searchbox .field{padding-left:36px}
   .searchbox .sic{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--faint)}
   .deep{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:18px}
@@ -6878,14 +6884,25 @@ const sugFmt=s=>s%1?s.toFixed(1):String(s);
    of its stories — the wiring at each site resolves it back. */
 function aspectChipsHtml(x,tgt){
   const a=x.aspects||{};
-  return ASPECTS.map(([k,label,ws])=>{
+  /* Claude's picks for these words, drawn dashed until ticked — see YOUR
+     NOTES SUGGEST ASPECT WORDS */
+  const key=((cur&&cur.id)||"")+"|"+tgt,sg=aspSug&&aspSug.key===key?aspSug:null,picks=(sg&&sg.picks)||{};
+  const rows=ASPECTS.map(([k,label,ws])=>{
     const mine=(a[k]||[]).filter(w=>!ws.some(([w2])=>w2===w));
     const all=[...ws.map(([w])=>w),...mine];
     return `<div class="asprow"><span class="asplab">${label}</span><span class="aspchips">${
-      all.map(w=>{const on=(a[k]||[]).includes(w);
-        return `<button class="rsn ${on?"on":""}" data-aspt="${esc(tgt)}" data-aspk="${k}" data-aspw="${esc(w)}">${on?"✓ ":""}${esc(w)}</button>`;}).join("")
+      all.map(w=>{const on=(a[k]||[]).includes(w),sug=!on&&(picks[k]||[]).includes(w);
+        return `<button class="rsn ${on?"on":""}${sug?" aspsug":""}" data-aspt="${esc(tgt)}" data-aspk="${k}" data-aspw="${esc(w)}"${sug?' title="Claude read this in your notes"':""}>${on?"✓ ":sug?"✨ ":""}${esc(w)}</button>`;}).join("")
     }<button class="rsn aspadd" data-aspaddt="${esc(tgt)}" data-aspaddk="${k}" title="A word of your own about the ${label.toLowerCase()}">＋</button></span></div>`;
   }).join("");
+  if(!claudeReady()||!aspNotesOf(x).length)return rows;
+  const n=Object.values(picks).reduce((s,l)=>s+l.length,0);
+  const line=!sg?`<button class="btn smallbtn" data-aspnote="${esc(tgt)}" title="Claude reads what you wrote about it and suggests the words it bears out — nothing is ticked until you say so">✨ From my notes</button>`
+    :sg.busy?`<span class="hint" style="margin:0">✨ Claude is reading your notes…</span>`
+    :sg.err?`<span class="hint" style="margin:0">✨ Claude couldn't — ${esc(sg.err)}</span> <button class="btn smallbtn" data-aspnote="${esc(tgt)}">Try again</button>`
+    :n?`<span class="hint" style="margin:0">✨ ${n} word${n===1?"":"s"} your notes bear out, marked ✨ above.</span> <button class="btn smallbtn pri" data-asptick="${esc(tgt)}">✓ Tick these</button> <button class="btn smallbtn" data-aspno="${esc(tgt)}">No thanks</button>`
+    :`<span class="hint" style="margin:0">✨ Your notes don't bear out any more of these.</span> <button class="btn smallbtn" data-aspno="${esc(tgt)}">OK</button>`;
+  return rows+`<div class="asprow aspnote">${line}</div>`;
 }
 /* The suggestion line. Always on show once there is enough to count — beside
    an empty rating it offers ★ Use it; beside a mark you set it only says
@@ -6913,6 +6930,24 @@ function wireAspects(root,apply){
     e.stopPropagation();
     apply(b.dataset.aspt,x=>toggleAspect(x,b.dataset.aspk,b.dataset.aspw));
   });
+  /* ✨ From my notes, and its answer — see YOUR NOTES SUGGEST ASPECT WORDS */
+  const whose=tgt=>!cur?null:tgt?(cur.entries||[]).find(en=>en.id===tgt)||null:cur;
+  qa("[data-aspnote]",root).forEach(b=>b.onclick=async e=>{
+    e.stopPropagation();
+    const tgt=b.dataset.aspnote,x=whose(tgt);if(!x)return;
+    const key=cur.id+"|"+tgt;
+    const comic=/manga|manhwa|manhua|comic|graphic|webtoon/i.test([...(x.genres||[]),...(cur.genres||[]),fmtOf(cur)].join(" "));
+    aspSug={key,busy:true};apply(tgt,null);
+    try{const picks=await aspAsk(x,comic);if(aspSug&&aspSug.key===key)aspSug={key,picks};}
+    catch(err){if(aspSug&&aspSug.key===key)aspSug={key,err:(err&&err.message)||"no answer"};}
+    apply(tgt,null);
+  });
+  qa("[data-asptick]",root).forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const tgt=b.dataset.asptick,picks=(aspSug&&aspSug.picks)||{};aspSug=null;
+    apply(tgt,x=>{Object.entries(picks).forEach(([k,ws])=>ws.forEach(w=>{if(!((x.aspects||{})[k]||[]).includes(w))toggleAspect(x,k,w);}));});
+  });
+  qa("[data-aspno]",root).forEach(b=>b.onclick=e=>{e.stopPropagation();const tgt=b.dataset.aspno;aspSug=null;apply(tgt,null);});
   qa("[data-aspaddt]",root).forEach(b=>b.onclick=e=>{
     e.stopPropagation();
     const tgt=b.dataset.aspaddt,k=b.dataset.aspaddk;
@@ -12974,6 +13009,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-24.4",go:["tab:search"],lines:["<b>✨ Ask your shelf in words.</b> Under 🔍 Search's box, type a question — “fantasy I gave 8 or more with found family”, “short books on my Want to read”, “what did I finish last summer” — and <b>✨ Ask</b>. Claude reads the question with your genre and tag names and turns it into one combined filter; your books never leave the device, the shelf is searched here, and the heading says how the question was read. About 1¢.","<b>✨ Aspect words from your notes.</b> In a book's editor, under its aspect words, <b>✨ From my notes</b> has Claude read what you liked, didn't like and noted, and mark the words it bears out with ✨. ✓ Tick these takes them; your mark is never touched."]},
   {v:"2026-10-24.3",lines:["<b>✨ Claude talks to you, not about you.</b> A verdict's lines and a suggestion's “why you” could slip into “they already rate this highly”; every one of them now says “you”."]},
   {v:"2026-10-24.2",go:["tab:insights"],lines:["<b>🔎 Look harder for the ending.</b> When a verdict in ✨ Would I like it? couldn't find a page that says how the book ends, a button under the ending sends Claude back for the ending alone — plot summaries, wikis, spoiler reviews, how the next book opens. The ending, its kind and the score follow what it finds: a confirmed ending you'd hate holds the score to 4, and one you wouldn't lets it back up."]},
   {v:"2026-10-24.1",go:["tab:insights"],lines:["<b>✨ Would I like it?</b> On ✨ Insights, under Something to read: type a title — your own books and Open Library's are suggested as you type — and <b>✨ Judge it</b>. Claude reads what the book is, its pace, what readers praise and complain about, and how it ends, spoilers and all, and gives you a fit and a score out of ten against your taste: why it would work for you, what to watch out for, and whether the ending is one you'd hate, which holds the score to 4 however well the rest fits. Every verdict is kept to reopen from the line under the card."]},
@@ -25704,6 +25740,95 @@ function wireVerdict(){
   const add=q("#vdAdd");if(add)add.onclick=async()=>{const v=(settings.verdicts||[])[verdictOpen];if(!v)return;add.disabled=true;
     const x={title:v.title,author:v.author,pitch:v.what};if(await recAdd(x))redraw();else add.disabled=false;};
   qa("#secVerdict [data-recopen]").forEach(b=>b.onclick=()=>openBook(b.dataset.recopen,false));
+}
+/* ┌─ ASK YOUR SHELF IN WORDS ────────────────────────────────────────────────┐
+   │ A line under 🔍 Search's box: a question in plain words — "fantasy I    │
+   │ gave 8 or more with found family", "short books on my Want to read" —   │
+   │ and ✨ Ask. Only the question goes, with the shelf's own genre and tag  │
+   │ names (so Claude answers in your words) and today's date: never a book. │
+   │ Claude turns it into one combined filter (askQuery: genres and tags,    │
+   │ all or any; authors; words of the title; stages; ♥; marks; pages; when  │
+   │ finished; kinds; an order), and the app runs it itself (askRows) over  │
+   │ every book and every story in a collection, as Search's S.filter of     │
+   │ type "ask" — so the rows, the counts and the one-row-per-shelf-item fold │
+   │ are Search's own. The heading says how the question was read.            │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+async function askQuery(question){
+  const S2={type:"string"},L={type:"array",items:S2};
+  const props={genres_all:L,genres_any:L,tags_all:L,tags_any:L,authors:L,title_words:L,
+    stages:{type:"array",items:{type:"string",enum:["finished","reading","want","dnf","hold"]}},
+    favorite:{type:"string",enum:["any","yes","no"]},rating_min:S2,rating_max:S2,pages_min:S2,pages_max:S2,
+    finished_from:S2,finished_to:S2,kinds:{type:"array",items:{type:"string",enum:["book","fanfic","ai"]}},
+    sort:{type:"string",enum:["none","rating","pages","finished","title"]},read_as:S2};
+  const schema={type:"object",properties:props,required:Object.keys(props),additionalProperties:false};
+  const gs=Object.keys(genres).sort((a,c)=>a.localeCompare(c)).slice(0,250);
+  const kw={};books.forEach(b=>{(b.keywords||[]).forEach(k=>kw[k]=(kw[k]||0)+1);(b.entries||[]).forEach(en=>(en.keywords||[]).forEach(k=>kw[k]=(kw[k]||0)+1));});
+  const ts=Object.entries(kw).sort((a,c)=>c[1]-a[1]).slice(0,400).map(x=>x[0]);
+  const text=`A reader asks their own book shelf: “${question}”\nToday is ${todayStr()}.\nTurn it into a filter over their shelf. Use their genre and tag names exactly as listed — pick the ones that mean what they asked; leave a list empty where the question says nothing about it.\n`
+    +`Their genres: ${gs.join("; ")||"none"}\nTheir tags: ${ts.join("; ")||"none"}\n`
+    +`Marks are out of 10; stages are finished, reading, want (want to read), dnf (did not finish), hold (on hold). rating_min, rating_max, pages_min, pages_max as digits or "". finished_from and finished_to as a year or YYYY-MM-DD, or "". favorite: yes, no or any. kinds: book, fanfic, ai, or empty for all. read_as: one short line saying how you read the question, to the reader as "you".`;
+  const j=await claudeAsk({kind:"ask",text,schema,effort:"low",max_tokens:1500});
+  return j.json||{};
+}
+function askRows(o,pool){
+  const low=a=>(Array.isArray(a)?a:[]).map(x=>String(x||"").trim().toLowerCase()).filter(Boolean);
+  const gA=low(o.genres_all),gO=low(o.genres_any),tA=low(o.tags_all),tO=low(o.tags_any),au=(o.authors||[]).filter(Boolean),tw=(o.title_words||[]).map(softFold).filter(Boolean);
+  const st=o.stages||[],kinds=o.kinds||[];
+  const num=k=>{const n=parseFloat(String(o[k]||""));return isFinite(n)?n:null;};
+  const rMin=num("rating_min"),rMax=num("rating_max"),pMin=num("pages_min"),pMax=num("pages_max");
+  const day=(s,end)=>{s=String(s||"").trim();if(/^\d{4}$/.test(s))return s+(end?"-12-31":"-01-01");return /^\d{4}-\d\d-\d\d$/.test(s)?s:"";};
+  const fFrom=day(o.finished_from,false),fTo=day(o.finished_to,true);
+  const rows=pool.flatMap(b=>isColl(b)?(b.entries||[]).map(en=>storyProxy(b,en)):[b]);
+  const has=(list,want,all)=>{const l=low(list);return all?want.every(w=>l.includes(w)):want.some(w=>l.includes(w));};
+  const stage=x=>x.dnf?"dnf":x.hold?"hold":(x.status||"finished");
+  let out=rows.filter(x=>{
+    if(gA.length&&!has(x.genres,gA,true))return false;
+    if(gO.length&&!has(x.genres,gO,false))return false;
+    if(tA.length&&!has(x.keywords,tA,true))return false;
+    if(tO.length&&!has(x.keywords,tO,false))return false;
+    if(au.length&&!au.some(a=>authorNear(a,x.author||"")))return false;
+    if(tw.length&&!tw.every(w=>softFold(x.title||"").includes(w)))return false;
+    if(st.length&&!st.includes(stage(x)))return false;
+    if(o.favorite==="yes"&&!x.favorite)return false;
+    if(o.favorite==="no"&&x.favorite)return false;
+    const r=x.rating==null||x.rating===""?null:Number(x.rating);
+    if((rMin!=null||rMax!=null)&&r==null)return false;
+    if(rMin!=null&&r<rMin)return false;if(rMax!=null&&r>rMax)return false;
+    const p=parseInt(x.pages)||0;
+    if((pMin!=null||pMax!=null)&&!p)return false;
+    if(pMin!=null&&p<pMin)return false;if(pMax!=null&&p>pMax)return false;
+    if(fFrom||fTo){const d=String(lastEnd(x)||x.dateFinished||"").slice(0,10);if(!d)return false;if(fFrom&&d<fFrom)return false;if(fTo&&d>fTo)return false;}
+    if(kinds.length&&!kinds.includes(kindOf(x)))return false;
+    return true;
+  });
+  const by={rating:x=>-(Number(x.rating)||0),pages:x=>-(parseInt(x.pages)||0),finished:x=>-(Date.parse(lastEnd(x)||x.dateFinished||"")||0)}[o.sort];
+  if(by)out=out.sort((a,c)=>by(a)-by(c));
+  else if(o.sort==="title")out=out.sort((a,c)=>String(a.title||"").localeCompare(String(c.title||"")));
+  return out;
+}
+/* ┌─ YOUR NOTES SUGGEST ASPECT WORDS ────────────────────────────────────────┐
+   │ Beside a book's aspect words, ✨ From my notes sends what you wrote —  │
+   │ liked, disliked, so-so and the notes — with the words already on offer  │
+   │ (ASPECTS and any of your own), and Claude picks the ones your writing    │
+   │ bears out. They are drawn as dashed chips with ✓ Tick these / No thanks │
+   │ (aspSug, per book or story); nothing changes until you press, and the    │
+   │ mark is never touched — the suggestion line below already only offers.  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+let aspSug=null;   /* {key, picks:{aspect:[word]}, busy, err} */
+const aspNotesOf=x=>[["Liked",x.pros],["Didn't like",x.cons],["So-so",x.meh]].map(([l,a])=>{
+  const t=(Array.isArray(a)?a:[]).map(w=>stripHtml(String(w||"")).trim()).filter(Boolean);return t.length?`${l}: ${t.join("; ")}`:"";})
+  .concat([stripHtml(String(x.canvasText||x.notes||"")).trim().slice(0,1500)?`Notes: ${stripHtml(String(x.canvasText||x.notes||"")).trim().slice(0,1500)}`:""]).filter(Boolean);
+async function aspAsk(x,isComic){
+  const a=x.aspects||{};
+  const offer=ASPECTS.filter(([k])=>k!=="art"||isComic).map(([k,label,ws])=>({k,label,words:[...ws.map(([w])=>w),...(a[k]||[]).filter(w=>!ws.some(([w2])=>w2===w))]}));
+  const props={};offer.forEach(o=>{props[o.k]={type:"array",items:{type:"string",enum:o.words}};});
+  const schema={type:"object",properties:props,required:Object.keys(props),additionalProperties:false};
+  const text=`A reader wrote this about “${x.title||"a book"}”:\n${aspNotesOf(x).join("\n")}\n\nFrom the words below, pick the ones their own writing clearly bears out, aspect by aspect. Pick none for an aspect the writing says nothing about. Never guess beyond what they wrote.\n`
+    +offer.map(o=>`${o.label}: ${o.words.join(", ")}`).join("\n");
+  const j=await claudeAsk({kind:"ask",text,schema,effort:"low",max_tokens:800});
+  const o=j.json||{},picks={};
+  offer.forEach(of=>{const w=(Array.isArray(o[of.k])?o[of.k]:[]).filter(v=>of.words.includes(v)&&!((a[of.k]||[]).includes(v)));if(w.length)picks[of.k]=w;});
+  return picks;
 }
 /* The function the app needs: FN_VERSION in claude-function.ts. Check Claude
    names an older copy in Supabase, which answers photos but not the rest. */
@@ -44593,8 +44718,22 @@ function renderSearchView(){
       <input class="field" id="sq" placeholder="Search…" value="${esc(S.q)}">
       <button class="fx" data-fx title="Clear what you typed (Esc)" aria-label="Clear the search">✕</button>
     </div>
+    ${claudeReady()?`<div class="askrow"><input class="field" id="askQ" placeholder="✨ Or ask in words — fantasy I gave 8 or more with found family…" value="${esc(S.askQ||"")}">
+      <button class="btn" id="askGo">✨ Ask</button></div>
+      <div class="hint" id="askSay" style="margin:-2px 0 10px">Only your question and your genre and tag names go to Claude — about 1¢; your shelf is searched here.</div>`:""}
     <div class="deep" id="scopeRow" style="flex-wrap:wrap;margin-bottom:18px"></div>
     <div id="sbody"></div>`;
+  {const ag=q("#askGo"),aq=q("#askQ"),as=q("#askSay");
+   if(ag&&aq){aq.onkeydown=e=>{if(e.key==="Enter")ag.click();};
+    ag.onclick=async()=>{const question=aq.value.trim();if(!question)return;S.askQ=question;
+      ag.disabled=true;ag.textContent="✨ Reading it…";
+      try{const o=await askQuery(question);
+        S.q="";const sqi=q("#sq");if(sqi)sqi.value="";S.multi=[];S.kmulti=[];
+        S.filter={type:"ask",value:o,label:`“${question}”${o.read_as?" — "+String(o.read_as).trim():""}`};
+        if(as)as.textContent="Only your question and your genre and tag names go to Claude — about 1¢; your shelf is searched here.";
+        renderSearchBody();}
+      catch(e){if(as)as.textContent="Claude couldn't — "+((e&&e.message)||"no answer");}
+      finally{ag.disabled=false;ag.textContent="✨ Ask";}};}}
   const sq=q("#sq");
   /* the same 160ms breather the library's find box has: every keystroke here
      reads through every summary, note and quote on the shelf */
@@ -44841,6 +44980,8 @@ function renderSearchBody(){
     if(f.type==="dgap"){const g=DEEP_GAPS.find(x=>x[0]===f.value);results=g?g[2]().filter(sKindOk):[];}
     /* a condition's own list — a bingo square, a colour, a medal; see PICKS */
     if(f.type==="pick"){pickFromPool=false;try{results=pickDef(f.value).rows().filter(sKindOk);}catch(e){results=[];}sPickPool=pickFromPool;}
+    /* a question asked in words — see ASK YOUR SHELF IN WORDS */
+    if(f.type==="ask")results=askRows(f.value,pool);
     heading=esc(f.label);
   }else if(S.multi.length){
     results=sUnits.filter(u=>S.multi.every(g=>(u.genres||[]).includes(g))).map(unitRow);
