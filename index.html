@@ -12974,6 +12974,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-24.2",go:["tab:insights"],lines:["<b>🔎 Look harder for the ending.</b> When a verdict in ✨ Would I like it? couldn't find a page that says how the book ends, a button under the ending sends Claude back for the ending alone — plot summaries, wikis, spoiler reviews, how the next book opens. The ending, its kind and the score follow what it finds: a confirmed ending you'd hate holds the score to 4, and one you wouldn't lets it back up."]},
   {v:"2026-10-24.1",go:["tab:insights"],lines:["<b>✨ Would I like it?</b> On ✨ Insights, under Something to read: type a title — your own books and Open Library's are suggested as you type — and <b>✨ Judge it</b>. Claude reads what the book is, its pace, what readers praise and complain about, and how it ends, spoilers and all, and gives you a fit and a score out of ten against your taste: why it would work for you, what to watch out for, and whether the ending is one you'd hate, which holds the score to 4 however well the rest fits. Every verdict is kept to reopen from the line under the card."]},
   {v:"2026-10-23.11",lines:["<b>🔎 No more same-titled strangers.</b> Auto-fill could fill a book — most often a story inside a collection — from a different book that only shared its title: Hardcover and AniList went by the title alone, and filling several at once checked the author on books but never on stories. Both now want the author too, and a story whose lookup names somebody else is left unticked with the two names side by side."]},
   {v:"2026-10-23.10",go:["tab:insights"],lines:["<b>✨ Something to read.</b> On ✨ Insights, under your taste: pick moods, your own genres, or say what you want in words — or nothing, and Claude goes by your taste alone. <b>✨ Suggest five</b> searches the web so every book is real and says where it found it, with why it suits you, Goodreads and StoryGraph, and ★ Want to read to put it on your shelf. Or choose <b>My Want to read</b> and it picks five you already have, with ⏭ Up next. ＋ 5 more and ↻ A fresh set never repeat a book they've shown you."]},
@@ -25566,13 +25567,13 @@ let verdictOpen=0,verdictSug=[],verdictT=null;
 async function verdictAsk(title,author){
   const S={type:"string"},L={type:"array",items:S};
   const schema={type:"object",properties:{found_title:S,author:S,what:S,pacing:S,praise:L,complaints:L,ending:S,
-    ending_kind:{type:"string",enum:["happy","bittersweet","sad","open","dark"]},ending_hated:{type:"boolean"},ending_fit:S,
+    ending_kind:{type:"string",enum:["happy","bittersweet","sad","open","dark"]},ending_hated:{type:"boolean"},ending_fit:S,ending_confirmed:{type:"boolean"},
     fit:{type:"string",enum:["great","good","mixed","poor"]},score:S,works:L,watch:L},
-    required:["found_title","author","what","pacing","praise","complaints","ending","ending_kind","ending_hated","ending_fit","fit","score","works","watch"],additionalProperties:false};
+    required:["found_title","author","what","pacing","praise","complaints","ending","ending_kind","ending_hated","ending_fit","ending_confirmed","fit","score","works","watch"],additionalProperties:false};
   const text=`${recTaste()}\n\nJudge this book for them: “${title}”${author?` by ${author}`:""}. Search the web for what it is, how it is paced, what readers praise and complain about, and how it ends.\n`
     +`- what: one or two sentences on what the book is.\n- pacing: one sentence.\n- praise, complaints: what readers say, a few short lines each.\n`
     +`- ending: how it actually ends, in full — they read the last chapter first and want the spoilers: who ends up with whom, who dies, how it resolves. Two to five sentences. If you could not find how it ends, say so plainly rather than guessing.\n`
-    +`- ending_kind, and ending_hated: true if, from their taste, this is an ending they would hate; ending_fit: one sentence on how the ending sits with their taste.\n`
+    +`- ending_kind, and ending_hated: true if, from their taste, this is an ending they would hate; ending_fit: one sentence on how the ending sits with their taste; ending_confirmed: true only if a page you read states how it ends.\n`
     +`- fit and score (a whole number out of 10). An ending they would hate keeps the score at 4 or below however well the rest fits.\n`
     +`- works: why it would work for them; watch: specific things to watch out for, from their own dislikes.\n- found_title and author: as the pages you relied on give them.`;
   const j=await claudeAsk({kind:"ask",text,schema,web:4,effort:"low",max_tokens:4000});
@@ -25580,12 +25581,41 @@ async function verdictAsk(title,author){
   let score=Math.max(1,Math.min(10,Math.round(parseFloat(s("score"))||0)||1));
   /* an ending you would hate holds the score down, and the fit word with it —
      "Good fit · 4/10" said two things at once */
-  let fit=s("fit");
-  if(o.ending_hated){score=Math.min(score,4);if(fit==="great"||fit==="good")fit="mixed";}
-  return {at:todayStr(),asked:title,title:s("found_title")||title,author:s("author")||author||"",what:s("what"),pacing:s("pacing"),
+  const v={scoreRaw:score,fitRaw:s("fit")};
+  verdictHold(v,!!o.ending_hated);
+  return Object.assign(v,{at:todayStr(),asked:title,title:s("found_title")||title,author:s("author")||author||"",what:s("what"),pacing:s("pacing"),
     praise:l("praise"),complaints:l("complaints"),ending:s("ending"),endingKind:s("ending_kind"),endingHated:!!o.ending_hated,endingFit:s("ending_fit"),
-    fit,score,works:l("works"),watch:l("watch"),
-    sources:(Array.isArray(j.sources)?j.sources:[]).slice(0,4).map(x=>({url:String(x.url||""),title:String(x.title||"")})).filter(x=>/^https?:/.test(x.url))};
+    endingSure:!!o.ending_confirmed,works:l("works"),watch:l("watch"),
+    sources:(Array.isArray(j.sources)?j.sources:[]).slice(0,4).map(x=>({url:String(x.url||""),title:String(x.title||"")})).filter(x=>/^https?:/.test(x.url))});
+}
+/* the score and fit as Claude gave them (scoreRaw, fitRaw), held down while
+   the ending is one you would hate — kept apart so a second look at the
+   ending can lift the hold as well as set it */
+function verdictHold(v,hated){
+  v.score=v.scoreRaw;v.fit=v.fitRaw;
+  if(hated){v.score=Math.min(v.score,4);if(v.fit==="great"||v.fit==="good")v.fit="mixed";}
+}
+/* 🔎 Look harder for the ending: only the ending, with more searches, for a
+   verdict whose ending no page it read had stated (endingSure false; older
+   verdicts carry no answer and are offered it too) */
+async function verdictLookEnding(v){
+  const S={type:"string"};
+  const schema={type:"object",properties:{ending:S,ending_kind:{type:"string",enum:["happy","bittersweet","sad","open","dark"]},
+    ending_hated:{type:"boolean"},ending_fit:S,ending_confirmed:{type:"boolean"}},
+    required:["ending","ending_kind","ending_hated","ending_fit","ending_confirmed"],additionalProperties:false};
+  const text=`${recTaste()}\n\nHow does “${v.title}”${v.author?` by ${v.author}`:""} end? Search for it specifically: plot summaries, fan wikis, spoiler reviews, the publisher's or author's own pages, and for a book in a series, how the next one opens. They read the last chapter first and want the spoilers in full: who ends up with whom, who dies, how it resolves. Two to five sentences.\n`
+    +(v.ending?`What was found before, unconfirmed: ${v.ending}\n`:"")
+    +`ending_confirmed: true only if a page you read states how it ends; if none does, say what you could and could not find. ending_kind, ending_hated (true if, from their taste, this is an ending they would hate) and ending_fit (one sentence) as before.`;
+  const j=await claudeAsk({kind:"ask",text,schema,web:5,effort:"low",max_tokens:2500});
+  const o=j.json||{};
+  if(String(o.ending||"").trim())v.ending=String(o.ending).trim();
+  if(o.ending_kind)v.endingKind=String(o.ending_kind);
+  v.endingHated=!!o.ending_hated;v.endingFit=String(o.ending_fit||v.endingFit||"").trim();v.endingSure=!!o.ending_confirmed;v.endingLooked=true;
+  if(v.scoreRaw==null){v.scoreRaw=v.score;v.fitRaw=v.fit;}
+  verdictHold(v,v.endingHated);
+  const seen=new Set((v.sources||[]).map(x=>x.url));
+  (Array.isArray(j.sources)?j.sources:[]).forEach(x=>{const u=String(x.url||"");if(/^https?:/.test(u)&&!seen.has(u)&&v.sources.length<7){seen.add(u);v.sources.push({url:u,title:String(x.title||"")});}});
+  return v;
 }
 function verdictCardHtml(v){
   const on=books.find(b=>titleKey(b.title)===titleKey(v.title)||titleKey(b.title)===titleKey(v.asked));
@@ -25600,6 +25630,8 @@ function verdictCardHtml(v){
     ${v.pacing?`<div class="hint" style="margin:3px 0 0">${esc(v.pacing)}</div>`:""}
     ${v.ending?`<div class="lbl" style="display:block;margin:10px 0 3px">How it ends — spoilers</div><div style="font-size:14px;line-height:1.55">${esc(v.ending)}</div>`:""}
     ${v.endingFit?`<div class="hint" style="margin:4px 0 0">${esc(v.endingFit)}</div>`:""}
+    ${v.endingSure?"":claudeReady()?`<div style="margin:6px 0 0"><button class="btn smallbtn" id="vdLook">🔎 Look harder for the ending</button>
+      <span class="hint" style="margin:0" id="vdLookSay">${v.endingLooked?"Looked once more and still not confirmed · ":""}a few more searches, only for the ending · about 10–20¢</span></div>`:""}
     ${list("Why it would work for you",v.works)}${list("Watch out for",v.watch)}
     ${(v.praise.length||v.complaints.length)?`<details style="margin:8px 0 0"><summary class="hint" style="cursor:pointer;margin:0">What readers say</summary>${list("They praise",v.praise)}${list("They complain about",v.complaints)}</details>`:""}
     <div class="hrow2" style="margin-top:9px;gap:6px;flex-wrap:wrap;align-items:center">
@@ -25659,6 +25691,10 @@ function wireVerdict(){
     catch(e){go.disabled=false;go.textContent="✨ Try again";if(say)say.textContent="Claude couldn't — "+((e&&e.message)||"no answer");}
   };
   qa("[data-vdopen]").forEach(b=>b.onclick=()=>{verdictOpen=+b.dataset.vdopen;redraw();});
+  const lk=q("#vdLook");if(lk)lk.onclick=async()=>{const v=(settings.verdicts||[])[verdictOpen];if(!v)return;
+    lk.disabled=true;lk.textContent="🔎 Claude is looking for the ending…";
+    try{await verdictLookEnding(v);saveSettings();redraw();}
+    catch(e){lk.disabled=false;lk.textContent="🔎 Try again";const s=q("#vdLookSay");if(s)s.textContent="Claude couldn't — "+((e&&e.message)||"no answer");}};
   const add=q("#vdAdd");if(add)add.onclick=async()=>{const v=(settings.verdicts||[])[verdictOpen];if(!v)return;add.disabled=true;
     const x={title:v.title,author:v.author,pitch:v.what};if(await recAdd(x))redraw();else add.disabled=false;};
   qa("#secVerdict [data-recopen]").forEach(b=>b.onclick=()=>openBook(b.dataset.recopen,false));
