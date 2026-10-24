@@ -13009,6 +13009,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-24.6",go:["tab:care"],lines:["<b>✨ Claude's look at your names.</b> At the foot of 🧰 Shelf care's Tidying up, <b>✨ Claude's look</b> reads your authors, series names and tags — the names alone, never your books — and finds what a spelling check can't: one author written two ways, one series under two names, two tags that mean the same. And the tags that are shelf labels rather than about the book: a Favorites tag can become ♥ on its books, a Dnf tag can mark them did not finish, a stray label can come off. Press the name to keep, or Leave it; every change is one ↶."]},
   {v:"2026-10-24.5",go:["tab:search"],lines:["<b>✨ Best-rated first means what it shows.</b> A question asked on 🔍 Search with an order — best first, longest, most recent — placed a collection by its best story while its row shows the collection's own mark, so a ★ 8.1 could sit above a ★ 8.6. The rows are now ordered by the mark they show."]},
   {v:"2026-10-24.4",go:["tab:search"],lines:["<b>✨ Ask your shelf in words.</b> Under 🔍 Search's box, type a question — “fantasy I gave 8 or more with found family”, “short books on my Want to read”, “what did I finish last summer” — and <b>✨ Ask</b>. Claude reads the question with your genre and tag names and turns it into one combined filter; your books never leave the device, the shelf is searched here, and the heading says how the question was read. About 1¢.","<b>✨ Aspect words from your notes.</b> In a book's editor, under its aspect words, <b>✨ From my notes</b> has Claude read what you liked, didn't like and noted, and mark the words it bears out with ✨. ✓ Tick these takes them; your mark is never touched."]},
   {v:"2026-10-24.3",lines:["<b>✨ Claude talks to you, not about you.</b> A verdict's lines and a suggestion's “why you” could slip into “they already rate this highly”; every one of them now says “you”."]},
@@ -41213,6 +41214,7 @@ async function renderHub(part){
         <div id="genDupBox"></div>
         <div id="tagDupBox"></div>
         <div id="capBox"></div>
+        <div id="claudeTidyBox"></div>
 </div>
     </div>
     <div class="sec">
@@ -41423,7 +41425,7 @@ async function renderHub(part){
   };
   /* the housekeeping half's wiring — every refresher looks its box up and
      returns when it is not on the page, and the two buttons are guarded here */
-  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();
+  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshClaudeTidy();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
   /* many books off one picture — see ONE PHOTO, THREE ANSWERS */
   {const pb=q("#impPhoto"),pf=q("#impPhotoFile"),ps=q("#impPhotoSay");
@@ -43296,10 +43298,136 @@ const genLeft=()=>new Set(settings.genLeave||[]);
    └───────────────────────────────────────────────────────────────────────────┘ */
 async function careAfterTidy(where){
   if(view==="care"&&q("#tagDupBox")){
-    for(const f of [refreshGenDupes,refreshTagDupes,refreshKwDupes,refreshCapTags])try{f();}catch(e){}
+    for(const f of [refreshGenDupes,refreshTagDupes,refreshKwDupes,refreshCapTags,refreshClaudeTidy])try{f();}catch(e){}
     return;
   }
   await Promise.resolve(render());keepPlaceAfterRedraw(where);
+}
+/* ┌─ CLAUDE'S LOOK AT THE NAMES ─────────────────────────────────────────────┐
+   │ The rows above catch spellings: a dropped letter, a plural, a capital.  │
+   │ ✨ Claude's look (claudeTidyAsk) reads the shelf's own vocabulary — the │
+   │ authors, the series names and the tags, each with how many carry it,    │
+   │ never a title — and finds what a spelling check cannot: one author      │
+   │ written two ways, one series under two names, two tags that mean the    │
+   │ same, and tags that are shelf labels rather than about the book (a      │
+   │ Favorites or Dnf brought in from another site, a stray metadata word).   │
+   │ Each comes back as a row: a merge offers every name to keep; a label     │
+   │ offers what it means — ♥ for its books, did not finish, or off — and    │
+   │ every row has Leave it, remembered in settings.claudeTidyLeave (synced). │
+   │ Merges and labels are one bulk step each (claudeTidyApply; tags through  │
+   │ mergeTag), so ↶ takes any of them back. The last answer is kept on this │
+   │ device (settings.claudeTidy) so a visit later finds it still there.      │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const ctKey=it=>it.kind+":"+[it.keep,...(it.others||[]),it.tag||""].map(s=>String(s).toLowerCase()).sort().join("|");
+function ctVocab(){
+  const au={},se={},tg={};
+  const bump=(m,v)=>{v=String(v||"").trim();if(v)m[v]=(m[v]||0)+1;};
+  books.forEach(b=>{bump(au,b.author);bump(se,b.series);(b.keywords||[]).forEach(k=>bump(tg,k));
+    (b.entries||[]).forEach(en=>{if(String(en.author||"").trim()&&en.author!==b.author)bump(au,en.author);(en.keywords||[]).forEach(k=>bump(tg,k));});});
+  const top=(m,n)=>Object.entries(m).sort((a,c)=>c[1]-a[1]).slice(0,n);
+  return {au:top(au,2500),se:top(se,1500),tg:top(tg,800)};
+}
+async function claudeTidyAsk(){
+  const v=ctVocab(),S2={type:"string"},L={type:"array",items:S2};
+  const merge={type:"array",items:{type:"object",properties:{keep:S2,others:L,why:S2},required:["keep","others","why"],additionalProperties:false}};
+  const schema={type:"object",properties:{authors:merge,series:merge,tags:merge,
+    labels:{type:"array",items:{type:"object",properties:{tag:S2,action:{type:"string",enum:["favorite","dnf","drop"]},why:S2},required:["tag","action","why"],additionalProperties:false}}},
+    required:["authors","series","tags","labels"],additionalProperties:false};
+  const fmt=a=>a.map(([n,c])=>`${n} (${c})`).join("; ");
+  const text=`This is the vocabulary of a reader's book shelf: the names in use and how many books carry each.\n\nAuthors: ${fmt(v.au)||"none"}\n\nSeries: ${fmt(v.se)||"none"}\n\nTags: ${fmt(v.tg)||"none"}\n\n`
+    +`Find what a spelling check would miss, and only what you are sure of:\n`
+    +`- authors: one person written two or more ways (initials and a full name, a middle name, a credit order, a known pen name of the same person) — never two different people. keep: the fullest usual form, others: the rest exactly as listed.\n`
+    +`- series: one series under two or more names (with or without "The", a subtitle, the word series, an older name).\n`
+    +`- tags: tags that mean the same thing to a reader (rivals to lovers and enemies to lovers are not the same; fae and faerie are). keep: the one carried most unless another is clearly the better name.\n`
+    +`- labels: tags that are a shelf or cataloguing label, or imported metadata, rather than about the book: action favorite when it marks favourites (they will get ♥), dnf when it marks books given up, drop when it says nothing about the book. Leave out a reminder the reader may still be using.\n`
+    +`Use the names exactly as written above. why: one short line, to the reader as "you".`;
+  const j=await claudeAsk({kind:"ask",text,schema,effort:"medium",max_tokens:6000});
+  const o=j.json||{},items=[];
+  const has={au:new Set(v.au.map(x=>x[0])),se:new Set(v.se.map(x=>x[0])),tg:new Set(v.tg.map(x=>x[0]))};
+  [["authors","author",has.au],["series","series",has.se],["tags","tag",has.tg]].forEach(([k,kind,known])=>
+    (Array.isArray(o[k])?o[k]:[]).forEach(x=>{const keep=String(x&&x.keep||"").trim(),others=(x&&x.others||[]).map(s=>String(s).trim()).filter(s=>s&&s!==keep&&known.has(s));
+      if(keep&&others.length)items.push({kind,keep,others,why:String(x.why||"").trim()});}));
+  (Array.isArray(o.labels)?o.labels:[]).forEach(x=>{const tag=String(x&&x.tag||"").trim();if(tag&&has.tg.has(tag))items.push({kind:"label",tag,action:x.action,why:String(x.why||"").trim()});});
+  settings.claudeTidy={at:todayStr(),items};saveSettings();
+  return items;
+}
+/* every book or story an item reaches, by the name it is under now */
+function ctReach(it){
+  const out=[];
+  const lc=s=>String(s||"").trim().toLowerCase();
+  const others=new Set((it.others||[]).map(lc)),tag=lc(it.tag);
+  books.forEach(b=>{
+    const self=it.kind==="author"?others.has(lc(b.author)):it.kind==="series"?others.has(lc(b.series)):(b.keywords||[]).some(k=>lc(k)===tag);
+    const ens=(b.entries||[]).filter(en=>it.kind==="author"?others.has(lc(en.author)):it.kind==="label"?(en.keywords||[]).some(k=>lc(k)===tag):false);
+    if(self||ens.length)out.push({b,self,ens});
+  });
+  return out;
+}
+async function claudeTidyApply(it){
+  if(it.kind==="tag"){for(const o of it.others)await mergeTag(o,it.keep);return;}
+  const lc=s=>String(s||"").trim().toLowerCase(),tag=lc(it.tag);
+  const items=[];let full=false;
+  for(const {b,self,ens} of ctReach(it)){
+    const before=JSON.parse(JSON.stringify(b));
+    const offTag=x=>{x.keywords=(x.keywords||[]).filter(k=>lc(k)!==tag);};
+    if(it.kind==="author"){if(self)b.author=it.keep;ens.forEach(en=>{en.author=it.keep;});}
+    else if(it.kind==="series"){if(self)b.series=it.keep;}
+    else{
+      /* markStatus turns did-not-finish on AND off — only a book not yet marked is pressed */
+      if(self){if(it.action==="favorite")b.favorite=true;else if(it.action==="dnf"&&!b.dnf)markStatus(b,"dnf");offTag(b);}
+      ens.forEach(en=>{if(it.action==="favorite")en.favorite=true;else if(it.action==="dnf")en.dnf=true;offTag(en);});
+    }
+    touchBook(b);
+    if(!(await putOrRestore(b,before))){full=true;break;}
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    try{await rebaseOpenBook(b.id);}catch(e){}
+  }
+  if(items.length)pushOp({t:"bulk",items});
+  if(SYNC.on)flushQueue();
+  if(full)alert(items.length+" changed. "+STORE_FULL_STOP);
+}
+function refreshClaudeTidy(){
+  const box=q("#claudeTidyBox");if(!box)return;
+  const ready=claudeReady(),T=settings.claudeTidy,left=new Set(settings.claudeTidyLeave||[]);
+  if(!ready&&!(T&&T.items&&T.items.length)){box.innerHTML="";return;}
+  /* what is still true of the shelf: a name merged by hand or a tag already
+     gone has nothing left to offer */
+  const live=((T&&T.items)||[]).filter(it=>!left.has(ctKey(it))&&ctReach(it).length+(it.kind==="tag"?1:0)>0
+    &&(it.kind!=="tag"||it.others.some(o=>books.some(b=>allKeywordsOf(b).includes(o)))));
+  const KIND={author:"One author, two names",series:"One series, two names",tag:"Two tags, one meaning",label:"A shelf label, not about the book"};
+  const n=it=>{const r=ctReach(it);return r.reduce((s,x)=>s+(x.self?1:0)+x.ens.length,0);};
+  const row=(it,i)=>{
+    const opts=it.kind==="label"
+      ?`<button class="btn" data-ctdo="${i}">${it.action==="favorite"?"♥ Make them favourites":it.action==="dnf"?"✕ Mark them did not finish":"Take the tag off"} <b>${n(it)}</b></button>`
+      :[it.keep,...it.others].map(nm=>`<button class="btn" data-ctkeep="${i}" data-ctv="${esc(nm)}" title="Keep this name and change the others to match">${esc(nm)}${it.kind==="tag"?"":` <b>${n({...it,others:[nm]})}</b>`}</button>`).join(`<span class="lbl" style="margin:0">or</span>`);
+    return `<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:7px">
+      <span class="dupehow">${KIND[it.kind]}${it.kind==="label"?` · “${esc(it.tag)}”`:""}</span>${opts}
+      <button class="btn" data-ctx="${i}" style="margin-left:auto">Leave ${it.kind==="label"?"it":"them"}</button>
+      ${it.why?`<div class="meta" style="flex:1 1 100%">✨ ${esc(it.why)}</div>`:""}</div>`;
+  };
+  box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">✨ Claude's look${live.length?` <b>${live.length}</b>`:""}</div>
+    <div class="hint" style="margin:0 0 7px">What a spelling check can't see: one author written two ways, one series under two names, two tags that mean the same, and tags that are shelf labels rather than about the book. Only the names go to Claude, never your books. Every change is one press of ↶ to undo.</div>
+    ${live.map(row).join("")}
+    ${ready?`<div class="hrow2" style="margin-top:8px;gap:6px;align-items:center"><button class="btn${live.length?"":" pri"}" id="ctGo">✨ ${T?"Look again":"Claude's look"}</button>
+      <span class="hint" style="margin:0" id="ctSay">${T?`Looked ${esc(printDay(T.at))}${live.length?"":" — nothing left from that look"} · `:""}about 5–15¢</span></div>`:""}`;
+  const go=q("#ctGo",box);
+  if(go)go.onclick=async()=>{go.disabled=true;go.textContent="✨ Claude is reading the names…";
+    try{await claudeTidyAsk();refreshClaudeTidy();}
+    catch(e){go.disabled=false;go.textContent="✨ Try again";const s=q("#ctSay",box);if(s)s.textContent="Claude couldn't — "+((e&&e.message)||"no answer");}};
+  qa("[data-ctx]",box).forEach(b=>b.onclick=()=>{const it=live[+b.dataset.ctx];if(!it)return;
+    settings.claudeTidyLeave=[...new Set([...(settings.claudeTidyLeave||[]),ctKey(it)])];saveSettings();refreshClaudeTidy();});
+  const act=async(b,it)=>{b.disabled=true;b.textContent="Changing…";const where=window.scrollY;
+    await claudeTidyApply(it);
+    settings.claudeTidyLeave=[...new Set([...(settings.claudeTidyLeave||[]),ctKey(it)])];saveSettings();
+    await careAfterTidy(where);refreshClaudeTidy();};
+  qa("[data-ctkeep]",box).forEach(b=>b.onclick=async()=>{const it0=live[+b.dataset.ctkeep];if(!it0)return;
+    const keep=b.dataset.ctv,all=[it0.keep,...it0.others],it={...it0,keep,others:all.filter(x=>x!==keep)};
+    undoSaid(`${it.others.map(o=>`“${o}”`).join(" and ")} changed to “${keep}”.`);
+    await act(b,it);});
+  qa("[data-ctdo]",box).forEach(b=>b.onclick=async()=>{const it=live[+b.dataset.ctdo];if(!it)return;
+    undoSaid(it.action==="favorite"?`Every book tagged “${it.tag}” has ♥ now, and the tag is off.`:it.action==="dnf"?`Every book tagged “${it.tag}” is marked did not finish, and the tag is off.`:`“${it.tag}” is off every book that had it.`);
+    await act(b,it);});
 }
 function refreshGenDupes(){
   const box=q("#genDupBox");if(!box)return;
@@ -56351,7 +56479,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","recapWords","taste","tastePrev","verdicts"];
+const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","recapWords","taste","tastePrev","verdicts","claudeTidyLeave"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
