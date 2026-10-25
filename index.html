@@ -13009,6 +13009,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-25.1",lines:["<b>🔮 Your guess on a reread waits for this reading's mark.</b> Guessing what you'd give a book you were reading again was judged the moment you finished it — against the mark from last time — and a book read a third time was never asked at all. Now the line waits for the mark you give this reading, or for <b>Keep</b> when the old one still stands, and every reading gets a guess of its own."]},
   {v:"2026-10-24.6",go:["tab:care"],lines:["<b>✨ Claude's look at your names.</b> At the foot of 🧰 Shelf care's Tidying up, <b>✨ Claude's look</b> reads your authors, series names and tags — the names alone, never your books — and finds what a spelling check can't: one author written two ways, one series under two names, two tags that mean the same. And the tags that are shelf labels rather than about the book: a Favorites tag can become ♥ on its books, a Dnf tag can mark them did not finish, a stray label can come off. Press the name to keep, or Leave it; every change is one ↶."]},
   {v:"2026-10-24.5",go:["tab:search"],lines:["<b>✨ Best-rated first means what it shows.</b> A question asked on 🔍 Search with an order — best first, longest, most recent — placed a collection by its best story while its row shows the collection's own mark, so a ★ 8.1 could sit above a ★ 8.6. The rows are now ordered by the mark they show."]},
   {v:"2026-10-24.4",go:["tab:search"],lines:["<b>✨ Ask your shelf in words.</b> Under 🔍 Search's box, type a question — “fantasy I gave 8 or more with found family”, “short books on my Want to read”, “what did I finish last summer” — and <b>✨ Ask</b>. Claude reads the question with your genre and tag names and turns it into one combined filter; your books never leave the device, the shelf is searched here, and the heading says how the question was read. About 1¢.","<b>✨ Aspect words from your notes.</b> In a book's editor, under its aspect words, <b>✨ From my notes</b> has Claude read what you liked, didn't like and noted, and mark the words it bears out with ✨. ✓ Tick these takes them; your mark is never touched."]},
@@ -27048,7 +27049,26 @@ async function openReader(id){
    whatever arrived from the other device. The 🔮 Oracle medal counts the
    gs: lines. Stories and collections are not asked. */
 const GUESS_MARK_XP=20,GUESS_MARK_TOL=1;
-const guessOf=b=>b&&b.guess&&isFinite(+b.guess.v)?+b.guess.v:null;
+/* ---- A GUESS BELONGS TO ONE READING ----
+   Made on a reread, a guess was settled the moment the book was finished —
+   against the mark it already had from the reading before ("you expected 4,
+   you gave 5.4") — and the ledger kept one result per book, so the next
+   reread was never asked at all. A guess now carries which reading it is for
+   (n: the readings finished before it) and the mark the book had when it was
+   made (was). It is settled against a mark given after this reading, or
+   against the old one once you press Keep (kept); and its ledger lines are
+   gs:/gx:<id> for a first reading as before, gs:/gx:<id>:<n> after. A guess
+   from an earlier reading is simply not this reading's — a book read again
+   asks again. Guesses made before this carry no n and settle as they did. */
+const guessOf=b=>{const g=b&&b.guess;if(!g||!isFinite(+g.v))return null;
+  if(g.n==null)return +g.v;
+  const done=doneReads(b).length,st=statusOf(b);
+  return (st==="finished"?done-1:done)===g.n?+g.v:null;};
+const guessKey=b=>{const n=b&&b.guess&&b.guess.n;return b.id+(n?":"+n:"");};
+/* still waiting for this reading's mark: the book carries the one it had
+   when the guess was made, and Keep has not been pressed */
+const guessWaits=b=>{const g=b.guess,r=b.rating==null||b.rating===""?null:Number(b.rating);
+  return !!g&&g.was!=null&&r!=null&&Number(g.was)===r&&!g.kept;};
 function guessHtml(b){
   if(!b||isColl(b)||collRow(b))return "";
   const st=statusOf(b),g=guessOf(b),r=b.rating==null||b.rating===""?null:Number(b.rating);
@@ -27060,9 +27080,13 @@ function guessHtml(b){
   /* the line reads what the ledger settled, not the mark as it is now: the
      guess is settled once, against the mark given when it was finished, and a
      mark changed afterwards showed "+20 XP" that was never paid */
-  if(st==="finished"&&!b.dnf&&r!=null){const hit=Math.abs(r-g)<=GUESS_MARK_TOL,led=(quests&&quests.led)||{};
-    const tail=led["gs:"+b.id]?` — called it: <b>+${GUESS_MARK_XP} XP</b>`
-      :led["gx:"+b.id]?(hit?` — within ${GUESS_MARK_TOL} now, but it was settled against the first mark you gave, and that one was further off`:" — not this time")
+  const led0=(quests&&quests.led)||{},k0=guessKey(b);
+  if(st==="finished"&&!b.dnf&&r!=null&&guessWaits(b)&&!led0["gs:"+k0]&&!led0["gx:"+k0])
+    return `<div class="vguess"><span class="hint" style="margin:0">🔮 You expected <b>${g}</b>. Your mark is still <b>${r.toFixed(1)}</b> from the reading before — give it its mark for this one, or</span>
+      <button class="pill" data-vguess="keep" style="font-size:12px;padding:2px 9px">Keep ${r.toFixed(1)}</button></div>`;
+  if(st==="finished"&&!b.dnf&&r!=null){const hit=Math.abs(r-g)<=GUESS_MARK_TOL,led=led0;
+    const tail=led["gs:"+k0]?` — called it: <b>+${GUESS_MARK_XP} XP</b>`
+      :led["gx:"+k0]?(hit?` — within ${GUESS_MARK_TOL} now, but it was settled against the first mark you gave, and that one was further off`:" — not this time")
       :hit?` — within ${GUESS_MARK_TOL}: ${GUESS_MARK_XP} XP on its way`:" — not this time";
     return `<div class="vguess"><span class="hint" style="margin:0">🔮 You expected <b>${g}</b>, you gave <b>${r.toFixed(1)}</b>${tail}.</span></div>`;}
   return `<div class="vguess"><span class="hint" style="margin:0">🔮 You expect <b>${g}</b>${st==="finished"?" — mark it and we'll see":""}.</span>${st==="finished"?"":` <button class="pill" data-vguess="clear" style="font-size:11px;padding:1px 8px">change</button>`}</div>`;
@@ -27075,9 +27099,11 @@ function guessCheck(){
     const g=guessOf(b);if(g==null)continue;
     if(statusOf(b)!=="finished"||b.dnf)continue;
     const r=b.rating==null||b.rating===""?null:Number(b.rating);if(r==null||!isFinite(r))continue;
-    if(led["gs:"+b.id]||led["gx:"+b.id])continue;
-    if(Math.abs(r-g)<=GUESS_MARK_TOL)questAward(GUESS_MARK_XP,"Called it: “"+(b.title||"Untitled")+"” — you expected "+g+", gave "+r.toFixed(1),"gs:"+b.id);
-    else questMark("gx:"+b.id);
+    const k=guessKey(b);
+    if(led["gs:"+k]||led["gx:"+k])continue;
+    if(guessWaits(b))continue;   /* this reading's mark not given yet — see A GUESS BELONGS TO ONE READING */
+    if(Math.abs(r-g)<=GUESS_MARK_TOL)questAward(GUESS_MARK_XP,"Called it: “"+(b.title||"Untitled")+"” — you expected "+g+", gave "+r.toFixed(1),"gs:"+k);
+    else questMark("gx:"+k);
   }
 }
 /* ---- THE WANTED CARD OF THE WEEK ----
@@ -49533,7 +49559,11 @@ function renderBookView(){
   qa("[data-vguess]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
     const v=x.dataset.vguess;
-    quickEdit(bk=>{bk.guess=v==="clear"?null:{v:+v,at:Date.now()};});});
+    /* which reading the guess is for, and the mark it had then — see A GUESS
+       BELONGS TO ONE READING */
+    if(v==="keep"){quickEdit(bk=>{if(bk.guess)bk.guess=Object.assign({},bk.guess,{kept:true});});setTimeout(()=>{try{guessCheck();}catch(e){}},900);return;}
+    quickEdit(bk=>{bk.guess=v==="clear"?null:{v:+v,at:Date.now(),n:doneReads(bk).length,
+      was:bk.rating==null||bk.rating===""?null:Number(bk.rating)};});});
   qa("[data-vr]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
     const v=x.dataset.vr;
