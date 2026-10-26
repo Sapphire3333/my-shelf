@@ -10435,8 +10435,22 @@ async function flushQueue(){
          step aside when nothing else waiting concerns the same book or picture.
          Letting a stuck delete drop behind a later re-add of the same id would
          run them the wrong way round and delete what had just been uploaded. */
-      const sameThing=o=>o!==op&&(o.id||o.key||"")===(op.id||op.key||"");
-      if(op.fails>=3&&SYNC.queue.length>1&&SYNC.queue[0]===op&&!SYNC.queue.some(sameThing))
+      /* ---- WHICH STUCK OPS MAY STEP ASIDE ----
+         "Nothing else of the same book or picture waiting" kept one cover
+         upload at the front for three days with 121 changes behind it,
+         failing 2,296 times, because the book's own row was queued behind
+         its cover. What the rule guards against is only ever a DELETE
+         changing places: a stuck delete dropping behind a later re-add of
+         the same id, or an upload dropping behind a later delete of the
+         same id, runs them the wrong way round. An upload — a book, a
+         cover, a picture, a record — may drop behind later uploads of the
+         same thing, which carry newer state. So it steps aside unless it is
+         a delete, or a delete of the same id waits behind it. */
+      const isDel=o=>/Del$/.test(String(o.kind||""));
+      const id=op.id||op.key||"";
+      const same=o=>o!==op&&(o.id||o.key||"")===id;
+      const held=isDel(op)?SYNC.queue.some(same):SYNC.queue.some(o=>same(o)&&isDel(o));
+      if(op.fails>=3&&SYNC.queue.length>1&&SYNC.queue[0]===op&&!held)
         SYNC.queue.push(SYNC.queue.shift());
       saveQueue();
     }
@@ -13029,6 +13043,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-26.9",go:["el:challenges:.qtasks"],lines:["<b>⇅ One stuck upload no longer holds everything behind it.</b> A change that keeps failing at the front of the sync queue used to stay there whenever anything else about the same book waited behind it — measured: one 10 KB cover, failing every minute for three days, with 121 changes queued behind it and none of them reaching your other device. An upload now steps aside after three failures and the rest go up; only a delete still waits, since a delete changing places with a re-add would run them the wrong way round. And <b>🩺 Test the road up</b> tries a small file upload too — the road covers and pictures take is not the one the tables take — and says what the stuck file is made of."]},
   {v:"2026-10-26.8",go:["el:challenges:.qtasks"],lines:["<b>🩺 Test the road up.</b> In 📋 Compare with your other device under the day’s three, the Syncing line now says what kind of change the last trouble was on, and a line names the change at the front of the queue — everything else waits behind it. <b>🩺 Test the road up</b> tries a small read and a small write to the cloud, measures that front change, sends it alone and says exactly what came back; if it goes up, the rest follows on its own."]},
   {v:"2026-10-26.7",go:["el:challenges:.qruns"],lines:["<b>🐉 Words on a card lose the dragon's halo.</b> With the dragon on, the small grey lines inside a card — “one missed day a week is forgiven” on Your runs, and the like — wore the same pale halo as words standing on the page, and on a white card that read as a smudge. A card is its own ground, so its words now stand plain on it; the halo stays on what is really on the page."]},
   {v:"2026-10-26.6",go:["tab:challenges"],lines:["<b>🎲 Today's three, on both screens.</b> Under the day's three on 🎲 Challenges, <b>📋 Compare with your other device</b> says what this screen knows: whether it is syncing and what is waiting to go up, when it last pulled, which day it thinks it is and by what day line, which tasks the game record has paid and when, and the receipt that ticked each one and from which screen. <b>⛅ Ask the cloud</b> reads the game record and the receipts as they stand in Supabase and says whether the other screen's ticks got that far; <b>⟳ Pull now</b> brings them down. If a tick made on one screen is missing on the other, open this on both and copy both — the first line that differs is the reason."]},
@@ -31989,18 +32004,34 @@ async function tasksDiagRoad(){
   catch(e){L.push("A small read from the cloud: "+say(e));}
   try{const {error}=await s.from("meta").upsert({user_id:uid,key:"probe",value:{t:Date.now(),dev:histDev()}});L.push("A small write to the cloud: "+say(error));}
   catch(e){L.push("A small write to the cloud: "+say(e));}
+  /* the road covers and pictures take is a different one — the storage
+     bucket, not the tables — so it is tried on its own: a 1×1 PNG, put up
+     and taken down again */
+  try{
+    const px=new Blob([Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),c=>c.charCodeAt(0))],{type:"image/png"});
+    const path=uid+"/probe.png";
+    const {error}=await s.storage.from("shelf").upload(path,px,{upsert:true,contentType:"image/png"});
+    L.push("A small file upload (the road covers and pictures take): "+say(error));
+    if(!error)try{await s.storage.from("shelf").remove([path]);}catch(e){}
+  }catch(e){L.push("A small file upload (the road covers and pictures take): "+say(e));}
   const op=SYNC.queue[0];
   if(!op){L.push("Nothing is waiting to go up.");return L;}
-  let size="?";
+  let size="?",holds="";
   try{
     let n=0;
     if(op.kind==="book"){const b=await dbGet("books",op.id);n=b?JSON.stringify(b).length:0;}
-    else if(op.kind==="cover"){const c=await dbGet("covers",op.id);n=c&&c.data?c.data.length:0;}
-    else if(op.kind==="img"){const im=await dbGet("images",op.key);n=im&&im.data?im.data.length:0;}
+    else if(op.kind==="cover"||op.kind==="img"){
+      const d=await dbGet(op.kind==="cover"?"covers":"images",op.kind==="cover"?op.id:op.key),data=String((d&&d.data)||"");
+      n=data.length;
+      /* what the file would be made of: a data: picture of some type, or
+         something that is not one and makes an empty file */
+      let bl=null;try{bl=dataURLtoBlob(data);}catch(e){}
+      holds=" · it holds "+(data.slice(0,5)==="data:"?data.slice(5,Math.max(5,data.indexOf(";")>0?data.indexOf(";"):30)):"not a data: picture, it begins "+JSON.stringify(data.slice(0,24)))
+        +(bl?", "+(bl.size<1024?bl.size+" bytes":Math.round(bl.size/1024)+" KB")+" as a file":", and could not be made into a file");}
     else if(op.kind==="meta"){const m=await dbGet("meta",op.key);n=m?JSON.stringify(m.v).length:0;}
     size=n>=1048576?(n/1048576).toFixed(1)+" MB":(n/1024).toFixed(n<10240?1:0)+" KB";
   }catch(e){size="unreadable here: "+say(e);}
-  L.push("The one at the front: "+opName(op)+" — "+size+", failed "+(op.fails||0)+"×, waiting since "+when(op.at));
+  L.push("The one at the front: "+opName(op)+" — "+size+", failed "+(op.fails||0)+"×, waiting since "+when(op.at)+holds);
   if(SYNC.flushing){L.push("The queue is sending right now — press again in a moment.");return L;}
   SYNC.flushing=true;
   try{await runOp(op);const i=SYNC.queue.indexOf(op);if(i>=0)SYNC.queue.splice(i,1);markOpDone(op);saveQueue();
