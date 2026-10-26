@@ -35,17 +35,32 @@
 //                                             with web: true, one web search too
 //   { kind: "book",  media_type, data }     — a cover, spine, title page or back
 //   { kind: "quote", media_type, data }     — a page, for the passage and its page
-//   { kind: "ask", text, system?, schema?, images?, web?, effort?, max_tokens? }
-//                                           — anything else the app asks: the
+//   { kind: "ask", text, system?, schema?, images?, web?, effort?, max_tokens?,
+//     model?, cache? }                      — anything else the app asks: the
 //                                             app writes the question, this
-//                                             function only carries it
+//                                             function only carries it.
+//                                             `model` picks one of MODELS for
+//                                             a small job (a name not listed,
+//                                             or a web search, runs on MODEL);
+//                                             `cache` marks `system` as a
+//                                             prompt cache, so the same text
+//                                             sent again within minutes is
+//                                             read at a tenth of the price
 // `data` is a photo as base64, no "data:" prefix. Nothing is stored here.
-// Every answer carries `usage` (tokens and web searches) for the app's meter.
+// Every answer carries `usage` (tokens and web searches) and `model` (the one
+// that answered) for the app's meter.
 
 import Anthropic from "npm:@anthropic-ai/sdk@0.131.0";
 
 const MODEL = "claude-opus-5-5";
-const FN_VERSION = 2;
+// the models an ask may name; web search and the API's own re-run of a
+// declined ask are not offered on Haiku, so those stay on MODEL
+const MODELS: Record<string, { web: boolean }> = {
+  "claude-opus-5-5": { web: true },
+  "claude-sonnet-5-5": { web: true },
+  "claude-haiku-5-5": { web: false },
+};
+const FN_VERSION = 3;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -160,14 +175,15 @@ Deno.serve(async (req) => {
   // decline by the safety classifiers is re-run on another model by the API
   // itself ("default" routes by why it was declined)
   // deno-lint-ignore no-explicit-any
-  const ask = (params: Record<string, unknown>): Promise<any> =>
+  const ask = (params: Record<string, unknown>): Promise<any> => {
+    const model = String(params.model || MODEL);
     // deno-lint-ignore no-explicit-any
-    (client.beta.messages.create as (p: any) => Promise<any>)({
-      model: MODEL,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
+    return (client.beta.messages.create as (p: any) => Promise<any>)({
+      ...(MODELS[model].web ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" } : {}),
       ...params,
+      model,
     });
+  };
   const usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, searches: 0 };
   // a turn with web searches can pause after ten server-side steps; it is
   // sent back as it stands and the API carries on where it stopped
@@ -260,16 +276,19 @@ Deno.serve(async (req) => {
     const effort = ["low", "medium", "high"].includes(body.effort) ? body.effort : "low";
     const maxTokens = Math.max(256, Math.min(16000, Number(body.max_tokens) || 4096));
     const schema = body.schema && typeof body.schema === "object" ? body.schema : null;
+    const model = MODELS[String(body.model)] && (!web || MODELS[String(body.model)].web) ? String(body.model) : MODEL;
     // a schema is held by the API itself when nothing else is in play; with
     // web searches the answer is asked for as a JSON object at its end
     const held = schema && !web;
     const ending = schema && web
       ? "\n\nWhen you are done, reply with only a JSON object matching this JSON Schema, and nothing after it:\n" + JSON.stringify(schema)
       : "";
+    const system = String(body.system || "").slice(0, 20_000);
     const { r, turns } = await run({
+      model,
       max_tokens: maxTokens,
       output_config: { effort, ...(held ? { format: { type: "json_schema", schema } } : {}) },
-      ...(body.system ? { system: String(body.system).slice(0, 20_000) } : {}),
+      ...(system ? { system: body.cache ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }] : system } : {}),
       ...(web ? { tools: webTool(web) } : {}),
       messages: [{
         role: "user",
