@@ -10192,7 +10192,14 @@ const nextMod=b=>Math.max(Date.now(),((b&&b.modified)||0)+1,(b?seenFloor(b.id):0
    written down. Nothing derives it, nothing backfills it, and a book that has
    never been edited on this build simply falls back to modified, so the list
    is no worse than it was for anything untouched. */
-const touchBook=b=>{if(!b)return 0;b.edited=Date.now();return b.modified=nextMod(b);};
+/* `quiet`: a change made to many books at once from Shelf care — merging two
+   tags, an author's spellings, capitals, Claude's look, the next-book check
+   — moves `modified` (the sync needs it) and not `edited`, which is "when YOU
+   last changed this one": 🕘 Recently edited sorts on it and the errands read
+   it as the last time you touched a book. Every merge stamped every book it
+   reached, so one merge buried the books just filled in, under dozens that
+   only lost a spelling. What changed still lists each of them. */
+const touchBook=(b,quiet)=>{if(!b)return 0;if(!quiet)b.edited=Date.now();return b.modified=nextMod(b);};
 
 /* the two values being filled in — the address and the public key. Separate
    from syncConfigured because plenty can be done with just these two: an
@@ -13009,6 +13016,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-26.1",go:["tab:history"],lines:["<b>🕘 Recently edited shows what you edited.</b> Tidying up in 🧰 Shelf care — merging two tags or an author's spellings, capitals, Claude's look — stamped every book it reached as just edited, so one merge pushed dozens of books above the ones you had actually opened and filled in. Those tidy-ups still show under 📝 What changed, but they no longer move a book up Recently edited, and the errands that ask how long since you last touched a book stop counting them too."]},
   {v:"2026-10-25.1",lines:["<b>🔮 Your guess on a reread waits for this reading's mark.</b> Guessing what you'd give a book you were reading again was judged the moment you finished it — against the mark from last time — and a book read a third time was never asked at all. Now the line waits for the mark you give this reading, or for <b>Keep</b> when the old one still stands, and every reading gets a guess of its own."]},
   {v:"2026-10-24.6",go:["tab:care"],lines:["<b>✨ Claude's look at your names.</b> At the foot of 🧰 Shelf care's Tidying up, <b>✨ Claude's look</b> reads your authors, series names and tags — the names alone, never your books — and finds what a spelling check can't: one author written two ways, one series under two names, two tags that mean the same. And the tags that are shelf labels rather than about the book: a Favorites tag can become ♥ on its books, a Dnf tag can mark them did not finish, a stray label can come off. Press the name to keep, or Leave it; every change is one ↶."]},
   {v:"2026-10-24.5",go:["tab:search"],lines:["<b>✨ Best-rated first means what it shows.</b> A question asked on 🔍 Search with an order — best first, longest, most recent — placed a collection by its best story while its row shows the collection's own mark, so a ★ 8.1 could sit above a ★ 8.6. The rows are now ordered by the mark they show."]},
@@ -26347,7 +26355,7 @@ async function atlasTagsApply(list){
     if(!setInAdd(b,r.tidy))continue;
     if(!it){it={id,before};items.push(it);}
   }
-  for(const it of items){const b=books.find(x=>x.id===it.id);touchBook(b);it.after=JSON.parse(JSON.stringify(b));
+  for(const it of items){const b=books.find(x=>x.id===it.id);touchBook(b,true);it.after=JSON.parse(JSON.stringify(b));
     try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});}
   if(!items.length)return 0;
@@ -43190,7 +43198,7 @@ function refreshNameDupes(){
       const before=JSON.parse(JSON.stringify(b));
       if(self)b[g.field]=keep;
       ens.forEach(en=>{en.author=keep;});
-      touchBook(b);
+      touchBook(b,true);
       if(!(await putOrRestore(b,before))){full=true;break;}
       if(SYNC.on)enqueue({kind:"book",id:b.id});
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -43403,7 +43411,7 @@ async function claudeTidyApply(it){
       if(self){if(it.action==="favorite")b.favorite=true;else if(it.action==="dnf"&&!b.dnf)markStatus(b,"dnf");offTag(b);}
       ens.forEach(en=>{if(it.action==="favorite")en.favorite=true;else if(it.action==="dnf")en.dnf=true;offTag(en);});
     }
-    touchBook(b);
+    touchBook(b,true);
     if(!(await putOrRestore(b,before))){full=true;break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
     items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
@@ -43763,7 +43771,7 @@ function refreshKwDupes(){
       if(!was.has(bk.id))was.set(bk.id,JSON.parse(JSON.stringify(bk)));
       bk.genres=bk.genres||[];
       if(!bk.genres.includes(h.g))bk.genres.push(h.g);
-      touchBook(bk);
+      touchBook(bk,true);
       bk.touched=true;
       try{await dbPut("books",bk);}
       catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
@@ -43837,7 +43845,7 @@ function refreshKwDupes(){
     }
     /* one write per book, however many of the two things happened to it */
     for(const b of touched.values()){
-      touchBook(b);
+      touchBook(b,true);
       try{await dbPut("books",b);}
       catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
       if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -44063,7 +44071,7 @@ async function mergeGenre(from,to){
     if(cur&&cur.id===b.id)rebaseOpenBook(b.id);
   }
   for(const b of touched.values()){
-    touchBook(b);
+    touchBook(b,true);
     try{await dbPut("books",b);}
     catch(e){alert("This couldn't be saved — storage may be full.");break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -44124,7 +44132,7 @@ async function mergeTag(from,to){
     if(isColl(b))(b.entries||[]).forEach(en=>{if(hasWord(en.keywords,from))en.keywords=swap(en.keywords);});
   }
   for(const b of touched.values()){
-    touchBook(b);
+    touchBook(b,true);
     try{await dbPut("books",b);}
     catch(e){alert("This couldn't be saved — storage may be full.");break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -44181,7 +44189,7 @@ async function capitaliseTags(pairs){
     if(isColl(b))(b.entries||[]).forEach(en=>{if(hits(en.keywords))en.keywords=swap(en.keywords);});
   }
   for(const b of touched.values()){
-    touchBook(b);
+    touchBook(b,true);
     try{await dbPut("books",b);}
     catch(e){alert("This couldn't be saved — storage may be full.\n\nWhat was written so far can still be undone.");break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
@@ -47524,7 +47532,7 @@ async function moveWordEverywhere(name,toGenre){
   for(const bk of touched.values()){
     if(full){const w=was.get(bk.id);for(const k of Object.keys(bk))delete bk[k];Object.assign(bk,JSON.parse(JSON.stringify(w)));continue;}
     bk.touched=true;
-    touchBook(bk);
+    touchBook(bk,true);
     /* storage full: this book and every one after it go back in memory to how
        they were — changed but never written, they were neither saved nor in
        the undo step, and the vocabulary below was still taken away */
@@ -59231,7 +59239,7 @@ async function nextOutAuto(list){
       /* never under a book that is open — its copy would save over this */
       if(view==="book"&&cur&&cur.id===b.id)continue;
       const live=books.find(x=>x.id===b.id);if(!live||!o)continue;
-      live.nextOut=o;touchBook(live);
+      live.nextOut=o;touchBook(live,true);
       try{await dbPut("books",live);}catch(e){continue;}
       if(SYNC.on)enqueue({kind:"book",id:live.id});
       wrote++;
