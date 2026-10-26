@@ -73,6 +73,15 @@ const PASSES=[
      fault can be told from a zoom fault. */
   {w:1588,scrap:true,scale:135,label:"1588 ⛶ at 135% — a wide screen with big text"},
   {w:1588,scrap:true,label:"1588 ⛶"},
+  /* ---- ON A DARK PICTURE ----
+     Under a dark background picture the words standing on the page are inked
+     white (markOnPage, data-onpage), and a card the app failed to recognise as
+     a card had every word inside it turned white on white — the editor's
+     folds, on a phone, for weeks, with every cell above green. These passes
+     set the dark tone and check each white word against what is really
+     under it (see the dark half of look). */
+  {w:430,scrap:true,dark:true,label:"430 ⛶ on a dark picture"},
+  {w:1588,scrap:true,scale:135,dark:true,label:"1588 ⛶ at 135% on a dark picture"},
 ];
 /* "pick" was the retired Pick tab, and render() has folded it into another
    view ever since — so that column was silently sweeping the cabinet under the
@@ -200,6 +209,32 @@ const SWEEP=`
   await wait(400);
   const out={};
   const CW=()=>document.documentElement.clientWidth;
+  /* ---- the dark picture's half (see ON A DARK PICTURE) ----
+     What is under a white word is read off the page itself: each ancestor's
+     background drawn into a one-pixel canvas and read back, which understands
+     every way a colour can be written — not through the app's own parser, the
+     thing under test. The first ancestor at least half opaque is the ground;
+     a picture or gradient on the way cannot be judged and is passed. */
+  const DARK=DARKPIC;
+  const cv=document.createElement("canvas");cv.width=cv.height=1;
+  const cx=cv.getContext("2d",{willReadFrequently:true});
+  const px=c=>{cx.clearRect(0,0,1,1);cx.fillStyle="rgba(0,0,0,0)";try{cx.fillStyle=c;}catch(e){}cx.fillRect(0,0,1,1);return cx.getImageData(0,0,1,1).data;};
+  const groundUnder=e=>{
+    for(let a=e;a&&a!==document.body;a=a.parentElement){
+      const cs=getComputedStyle(a);
+      if(cs.backgroundImage&&cs.backgroundImage!=="none")return null;
+      const d=px(cs.backgroundColor);
+      if(d[3]>=128)return (0.2126*d[0]+0.7152*d[1]+0.0722*d[2])/255;
+    }
+    return null;
+  };
+  const whiteOnLight=()=>{
+    if(!DARK)return [];
+    document.documentElement.setAttribute("data-bgtone","dark");markOnPage();
+    return [...document.querySelectorAll("#app [data-onpage]")].filter(e=>{
+      const r=e.getBoundingClientRect();if(!r.width||!r.height)return false;
+      const L=groundUnder(e);return L!=null&&L>0.6;});
+  };
   const look=async(name,ms)=>{
     step("measuring "+name);
     await wait(ms||450);
@@ -228,12 +263,14 @@ const SWEEP=`
       if(r.width<40&&/^vertical/.test(getComputedStyle(e).writingMode||""))return false;
       return r.width<40&&r.height>60&&r.height>r.width*3;
     });
-    out[name]={ok:document.documentElement.scrollWidth<=CW()+3&&!squeezed.length,
+    const inked=whiteOnLight();
+    out[name]={ok:document.documentElement.scrollWidth<=CW()+3&&!squeezed.length&&!inked.length,
       offenders:over.filter(e=>![...e.children].some(c=>set.has(c)))
         .map(e=>name_(e)+"  sticks out to "+Math.round(e.getBoundingClientRect().right)+"px of "+CW()).slice(0,8)
         .concat(squeezed.map(e=>{const r=e.getBoundingClientRect();
           return name_(e)+"  SQUEEZED to "+Math.round(r.width)+"x"+Math.round(r.height)
-            +" — “"+(e.textContent||"").trim().slice(0,28)+"”";}).slice(0,8))};
+            +" — “"+(e.textContent||"").trim().slice(0,28)+"”";}).slice(0,8))
+        .concat(inked.map(e=>name_(e)+"  WHITE ON A LIGHT GROUND — “"+(e.textContent||"").trim().slice(0,28)+"”").slice(0,8))};
   };
   /* This list is the one that actually WALKS the screens; VIEWS above only
      names the table's columns. They are two lists and they had drifted — add a
@@ -678,7 +715,7 @@ async function __runSweep(){
     prog.textContent=" testing "+p.label+"…";
     await freshLoad(p.w);
     try{
-      const out=await runInFrame(SWEEP.replace("SCRAP",String(p.scrap)).replace("SCALE",String(p.scale||100)));
+      const out=await runInFrame(SWEEP.replace("SCRAP",String(p.scrap)).replace("SCALE",String(p.scale||100)).replace("DARKPIC",String(!!p.dark)));
       if(out.ERROR)for(const v of VIEWS)results[p.label+"|"+v]={ok:false,offenders:[out.ERROR]};
       else for(const v of VIEWS)results[p.label+"|"+v]=out[v]||{skip:true};
     }catch(e){
