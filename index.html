@@ -10259,6 +10259,28 @@ function dataURLtoBlob(dataURL){
 function blobToDataURL(blob){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(blob);});}
 const coverPath=id=>`${SYNC.user.id}/covers/${id}.jpg`;
 const imgPath=key=>`${SYNC.user.id}/images/${String(key).replace("|","__")}.jpg`;
+/* ┌─ A FILE GOES UP AS ITSELF, NOT IN A FORM ────────────────────────────────┐
+   │ The storage library packs a Blob into a multipart form before sending  │
+   │ it (its prepareUploadFormData: the file, plus cacheControl as a field). │
+   │ Measured on one computer: Firefox answered every such upload            │
+   │ "NetworkError when attempting to fetch resource" for days — the tables' │
+   │ road open both ways, a one-pixel PNG refused, 2,296 tries on one cover  │
+   │ — while the same bytes sent plainly, as the request body with their    │
+   │ content type, were answered 200, and the library's own upload from Edge │
+   │ on the same machine went up. So a file goes up the plain way: one POST │
+   │ to /storage/v1/object/shelf/<path> with the session's token, x-upsert   │
+   │ and the type. Downloads and removes keep the library, which never had  │
+   │ the trouble. The road test's small file upload takes this road too.     │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+async function storagePut(path,bl){
+  let tok="";try{const {data}=await SYNC.supa.auth.getSession();tok=(data&&data.session&&data.session.access_token)||"";}catch(e){}
+  if(!tok)throw new Error("not signed in on this device");
+  const base=String(CFG.url||"").replace(/\/+$/,"");
+  const r=await fetch(base+"/storage/v1/object/shelf/"+path,{method:"POST",
+    headers:{apikey:CFG.anonKey,Authorization:"Bearer "+tok,"Content-Type":bl.type||"image/jpeg","x-upsert":"true","cache-control":"max-age=3600"},body:bl});
+  if(!r.ok){let m="";try{const j=await r.json();m=(j&&(j.message||j.error))||"";}catch(e){}
+    throw new Error("the file road answered "+r.status+(m?": "+String(m).slice(0,120):""));}
+}
 
 /* The waiting-uploads record holds two things now: the ops still to go, and the
    ops already finished. Builds before this one wrote a bare list, so that shape
@@ -10598,7 +10620,7 @@ async function runOp(op){
   }else if(op.kind==="cover"){
     const c=await dbGetOrThrow("covers",op.id);
     if(c&&c.data){const bl=dataURLtoBlob(c.data);
-      const {error}=await s.storage.from("shelf").upload(coverPath(op.id),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
+      await storagePut(coverPath(op.id),bl);}   /* see A FILE GOES UP AS ITSELF */
   }else if(op.kind==="coverDel"){
     /* storage answers a failure with {error}, it does not throw — unread, a
        delete lost on a bad connection counted as done and the file stayed up,
@@ -10607,7 +10629,7 @@ async function runOp(op){
   }else if(op.kind==="img"){
     const im=await dbGetOrThrow("images",op.key);
     if(im&&im.data){const bl=dataURLtoBlob(im.data);
-      const {error}=await s.storage.from("shelf").upload(imgPath(op.key),bl,{upsert:true,contentType:bl.type||"image/jpeg"});if(error)throw error;}
+      await storagePut(imgPath(op.key),bl);}
   }else if(op.kind==="imgDel"){
     const {error}=await s.storage.from("shelf").remove([imgPath(op.key)]);if(error)throw error;
   }
@@ -13043,6 +13065,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-26.11",go:["el:challenges:.qtasks"],lines:["<b>⇅ Covers and pictures go up as themselves.</b> The sync library packs a file into a form before sending it, and on a computer Firefox refused every upload packed that way for days — the tables' road open, a one-pixel picture turned away, one cover tried 2,296 times — while the same file sent plainly went straight up, and Edge on the same computer took the form without complaint. A cover or picture now goes up plainly, as one request carrying the file and its type. The road test's small file upload goes the same way, and only tries the library's form afterwards, for the record."]},
   {v:"2026-10-26.10",go:["el:challenges:.qtasks"],lines:["<b>🩺 A shut file road is asked who shut it.</b> When the road test's small file upload fails, it asks the same thing three more ways — a plain read of the file road, the upload without the library, and the upload with no questions asked — and says what that means: the file road unreachable from this browser, or something answering in the storage's place without the headers a page may read, which is a blocker or privacy shield in the browser or a challenge page in front of the server."]},
   {v:"2026-10-26.9",go:["el:challenges:.qtasks"],lines:["<b>⇅ One stuck upload no longer holds everything behind it.</b> A change that keeps failing at the front of the sync queue used to stay there whenever anything else about the same book waited behind it — measured: one 10 KB cover, failing every minute for three days, with 121 changes queued behind it and none of them reaching your other device. An upload now steps aside after three failures and the rest go up; only a delete still waits, since a delete changing places with a re-add would run them the wrong way round. And <b>🩺 Test the road up</b> tries a small file upload too — the road covers and pictures take is not the one the tables take — and says what the stuck file is made of."]},
   {v:"2026-10-26.8",go:["el:challenges:.qtasks"],lines:["<b>🩺 Test the road up.</b> In 📋 Compare with your other device under the day’s three, the Syncing line now says what kind of change the last trouble was on, and a line names the change at the front of the queue — everything else waits behind it. <b>🩺 Test the road up</b> tries a small read and a small write to the cloud, measures that front change, sends it alone and says exactly what came back; if it goes up, the rest follows on its own."]},
@@ -32011,31 +32034,29 @@ async function tasksDiagRoad(){
   try{
     const px=new Blob([Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="),c=>c.charCodeAt(0))],{type:"image/png"});
     const path=uid+"/probe.png";
-    const {error}=await s.storage.from("shelf").upload(path,px,{upsert:true,contentType:"image/png"});
-    L.push("A small file upload (the road covers and pictures take): "+say(error));
-    if(!error)try{await s.storage.from("shelf").remove([path]);}catch(e){}
+    let failed=null;
+    try{await storagePut(path,px);L.push("A small file upload (the road covers and pictures take): ok");try{await s.storage.from("shelf").remove([path]);}catch(e){}}
+    catch(e){failed=e;L.push("A small file upload (the road covers and pictures take): "+say(e));}
     /* ---- A SHUT ROAD, ASKED WHO SHUT IT ----
        "NetworkError" is what a browser says both when nothing answered and
        when something answered WITHOUT the headers a page is allowed to
        read — a blocker in the browser, a challenge page in front of the
-       server. The same upload is asked again without the library, then
-       with mode "no-cors", which comes back opaque whenever anything at
-       all answered. Together they say which: unreachable, or answered by
-       something that is not the storage. A plain GET of the road's
-       version page is asked too, since a block may be on uploads alone. */
-    if(error){
+       server. A plain GET of the road's version page is asked (a block may
+       be on uploads alone), then the upload again with mode "no-cors",
+       which comes back opaque whenever anything at all answered. Together
+       they say which: unreachable, or answered by something that is not
+       the storage. The library's own way — the file packed in a form — is
+       tried last, for the record. */
+    if(failed){
       const base=String(CFG.url||"").replace(/\/+$/,"");
       let tok="";try{const {data}=await s.auth.getSession();tok=(data&&data.session&&data.session.access_token)||"";}catch(e){}
       try{const r=await fetch(base+"/storage/v1/version",{headers:{apikey:CFG.anonKey,Authorization:"Bearer "+tok}});L.push("  a plain read of the file road: answered "+r.status);}
       catch(e){L.push("  a plain read of the file road: "+say(e));}
-      try{const r=await fetch(base+"/storage/v1/object/shelf/"+path,{method:"POST",headers:{apikey:CFG.anonKey,Authorization:"Bearer "+tok,"Content-Type":"image/png","x-upsert":"true"},body:px});
-        L.push("  the same upload without the library: answered "+r.status+(r.ok?" — it went up this way, so the library's road is the odd one":""));
-        if(r.ok)try{await s.storage.from("shelf").remove([path]);}catch(e){}}
-      catch(e){
-        try{await fetch(base+"/storage/v1/object/shelf/"+path,{method:"POST",mode:"no-cors",body:px});
-          L.push("  the same upload without the library: "+say(e)+" — but asked with no questions it comes back, so something answers in the storage's place without the headers a page may read: a blocker or a privacy shield in this browser, or a challenge page in front of the server. Try the app in another browser on this computer.");}
-        catch(e2){L.push("  the same upload without the library: "+say(e)+", and with no questions too ("+say(e2)+"): this browser cannot reach the file road at all.");}
-      }
+      try{await fetch(base+"/storage/v1/object/shelf/"+path,{method:"POST",mode:"no-cors",body:px});
+        L.push("  asked with no questions it comes back, so something answers in the storage's place without the headers a page may read: a blocker or a privacy shield in this browser, or a challenge page in front of the server. Try the app in another browser on this computer.");}
+      catch(e2){L.push("  and with no questions too ("+say(e2)+"): this browser cannot reach the file road at all.");}
+      try{const {error}=await s.storage.from("shelf").upload(path,px,{upsert:true,contentType:"image/png"});L.push("  the library's way, the file packed in a form: "+say(error));if(!error)try{await s.storage.from("shelf").remove([path]);}catch(e){}}
+      catch(e){L.push("  the library's way, the file packed in a form: "+say(e));}
     }
   }catch(e){L.push("A small file upload (the road covers and pictures take): "+say(e));}
   const op=SYNC.queue[0];
