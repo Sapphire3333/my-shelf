@@ -2507,6 +2507,7 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .bs-row.bs-story{border:none;border-top:1px solid var(--line);border-radius:0;
     padding:7px 0 4px;margin:0}
   .bs-pile{background:var(--bg);border-radius:9px;padding:8px 9px;margin-top:8px}
+  .bs-claude{border:1px dashed var(--teal);border-radius:10px;padding:9px 11px;margin:0 0 9px}
   .bs-row input[type=checkbox]{accent-color:var(--teal);width:16px;height:16px;flex:none;margin:3px 0 0}
   /* an import can hand over a title with no spaces in it at all, and the two
      lines under this one already knew to break — this one poked out of its row */
@@ -13016,6 +13017,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-26.3",lines:["<b>✨ Claude in Fill in the blanks.</b> When you fill in many books at once — a collection's stories, or books ticked on Search — and the sites leave some without a blurb, their pages or an author, <b>✨ Ask Claude</b> above the list searches the web for those, ten books a press. Its answers join the list ticked and marked ✨ Claude; one that seems to name a different book is left unticked. The line says what the press will cost and what the sheet has spent, and nothing is written until you press Fill in."]},
   {v:"2026-10-26.2",go:["tab:care"],lines:["<b>📱 Readable over a dark picture.</b> With a dark background picture, the words standing straight on it turn white so they can be read — and the editor's folds were mistaken for bare page, so “The book itself” and everything in it turned white on a white card. They keep their own dark ink now.","<b>🧰 Tag pairs: tap a book, or drop a tag.</b> In Shelf care's Tidying up, under a pair's “what carries them”, each book's title opens it, and each of the two tags has <b>✕ Take it off all</b> — for a tag like “fiction” that says nothing, gone from every book in one press, and ↶ puts it back."]},
   {v:"2026-10-26.1",go:["tab:history"],lines:["<b>🕘 Recently edited shows what you edited.</b> Tidying up in 🧰 Shelf care — merging two tags or an author's spellings, capitals, Claude's look — stamped every book it reached as just edited, so one merge pushed dozens of books above the ones you had actually opened and filled in. Those tidy-ups still show under 📝 What changed, but they no longer move a book up Recently edited, and the errands that ask how long since you last touched a book stop counting them too."]},
   {v:"2026-10-25.1",lines:["<b>🔮 Your guess on a reread waits for this reading's mark.</b> Guessing what you'd give a book you were reading again was judged the moment you finished it — against the mark from last time — and a book read a third time was never asked at all. Now the line waits for the mark you give this reading, or for <b>Keep</b> when the old one still stands, and every reading gets a guess of its own."]},
@@ -21122,6 +21124,60 @@ async function openBulkFill(ids){
     if(live)live.textContent=`${S.stage==="writing"?"Filling in":S.stage==="covers"?"Fetching the cover for":"Looking up"} ${S.now}… (${S.done} of ${S.total})`;
   }
   const liveJobs=()=>groups.reduce((n,g)=>n+g.jobs.filter(j=>j.row&&j.row.on&&j.row.info).length,0);
+  /* ┌─ CLAUDE FOR WHAT THE SOURCES LEFT EMPTY ───────────────────────────────┐
+     │ After the run, the books still missing a blurb, their pages or (a whole │
+     │ book's) author are counted (claudeLeft), and ✨ asks Claude about the  │
+     │ next CLAUDE_BULK of them, two at a time, with web search, through the  │
+     │ single panel's own claudeBookGaps — the story's collection named, the  │
+     │ author it shows. Its answers go into the same row (want, found), so    │
+     │ the one Fill in button writes them with the rest; a row whose answer   │
+     │ names a different title is left unticked with a note, as the sheet     │
+     │ does for its own doubtful finds. Covers and ISBNs are not asked: a     │
+     │ picture Claude cannot give, and a wrong edition's number would steer   │
+     │ every later lookup. The line says what the press is likely to cost and │
+     │ what this sheet has spent, off the meter (claudeMeter).                 │
+     └─────────────────────────────────────────────────────────────────────────┘ */
+  const CLAUDE_BULK=10,CLAUDE_GAPS_BULK=["author","blurb","pages"];
+  let claudeAsked=new Set(),claudeBusy=false,claudeSpent=0;
+  const claudeLeft=()=>groups.flatMap(g=>g.jobs.map(j=>{
+    if(!j.needs.length||claudeAsked.has(j))return null;
+    const want=(j.row&&j.row.want)||{};
+    const gaps=CLAUDE_GAPS_BULK.filter(k=>j.needs.includes(k)&&!(k==="pages"?want.pages:k==="blurb"?want.blurb:want.author));
+    return gaps.length&&titleOf(j)?{j,gaps}:null;})).filter(Boolean);
+  async function askClaudeBulk(btn,say){
+    if(claudeBusy)return;claudeBusy=true;
+    const batch=claudeLeft().slice(0,CLAUDE_BULK);
+    const m0=claudeMeter().usd||0;let done=0;
+    const one=async({j,gaps})=>{
+      claudeAsked.add(j);
+      const author=j.en?(entAuthorOf(j.b,j.en)||j.b.author||""):(j.b.author||"");
+      try{
+        const r=await claudeBookGaps({title:titleOf(j),author:looksBlank(author)?"":author,isbn:"",en:j.en,gaps,coll:j.en?j.b:null});
+        const o=r.json||{},s=k=>String(o[k]||"").trim();
+        if(!j.row||!j.row.info)j.row={info:{title:s("found_title")},want:{},found:[],chips:[],newTags:[],newGen:[],note:"",on:false};
+        const row=j.row,got=[];
+        if(gaps.includes("pages")&&parseInt(s("pages").replace(/\D/g,""))){row.want.pages=parseInt(s("pages").replace(/\D/g,""));got.push(row.want.pages+" pages");}
+        if(gaps.includes("blurb")&&s("blurb").length>40){row.want.blurb=s("blurb");got.push("a blurb");}
+        if(gaps.includes("author")&&s("author")){row.want.author=s("author");got.push(s("author"));}
+        if(got.length){
+          row.found=[...(row.found||[]),...got.map(x=>x+" (✨ Claude)")];
+          const sameBook=!s("found_title")||titleSame(titleOf(j),s("found_title"));
+          /* what the sites had already found and the sheet had left unticked
+             on purpose (a renamed or title-only match) stays unticked: Claude's
+             share of the row is right, theirs may not be */
+          const sitesDoubted=row.found.length>got.length&&row.on===false&&!!row.note;
+          if(!sameBook){row.on=false;row.note=((row.note||"")+` ✨ Claude found “${s("found_title")}” — check it is the same book. Left unticked on purpose.`).trim();}
+          else if(!sitesDoubted)row.on=true;
+          row.dead="";
+        }else if(!row.found.length)row.dead="Nothing came back for this title, from the sites or from Claude.";
+      }catch(e){if(say)say.textContent="Claude couldn't — "+((e&&e.message)||"no answer");}
+      done++;if(btn)btn.textContent=`✨ Claude is looking… ${done} of ${batch.length}`;
+    };
+    let next=0;
+    await Promise.all([0,1].map(async()=>{for(;;){const i=next++;if(i>=batch.length)return;await one(batch[i]);}}));
+    claudeSpent+=(claudeMeter().usd||0)-m0;
+    claudeBusy=false;draw();
+  }
   const usableJobs=()=>groups.reduce((a,g)=>a.concat(g.jobs.filter(j=>j.row&&j.row.info&&j.row.found.length)),[]);
   function jobRow(g,gi,j,ji){
     const r=j.row,inColl=g.coll;
@@ -21214,6 +21270,13 @@ async function openBulkFill(ids){
           S.oDown?`<b>Open Library didn't answer</b> for ${S.oDown} of ${S.asked}. `:""}${
           S.hDown?`<b>Hardcover didn't answer</b> for ${S.hDown} of ${S.asked} — the moods come from it. `:""}Nothing is lost by running it again later — only blanks are filled, so a second pass adds what a first one missed.</div>`:""}
         ${srcLine()}
+        ${(()=>{/* see CLAUDE FOR WHAT THE SOURCES LEFT EMPTY */
+          if(!claudeReady())return "";
+          const left=claudeLeft(),n=Math.min(CLAUDE_BULK,left.length);
+          const spent=claudeSpent>=.005?` This sheet has spent about ${claudeSpent<1?Math.round(claudeSpent*100)+"¢":"$"+claudeSpent.toFixed(2)} on Claude so far.`:"";
+          if(!left.length)return claudeAsked.size?`<div class="hint" style="margin:0 0 8px">✨ Claude has been asked about every book still missing something.${spent}</div>`:"";
+          return `<div class="bs-claude"><div class="hint" style="margin:0 0 6px"><b>${plural(left.length,"book")}</b> still ${left.length===1?"lacks":"lack"} ${[...new Set(left.flatMap(x=>x.gaps))].map(k=>({blurb:"a blurb",pages:"pages",author:"an author"})[k]).join(" or ")} after the sites. Claude can search the web for those — about 10–20¢ a book, so about ${n<=5?Math.round(n*0.15*100)+"¢":"$"+(n*0.15).toFixed(2)} for these ${n}. Its answers join the list below, ticked, and nothing is written until you press Fill in.${spent}</div>
+            <button class="btn" id="bsClaude">✨ Ask Claude about ${n===left.length?"":"the next "}${plural(n,"book")}</button> <span class="hint" style="margin:0" id="bsClaudeSay"></span></div>`;})()}
         <div class="bs-list" id="bsList">${groups.map((g,gi)=>{
           if(!g.coll)return jobRow(g,gi,g.jobs[0],0);
           const asked=g.jobs.filter(j=>j.needs.length).length;
@@ -21273,6 +21336,8 @@ async function openBulkFill(ids){
         q("#bsAll",inner).textContent=(!every)?"Untick them all":"Tick them all";
       };
       q("#bsWrite",inner).onclick=writeAll;
+      const cl=q("#bsClaude",inner);
+      if(cl)cl.onclick=()=>{cl.disabled=true;cl.textContent="✨ Claude is looking…";askClaudeBulk(cl,q("#bsClaudeSay",inner));};
     }
     else{
       const strips=groups.filter(g=>g.coll&&g.strip.length);
@@ -25205,19 +25270,23 @@ function claudeGapsOf(b,en,info){
   const tried=(info&&info.__claudeTried)||[];
   return g.filter(k=>!tried.includes(k));
 }
-async function claudeBookGaps({title,author,isbn,en,gaps}){
+/* `coll`: the collection a story sits in. The single-book panel leaves it to
+   the open book (cur); the bulk Fill in sheet asks about many at once, with
+   whatever page happens to be open behind it, and names it. */
+async function claudeBookGaps({title,author,isbn,en,gaps,coll}){
+  const host=coll||cur||{};
   const S={type:"string"},L={type:"array",items:{type:"string"}};
   const props={found_title:S};
   gaps.forEach(k=>{if(k==="series"){props.series=S;props.seriesNum=S;}else props[k]=(k==="genres"||k==="tags")?L:S;});
   const schema={type:"object",properties:props,required:Object.keys(props),additionalProperties:false};
-  const what=kindOf(en||cur)==="fic"?"fan fiction work":"book";
+  const what=kindOf(en||host)==="fic"?"fan fiction work":"book";
   const rule={author:"author: the author or authors as credited, several joined with a comma.",
     blurb:"blurb: the publisher's description, or a faithful summary of it, as one paragraph — no spoilers beyond what it says.",
     pages:"pages: the print page count, digits only.",year:"year: the year it was first published, four digits.",
     genres:"genres: up to four broad genres in English, such as Fantasy or Romance — a shop's categories and readers' shelves for this book count.",
     tags:"tags: up to eight short tropes or themes readers use, such as found family or slow burn — taken from how readers, reviews and shops describe this book.",
     series:"series: the series name, without the word series or the number; seriesNum: this one's number in it."};
-  const text=`Find this ${what} on the web: “${title}”${author?` by ${author}`:""}${isbn?`, ISBN ${isbn}`:""}${en?`, a story inside the collection “${cur.title||""}”`:""}.\n`
+  const text=`Find this ${what} on the web: “${title}”${author?` by ${author}`:""}${isbn?`, ISBN ${isbn}`:""}${en?`, a story inside the collection “${host.title||""}”`:""}.\n`
     +`Fill in only these: ${gaps.map(k=>CLAUDE_GAP_SAY[k]).join(", ")}. Use only what pages about this exact ${what} say — the same title and the same author. Leave a field empty ("" or []) when you can't be sure of it; a standalone has no series.\n`
     +gaps.map(k=>"- "+rule[k]).join("\n")+`\n- found_title: the title as the page you relied on gives it.`;
   const j=await claudeAsk({kind:"ask",web:2,effort:"low",max_tokens:3000,schema,text});
