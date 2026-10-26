@@ -11076,7 +11076,7 @@ async function pullAll(){
     {const lifted=await liftUnanimousGenres();
      if(lifted.length){touched=true;lifted.forEach(id=>enqueue({kind:"book",id}));}}
     {let now="";try{now=JSON.stringify(SYNC.seen);}catch(e){}if(!now||now!==seenWas)dbPut("meta",{k:"seenMod",v:SYNC.seen});}
-    setSync("synced");
+    setSync("synced");SYNC.pulledAt=Date.now();   /* read by tasksDiag */
     /* a pull that changed nothing leaves the screen alone. Coming back to the tab
        pulls, and on a phone that is every few minutes — each one used to rebuild
        the page whether or not a single word had changed anywhere. */
@@ -13022,6 +13022,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-26.6",go:["tab:challenges"],lines:["<b>🎲 Today's three, on both screens.</b> Under the day's three on 🎲 Challenges, <b>📋 Compare with your other device</b> says what this screen knows: whether it is syncing and what is waiting to go up, when it last pulled, which day it thinks it is and by what day line, which tasks the game record has paid and when, and the receipt that ticked each one and from which screen. <b>⛅ Ask the cloud</b> reads the game record and the receipts as they stand in Supabase and says whether the other screen's ticks got that far; <b>⟳ Pull now</b> brings them down. If a tick made on one screen is missing on the other, open this on both and copy both — the first line that differs is the reason."]},
   {v:"2026-10-26.5",go:["el:settings:#claudeCmp"],lines:["<b>✨ The small jobs can run on Haiku.</b> Under Check Claude in ⚙ Settings → How it works, <b>Compare</b> asks the same four small jobs — a translation, two Ask-your-shelf questions, the aspect words off your notes, Claude's look at your names — of Opus and of Haiku on your own shelf, and lays the answers side by side with what each cost and took. If Haiku's are good enough, the switch beside it sends those four to Haiku from then on, at about a fortieth of the price; photos, web searches and everything Claude writes for you stay on Opus. The meter's line says how many went to Haiku and what they cost, priced at each model's own rates now. Your taste profile also travels as a cached prompt with every verdict and recommendation, so a second ask within minutes reads it at a tenth of the price. Paste claude-function.ts over the function in Supabase once more and Deploy for either to take; Check Claude says if the copy there is older."]},
   {v:"2026-10-26.3",lines:["<b>✨ Claude in Fill in the blanks.</b> When you fill in many books at once — a collection's stories, or books ticked on Search — and the sites leave some without a blurb, their pages or an author, <b>✨ Ask Claude</b> above the list searches the web for those, ten books a press. Its answers join the list ticked and marked ✨ Claude; one that seems to name a different book is left unticked. The line says what the press will cost and what the sheet has spent, and nothing is written until you press Fill in."]},
   {v:"2026-10-26.2",go:["tab:care"],lines:["<b>📱 Readable over a dark picture.</b> With a dark background picture, the words standing straight on it turn white so they can be read — and the editor's folds were mistaken for bare page, so “The book itself” and everything in it turned white on a white card. They keep their own dark ink now.","<b>🧰 Tag pairs: tap a book, or drop a tag.</b> In Shelf care's Tidying up, under a pair's “what carries them”, each book's title opens it, and each of the two tags has <b>✕ Take it off all</b> — for a tag like “fiction” that says nothing, gone from every book in one press, and ↶ puts it back."]},
@@ -28056,6 +28057,15 @@ function wireQuestCards(m){
    /* what XP buys: a shield, and a task redrawn */
    {const sh=q("#qShield",m);if(sh)sh.onclick=()=>{if(shieldStock()<=0&&questBuy("shield",SHIELD_XP))renderChallenges();};
     qa("[data-qredraw]",m).forEach(b=>b.onclick=()=>{if(redrawTask(b.dataset.qredraw))renderChallenges();});
+    /* the day's three on both screens — see TODAY'S THREE, ON BOTH SCREENS */
+    {const tc=q("#tasksCloud",m),td=q("#tasksDiag",m);
+     if(tc&&td)tc.onclick=async()=>{tc.disabled=true;tc.textContent="⛅ Asking…";
+       const L=await tasksDiagCloud();td.insertAdjacentHTML("beforeend",L.map(l=>`<div>${esc(l)}</div>`).join(""));tc.textContent="⛅ Asked";};
+     const tp=q("#tasksPull",m);if(tp)tp.onclick=async()=>{tp.disabled=true;tp.textContent="⟳ Pulling…";try{await pullAll();}catch(e){}questCheck();renderChallenges();};
+     const tcp=q("#tasksCopy",m);if(tcp)tcp.onclick=async()=>{
+       const txt=qa("#tasksDiag div",m).map(d=>d.textContent).join("\n");
+       try{await navigator.clipboard.writeText(txt);tcp.textContent="✓ Copied";}
+       catch(e){const ta=document.createElement("textarea");ta.value=txt;ta.rows=7;ta.style.cssText="display:block;width:100%;margin-top:6px;font:inherit;font-size:13px";tcp.after(ta);ta.select();tcp.textContent="Select it and copy";}};}
     const pk2=q("#qPeek",m);if(pk2)pk2.onclick=()=>{togglePeek();renderChallenges();};
     const ah=q("#qAhead",m);if(ah)ah.onclick=()=>{if(buyAhead()){questCheck();renderChallenges();}};
     const st2=q("#qStake",m);if(st2)st2.onclick=()=>{if(buyStake())renderChallenges();};
@@ -31876,6 +31886,67 @@ function readingRoomHtml(){
     +chBand("This year",`<div class="qgrid qband"><div class="qcell">${twelveHtml()}</div>${cell("card:road","🛤","The long road","qroad",road)}</div>`)
     +chBand("Whenever you like",`<div class="qgrid qband">${dareCellHtml()}${errandCellHtml()}${promptCellHtml()}</div>`);
 }
+/* ┌─ TODAY'S THREE, ON BOTH SCREENS ─────────────────────────────────────────┐
+   │ A tick is two records travelling: the receipt (histLog) that made the    │
+   │ task tick, and the game record (quests.daily.got) that paid it. A task   │
+   │ ticked on one screen and not on the other is one of those not arriving,  │
+   │ or the two screens not agreeing what day it is. tasksDiag says, for this │
+   │ screen, which: the sync's state and queue, when it last pulled, its day  │
+   │ and day line, the game record, today's receipts by screen, and each      │
+   │ task's receipt. ⛅ Ask the cloud (tasksDiagCloud) reads the two rows as  │
+   │ they stand in Supabase and says whether the other screen's ticks got     │
+   │ that far, so whichever half is failing is named rather than guessed at.  │
+   │ Same shape as roadDiag, under the tasks card on 🎲 Challenges.           │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function tasksDiag(){
+  const when=t=>t?new Date(+t).toLocaleString():"never";
+  const day=questToday(),d=(quests&&quests.daily)||{};
+  const waiting=SYNC.queue.length,up=k=>SYNC.queue.some(o=>o.kind==="meta"&&o.key===k);
+  const sync=!SYNC.on?"off — this screen only":SYNC.onHold?"on hold, waiting for the syncing library":!SYNC.user?"not signed in"
+    :(SYNC.status||"?")+(waiting?`, ${waiting} change${waiting===1?"":"s"} waiting to go up${up("quests")?" (the game record among them)":""}${up("histLog")?" (the receipts among them)":""}`:"");
+  const err=SYNC.lastErr?` — last trouble ${when(SYNC.lastErr.at)}: ${SYNC.lastErr.msg}`:"";
+  const today=histLog.filter(e=>e&&!e.list&&shelfDayOf(e.t)===day);
+  const by=dev=>today.filter(e=>(e.dev||"computer")===dev);
+  const newest=a=>a.length?when(Math.max(...a.map(e=>e.t||0))):"none";
+  const L=[
+    "Build: "+(window.APP_VERSION||"?")+" · this screen: "+histDev(),
+    "Syncing: "+sync+err,
+    "Last pulled from the cloud: "+when(SYNC.pulledAt),
+    "The shelf's day here: "+day+" · day line "+dlHourLabel(dayLineH())+(dayLine&&dayLine.tz?" "+dayLine.tz:" (device zone)")+" · clock "+new Date().toLocaleString(),
+    "Game record here: day "+(d.day||"—")+", paid "+((d.got||[]).join(", ")||"nothing")+", saved "+when(quests&&quests.at),
+    "Receipts here for today: "+today.length+" — computer "+by("computer").length+" (newest "+newest(by("computer"))+"), phone "+by("phone").length+" (newest "+newest(by("phone"))+")",
+  ];
+  todaysTasks().forEach(t=>{
+    const paid=(d.got||[]).indexOf(t[0])>=0,at=(d.gotAt||{})[t[0]];
+    const r=typeof t[2]==="function"?today.find(e=>t[2](Array.isArray(e.add)?e.add:(e.what||[]),e)):null;
+    L.push("· "+taskLabel(t)+": "+(paid?"paid"+(at?" "+when(at):""):"not paid")+" · "
+      +(t[5]?(t[5](day)?"done (the game says so)":"not done"):r?"receipt "+when(r.t)+" from the "+(r.dev||"computer")+" ("+r.title+")":"no receipt today"));
+  });
+  return L;
+}
+async function tasksDiagCloud(){
+  const when=t=>t?new Date(+t).toLocaleString():"never";
+  if(!(SYNC.on&&SYNC.user&&SYNC.supa))return ["Cloud: not syncing on this screen — nothing to ask"];
+  if(!navigator.onLine)return ["Cloud: offline — it could not be asked"];
+  const uid=SYNC.user.id,L=[];
+  const row=async k=>{const {data,error}=await SYNC.supa.from("meta").select("value").eq("user_id",uid).eq("key",k).maybeSingle();if(error)throw error;return data?data.value:null;};
+  try{
+    const qc=await row("quests"),d=(qc&&qc.daily)||{},here=(quests&&quests.daily)||{};
+    L.push("Cloud game record: day "+(d.day||"—")+", paid "+((d.got||[]).join(", ")||"nothing")+", saved "+when(qc&&qc.at));
+    const cloudOnly=(d.got||[]).filter(k=>(here.got||[]).indexOf(k)<0),hereOnly=(here.got||[]).filter(k=>(d.got||[]).indexOf(k)<0);
+    if(d.day&&here.day&&d.day!==here.day)L.push("→ The cloud and this screen disagree what day it is: "+d.day+" there, "+here.day+" here. The day line, or one clock.");
+    else if(cloudOnly.length)L.push("→ The cloud holds ticks this screen has not pulled: "+cloudOnly.join(", ")+". ⟳ Pull now brings them.");
+    if(hereOnly.length)L.push("→ This screen's ticks have not reached the cloud: "+hereOnly.join(", ")+(SYNC.queue.length?" — they are in the queue above.":" — and nothing is queued, so they were never sent."));
+    const hl=await row("histLog"),day=questToday();
+    const today=(Array.isArray(hl)?hl:[]).filter(e=>e&&!e.list&&shelfDayOf(e.t)===day);
+    const by=dev=>today.filter(e=>(e.dev||"computer")===dev);
+    const newest=a=>a.length?when(Math.max(...a.map(e=>e.t||0))):"none";
+    L.push("Cloud receipts for today: "+today.length+" of "+(Array.isArray(hl)?hl.length:0)+" — computer "+by("computer").length+" (newest "+newest(by("computer"))+"), phone "+by("phone").length+" (newest "+newest(by("phone"))+")");
+    const dl=await row("dayline");
+    if(dl)L.push("Cloud day line: "+dlHourLabel(parseInt(dl.h)||0)+(dl.tz?" "+dl.tz:" (device zone)"));
+  }catch(e){L.push("Cloud: could not be read — "+String((e&&e.message)||e).slice(0,160));}
+  return L;
+}
 function tasksCellHtml(){
   const tasks=todaysTasks();
   const lvl=questLevel();
@@ -31921,6 +31992,10 @@ function tasksCellHtml(){
       <span class="prog" style="display:inline-block;width:150px;height:8px;vertical-align:-1px;margin-right:8px"><i style="width:${Math.round(i.into/i.need*100)}%"></i></span>
       <b>Level ${lvl} · ${esc(levelTitle(lvl))}</b> · <b>${i.left.toLocaleString()} XP</b> to level ${lvl+1} · ${i.into.toLocaleString()} of ${i.need.toLocaleString()} · ${questEarned().toLocaleString()} earned in all${questSpent()?`, <b>${questWallet().toLocaleString()}</b> to spend${debtSay()}`:""}.<br>
       Tasks tick themselves when the change happens; nothing asks you to report.</div>`;})()}
+    <details class="roadmore"><summary class="hint">📋 Compare with your other device</summary>
+      <div class="hint" style="margin:5px 0 0">If a task ticked on your phone isn't ticked on your computer, open this on both. The first line that differs says why, and <b>⛅ Ask the cloud</b> says whether the other screen's ticks got as far as Supabase.</div>
+      <div class="hint" id="tasksDiag" style="margin:6px 0;font-variant-numeric:tabular-nums;line-height:1.5">${tasksDiag().map(l=>`<div>${esc(l)}</div>`).join("")}</div>
+      <button class="btn smallbtn" id="tasksCloud">⛅ Ask the cloud</button> <button class="btn smallbtn" id="tasksPull">⟳ Pull now</button> <button class="btn smallbtn" id="tasksCopy">⧉ Copy</button></details>
     ${(()=>{
       /* The run, said where the three are — a bonus nobody can see is not a
          reason to come back. It names what TOMORROW is worth rather than
