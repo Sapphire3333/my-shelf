@@ -1624,6 +1624,11 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .askrow .field{flex:1;min-width:min(220px,100%);font-size:14px}
   /* ↳ And… and ✨ New wrap below the box together, never one alone */
   .askrow .askbtns{display:flex;gap:6px}
+  /* Up to where I am, under a book's bookmark: the ask row a little apart
+     from the pace line, each answer under its question */
+  .upto{margin:10px 0 0}
+  .upto .askrow{margin-top:0}
+  .uptoa .cwtext{font-size:14px;line-height:1.55}
   .searchbox .field{padding-left:36px}
   .searchbox .sic{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--faint)}
   .deep{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:18px}
@@ -13070,6 +13075,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-27.6",lines:["<b>📖 Claude reading beside you.</b> Under the bookmark of a book you are reading, ask anything — who is this again, what happened before — and Claude answers only up to the page you are on; when it isn't sure of the book, 🔎 Search the web asks again with a search. On a book in a series you have read earlier books of, <b>✨ Previously on…</b> recaps them from their plots and your notes, telling nothing past the last one you read, and keeps it with the series — under the series' blurb on the book's page, and a button on Today's Up next and series rows. And <b>✨ Would I like it?</b> now also says what readers warn about, folded under Content notes until you open it."]},
   {v:"2026-10-27.5",go:["tab:care"],lines:["<b>📋 Paste anything, and ask your shelf again.</b> In 🧰 Shelf care, beside 📷 Books from a photo, <b>📋 Books from pasted text</b> takes a list, an email, a message of recommendations or a page of AO3 copied whole: Claude reads every book in it into the import list to tick, or one fic into ⚡ Quick add. And on 🔍 Search, once Claude has answered a question, <b>↳ And…</b> goes on from it — “only the short ones”, “sort them by when I finished” — keeping what you asked before; <b>✨ New</b> starts again."]},
   {v:"2026-10-27.4",go:["el:challenges:.qevent"],lines:["<b>🎃 Spooky week, and three more dated events.</b> Four weeks a year now bring a card of five to the top of 🎲 Challenges: Book Day week in April, Midsummer week in June, Spooky week at the end of October and the longest night in December. Each square — something spooky, 300 pages, five days of reading, a quote, a new author, and others by the event — pays +40, and all five +200 more. The card counts the whole week, so Spooky week counts from 25 October. Each event sells one burst for finishing a book in the shop, only that week: bats and pumpkins this one."]},
   {v:"2026-10-27.3",go:["el:challenges:.qweek2"],lines:["<b>📖🧹 Two goals a week.</b> Under This week on 🎲 Challenges, every Monday now draws a pair: one you read for — finish a book, read 300 pages, start a new book, a series' next book — and one you tend the shelf for — ten quotes, twenty blanks, rate three books, notes on two, clear the day's three on five days, tag or genre five books. Each has its own rungs, ↑ Harder and Double or nothing, and both count toward the Week's Work medal. A rating, a note or a tag counts once a book a week, however often you change it. This week keeps the goal it began with and gains its second today; from 2 November both are drawn the new way."]},
@@ -25422,7 +25428,7 @@ document.addEventListener("click",async e=>{
   if(t.dataset.cwno!=null){delete cwOut[key];job.redraw();return;}
   if(t.dataset.cwuse!=null){const o=cwOut[key];delete cwOut[key];if(o&&o.text)await job.use(o.text);else job.redraw();return;}
   cwOut[key]={busy:true};job.redraw();
-  try{const j=await claudeAsk({kind:"ask",text:job.ask(),effort:"low",max_tokens:job.max||1500});
+  try{const j=await claudeAsk(Object.assign({kind:"ask",text:job.ask(),effort:"low",max_tokens:job.max||1500},job.web?{web:job.web}:{}));
     const text=String(j.text||"").trim();cwOut[key]=text?{text}:{err:"it came back empty"};}
   catch(err){cwOut[key]={err:(err&&err.message)||"no answer"};}
   job.redraw();
@@ -25476,6 +25482,105 @@ function cwRecapHtml(d){
     use:text=>{settings.recapWords=Object.assign({},settings.recapWords||{},{[d.m]:String(text).trim()});saveSettings();render();},
     redraw:()=>{if(view==="overview")render();},max:800})}</div>`;
 }
+/* ┌─ PREVIOUSLY ON… ────────────────────────────────────────────────────────┐
+   │ On a book in a series of separate books, not yet finished, with earlier │
+   │ books of the series read (prevOnOf): a recap of those, through cwBox    │
+   │ with a web search (job.web), from their plots and your own notes, told  │
+   │ only up to the last one you read. Kept in settings.serPrev by the       │
+   │ series' folded name {text, upto, uptoTitle, at}, one of the settings    │
+   │ that follow you; once you have read further it says so and offers to    │
+   │ write it again. Drawn under the series' blurb on the book's page        │
+   │ (#secPrevOn); Today's series rows and Up next carry ✨ Previously on…,   │
+   │ which opens the book there (data-prevon, caught before the row opens).  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function prevOnOf(b){
+  if(!b||isColl(b)||statusOf(b)==="finished")return null;
+  const s=seriesShown(b);if(!s)return null;
+  const mates=seriesMates(b).filter(x=>!isColl(x)),i=mates.findIndex(x=>x.id===b.id);
+  const read=mates.slice(0,Math.max(0,i)).filter(x=>statusOf(x)==="finished"||readsOf(x).some(r=>String(r.end||"").trim()));
+  return read.length?{s,k:softFold(s),read,last:read[read.length-1]}:null;
+}
+const prevOnKept=b=>{const p=prevOnOf(b);return p?(settings.serPrev||{})[p.k]||null:null;};
+function prevOnHtml(b){
+  const p=prevOnOf(b);if(!p)return "";
+  const kept=(settings.serPrev||{})[p.k],fresh=!!kept&&kept.upto===p.last.id;
+  const shown=kept?`<div class="cwkept">${cwParas(kept.text)}</div>${fresh?"":`<div class="hint" style="margin:4px 0 0">Written up to “${esc(kept.uptoTitle||"an earlier book")}” — you have read further since.</div>`}`:"";
+  if(!claudeReady())return shown;
+  const author=String(b.author||p.last.author||"").trim();
+  return shown+`<div class="cwrow">${cwBox("prev:"+p.k,kept?(fresh?"Write it again":"Write it again, up to where you are"):"Previously on… — what you've read, recapped","Keep it",{
+    web:3,max:1800,
+    ask:()=>`A reader is about to go on with the series “${p.s}”${author?` by ${author}`:""}, starting “${b.title||"the next book"}”${b.seriesNum?` (book ${b.seriesNum})`:""}. Write them a “Previously on…” recap of the books they have already read, so they can pick the story up again:\n`
+      +p.read.map(x=>{const n=stripHtml(String(x.canvasText||x.notes||"")).replace(/\s+/g," ").trim().slice(0,400);
+        return `- ${x.seriesNum?"#"+x.seriesNum+" ":""}“${x.title||"Untitled"}”${n?` — their own notes: ${n}`:""}`;}).join("\n")
+      +`\n\nSearch the web for these books' plots. For each, in order, a short paragraph starting with its title: the main events, who is who, how it ended and where things stood. Then two or three sentences on where the story stands at the end of “${p.last.title||"the last one"}”.\n`
+      +`Tell nothing at all from “${b.title||"the next book"}” itself or from any book after “${p.last.title||"the last one"}”: no later events, deaths, reveals or pairings — if a page you read spoils later books, leave that out. Write to the reader as "you", about 250 words in all. Reply with the recap alone.`,
+    use:text=>{settings.serPrev=Object.assign({},settings.serPrev||{},{[p.k]:{text:String(text).trim(),upto:p.last.id,uptoTitle:String(p.last.title||""),at:todayStr()}});
+      saveSettings();if(view==="book")renderBookView();},
+    redraw:()=>{if(view==="book")renderBookView();}})}
+    ${kept&&fresh?"":`<div class="hint" style="margin:4px 0 0">Searches the web for the plots and reads your notes on them — about 10–15¢. Nothing past “${esc(p.last.title||"the last one you read")}” is told.</div>`}</div>`;
+}
+const prevOnBtn=b=>(claudeReady()||prevOnKept(b))&&prevOnOf(b)?`<button class="btn smallbtn" data-prevon="${esc(b.id)}" title="A recap of the books in this series you've already read">✨ Previously on…</button>`:"";
+/* caught before the row underneath reads the press as "open the book" */
+document.addEventListener("click",e=>{
+  const t=e.target.closest&&e.target.closest("[data-prevon]");if(!t)return;
+  e.stopPropagation();e.preventDefault();
+  Promise.resolve(openBook(t.dataset.prevon,false)).then(()=>setTimeout(()=>{const s=q("#secPrevOn");if(s)s.scrollIntoView({block:"start"});},60));
+},true);
+/* ┌─ UP TO WHERE I AM ──────────────────────────────────────────────────────┐
+   │ Under the bookmark of a book being read: a question — who is this       │
+   │ again, what happened before — answered by Claude told the page and      │
+   │ percent you're on (uptoWhere) and asked to tell nothing past it. Where │
+   │ a page falls in the story is its guess, which the line under the box   │
+   │ says. Claude answers from what it knows (about 2¢) and says whether it  │
+   │ is sure; when it isn't, 🔎 Search the web asks again with a search     │
+   │ (about 10¢). Answers are kept per book in uptoLog, on this device and   │
+   │ for this visit only — UPTO_KEEP of them, newest first.                  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const uptoLog={},UPTO_KEEP=3;
+function uptoWhere(b){
+  const pages=parseInt(b.pages)||0,pg=parseInt(b.progress)||0,pct=pages&&pg?Math.round(pg/pages*100):(parseInt(b.pct)||0);
+  return {pages,pg,pct,say:pg?`page ${pg}${pages?` of ${pages}`:""}${pct?` (about ${pct}% through)`:""}`:pct?`about ${pct}% through`:""};
+}
+async function uptoAsk(b,question,web){
+  const w=uptoWhere(b),s=seriesShown(b);
+  const schema={type:"object",properties:{answer:{type:"string"},sure:{type:"boolean"}},required:["answer","sure"],additionalProperties:false};
+  const text=`A reader is part-way through “${b.title||"a book"}”${b.author?` by ${b.author}`:""}${s?`, in the series “${s}”${b.seriesNum?` (book ${b.seriesNum})`:""}`:""}. They are on ${w.say}.\n`
+    +`Their question: “${question}”\n`
+    +(web?`Search the web for chapter summaries or a plot summary of this book first.\n`:"")
+    +`Answer only from what happens up to that point in the book. Tell nothing later — no later events, deaths, reveals, or who ends up with whom. If the answer lies later, say it comes later and leave it there. Where that page falls in the story is your estimate: when unsure, keep to earlier.\n`
+    +`Two to five sentences, to the reader as "you". sure: true only if you know this book well enough to answer with confidence; false for a book you know little about.`;
+  const j=await claudeAsk(Object.assign({kind:"ask",text,schema,effort:"low",max_tokens:1200},web?{web:3}:{}));
+  const o=j.json||{};return {answer:String(o.answer||"").trim()||"No answer came back.",sure:!!o.sure};
+}
+function uptoHtml(b){
+  if(!claudeReady()||!b||isColl(b))return "";
+  const w=uptoWhere(b),log=uptoLog[b.id]||[];
+  return `<div class="upto" id="secUpto"><div class="askrow"><input class="field" id="uptoQ" placeholder="✨ Who is this again? What happened before?"${w.say?"":" disabled"}>
+      <button class="btn" data-uptogo="1"${w.say?"":" disabled"}>✨ Ask</button></div>
+    <div class="hint" style="margin:-2px 0 6px">${w.say?`Claude is told you're on ${esc(w.say)} and answers only up to there — where a page falls in the story is its guess, so it can slip by a chapter. About 2¢; with the web, about 10¢.`
+      :"Say where you are first, a page or a percent, and Claude answers questions about the book only up to there."}</div>
+    ${log.map((x,i)=>`<div class="uptoa"><div class="lbl" style="display:block;margin:6px 0 2px">“${esc(x.q)}”</div>${x.busy?`<span class="hint" style="margin:0">✨ Claude is ${x.web?"searching":"thinking"}…</span>`
+      :x.err?`<span class="hint" style="margin:0">Claude couldn't — ${esc(x.err)}</span> <button class="btn smallbtn" data-uptore="${i}">Try again</button>`
+      :`<div class="cwtext">${esc(x.a)}</div>${x.web?`<div class="hint" style="margin:3px 0 0">Checked on the web.</div>`:x.sure?"":`<div class="hint" style="margin:3px 0 0">Claude isn't sure of this book. <button class="btn smallbtn" data-uptoweb="${i}">🔎 Search the web for it</button></div>`}`}</div>`).join("")}
+  </div>`;
+}
+document.addEventListener("click",async e=>{
+  const g=e.target.closest&&e.target.closest("[data-uptogo],[data-uptoweb],[data-uptore]");if(!g)return;
+  e.stopPropagation();
+  const b=view==="book"?cur:null;if(!b)return;
+  const redraw=()=>{if(view==="book"&&cur&&cur.id===b.id)renderBookView();};
+  let item;
+  if(g.dataset.uptogo!=null){const inp=q("#uptoQ"),qq=inp?inp.value.trim():"";if(!qq){if(inp)inp.focus();return;}
+    item={q:qq,busy:true};uptoLog[b.id]=[item,...(uptoLog[b.id]||[])].slice(0,UPTO_KEEP);}
+  else{item=(uptoLog[b.id]||[])[+(g.dataset.uptoweb||g.dataset.uptore)];if(!item)return;item.busy=true;item.err="";
+    /* 🔎 asks again with a search; Try again asks the way it asked before */
+    if(g.dataset.uptoweb!=null)item.web=true;}
+  redraw();
+  try{const o=await uptoAsk(b,item.q,item.web);item.a=o.answer;item.sure=o.sure;}
+  catch(err){item.err=(err&&err.message)||"no answer";}
+  item.busy=false;redraw();
+});
+document.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target&&e.target.id==="uptoQ"){e.preventDefault();const b=q("[data-uptogo]");if(b)b.click();}});
 /* not in English: a European language the word lists know, or a run of
    letters from another script (Korean, Japanese, Chinese, Cyrillic…) */
 const notEnglish=t=>{const s=String(t||"");return !!guessLang(s)||(s.match(/[Ѐ-ӿ぀-ヿ㐀-鿿가-힯֐-ۿ]/g)||[]).length>=6;};
@@ -25769,14 +25874,15 @@ async function verdictAsk(title,author){
   const S={type:"string"},L={type:"array",items:S};
   const schema={type:"object",properties:{found_title:S,author:S,what:S,pacing:S,praise:L,complaints:L,ending:S,
     ending_kind:{type:"string",enum:["happy","bittersweet","sad","open","dark"]},ending_hated:{type:"boolean"},ending_fit:S,ending_confirmed:{type:"boolean"},
-    fit:{type:"string",enum:["great","good","mixed","poor"]},score:S,works:L,watch:L},
-    required:["found_title","author","what","pacing","praise","complaints","ending","ending_kind","ending_hated","ending_fit","ending_confirmed","fit","score","works","watch"],additionalProperties:false};
+    fit:{type:"string",enum:["great","good","mixed","poor"]},score:S,works:L,watch:L,content_notes:L},
+    required:["found_title","author","what","pacing","praise","complaints","ending","ending_kind","ending_hated","ending_fit","ending_confirmed","fit","score","works","watch","content_notes"],additionalProperties:false};
   const text=`Judge this book for them: “${title}”${author?` by ${author}`:""}. Search the web for what it is, how it is paced, what readers praise and complain about, and how it ends.\n`
     +`- what: one or two sentences on what the book is.\n- pacing: one sentence.\n- praise, complaints: what readers say, a few short lines each.\n`
     +`- ending: how it actually ends, in full — they read the last chapter first and want the spoilers: who ends up with whom, who dies, how it resolves. Two to five sentences. If you could not find how it ends, say so plainly rather than guessing.\n`
     +`- ending_kind, and ending_hated: true if, from their taste, this is an ending they would hate; ending_fit: one sentence on how the ending sits with their taste; ending_confirmed: true only if a page you read states how it ends.\n`
     +`- fit and score (a whole number out of 10). An ending they would hate keeps the score at 4 or below however well the rest fits.\n`
     +`- works: why it would work for them; watch: specific things to watch out for, from their own dislikes.\n- found_title and author: as the pages you relied on give them.\n`
+    +`- content_notes: what readers and content-warning sites warn about in it — violence, sexual content, abuse, self-harm, the death of a child or an animal, and the like — one short line each, saying how much of it there is and whether it is on the page; an empty list if nobody warns about anything.\n`
     +VERDICT_VOICE;
   const j=await claudeAsk({kind:"ask",text,schema,web:4,effort:"low",max_tokens:4000,system:recTaste(),cache:true});
   const o=j.json||{},s=k=>String(o[k]||"").trim(),l=k=>(Array.isArray(o[k])?o[k]:[]).map(x=>String(x||"").trim()).filter(Boolean).slice(0,8);
@@ -25787,7 +25893,7 @@ async function verdictAsk(title,author){
   verdictHold(v,!!o.ending_hated);
   return Object.assign(v,{at:todayStr(),asked:title,title:s("found_title")||title,author:s("author")||author||"",what:s("what"),pacing:s("pacing"),
     praise:l("praise"),complaints:l("complaints"),ending:s("ending"),endingKind:s("ending_kind"),endingHated:!!o.ending_hated,endingFit:s("ending_fit"),
-    endingSure:!!o.ending_confirmed,works:l("works"),watch:l("watch"),
+    endingSure:!!o.ending_confirmed,works:l("works"),watch:l("watch"),contentNotes:l("content_notes"),
     sources:(Array.isArray(j.sources)?j.sources:[]).slice(0,4).map(x=>({url:String(x.url||""),title:String(x.title||"")})).filter(x=>/^https?:/.test(x.url))});
 }
 /* the score and fit as Claude gave them (scoreRaw, fitRaw), held down while
@@ -25836,6 +25942,9 @@ function verdictCardHtml(v){
     ${v.endingSure?"":claudeReady()?`<div style="margin:6px 0 0"><button class="btn smallbtn" id="vdLook">🔎 Look harder for the ending</button>
       <span class="hint" style="margin:0" id="vdLookSay">${v.endingLooked?"Looked once more and still not confirmed · ":""}a few more searches, only for the ending · about 10–20¢</span></div>`:""}
     ${list("Why it would work for you",v.works)}${list("Watch out for",v.watch)}
+    ${/* folded shut, so nothing is read before you choose to — older verdicts
+         were asked before the question existed and carry none */
+      v.contentNotes?`<details class="vcn" style="margin:8px 0 0"><summary class="hint" style="cursor:pointer;margin:0">Content notes${v.contentNotes.length?` (${v.contentNotes.length})`:""} — show</summary>${v.contentNotes.length?`<ul class="tastelist">${v.contentNotes.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:`<div class="hint" style="margin:4px 0 0">Nothing readers warn about.</div>`}</details>`:""}
     ${(v.praise.length||v.complaints.length)?`<details style="margin:8px 0 0"><summary class="hint" style="cursor:pointer;margin:0">What readers say</summary>${list("They praise",v.praise)}${list("They complain about",v.complaints)}</details>`:""}
     <div class="hrow2" style="margin-top:9px;gap:6px;flex-wrap:wrap;align-items:center">
       ${on?`<button class="btn smallbtn" data-recopen="${esc(on.id)}">Open it</button>`:`<button class="btn smallbtn" id="vdAdd">★ Want to read</button>`}
@@ -25849,7 +25958,7 @@ function verdictHtml(){
   return `<div class="sec" id="secVerdict"><div class="heading"><h2 class="serif">✨ Would I like it?</h2></div><div class="hcard">
     ${ready?`<div class="hrow2" style="gap:6px;flex-wrap:wrap;position:relative"><span style="position:relative;flex:1;min-width:200px"><input class="field" id="vdTitle" placeholder="A book's title…" autocomplete="off">
       <div class="sug" id="vdSug" hidden></div></span><button class="btn pri" id="vdGo">✨ Judge it</button></div>
-    <div class="hint" style="margin:4px 0 10px" id="vdSay">Searches the web for what readers say and how it ends — spoilers included · about 20–35¢</div>`:""}
+    <div class="hint" style="margin:4px 0 10px" id="vdSay">Searches the web for what readers say, what they warn about and how it ends — spoilers included · about 20–35¢</div>`:""}
     ${cur2?verdictCardHtml(cur2):""}
     ${V.length>1||(V.length&&!cur2)?`<div class="hint" style="margin:9px 0 0">Judged before: ${V.map((v,i)=>i===verdictOpen?`<b>${esc(v.title)}</b>`:`<button class="linkbtn" data-vdopen="${i}">${esc(v.title)}</button>`).join(" · ")}</div>`:""}
   </div></div>`;
@@ -42053,7 +42162,7 @@ async function renderHub(part){
     } — the series comes back here when the mark is off.</div>`:"";
   const nextLineHtml=today&&(nextLine.length||nextWait.length)?`<div class="serpart" id="secNextLine">
     <div class="lbl" style="margin:12px 0 4px">Series — the next book${nextLine.length>1?` (${nextLine.length})`:""}</div>
-    ${nextLine.slice(0,5).map(b=>rowHtml(b,false)+`<div class="hrow2" style="margin:-4px 0 8px 4px"><button class="btn smallbtn" data-setst="${b.id}|reading" title="Mark it Reading now — it moves up to Reading now">📖 Start it</button>
+    ${nextLine.slice(0,5).map(b=>rowHtml(b,false)+`<div class="hrow2" style="margin:-4px 0 8px 4px"><button class="btn smallbtn" data-setst="${b.id}|reading" title="Mark it Reading now — it moves up to Reading now">📖 Start it</button>${prevOnBtn(b)}
       <span class="hint" style="margin:0">the next unread in ${esc(seriesShown(b))}</span></div>`).join("")}
     ${nextLine.length>5?`<div class="hint" style="margin:0 0 4px">…and ${nextLine.length-5} more series with a next one waiting — 🔗 Series overview in the Library lists them all.</div>`:""}
     ${nextWaitHtml}
@@ -42072,7 +42181,7 @@ async function renderHub(part){
             ${i===0?`<button class="btn smallbtn" data-setst="${b.id}|reading" title="Mark it Reading now — it leaves the queue and moves up to Reading now">📖 Start it</button>`:""}
             <button class="btn smallbtn" data-unmv="${b.id}|-1"${i===0?" disabled":""} title="Move it up the queue">↑</button>
             <button class="btn smallbtn" data-unmv="${b.id}|1"${i===upq.length-1?" disabled":""} title="Move it down the queue">↓</button>
-            <button class="btn smallbtn" data-unx="${b.id}" title="Take it out of the queue — the book stays where it is on the shelf">✕</button>
+            <button class="btn smallbtn" data-unx="${b.id}" title="Take it out of the queue — the book stays where it is on the shelf">✕</button>${prevOnBtn(b)}
           </div>
         </div>
       </div>`).join("")}</div>
@@ -49865,7 +49974,7 @@ function renderBookView(){
             title="How far through you are — type a percent, and with a page count it becomes the page"
             style="border:none;background:transparent;font:inherit;color:var(--ink);font-weight:700;width:40px;text-align:center;padding:0">`;
           if(parseInt(b.pages))return `<div class="vprog"><span class="prog" id="vProgBar" style="flex:1"><i style="width:${pct||0}%"></i></span>
-            <span class="rr">${pcin}% · p.${pin('id="vProg"',b.progress,parseInt(b.pages),"The page you're on — type a new one and press Enter")} of ${esc(String(b.pages))}${audioAt(b)?` · ${audioAt(b)}`:""}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b);
+            <span class="rr">${pcin}% · p.${pin('id="vProg"',b.progress,parseInt(b.pages),"The page you're on — type a new one and press Enter")} of ${esc(String(b.pages))}${audioAt(b)?` · ${audioAt(b)}`:""}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b)+uptoHtml(b);
           /* No page count. There was no box here at all once, which made a book
              you are READING the one book with nowhere on this page to say where
              you are; then both numbers stood here and the bar waited on a total.
@@ -49874,7 +49983,7 @@ function renderBookView(){
              for, quietly, because a page is the better record where it exists. */
           return `<div class="vprog">${b.pct?`<span class="prog" style="flex:1"><i style="width:${pct||0}%"></i></span>`:""}
             <span class="rr">${pcin}% through</span>
-            <span class="rr">p.${pin('id="vProg"',b.progress,0,"The page you're on")} of ${pin('id="vPages"',"",0,"How many pages it has — a page is a better record than a percent")}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b);
+            <span class="rr">p.${pin('id="vProg"',b.progress,0,"The page you're on")} of ${pin('id="vPages"',"",0,"How many pages it has — a page is a better record than a percent")}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b)+uptoHtml(b);
         })():""}
         ${/* A finished book with no readings offers the fold so the dates can be
               typed in. A finished COLLECTION with none said "▸ no dates
@@ -49937,6 +50046,8 @@ function renderBookView(){
     ${(()=>{/* the series' blurb under the book's own, at the page's width — in
          the series panel beside the cover it stood 163 px wide on a phone */
       const cw=cwSeriesHtml(b);return cw?`<div class="cap2" id="secSerBlurb">${esc(seriesShown(b))}, as a whole</div>${cw}`:"";})()}
+    ${(()=>{/* the books of the series already read, recapped — see PREVIOUSLY ON… */
+      const pv=prevOnHtml(b);return pv?`<div class="cap2" id="secPrevOn">Previously on ${esc(seriesShown(b))}</div>${pv}`:"";})()}
     ${(()=>{
       /* ---- the contents ----
          A collection of a dozen stories is a book with chapters, and its page
@@ -57577,7 +57688,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","recapWords","taste","tastePrev","verdicts","claudeTidyLeave"];
+const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","recapWords","taste","tastePrev","verdicts","claudeTidyLeave"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
