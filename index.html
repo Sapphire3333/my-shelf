@@ -13075,6 +13075,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-27.8",lines:["<b>🏪 Claude and your shelf.</b> Photograph a shelf in a bookshop or a library — <b>📷 A shop's shelf, against yours</b> on 🔍 Search, or 🏪 in Shelf care — and see which you've read, which are on your list, and which two or three of the rest Claude thinks you'd love, each one press from Want to read. <b>✨ Claude's look</b> in Shelf care now reads your genres too: one genre under two names, a genre that is really a tag and a tag that is really a genre — and, asked apart, books whose genres don't fit their blurb. On 🎲 Challenges, <b>✨ Three made for you</b> beside 🎯 Make one proposes challenges from what is waiting on your shelf. And an author's panel has <b>✨ Who they are</b>: three lines checked on the web, kept once asked."]},
   {v:"2026-10-27.7",lines:["<b>✍ Claude, in your own words.</b> Under a finished book's notes, <b>Draft a review from what you wrote</b> turns your mark, likes, notes and quotes into a short first-person review, with 📋 Copy it for Goodreads or StoryGraph. On ✨ Insights, under your taste, <b>✉ Your year in a letter</b> — this year so far or last year — kept once you like it, and on Today in the first week of January. In 🧠 Questions for later, <b>✨ Five from Claude</b> offers questions with their answers to keep or cut. And on ❝ Quotes, <b>✨ Sort them by what they're about</b> groups every quote by theme and picks one for a paper on your wall; the groups become one more way to Group by."]},
   {v:"2026-10-27.6",lines:["<b>📖 Claude reading beside you.</b> Under the bookmark of a book you are reading, ask anything — who is this again, what happened before — and Claude answers only up to the page you are on; when it isn't sure of the book, 🔎 Search the web asks again with a search. On a book in a series you have read earlier books of, <b>✨ Previously on…</b> recaps them from their plots and your notes, telling nothing past the last one you read, and keeps it with the series — under the series' blurb on the book's page, and a button on Today's Up next and series rows. And <b>✨ Would I like it?</b> now also says what readers warn about, folded under Content notes until you open it."]},
   {v:"2026-10-27.5",go:["tab:care"],lines:["<b>📋 Paste anything, and ask your shelf again.</b> In 🧰 Shelf care, beside 📷 Books from a photo, <b>📋 Books from pasted text</b> takes a list, an email, a message of recommendations or a page of AO3 copied whole: Claude reads every book in it into the import list to tick, or one fic into ⚡ Quick add. And on 🔍 Search, once Claude has answered a question, <b>↳ And…</b> goes on from it — “only the short ones”, “sort them by when I finished” — keeping what you asked before; <b>✨ New</b> starts again."]},
@@ -20017,6 +20018,7 @@ function renderAuthorPanel(name){
     <div class="hrow2" style="margin-bottom:6px"><span class="lbl">👤 Author</span>
       <button class="btn" id="apClose" style="margin-left:auto;padding:4px 10px">Done</button></div>
     ${authorHeadHtml(name)}
+    ${authorBioHtml(name)}
     <div class="grouphead" style="margin:16px 0 8px"><h2 class="serif" style="margin:0;font-size:15px">Group them</h2><span class="ghline"></span></div>
     <div class="lbl" style="display:block;margin-bottom:5px">${mine.length} filed under exactly this name — tick two or more to group them</div>
     ${mine.map(row).join("")||'<span class="none">Nothing by this author yet.</span>'}
@@ -25745,6 +25747,207 @@ async function quizAsk(b,web){
   const j=await claudeAsk(Object.assign({kind:"ask",text,schema,effort:"low",max_tokens:1500},web?{web:3}:{}));
   return ((j.json&&j.json.questions)||[]).map(x=>({q:String(x.q||"").trim().slice(0,200),a:String(x.a||"").trim().slice(0,300)})).filter(x=>x.q).slice(0,5);
 }
+/* ┌─ A SHOP'S SHELF, READ AGAINST YOURS ────────────────────────────────────┐
+   │ A photo of a shelf in a bookshop or a library (📷 on Search, 🏪 in      │
+   │ Shelf care): claudeReadAny reads the spines, shelfMatch finds each on   │
+   │ your shelf by its title (and author, where both are known), and of the  │
+   │ ones you don't have Claude picks the two or three you would most likely │
+   │ like, from your taste profile (recTaste, cached). Shown in a panel     │
+   │ (#shopShelfPanel): what you have read, are reading or have; what is new │
+   │ to you, ✨ by its pick with why; ★ Want to read adds one (recAdd).      │
+   │ Nothing is kept.                                                        │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function shelfMatch(x){
+  const t=titleKey(x.title);if(!t)return null;
+  return books.find(b=>!b.apart&&titleKey(b.title)===t&&(!x.author||!b.author||authorNear(x.author,b.author)||authorNear(b.author,x.author)))||null;
+}
+function shopShelfPick(){
+  const i=document.createElement("input");i.type="file";i.accept="image/*";
+  i.onchange=()=>{const f=i.files&&i.files[0];if(f)shopShelfRead(f);};
+  i.click();
+}
+async function shopShelfRead(file){
+  const old=q("#shopShelfPanel");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="shopShelfPanel";d.className="ratepanel";
+  let rows=null,err="",picking=false;
+  const stage=b=>!b?"":b.dnf?"you gave it up":statusOf(b)==="finished"?"✓ you've read it":statusOf(b)==="reading"?"📖 you're reading it":b.unowned?"⌛ on your list":statusOf(b)==="want"?"★ on Want to read":"on your shelf";
+  const paint=()=>{
+    const fresh=rows?rows.filter(r=>!r.mine):[];
+    d.innerHTML=`<div class="hrow2" style="margin-bottom:8px"><b style="font-size:14px">🏪 This shelf, against yours</b><button class="btn" id="ssX" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+      ${err?`<div class="hint" style="margin:0">Claude couldn't — ${esc(err)}</div>`:!rows?`<div class="hint" style="margin:0">✨ Claude is reading the spines…</div>`
+      :!rows.length?`<div class="hint" style="margin:0">Claude found no title it could read — a closer, straighter shot works best.</div>`
+      :`<div class="hint" style="margin:0 0 8px">${rows.length} book${rows.length===1?"":"s"} read off the picture: ${rows.length-fresh.length} you know, ${fresh.length} new to you.${picking?" ✨ Claude is picking the ones for you…":""}</div>
+        ${rows.slice().sort((a,c)=>(c.pick?2:0)+(c.mine?0:1)-((a.pick?2:0)+(a.mine?0:1))).map(r=>`<div class="snap" style="padding:6px 10px;align-items:flex-start;flex-wrap:wrap;gap:6px">
+          <div style="min-width:0;flex:1"><div class="when" style="font-size:13px">${r.pick?"✨ ":""}${esc(r.title)}</div>
+            <div class="meta">${esc(r.author||"")}${r.author?" · ":""}${r.mine?esc(stage(r.mine)):"new to you"}</div>
+            ${r.pick?`<div class="hint" style="margin:3px 0 0">${esc(r.pick)}</div>`:""}</div>
+          ${r.mine?`<button class="btn smallbtn" data-ssopen="${esc(r.mine.id)}">Open it</button>`:r.added?`<span class="lbl" style="white-space:nowrap">✓ added</span>`:`<button class="btn smallbtn" data-sswant="${rows.indexOf(r)}">★ Want to read</button>`}</div>`).join("")}`}`;
+    q("#ssX",d).onclick=()=>close();
+    qa("[data-ssopen]",d).forEach(b=>b.onclick=()=>{close();openBook(b.dataset.ssopen,false);});
+    qa("[data-sswant]",d).forEach(b=>b.onclick=async()=>{const r=rows[+b.dataset.sswant];if(!r||r.added)return;b.disabled=true;
+      if(await recAdd({title:r.title,author:r.author,pitch:r.pick||""})){r.added=true;paint();}else b.disabled=false;});
+  };
+  document.body.appendChild(d);
+  const close=dismissable(d);d.__close=close;
+  paint();
+  try{
+    const r=await claudeReadAny(file,"many"),o=r.json||{};
+    const list=o.what==="many"?(o.books||[]):o.what==="book"&&o.book&&String(o.book.title||"").trim()?[o.book]:[];
+    const seen=new Set();rows=[];
+    list.forEach(x=>{const title=String(x&&x.title||"").trim(),author=String(x&&x.author||"").trim(),k=titleKey(title);
+      if(!title||seen.has(k))return;seen.add(k);rows.push({title,author,mine:shelfMatch({title,author})});});
+  }catch(e){err=(e&&e.message)||"no answer";}
+  paint();
+  const fresh=(rows||[]).filter(r=>!r.mine);
+  if(fresh.length>=2){picking=true;paint();
+    try{const schema={type:"object",properties:{picks:{type:"array",items:{type:"object",properties:{n:{type:"integer"},why:{type:"string"}},required:["n","why"],additionalProperties:false}}},required:["picks"],additionalProperties:false};
+      const text=`They are standing at a shelf in a bookshop or a library. Of these books, none of which they have, pick the two or three they would most likely love, from their taste — fewer if few fit. why: one short line on why, to them as "you".\n`
+        +fresh.map((r,i)=>`[${i}] ${r.title}${r.author?` by ${r.author}`:""}`).join("\n");
+      const j=await claudeAsk({kind:"ask",text,schema,effort:"low",max_tokens:800,system:recTaste(),cache:true});
+      ((j.json&&j.json.picks)||[]).slice(0,3).forEach(p=>{const r=fresh[p.n];if(r)r.pick=String(p.why||"").trim()||"Claude's pick for you.";});}
+    catch(e){}
+    picking=false;}
+  if(document.body.contains(d))paint();
+}
+/* ┌─ A CHALLENGE MADE FOR YOU ──────────────────────────────────────────────┐
+   │ Beside 🎯 Make one: Claude reads what is waiting on the shelf — the    │
+   │ unread books by genre, tag, author, length, language and setting, with │
+   │ the marks you give each genre and how many you finish a month — and    │
+   │ proposes three challenges in the builder's own shapes (the rule kinds  │
+   │ customFits knows), each with its why. Start it makes it exactly as     │
+   │ 🎯 Make one would, held to the same floors (CUSTOM_MIN_N, CUSTOM_MIN_  │
+   │ DAYS) and to CUSTOM_MAX running. The three are kept for this visit.    │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+let customSug=null;   /* {busy} | {err} | {items:[{name,n,days,rule:{k,v},why}]} */
+function customSugFacts(){
+  const unread=stageUnits().filter(u=>!u.dnf&&u.status!=="finished"&&!(u.en||u.book).unowned);
+  const tally=f=>{const m={};unread.forEach(u=>{try{f(u).forEach(v=>{v=String(v||"").trim();if(v)m[v]=(m[v]||0)+1;});}catch(e){}});
+    return Object.entries(m).filter(x=>x[1]>=CUSTOM_MIN_N).sort((a,c)=>c[1]-a[1]).slice(0,25);};
+  const gs=tally(u=>u.en?entGenresOf(u.book,u.en):(u.book.genres||[])),ts=tally(u=>u.en?entKeywordsOf(u.book,u.en):allKeywordsOf(u.book));
+  const as=tally(u=>[u.en?entAuthorOf(u.book,u.en):u.book.author]),ls=tally(u=>[langOf(u.book)]),ps=tally(u=>setInOf(u.book));
+  const len={short:0,mid:0,long:0};unread.forEach(u=>{const p=parseInt((u.en||u.book).pages)||0;if(p)len[p<200?"short":p<=400?"mid":"long"]++;});
+  const gm={};books.forEach(b=>{const v=Number(b.rating);if(!isFinite(v)||b.rating==null||b.rating==="")return;(b.genres||[]).forEach(g=>{(gm[g]=gm[g]||[]).push(v);});});
+  const marks=Object.entries(gm).filter(x=>x[1].length>=3).map(([g,a])=>[g,Math.round(a.reduce((s,v)=>s+v,0)/a.length*10)/10]).sort((a,c)=>c[1]-a[1]).slice(0,12);
+  const y=todayStr().slice(0,4),done=ruHold(()=>readsBetween(y+"-01-01",todayStr())).length,months=Math.max(1,+todayStr().slice(5,7));
+  const f=a=>a.map(([k,n])=>`${k} (${n})`).join("; ")||"none";
+  return {gs,ts,as,ls,ps,text:`Waiting to be read on their shelf, by genre: ${f(gs)}\nBy tag: ${f(ts)}\nBy author: ${f(as)}\nBy language: ${f(ls)}\nBy where it is set: ${f(ps)}\nBy length: ${len.short} under 200 pages, ${len.mid} of 200 to 400, ${len.long} over 400\nThe marks they give each genre on average: ${marks.map(([g,m])=>`${g} ${m}`).join("; ")||"none yet"}\nThey finish about ${Math.round(done/months*10)/10} books a month this year.`};
+}
+async function customSugAsk(){
+  const F=customSugFacts();
+  const kinds=["any","genre","tag","author","length","mark","lang","setin"];
+  const schema={type:"object",properties:{challenges:{type:"array",items:{type:"object",properties:{name:{type:"string"},n:{type:"integer"},days:{type:"integer"},
+    kind:{type:"string",enum:kinds},value:{type:"string"},why:{type:"string"}},required:["name","n","days","kind","value","why"],additionalProperties:false}}},required:["challenges"],additionalProperties:false};
+  const text=`Propose three reading challenges for this reader, made from what is waiting on their own shelf, each different in kind and each something they could really finish at their pace. A challenge is: read n books of one kind within days days.\n${F.text}\n\n`
+    +`kind and value: genre, tag, author, lang or setin with a value written exactly as listed above; length with short, mid or long; mark with a number from 6 to 10 (books they will mark that or higher); any with an empty value. n at least ${CUSTOM_MIN_N}, days at least ${CUSTOM_MIN_DAYS}. name: short, like “Three fantasy by spring”. why: one line, to the reader as "you".`;
+  const j=await claudeAsk({kind:"ask",text,schema,effort:"low",max_tokens:1500,model:claudeSmallModel()});
+  const ok={genre:new Set(F.gs.map(x=>x[0])),tag:new Set(F.ts.map(x=>x[0])),author:new Set(F.as.map(x=>x[0])),lang:new Set(F.ls.map(x=>x[0])),setin:new Set(F.ps.map(x=>x[0]))};
+  return ((j.json&&j.json.challenges)||[]).map(c=>{const k=String(c.kind||"any"),v=String(c.value||"").trim();
+    if(ok[k]&&!ok[k].has(v))return null;
+    if(k==="length"&&!["short","mid","long"].includes(v))return null;
+    if(k==="mark"&&!(+v>=6&&+v<=10))return null;
+    return {name:String(c.name||"").trim().slice(0,60),n:Math.max(CUSTOM_MIN_N,Math.min(100,parseInt(c.n)||CUSTOM_MIN_N)),days:Math.max(CUSTOM_MIN_DAYS,Math.min(366,parseInt(c.days)||30)),
+      rule:{k,v:customBare(k)?"":v},why:String(c.why||"").trim()};}).filter(Boolean).slice(0,3);
+}
+function customSugHtml(){
+  if(!claudeReady())return "";
+  const S=customSug,full=customRunning().length>=CUSTOM_MAX;
+  if(!S)return `<button class="btn" data-csug="1">✨ Three made for you</button>`;
+  if(S.busy)return `<span class="hint" style="margin:0">✨ Claude is reading what's waiting on your shelf…</span>`;
+  if(S.err)return `<span class="hint" style="margin:0">Claude couldn't — ${esc(S.err)}</span> <button class="btn smallbtn" data-csug="1">Try again</button>`;
+  return `<div style="flex:1 1 100%;display:grid;gap:6px;margin-top:4px">${S.items.map((c,i)=>{const by=dayBack(todayStr(),-c.days);
+    return `<div class="customcard"><b>✨ ${esc(c.name)}</b><div class="hint" style="margin:2px 0 0">Read ${c.n} book${c.n===1?"":"s"} ${esc(customRuleSay(c))} by ${esc(printDay(by))} · +${CUSTOM_XP} a book, +${customFinXp(c.n)} at the finish</div>
+      ${c.why?`<div class="hint" style="margin:3px 0 0">${esc(c.why)}</div>`:""}
+      <div class="hrow2" style="gap:6px;margin-top:6px">${c.made?`<span class="lbl">✓ started</span>`:`<button class="btn smallbtn pri" data-csgo="${i}"${full?` disabled title="${CUSTOM_MAX} running — finish or ✕ one first"`:""}>Start it</button>`}</div></div>`;}).join("")||`<div class="hint" style="margin:0">Claude had nothing it could make from your shelf.</div>`}
+    <div><button class="btn smallbtn" data-csug="1">↻ Three more</button></div></div>`;
+}
+document.addEventListener("click",async e=>{
+  const t=e.target.closest&&e.target.closest("[data-csug],[data-csgo]");if(!t)return;
+  e.stopPropagation();
+  const redraw=()=>{if(view==="challenges")renderChallenges();};
+  if(t.dataset.csgo!=null){const c=customSug&&customSug.items&&customSug.items[+t.dataset.csgo];if(!c||c.made)return;
+    if(customRunning().length>=CUSTOM_MAX){alert(CUSTOM_MAX+" can run at once — finish or ✕ one first.");return;}
+    const today=todayStr();
+    quests.custom=[...(quests.custom||[]),{id:uid(),name:c.name||("Read "+c.n+" "+customRuleSay(c)),n:c.n,by:dayBack(today,-c.days),rule:c.rule,since:today,at:Date.now()}];
+    c.made=true;questSave();redraw();return;}
+  customSug={busy:true};redraw();
+  try{customSug={items:await customSugAsk()};}catch(err){customSug={err:(err&&err.message)||"no answer"};}
+  redraw();
+});
+/* ┌─ WHO THE AUTHOR IS ─────────────────────────────────────────────────────┐
+   │ In the author panel, under the name: ✨ Who they are asks Claude, with  │
+   │ a web search, for three lines on the person and the books they are     │
+   │ best known for; the titles already on your shelf are dropped. Kept     │
+   │ once asked in settings.authorBios by the folded name ({text, known,    │
+   │ at}), one of the settings that follow you, and asked again only with    │
+   │ ↻. The Open Library list below still adds any of their books.           │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+let authorBioBusy="",authorBioErr="";
+function authorBioHtml(name){
+  const k=softFold(name),kept=(settings.authorBios||{})[k],ready=claudeReady();
+  if(!kept&&!ready)return "";
+  const known=kept?(kept.known||[]).filter(t=>!books.some(b=>titleKey(b.title)===titleKey(t))):[];
+  return `<div class="abio" style="margin:10px 0 0">${kept?`<div style="font-size:14px;line-height:1.55">${esc(kept.text)}</div>
+      ${known.length?`<div class="hint" style="margin:4px 0 0">Best known for, and not on your shelf: ${known.map(t=>`<i>${esc(t)}</i>`).join(", ")}</div>`:""}`:""}
+    ${ready?`<div class="hrow2" style="gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">${authorBioBusy===k?`<span class="hint" style="margin:0">✨ Claude is looking them up…</span>`
+      :`<button class="btn smallbtn" data-abio="${esc(name)}">${kept?"↻ Ask again":"✨ Who they are"}</button><span class="hint" style="margin:0">${authorBioErr&&!kept?`Claude couldn't — ${esc(authorBioErr)}`:kept?`Looked up ${esc(printDay(kept.at))}`:"checked on the web, about 5–10¢, kept once asked"}</span>`}</div>`:""}</div>`;
+}
+document.addEventListener("click",async e=>{
+  const t=e.target.closest&&e.target.closest("[data-abio]");if(!t)return;
+  e.stopPropagation();
+  const name=t.dataset.abio,k=softFold(name);
+  const redraw=()=>{const box=q("#authPanel");if(box&&!box.hidden&&box.dataset.author===name)renderAuthorPanel(name);};
+  authorBioBusy=k;authorBioErr="";redraw();
+  try{
+    const schema={type:"object",properties:{who:{type:"string"},known_for:{type:"array",items:{type:"string"}}},required:["who","known_for"],additionalProperties:false};
+    const mine=books.filter(b=>softFold(b.author||"")===k).map(b=>b.title).slice(0,15);
+    const text=`Who is the author “${name}”? Search the web. who: three short lines on them — who they are, where they are from, what they write and anything notable — plainly, to a reader as "you" where it matters. If more than one writer has this name, pick the one who wrote ${mine.length?mine.map(x=>`“${x}”`).join(", "):"books like these"}. known_for: up to six titles they are best known for, as published. If you cannot find them, say so in who and leave known_for empty.`;
+    const j=await claudeAsk({kind:"ask",text,schema,web:2,effort:"low",max_tokens:1200});
+    const o=j.json||{};
+    settings.authorBios=Object.assign({},settings.authorBios||{},{[k]:{text:String(o.who||"").trim()||"Nothing came back.",known:(o.known_for||[]).map(x=>String(x||"").trim()).filter(Boolean).slice(0,6),at:todayStr()}});
+    saveSettings();
+  }catch(err){authorBioErr=(err&&err.message)||"no answer";}
+  authorBioBusy="";redraw();
+});
+/* ┌─ GENRES THAT DON'T FIT THEIR BLURB ─────────────────────────────────────┐
+   │ The second half of Claude's look, asked apart because it sends books:  │
+   │ up to FIT_N books with a blurb and a genre, picked at random, each with │
+   │ its title, genres and the start of its blurb, and the shelf's genre    │
+   │ list. Claude names the books whose genres clearly do not fit, what to  │
+   │ take off and what to add (from the list only). Each is a row in the    │
+   │ same box with Change it (one undo step, claudeFitApply) or Leave it    │
+   │ (settings.claudeTidyLeave, "fit:<id>"). Kept on this device in         │
+   │ settings.claudeFit.                                                     │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const FIT_N=60;
+async function claudeFitAsk(){
+  const gl=Object.keys(genres||{}).sort((a,c)=>a.localeCompare(c)).slice(0,250);
+  const pool=books.filter(b=>!isColl(b)&&!b.apart&&(b.genres||[]).length&&stripHtml(b.summary||"").trim().length>=80)
+    .sort(()=>Math.random()-.5).slice(0,FIT_N);
+  if(!pool.length)throw new Error("no book has both a blurb and a genre to look at");
+  const schema={type:"object",properties:{books:{type:"array",items:{type:"object",properties:{n:{type:"integer"},remove:{type:"array",items:{type:"string"}},add:{type:"array",items:{type:"string"}},why:{type:"string"}},required:["n","remove","add","why"],additionalProperties:false}}},required:["books"],additionalProperties:false};
+  const text=`These are books on a reader's shelf, each with the genres they filed it under and the start of its blurb. Name only the books whose genres clearly do not fit the blurb — a mystery filed as romance, a fantasy missing fantasy. remove: its genres that are wrong, exactly as written; add: genres it should have, only from their list below. why: one short line, to the reader as "you". Leave out any book that is fine or only arguable.\n`
+    +`Their genres: ${gl.join("; ")}\n\n`
+    +pool.map((b,i)=>`[${i}] ${b.title||"Untitled"}${b.author?` by ${b.author}`:""} — genres: ${(b.genres||[]).join(", ")}\n${stripHtml(b.summary).replace(/\s+/g," ").trim().slice(0,350)}`).join("\n\n");
+  const j=await claudeAsk({kind:"ask",text,schema,effort:"low",max_tokens:3000,model:claudeSmallModel()});
+  const has=new Set(gl);
+  const items=((j.json&&j.json.books)||[]).map(x=>{const b=pool[x.n];if(!b)return null;
+    const remove=(x.remove||[]).filter(g=>(b.genres||[]).includes(g)),add=(x.add||[]).filter(g=>has.has(g)&&!(b.genres||[]).includes(g));
+    return remove.length||add.length?{id:b.id,title:b.title||"Untitled",remove,add,why:String(x.why||"").trim()}:null;}).filter(Boolean);
+  settings.claudeFit={at:todayStr(),n:pool.length,items};saveSettings();
+  return items;
+}
+async function claudeFitApply(it){
+  const b=books.find(x=>x.id===it.id);if(!b)return;
+  const before=JSON.parse(JSON.stringify(b));
+  b.genres=[...new Set((b.genres||[]).filter(g=>!it.remove.includes(g)).concat(it.add))];
+  b.genreBreaks=(b.genreBreaks||[]).filter(g=>!it.remove.includes(g));
+  touchBook(b,true);
+  if(!(await putOrRestore(b,before)))return;
+  if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+  pushOp({t:"bulk",items:[{id:b.id,before,after:JSON.parse(JSON.stringify(b))}]});
+  try{await rebaseOpenBook(b.id);}catch(e){}
+}
+const fitLive=it=>{const b=books.find(x=>x.id===it.id);return !!b&&(it.remove.some(g=>(b.genres||[]).includes(g))||it.add.some(g=>!(b.genres||[]).includes(g)));};
 /* not in English: a European language the word lists know, or a run of
    letters from another script (Korean, Japanese, Chinese, Cyrillic…) */
 const notEnglish=t=>{const s=String(t||"");return !!guessLang(s)||(s.match(/[Ѐ-ӿ぀-ヿ㐀-鿿가-힯֐-ۿ]/g)||[]).length>=6;};
@@ -38067,7 +38270,7 @@ function customHtml(){
       <div class="hrow2" style="gap:6px;margin-top:8px">${done||ended?"":`<button class="btn smallbtn" data-customfit="${esc(c.id)}">${customFitOpen===c.id?"▾ Hide":"📚 Books that would fit"}</button>`}${done?`<button class="btn smallbtn" data-custompic="${esc(c.id)}">⬇ Picture</button>`:""}<button class="btn smallbtn" data-customx="${esc(c.id)}" title="${done||ended?"Take the card away":"Give it up — the XP already paid stays"}">✕</button></div>
     ${customFitOpen===c.id?customFitHtml(c):""}</div>`;}).join("");
   return `${cards||`<div class="hint" style="margin:0 0 7px">A challenge of your own: read so many books of a kind — a genre, a tag, an author, a cover colour, a length, a mark, audiobooks, a language, who they came from, where they are set, or anything at all — by a day you choose. +${CUSTOM_XP} XP a book as you go, and more at the finish; a book counts for every challenge it fits. ${CUSTOM_MAX} can run at once.</div>`}
-    <div class="hrow2" style="margin-top:${cards?10:4}px;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn pri" id="customGo"${running.length>=CUSTOM_MAX?" disabled":""}>🎯 Make one</button>${running.length>=CUSTOM_MAX?`<span class="hint" style="margin:0">${CUSTOM_MAX} running — finish or ✕ one first</span>`:""}</div>`;
+    <div class="hrow2" style="margin-top:${cards?10:4}px;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn pri" id="customGo"${running.length>=CUSTOM_MAX?" disabled":""}>🎯 Make one</button>${running.length>=CUSTOM_MAX?`<span class="hint" style="margin:0">${CUSTOM_MAX} running — finish or ✕ one first</span>`:""}${customSugHtml()}</div>`;
 }
 function customMake(){
   const old=q("#customPanel");if(old&&old.__close)old.__close();
@@ -42557,7 +42760,8 @@ async function renderHub(part){
         <div class="hrow2"><button class="btn pri" id="csvBtn">⭱ Choose an export file</button>
           ${claudeReady()?`<button class="btn" id="impPhoto" title="A shelf of spines, a list, a screenshot of a library, a receipt — Claude reads every book on it into the list below">📷 Books from a photo</button>
           <input type="file" id="impPhotoFile" accept="image/*" hidden>
-          <button class="btn" id="impPaste" title="A list, an email, a chat, a page copied whole — Claude reads every book in it into the list below">📋 Books from pasted text</button>`:""}
+          <button class="btn" id="impPaste" title="A list, an email, a chat, a page copied whole — Claude reads every book in it into the list below">📋 Books from pasted text</button>
+          <button class="btn" id="impShop" title="A photo of a shelf in a bookshop or a library — which you have, which you've read, and which of the rest you'd like">🏪 A shop's shelf, against yours</button>`:""}
           <button class="btn" id="impClear" hidden>Clear the list</button></div>
         ${claudeReady()?`<div id="impPasteBox" hidden style="margin:9px 0 0">
           <textarea class="field" id="impPasteText" rows="6" style="width:100%;box-sizing:border-box;resize:vertical" placeholder="Paste anything with books in it — a list, an email, a message of recommendations, a page of AO3…"></textarea>
@@ -42749,6 +42953,7 @@ async function renderHub(part){
           if(ps)ps.textContent=`📷 Claude read ${res.n} book${res.n===1?"":"s"} off the picture: ${res.fresh} new on the list below${res.updated?`, ${res.updated} already there`:""}. Tick the ones you want on your shelf.`;}
       }catch(e){if(ps)ps.textContent="📷 Claude couldn't read it — "+((e&&e.message)||"no answer");}
       finally{pb.disabled=false;pb.textContent="📷 Books from a photo";}};}}
+  {const sb=q("#impShop");if(sb)sb.onclick=shopShelfPick;}
   /* the same, off pasted words — see PASTE ANYTHING */
   {const pb=q("#impPaste"),box=q("#impPasteBox"),ta=q("#impPasteText"),go=q("#impPasteGo"),x=q("#impPasteX"),ps=q("#impPhotoSay");
    if(pb&&box&&ta&&go){
@@ -44649,14 +44854,16 @@ async function careAfterTidy(where){
    │ mergeTag), so ↶ takes any of them back. The last answer is kept on this │
    │ device (settings.claudeTidy) so a visit later finds it still there.      │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const ctKey=it=>it.kind+":"+[it.keep,...(it.others||[]),it.tag||""].map(s=>String(s).toLowerCase()).sort().join("|");
+/* a move's word is added only where there is one, so the keys of rows left
+   before genres were looked at stay what they were */
+const ctKey=it=>it.kind+":"+[it.keep,...(it.others||[]),it.tag||"",...(it.word?[it.word+">"+it.to]:[])].map(s=>String(s).toLowerCase()).sort().join("|");
 function ctVocab(){
-  const au={},se={},tg={};
+  const au={},se={},tg={},ge={};
   const bump=(m,v)=>{v=String(v||"").trim();if(v)m[v]=(m[v]||0)+1;};
-  books.forEach(b=>{bump(au,b.author);bump(se,b.series);(b.keywords||[]).forEach(k=>bump(tg,k));
-    (b.entries||[]).forEach(en=>{if(String(en.author||"").trim()&&en.author!==b.author)bump(au,en.author);(en.keywords||[]).forEach(k=>bump(tg,k));});});
+  books.forEach(b=>{bump(au,b.author);bump(se,b.series);(b.keywords||[]).forEach(k=>bump(tg,k));(b.genres||[]).forEach(g=>bump(ge,g));
+    (b.entries||[]).forEach(en=>{if(String(en.author||"").trim()&&en.author!==b.author)bump(au,en.author);(en.keywords||[]).forEach(k=>bump(tg,k));(en.genres||[]).forEach(g=>bump(ge,g));});});
   const top=(m,n)=>Object.entries(m).sort((a,c)=>c[1]-a[1]).slice(0,n);
-  return {au:top(au,2500),se:top(se,1500),tg:top(tg,800)};
+  return {au:top(au,2500),se:top(se,1500),tg:top(tg,800),ge:top(ge,300)};
 }
 async function claudeTidyAsk(){
   const items=await claudeTidyFind();
@@ -44667,21 +44874,26 @@ async function claudeTidyAsk(){
 async function claudeTidyFind(model){
   const v=ctVocab(),S2={type:"string"},L={type:"array",items:S2};
   const merge={type:"array",items:{type:"object",properties:{keep:S2,others:L,why:S2},required:["keep","others","why"],additionalProperties:false}};
-  const schema={type:"object",properties:{authors:merge,series:merge,tags:merge,
-    labels:{type:"array",items:{type:"object",properties:{tag:S2,action:{type:"string",enum:["favorite","dnf","drop"]},why:S2},required:["tag","action","why"],additionalProperties:false}}},
-    required:["authors","series","tags","labels"],additionalProperties:false};
+  const schema={type:"object",properties:{authors:merge,series:merge,tags:merge,genres:merge,
+    labels:{type:"array",items:{type:"object",properties:{tag:S2,action:{type:"string",enum:["favorite","dnf","drop"]},why:S2},required:["tag","action","why"],additionalProperties:false}},
+    moves:{type:"array",items:{type:"object",properties:{word:S2,to:{type:"string",enum:["tag","genre"]},why:S2},required:["word","to","why"],additionalProperties:false}}},
+    required:["authors","series","tags","genres","labels","moves"],additionalProperties:false};
   const fmt=a=>a.map(([n,c])=>`${n} (${c})`).join("; ");
-  const text=`This is the vocabulary of a reader's book shelf: the names in use and how many books carry each.\n\nAuthors: ${fmt(v.au)||"none"}\n\nSeries: ${fmt(v.se)||"none"}\n\nTags: ${fmt(v.tg)||"none"}\n\n`
+  const text=`This is the vocabulary of a reader's book shelf: the names in use and how many books carry each.\n\nAuthors: ${fmt(v.au)||"none"}\n\nSeries: ${fmt(v.se)||"none"}\n\nTags: ${fmt(v.tg)||"none"}\n\nGenres: ${fmt(v.ge)||"none"}\n\n`
     +`Find what a spelling check would miss, and only what you are sure of:\n`
     +`- authors: one person written two or more ways (initials and a full name, a middle name, a credit order, a known pen name of the same person) — never two different people. keep: the fullest usual form, others: the rest exactly as listed.\n`
     +`- series: one series under two or more names (with or without "The", a subtitle, the word series, an older name).\n`
     +`- tags: tags that mean the same thing to a reader (rivals to lovers and enemies to lovers are not the same; fae and faerie are). keep: the one carried most unless another is clearly the better name.\n`
     +`- labels: tags that are a shelf or cataloguing label, or imported metadata, rather than about the book: action favorite when it marks favourites (they will get ♥), dnf when it marks books given up, drop when it says nothing about the book. Leave out a reminder the reader may still be using.\n`
+    +`- genres: one genre written two or more ways, or two genres that are the same genre (sci-fi and science fiction).\n`
+    +`- moves: a genre that is really a tag (a trope, a mood, a setting, a format, like enemies to lovers, cosy or audiobook) to "tag"; a tag that is really a genre, like fantasy, mystery or romance, to "genre". Only clear ones.\n`
     +`Use the names exactly as written above. why: one short line, to the reader as "you".`;
   const j=await claudeAsk({kind:"ask",text,schema,effort:"medium",max_tokens:6000,model:model||claudeSmallModel()});
   const o=j.json||{},items=[];
-  const has={au:new Set(v.au.map(x=>x[0])),se:new Set(v.se.map(x=>x[0])),tg:new Set(v.tg.map(x=>x[0]))};
-  [["authors","author",has.au],["series","series",has.se],["tags","tag",has.tg]].forEach(([k,kind,known])=>
+  const has={au:new Set(v.au.map(x=>x[0])),se:new Set(v.se.map(x=>x[0])),tg:new Set(v.tg.map(x=>x[0])),ge:new Set(v.ge.map(x=>x[0]))};
+  (Array.isArray(o.moves)?o.moves:[]).forEach(x=>{const word=String(x&&x.word||"").trim(),to=x&&x.to==="genre"?"genre":"tag";
+    if(word&&(to==="tag"?has.ge:has.tg).has(word))items.push({kind:"move",word,to,why:String(x.why||"").trim()});});
+  [["authors","author",has.au],["series","series",has.se],["tags","tag",has.tg],["genres","genre",has.ge]].forEach(([k,kind,known])=>
     (Array.isArray(o[k])?o[k]:[]).forEach(x=>{const keep=String(x&&x.keep||"").trim(),others=(x&&x.others||[]).map(s=>String(s).trim()).filter(s=>s&&s!==keep&&known.has(s));
       if(keep&&others.length)items.push({kind,keep,others,why:String(x.why||"").trim()});}));
   (Array.isArray(o.labels)?o.labels:[]).forEach(x=>{const tag=String(x&&x.tag||"").trim();if(tag&&has.tg.has(tag))items.push({kind:"label",tag,action:x.action,why:String(x.why||"").trim()});});
@@ -44691,16 +44903,23 @@ async function claudeTidyFind(model){
 function ctReach(it){
   const out=[];
   const lc=s=>String(s||"").trim().toLowerCase();
-  const others=new Set((it.others||[]).map(lc)),tag=lc(it.tag);
+  const others=new Set((it.others||[]).map(lc)),tag=lc(it.tag),word=lc(it.word);
+  /* a genre merge reaches every book and story under one of the other names;
+     a move reaches what carries the word where it is now */
+  const inG=x=>(x.genres||[]).some(g=>others.has(lc(g))),wordIn=(x,f)=>(x[f]||[]).some(k=>lc(k)===word);
   books.forEach(b=>{
-    const self=it.kind==="author"?others.has(lc(b.author)):it.kind==="series"?others.has(lc(b.series)):(b.keywords||[]).some(k=>lc(k)===tag);
-    const ens=(b.entries||[]).filter(en=>it.kind==="author"?others.has(lc(en.author)):it.kind==="label"?(en.keywords||[]).some(k=>lc(k)===tag):false);
+    const self=it.kind==="author"?others.has(lc(b.author)):it.kind==="series"?others.has(lc(b.series)):it.kind==="genre"?inG(b)
+      :it.kind==="move"?wordIn(b,it.to==="tag"?"genres":"keywords"):(b.keywords||[]).some(k=>lc(k)===tag);
+    const ens=(b.entries||[]).filter(en=>it.kind==="author"?others.has(lc(en.author)):it.kind==="label"?(en.keywords||[]).some(k=>lc(k)===tag)
+      :it.kind==="genre"?inG(en):it.kind==="move"&&it.to==="tag"?wordIn(en,"genres"):false);
     if(self||ens.length)out.push({b,self,ens});
   });
   return out;
 }
 async function claudeTidyApply(it){
   if(it.kind==="tag"){for(const o of it.others)await mergeTag(o,it.keep);return;}
+  if(it.kind==="genre"){for(const o of it.others)await mergeGenre(o,it.keep);return;}
+  if(it.kind==="move"){await moveWordEverywhere(it.word,it.to==="genre");return;}
   const lc=s=>String(s||"").trim().toLowerCase(),tag=lc(it.tag);
   const items=[];let full=false;
   for(const {b,self,ens} of ctReach(it)){
@@ -44731,22 +44950,45 @@ function refreshClaudeTidy(){
      gone has nothing left to offer */
   const live=((T&&T.items)||[]).filter(it=>!left.has(ctKey(it))&&ctReach(it).length+(it.kind==="tag"?1:0)>0
     &&(it.kind!=="tag"||it.others.some(o=>books.some(b=>allKeywordsOf(b).includes(o)))));
-  const KIND={author:"One author, two names",series:"One series, two names",tag:"Two tags, one meaning",label:"A shelf label, not about the book"};
+  const KIND={author:"One author, two names",series:"One series, two names",tag:"Two tags, one meaning",label:"A shelf label, not about the book",
+    genre:"One genre, two names",move:"A genre that is really a tag",movetag:"A tag that is really a genre"};
   const n=it=>{const r=ctReach(it);return r.reduce((s,x)=>s+(x.self?1:0)+x.ens.length,0);};
   const row=(it,i)=>{
-    const opts=it.kind==="label"
+    const opts=it.kind==="move"?`<button class="btn" data-ctdo="${i}">${it.to==="genre"?"Make it a genre":"Make it a tag"} <b>${n(it)}</b></button>`
+      :it.kind==="label"
       ?`<button class="btn" data-ctdo="${i}">${it.action==="favorite"?"♥ Make them favourites":it.action==="dnf"?"✕ Mark them did not finish":"Take the tag off"} <b>${n(it)}</b></button>`
       :[it.keep,...it.others].map(nm=>`<button class="btn" data-ctkeep="${i}" data-ctv="${esc(nm)}" title="Keep this name and change the others to match">${esc(nm)}${it.kind==="tag"?"":` <b>${n({...it,others:[nm]})}</b>`}</button>`).join(`<span class="lbl" style="margin:0">or</span>`);
     return `<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:7px">
-      <span class="dupehow">${KIND[it.kind]}${it.kind==="label"?` · “${esc(it.tag)}”`:""}</span>${opts}
-      <button class="btn" data-ctx="${i}" style="margin-left:auto">Leave ${it.kind==="label"?"it":"them"}</button>
+      <span class="dupehow">${KIND[it.kind==="move"&&it.to==="genre"?"movetag":it.kind]}${it.kind==="label"?` · “${esc(it.tag)}”`:it.kind==="move"?` · “${esc(it.word)}”`:""}</span>${opts}
+      <button class="btn" data-ctx="${i}" style="margin-left:auto">Leave ${it.kind==="label"||it.kind==="move"?"it":"them"}</button>
       ${it.why?`<div class="meta" style="flex:1 1 100%">✨ ${esc(it.why)}</div>`:""}</div>`;
   };
   box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">✨ Claude's look${live.length?` <b>${live.length}</b>`:""}</div>
-    <div class="hint" style="margin:0 0 7px">What a spelling check can't see: one author written two ways, one series under two names, two tags that mean the same, and tags that are shelf labels rather than about the book. Only the names go to Claude, never your books. Every change is one press of ↶ to undo.</div>
+    <div class="hint" style="margin:0 0 7px">What a spelling check can't see: one author written two ways, one series or one genre under two names, two tags that mean the same, a genre that is really a tag or the other way round, and tags that are shelf labels rather than about the book. Only the names go to Claude, never your books. Every change is one press of ↶ to undo.</div>
     ${live.map(row).join("")}
     ${ready?`<div class="hrow2" style="margin-top:8px;gap:6px;align-items:center"><button class="btn${live.length?"":" pri"}" id="ctGo">✨ ${T?"Look again":"Claude's look"}</button>
-      <span class="hint" style="margin:0" id="ctSay">${T?`Looked ${esc(printDay(T.at))}${live.length?"":" — nothing left from that look"} · `:""}about 5–15¢</span></div>`:""}`;
+      <span class="hint" style="margin:0" id="ctSay">${T?`Looked ${esc(printDay(T.at))}${live.length?"":" — nothing left from that look"} · `:""}about 5–15¢</span></div>`:""}
+    ${(()=>{/* the books whose genres don't fit their blurb — see GENRES THAT DON'T FIT */
+      const F=settings.claudeFit,fits=((F&&F.items)||[]).filter(it=>!left.has("fit:"+it.id)&&fitLive(it));
+      if(!ready&&!fits.length)return "";
+      return `<div class="lbl" style="display:block;margin:14px 0 4px">✨ Genres that don't fit the blurb${fits.length?` <b>${fits.length}</b>`:""}</div>
+        ${fits.map((it,i)=>`<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:7px">
+          <span class="dupehow"><button class="linkbtn" data-ctfitopen="${esc(it.id)}">${esc(it.title)}</button></span>
+          <button class="btn" data-ctfit="${i}">${[it.remove.length?"take off "+it.remove.join(", "):"",it.add.length?"add "+it.add.join(", "):""].filter(Boolean).map(esc).join(" and ")}</button>
+          <button class="btn" data-ctfitx="${i}" style="margin-left:auto">Leave it</button>
+          ${it.why?`<div class="meta" style="flex:1 1 100%">✨ ${esc(it.why)}</div>`:""}</div>`).join("")}
+        ${ready?`<div class="hrow2" style="margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap"><button class="btn" id="ctFitGo">✨ ${F?"Look at another "+FIT_N:"Look at the genres against the blurbs"}</button>
+          <span class="hint" style="margin:0" id="ctFitSay">${F?`Looked ${esc(printDay(F.at))} at ${F.n} · `:""}sends ${FIT_N} books' titles, genres and blurbs, picked at random · about 3–6¢</span></div>`:""}`;})()}`;
+  {const fg=q("#ctFitGo",box),F=settings.claudeFit,fits=((F&&F.items)||[]).filter(it=>!left.has("fit:"+it.id)&&fitLive(it));
+   if(fg)fg.onclick=async()=>{fg.disabled=true;fg.textContent="✨ Claude is reading the blurbs…";
+     try{await claudeFitAsk();refreshClaudeTidy();}
+     catch(e){fg.disabled=false;fg.textContent="✨ Try again";const s=q("#ctFitSay",box);if(s)s.textContent="Claude couldn't — "+((e&&e.message)||"no answer");}};
+   qa("[data-ctfitx]",box).forEach(b=>b.onclick=()=>{const it=fits[+b.dataset.ctfitx];if(!it)return;
+     settings.claudeTidyLeave=[...new Set([...(settings.claudeTidyLeave||[]),"fit:"+it.id])];saveSettings();refreshClaudeTidy();});
+   qa("[data-ctfit]",box).forEach(b=>b.onclick=async()=>{const it=fits[+b.dataset.ctfit];if(!it)return;b.disabled=true;
+     undoSaid(`“${it.title}” changed its genres.`);await claudeFitApply(it);
+     settings.claudeTidyLeave=[...new Set([...(settings.claudeTidyLeave||[]),"fit:"+it.id])];saveSettings();refreshClaudeTidy();});
+   qa("[data-ctfitopen]",box).forEach(b=>b.onclick=()=>openBook(b.dataset.ctfitopen,false));}
   const go=q("#ctGo",box);
   if(go)go.onclick=async()=>{go.disabled=true;go.textContent="✨ Claude is reading the names…";
     try{await claudeTidyAsk();refreshClaudeTidy();}
@@ -44762,7 +45004,8 @@ function refreshClaudeTidy(){
     undoSaid(`${it.others.map(o=>`“${o}”`).join(" and ")} changed to “${keep}”.`);
     await act(b,it);});
   qa("[data-ctdo]",box).forEach(b=>b.onclick=async()=>{const it=live[+b.dataset.ctdo];if(!it)return;
-    undoSaid(it.action==="favorite"?`Every book tagged “${it.tag}” has ♥ now, and the tag is off.`:it.action==="dnf"?`Every book tagged “${it.tag}” is marked did not finish, and the tag is off.`:`“${it.tag}” is off every book that had it.`);
+    undoSaid(it.kind==="move"?(it.to==="genre"?`“${it.word}” is a genre now, wherever it was a tag.`:`“${it.word}” is a tag now, wherever it was a genre.`)
+      :it.action==="favorite"?`Every book tagged “${it.tag}” has ♥ now, and the tag is off.`:it.action==="dnf"?`Every book tagged “${it.tag}” is marked did not finish, and the tag is off.`:`“${it.tag}” is off every book that had it.`);
     await act(b,it);});
 }
 function refreshGenDupes(){
@@ -46222,9 +46465,11 @@ function renderSearchView(){
     </div>
     ${claudeReady()?(()=>{const on=askThreadOn();return `<div class="askrow"><input class="field" id="askQ" placeholder="${on?"↳ And… — only under 300 pages, sort them by when I finished…":"✨ Or ask in words — fantasy I gave 8 or more with found family…"}" value="${on?"":esc(S.askQ||"")}">
       ${on?`<span class="askbtns"><button class="btn pri" id="askMore" title="Narrow or change the answer below, keeping what you asked before">↳ And…</button><button class="btn" id="askGo" title="Start a new question">✨ New</button></span>`:`<button class="btn" id="askGo">✨ Ask</button>`}</div>
-      <div class="hint" id="askSay" style="margin:-2px 0 10px">${on?`Following on from ${S.askThread.map(x=>`“${esc(x.q)}”`).join(" → ")}. Press ↳ And… to go on, or ✨ New to start again.`:"Only your question and your genre and tag names go to Claude — about 1¢; your shelf is searched here."}</div>`;})():""}
+      <div class="hint" id="askSay" style="margin:-2px 0 10px">${on?`Following on from ${S.askThread.map(x=>`“${esc(x.q)}”`).join(" → ")}. Press ↳ And… to go on, or ✨ New to start again.`:"Only your question and your genre and tag names go to Claude — about 1¢; your shelf is searched here."}</div>
+      <div style="margin:-4px 0 12px"><button class="btn smallbtn" id="shopShelfGo" title="A photo of a shelf in a bookshop or a library, read against yours">📷 A shop's shelf, against yours</button></div>`;})():""}
     <div class="deep" id="scopeRow" style="flex-wrap:wrap;margin-bottom:18px"></div>
     <div id="sbody"></div>`;
+  {const sg=q("#shopShelfGo");if(sg)sg.onclick=shopShelfPick;}
   {const ag=q("#askGo"),am=q("#askMore"),aq=q("#askQ"),as=q("#askSay");
    /* a fresh question, or one more turn of the thread — see TALKING IT THROUGH */
    const ask=async(more,btn)=>{const question=aq.value.trim();if(!question){aq.focus();return;}
@@ -57875,7 +58120,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","recapWords","taste","tastePrev","verdicts","claudeTidyLeave"];
+const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","verdicts","claudeTidyLeave"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
