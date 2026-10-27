@@ -13084,6 +13084,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-27.12",lines:["<b>📖 Words you looked up.</b> In the app's reader, select a word — up to three — and press <b>📖 What does it mean?</b>: Claude says what it means in that very sentence, in English, whatever language the book is in, and the word is kept with the book, with its sentence and page. For a paper book, type the word under <b>📖 Words you looked up</b> on its page. ❝ Quotes lists every word you have looked up, and the crossword and the hangman now deal your own words back to you. Each look-up goes to Claude's cheapest model — well under 1¢."]},
   {v:"2026-10-27.11",lines:["<b>🏃 A reading sprint.</b> Under the bar of a book you are reading, 🏃 Sprint: pick 15, 25 or 45 minutes and guess how many pages — the guess is filled from your own pages an hour — and the clock counts down where ⏱ was. At the end, say your page: it moves the bookmark, keeps the sprint as a session, and says how close the guess was. <b>+10 XP</b> for a sprint run to its end, <b>+5</b> more for a guess within two pages or a tenth. The app's reader shows the minutes left, and the season's card can now deal a Three sprints square."]},
   {v:"2026-10-27.10",go:["tab:challenges"],lines:["<b>⏳ In order, four ways.</b> The arcade's In order now orders your books by something different each round: when you last finished them, how long they are, when they first came out, or the mark you gave them — the card says which, and the answers show the dates, pages, years or marks. From 29 October it is also one of the day's games, so a day can ask for five In order wins."]},
   {v:"2026-10-27.9",go:["el:challenges:.qboss"],lines:["<b>👹 The doorstopper.</b> Under This month on 🎲 Challenges, beside the readathon: your longest book that you started and set down becomes a monster, its pages left as hit points. Take it on, or pick another; only moving that book's bookmark hurts it. Finish it for <b>+500 XP</b> and a 🏆 trophy card — a gold edition of the book's card that no pack can deal, in its own row of the album. Then the next one is waiting."]},
@@ -27734,14 +27735,88 @@ function rdSelNow(){
   const sel=window.getSelection&&window.getSelection(),t=q("#rdText",s.el);
   if(!sel||sel.isCollapsed||!sel.rangeCount||!t||!t.contains(sel.anchorNode))return null;
   const text=String(sel).replace(/[ \t ]+/g," ").replace(/ *\n */g,"\n").replace(/\n{3,}/g,"\n\n").trim();
-  if(text.length<3)return null;
+  if(text.length<2)return null;
   /* how far into the text the words begin, counted in characters — the
      same answer in the scroll and on pages, where a last page that is
      mostly empty would make any measure by layout read short */
   const rg=sel.getRangeAt(0),pre=document.createRange();pre.selectNodeContents(t);pre.setEnd(rg.startContainer,rg.startOffset);
-  const frac=pre.toString().length/Math.max(1,t.textContent.length);
-  return {text:text.slice(0,2000),frac:Math.max(0,Math.min(1,frac))};
+  const at=pre.toString().length,frac=at/Math.max(1,t.textContent.length);
+  /* the sentence the words stand in, for 📖 — see WORDS YOU LOOKED UP */
+  const all=t.textContent,a=Math.max(all.lastIndexOf(".",at-1),all.lastIndexOf("!",at-1),all.lastIndexOf("?",at-1),all.lastIndexOf("\n",at-1))+1;
+  const ends=[".","!","?","\n"].map(ch=>all.indexOf(ch,at+text.length)).filter(i=>i>=0);
+  const z=ends.length?Math.min(...ends)+1:all.length;
+  const ctx=all.slice(a,z).replace(/\s+/g," ").trim().slice(0,300);
+  return {text:text.slice(0,2000),frac:Math.max(0,Math.min(1,frac)),ctx};
 }
+/* ┌─ WORDS YOU LOOKED UP ───────────────────────────────────────────────────┐
+   │ In the reader, a selection of one to three words offers 📖 What does  │
+   │ it mean? (#rdWord, beside ❝ Keep): wordAsk sends the word, the sentence │
+   │ it stands in (rdSelNow's ctx) and the book's title to Claude on Haiku   │
+   │ (CLAUDE_HAIKU, well under 1¢), which answers its sense in that sentence │
+   │ in one line of English, whatever the word's language, with the word as  │
+   │ a dictionary lists it. The answer is said in the reader's foot and kept │
+   │ on the book (b.words [{w, base, mean, ctx, src, at}], WORDS_MAX), so it │
+   │ travels with the book. A word from a paper book is typed into the book  │
+   │ page's Words fold (wordsHtml), with its sentence if you like. ❝ Quotes  │
+   │ lists every word (📖 Words). The words are dealt back by the crossword  │
+   │ (cwClues: "Means …") and the hangman (hmPool, kind "word").             │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const WORDS_MAX=300;
+const wordsOf=b=>Array.isArray(b&&b.words)?b.words.filter(x=>x&&x.w&&x.mean):[];
+const wordish=t=>{t=String(t||"").trim();return t.length>=2&&t.length<=40&&/^[\p{L}'’-]+(?: [\p{L}'’-]+){0,2}$/u.test(t);};
+async function wordAsk(word,sentence,b){
+  const schema={type:"object",properties:{base:{type:"string"},meaning:{type:"string"}},required:["base","meaning"],additionalProperties:false};
+  const text=`A reader of “${(b&&b.title)||"a book"}”${b&&b.author?` by ${b.author}`:""} looked up “${word}”${sentence?` in this sentence: “${sentence}”`:""}.\n`
+    +`meaning: what it means${sentence?" here, in this sentence":""}, as one short plain line of English, under twenty words — whatever language the word is in. base: the word as a dictionary lists it (singular, the infinitive), in its own language.`;
+  const j=await claudeAsk({kind:"ask",text,schema,effort:"low",max_tokens:300,model:CLAUDE_HAIKU});
+  const o=j.json||{};
+  return {w:String(word).trim().slice(0,40),base:String(o.base||"").trim().slice(0,40),mean:String(o.meaning||"").trim().slice(0,200)||"No meaning came back.",
+    ctx:String(sentence||"").trim().slice(0,300),at:todayStr()};
+}
+/* one entry a word on a book: a word looked up again takes the newer answer */
+function wordKeep(bk,e){bk.words=wordsOf(bk).filter(x=>softFold(x.w)!==softFold(e.w)).concat([e]).slice(-WORDS_MAX);return true;}
+async function rdWordGo(){
+  const s=rdState;if(!s||!s.sel||!wordish(s.sel.text))return;
+  const {text,frac,ctx}=s.sel;s.sel=null;
+  const b=books.find(x=>x.id===s.id);if(!b)return;
+  const n=q("#rdSaid",s.el),w=q("#rdWord",s.el),k=q("#rdKeep",s.el);if(w)w.hidden=true;if(k)k.hidden=true;
+  const say=(t,ms)=>{if(!n)return;n.textContent=t;clearTimeout(s.saidT);if(ms)s.saidT=setTimeout(()=>{if(n.isConnected)n.textContent="";},ms);};
+  say("📖 Looking up “"+text+"”…");
+  try{const t=parseInt(b.pages)||0,src=t?"p. "+Math.max(1,Math.round(frac*t)):Math.round(frac*100)+"%";
+    const e=Object.assign(await wordAsk(text,ctx,b),{src});
+    const mut=bk=>wordKeep(bk,e);
+    if(view==="book"&&cur&&cur.id===s.id)await quickEdit(mut);else await shelfMut(s.id,mut);
+    try{window.getSelection().removeAllRanges();}catch(x){}
+    say("📖 "+e.w+" — "+e.mean,15000);}
+  catch(err){say("📖 Claude couldn't — "+((err&&err.message)||"no answer"),6000);}
+}
+let wordsOpen="",wordBusy=false,wordErr="";
+function wordsHtml(b){
+  const ws=wordsOf(b),ready=claudeReady();
+  if(!ws.length&&!ready)return "";
+  const open=wordsOpen===b.id;
+  return `<div class="vwords"><button class="rdtog" data-wordsopen="1">${open?"▾":"▸"} 📖 Words you looked up${ws.length?` · ${ws.length}`:""}</button>
+    ${open?`<div style="margin:6px 0 0">${ws.slice().reverse().map(x=>`<div class="snap" style="padding:5px 10px;align-items:flex-start;gap:8px"><div style="min-width:0;flex:1"><b>${esc(x.w)}</b>${x.base&&softFold(x.base)!==softFold(x.w)?` <span class="hint" style="margin:0">(${esc(x.base)})</span>`:""} — ${esc(x.mean)}
+        ${x.ctx||x.src?`<div class="hint" style="margin:2px 0 0">${x.ctx?`“${esc(x.ctx.length>140?x.ctx.slice(0,140)+"…":x.ctx)}”`:""}${x.src?` · ${esc(x.src)}`:""}</div>`:""}</div>
+        <button class="lx" data-wordx="${esc(x.w)}" style="opacity:1" title="Take this word off">✕</button></div>`).join("")||`<div class="hint" style="margin:0 0 6px">None yet. In the app's reader, select a word and press 📖; for a paper book, type it here.</div>`}
+      ${ready?`<div class="hrow2" style="gap:6px;margin-top:6px;flex-wrap:wrap"><input class="field" id="wordIn" maxlength="40" placeholder="A word from the page" style="flex:1;min-width:140px">
+        <input class="field" id="wordCtx" maxlength="300" placeholder="The sentence it was in — if you like" style="flex:2;min-width:180px">
+        <button class="btn smallbtn" id="wordGo"${wordBusy?" disabled":""}>${wordBusy?"📖 Looking…":"📖 Look it up"}</button></div>
+        <div class="hint" style="margin:4px 0 0">${wordErr?`Claude couldn't — ${esc(wordErr)}`:"Claude, on its cheapest model — well under 1¢ a word. The crossword and the hangman deal your words back."}</div>`:""}</div>`:""}</div>`;
+}
+document.addEventListener("click",async e=>{
+  const t=e.target.closest&&e.target.closest("[data-wordsopen],[data-wordx],#wordGo");if(!t||view!=="book"||!cur)return;
+  e.stopPropagation();
+  const id=cur.id,redraw=()=>{if(view==="book"&&cur&&cur.id===id)renderBookView();};
+  if(t.dataset.wordsopen){wordsOpen=wordsOpen===id?"":id;wordErr="";redraw();return;}
+  if(t.dataset.wordx){const w=t.dataset.wordx;quickEdit(bk=>{const l=wordsOf(bk);if(!l.some(x=>x.w===w))return false;bk.words=l.filter(x=>x.w!==w);if(!bk.words.length)delete bk.words;return true;});return;}
+  const wi=q("#wordIn"),wc=q("#wordCtx"),word=wi?wi.value.trim():"";if(!word){if(wi)wi.focus();return;}
+  wordBusy=true;wordErr="";redraw();
+  try{const en=await wordAsk(word,wc?wc.value.trim():"",cur);await quickEdit(bk=>wordKeep(bk,Object.assign(en,{src:"typed"})));}
+  catch(err){wordErr=(err&&err.message)||"no answer";}
+  wordBusy=false;redraw();
+});
+document.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target&&(e.target.id==="wordIn"||e.target.id==="wordCtx")){e.preventDefault();const g=q("#wordGo");if(g&&!g.disabled)g.click();}});
 async function rdKeep(){
   const s=rdState;if(!s||!s.sel)return;
   const {text,frac}=s.sel;s.sel=null;
@@ -27797,7 +27872,7 @@ async function openReader(id){
       <button class="btn smallbtn" id="rdToc" title="Chapters">☰</button>
       <button class="btn smallbtn" id="rdMode" title="Turn between pages and one long scroll">${mode==="pages"?"⇅ Scroll":"⇆ Pages"}</button></div>
     <div class="rdview" id="rdView"><article class="rdtext serif" id="rdText">${html}</article></div>
-    <div class="rdfoot"><span id="rdPos"></span><button class="btn smallbtn pri" id="rdKeep" hidden title="Keep the words you selected as a quote, at this page">❝ Keep as a quote</button><span id="rdSaid" class="hint" style="margin:0"></span><span id="rdClock" class="hint" style="margin:0"></span><span class="hint rdmark" style="margin:0">${reading?"the bookmark follows you":"not Reading now — your place is kept, the bookmark isn't moved"}</span></div>
+    <div class="rdfoot"><span id="rdPos"></span><button class="btn smallbtn pri" id="rdKeep" hidden title="Keep the words you selected as a quote, at this page">❝ Keep as a quote</button>${claudeReady()?`<button class="btn smallbtn" id="rdWord" hidden title="What the word means in this sentence — kept with the book">📖 What does it mean?</button>`:""}<span id="rdSaid" class="hint" style="margin:0"></span><span id="rdClock" class="hint" style="margin:0"></span><span class="hint rdmark" style="margin:0">${reading?"the bookmark follows you":"not Reading now — your place is kept, the bookmark isn't moved"}</span></div>
     <div class="rdtocbox" id="rdTocBox" hidden></div>`;
   document.body.appendChild(el);document.documentElement.classList.add("rdopen");
   /* where you left off: your place in the file, or — the first time it is
@@ -27849,9 +27924,12 @@ async function openReader(id){
   s.timer=setInterval(()=>rdSave(false),RD_SAVE_S*1000);
   s.clock=setInterval(rdClockTick,5000);
   /* a line selected in the text — see A LINE KEPT AS A QUOTE */
-  s.onSel=()=>{if(!rdState)return;const k=q("#rdKeep",el),got=rdSelNow();if(got){s.sel=got;act();}if(k)k.hidden=!got&&!s.sel;if(!got&&k&&!k.matches(":hover"))setTimeout(()=>{if(rdState&&!rdSelNow()){s.sel=null;k.hidden=true;}},600);};
+  s.onSel=()=>{if(!rdState)return;const k=q("#rdKeep",el),wd=q("#rdWord",el),got=rdSelNow();if(got){s.sel=got;act();}if(k)k.hidden=(!got&&!s.sel)||!!(s.sel&&s.sel.text.length<3);
+    if(wd)wd.hidden=!(s.sel&&wordish(s.sel.text));
+    if(!got&&k&&!k.matches(":hover")&&!(wd&&wd.matches(":hover")))setTimeout(()=>{if(rdState&&!rdSelNow()){s.sel=null;k.hidden=true;if(wd)wd.hidden=true;}},600);};
   document.addEventListener("selectionchange",s.onSel);
   {const k=q("#rdKeep",el);k.addEventListener("pointerdown",e=>{e.preventDefault();});k.onclick=e=>{e.stopPropagation();rdKeep();};}
+  {const w=q("#rdWord",el);if(w){w.addEventListener("pointerdown",e=>{e.preventDefault();});w.onclick=e=>{e.stopPropagation();rdWordGo();};}}
   setTimeout(rdLayout,30);
 }
 /* ---- GUESS YOUR MARK ----
@@ -36087,7 +36165,7 @@ function pzWire(m){
    keyboard could never reach it. Digits and punctuation stand shown. */
 const HM_LIVES=7;
 const swNorm=w=>String(w||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toUpperCase().replace(/[^A-Z]/g,"");
-const HM_KIND={title:"A title on your shelf",author:"An author on your shelf",series:"A series or collection on your shelf",character:"A character in one of your fics"};
+const HM_KIND={word:"A word you looked up",title:"A title on your shelf",author:"An author on your shelf",series:"A series or collection on your shelf",character:"A character in one of your fics"};
 function hmPool(){
   const out=[],seen=new Set(),n={};
   const add=(text,kind,id,clue)=>{
@@ -36114,6 +36192,8 @@ function hmPool(){
       if(ficsOn()&&kindOf(b)==="fanfic")(b.characters||[]).forEach(c=>add(c,"character",b.id,"in "+b.title));
     }
     if(au)add(au,"author",b.id,"wrote "+b.title);
+    /* the words you looked up — see WORDS YOU LOOKED UP */
+    wordsOf(b).forEach(x=>add(x.base||x.w,"word",b.id,x.mean));
   });
   return out;
 }
@@ -37140,6 +37220,8 @@ function cwClues(){
     if(t.split(" ").length>1){const x=blank(t,b.id+"|t",4,CW_N);if(x)add(x.w,`“${x.shown}”${a?" — "+a:""}`,b.id);}
     allKeywordsOf(b).forEach(k=>{if(/^\S+$/.test(String(k).trim()))add(k,`A tag you gave “${t}”`,b.id);});
     if(isFic(b))(b.characters||[]).forEach(ch=>add(String(ch).split(/[\s(]/)[0],`Someone in “${t}”`,b.id));
+    /* the words you looked up, by their meaning — see WORDS YOU LOOKED UP */
+    wordsOf(b).forEach(x=>{const w=x.base&&/^\S+$/.test(x.base)?x.base:x.w;if(/^\S+$/.test(w))add(w,`Means: ${x.mean.length>90?x.mean.slice(0,90)+"…":x.mean}`,b.id);});
     const s=stripHtml(b.summary||"").replace(/\s+/g," ").trim();
     if(s){const sents=(s.match(/[^.!?]+[.!?]+/g)||[]).map(x=>x.trim()).filter(x=>x.length>=40&&x.length<=170);
       if(sents.length){const sen=sents[strHash(b.id+"|b")%sents.length],x=blank(sen,sen,5,9);if(x)add(x.w,`From the blurb of “${t}”: ${x.shown}`,b.id);}}
@@ -47526,12 +47608,20 @@ const qBookCounts=()=>{
   return [...n.values()].sort((a,b)=>b.n-a.n
     ||String(a.b.title||"").localeCompare(String(b.b.title||"")));
 };
+/* every word you looked up, newest first — see WORDS YOU LOOKED UP */
+function quoteWordsHtml(){
+  const all=books.flatMap(b=>wordsOf(b).map(x=>({x,b}))).sort((p,q2)=>String(q2.x.at||"").localeCompare(String(p.x.at||"")));
+  return `<div class="hcard" style="margin-bottom:12px;padding:10px 12px"><div class="hint" style="margin:0 0 7px">📖 Every word you looked up, newest first — press one to open its book. The crossword and the hangman deal them back.</div>
+    ${all.map(({x,b})=>`<div class="snap" style="padding:5px 10px;cursor:pointer" data-qb="${esc(b.id)}"><div style="min-width:0;flex:1"><b>${esc(x.w)}</b> — ${esc(x.mean)}<div class="hint" style="margin:2px 0 0">${esc(b.title||"Untitled")}${x.src&&x.src!=="typed"?" · "+esc(x.src):""}</div></div></div>`).join("")}</div>`;
+}
 function renderQuotes(){
   const m=q("#main");
   qtPage();
   const all=allQuotes();
   const nn=(x,w)=>`${x} ${w}${x===1?"":"s"}`;
-  if(!all.length){m.innerHTML=`<div class="empty">❝<br>No quotes kept yet. Each line in a book's Quotes box becomes one, and they all gather here.</div>`;return;}
+  /* the words you looked up stand here even before there is a quote */
+  if(!all.length){m.innerHTML=`<div class="empty">❝<br>No quotes kept yet. Each line in a book's Quotes box becomes one, and they all gather here.</div>${books.some(b=>wordsOf(b).length)?`<div class="sec">${quoteWordsHtml()}</div>`:""}`;
+    qa("[data-qb]",m).forEach(el=>el.onclick=()=>openBook(el.dataset.qb,false));return;}
   const nBooks=new Set(all.map(x=>x.b.id)).size;
   /* the same date-keyed pick Overview greets you with, nudge and all, so
      asking for another in either place changes both */
@@ -47631,7 +47721,9 @@ function renderQuotes(){
       <button class="pill ${QT.books?"on":""}" id="qtBooks" title="Every book that has a quote, and how many — press one to go to its lines">📚 Which books ${QT.books?"▾":"▸"}</button>
       <button class="pill ${QT.hand?"on":""}" id="qtHand" title="Five at random — press again for five more">🎲 A handful at random</button>
       <button class="pill" id="qtSave" title="Every quote as one text file">⭳ Save them all as a file</button>
+      ${(()=>{const n=books.reduce((a,b)=>a+wordsOf(b).length,0);return n?`<button class="pill ${QT.words?"on":""}" id="qtWords" title="Every word you looked up, and what it meant">📖 Words · ${n} ${QT.words?"▾":"▸"}</button>`:"";})()}
     </div>
+    ${QT.words?quoteWordsHtml():""}
     ${/* the list of books that have quotes, folded away because
           it is a way IN rather than something to read. Pressing one groups by
           book, opens that book's own heading and scrolls to it. */""}
@@ -47660,6 +47752,7 @@ function renderQuotes(){
         <button class="btn" id="qtMoreG">Show ${Math.min(QT_GROUPS,names.length-qtGroupsShown)} more — ${names.length-qtGroupsShown} still below</button></div>`:"")
     :`<div class="none" style="padding:20px 0">Nothing carries “${esc(QT.q.trim())}” — clear the box to get everything back.</div>`}
   </div>`;
+  {const qw=q("#qtWords",m);if(qw)qw.onclick=()=>{QT.words=!QT.words;renderQuotes();};}
   {const gm=q("#qtMoreG",m);
    if(gm)gm.onclick=()=>{qtGroupsShown+=QT_GROUPS;renderQuotes();};}
   qa("[data-qb]",m).forEach(el=>el.onclick=()=>openBook(el.dataset.qb,false));
@@ -50837,6 +50930,7 @@ function renderBookView(){
         </div></div>`).join("");})()}</div>`:""}
     ${lists?`<div class="lists" id="secLists">${lists}</div>`:""}
     ${quotes?`<div id="secQuotes">${quotes}</div>`:""}
+    ${!isColl(b)?wordsHtml(b):""}
     ${chapBox}${discBox}${promBox}
     ${readNotesHtml(b)}
     ${hasNotes?`<div class="cap2" id="secNotes">Notes</div><div class="vtext note">${b.canvasText}</div>`:""}
