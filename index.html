@@ -7570,6 +7570,8 @@ function markStatus(b,what){
      clock then refused every sitting for that book (!timerOn) */
   if(timerOn(b)&&what!=="reading"&&what!=="unowned")
     timerStop(b,what==="finished"&&parseInt(b.pages)?b.pages:"");
+  if(sprintOn(b)&&what!=="reading"&&what!=="unowned")
+    sprintPay(sprintStop(b,what==="finished"&&parseInt(b.pages)?b.pages:""));
   /* either given up on or set down, never both — saying both says nothing */
   if(what==="dnf"){b.dnf=!b.dnf;if(b.dnf)b.hold=false;}
   else if(what==="hold"){b.hold=!b.hold;if(b.hold)b.dnf=false;}
@@ -13082,6 +13084,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-27.11",lines:["<b>🏃 A reading sprint.</b> Under the bar of a book you are reading, 🏃 Sprint: pick 15, 25 or 45 minutes and guess how many pages — the guess is filled from your own pages an hour — and the clock counts down where ⏱ was. At the end, say your page: it moves the bookmark, keeps the sprint as a session, and says how close the guess was. <b>+10 XP</b> for a sprint run to its end, <b>+5</b> more for a guess within two pages or a tenth. The app's reader shows the minutes left, and the season's card can now deal a Three sprints square."]},
   {v:"2026-10-27.10",go:["tab:challenges"],lines:["<b>⏳ In order, four ways.</b> The arcade's In order now orders your books by something different each round: when you last finished them, how long they are, when they first came out, or the mark you gave them — the card says which, and the answers show the dates, pages, years or marks. From 29 October it is also one of the day's games, so a day can ask for five In order wins."]},
   {v:"2026-10-27.9",go:["el:challenges:.qboss"],lines:["<b>👹 The doorstopper.</b> Under This month on 🎲 Challenges, beside the readathon: your longest book that you started and set down becomes a monster, its pages left as hit points. Take it on, or pick another; only moving that book's bookmark hurts it. Finish it for <b>+500 XP</b> and a 🏆 trophy card — a gold edition of the book's card that no pack can deal, in its own row of the album. Then the next one is waiting."]},
   {v:"2026-10-27.8",lines:["<b>🏪 Claude and your shelf.</b> Photograph a shelf in a bookshop or a library — <b>📷 A shop's shelf, against yours</b> on 🔍 Search, or 🏪 in Shelf care — and see which you've read, which are on your list, and which two or three of the rest Claude thinks you'd love, each one press from Want to read. <b>✨ Claude's look</b> in Shelf care now reads your genres too: one genre under two names, a genre that is really a tag and a tag that is really a genre — and, asked apart, books whose genres don't fit their blurb. On 🎲 Challenges, <b>✨ Three made for you</b> beside 🎯 Make one proposes challenges from what is waiting on your shelf. And an author's panel has <b>✨ Who they are</b>: three lines checked on the web, kept once asked."]},
@@ -24970,7 +24973,69 @@ function sessionsLine(b){
       <input class="field" type="number" min="1" max="${TIMER_MAX_H*60}" data-sessmin="${esc(String(x.at))}" value="${Math.max(1,Math.round((+x.secs||0)/60))}" style="width:70px;padding:3px 6px"> <span class="hint" style="margin:0">min</span>
       <button class="lx" data-sessx="${esc(String(x.at))}" style="opacity:1" title="Remove this session">✕</button></div>`).join("")}</div>`:"");
 }
-const timerBtn=b=>timerOn(b)
+/* ---- THE READING SPRINT ----
+   🏃 Sprint beside ⏱: pick SPRINT_MINS (15, 25 or 45 minutes) and guess the
+   pages (sprintPickHtml, the guess filled from your pages an hour,
+   sprintPph), and the clock counts DOWN. b.sprint {since, mins, guess, from}
+   rides on the book as b.timing does, so the other device sees it running;
+   the two clocks never run together, and the reader files no sitting of its
+   own for a book in a sprint. At the end the button asks your page
+   (sprintStop): the bookmark moves through setProgress, the sprint is filed
+   in b.sessions as any session, with `sprint` {mins, guess}, and the result
+   is said once under the bar (timerSaid). A sprint run to its end pays
+   SPRINT_XP (sp:<since>), and a guess within SPRINT_CLOSE pages, or a tenth
+   of the guess, SPRINT_NEAR more (sp:<since>:near). Stopped early it is
+   still a session but pays nothing. The season's card can deal "Three
+   sprints" (sprintsBetween counts the sp:<since> lines). */
+const SPRINT_MINS=[15,25,45],SPRINT_XP=10,SPRINT_NEAR=5,SPRINT_CLOSE=2;
+let sprintPicking="",sprintMins=25;
+const sprintOn=b=>!!(b&&b.sprint&&b.sprint.since);
+const sprintLeft=b=>sprintOn(b)?Math.round((b.sprint.since+b.sprint.mins*60000-Date.now())/1000):0;
+function sprintPph(b){
+  const rate=ss=>{const m=(ss||[]).filter(x=>+x.to>+x.from&&+x.secs>0);const secs=m.reduce((a,x)=>a+ +x.secs,0);return secs>=600?m.reduce((a,x)=>a+(x.to-x.from),0)/(secs/3600):0;};
+  return rate(b&&b.sessions)||rate(books.flatMap(x=>x.sessions||[]))||30;
+}
+function sprintStart(b,mins,guess){
+  if(timerOn(b)||sprintOn(b))return false;
+  b.sprint={since:Date.now(),mins:+mins||25,guess:Math.max(0,parseInt(guess)||0),from:parseInt(b.progress)||0};timerSaid="";return true;
+}
+/* page: what was typed — "" keeps the bookmark; returns what happened, for sprintPay */
+function sprintStop(b,page){
+  const t=b.sprint;if(!t||!t.since)return null;delete b.sprint;
+  const now=Date.now(),full=now>=t.since+t.mins*60000-5000;
+  const secs=Math.min(Math.round((now-t.since)/1000),t.mins*60);
+  const from=t.from||0;let to=from;
+  const pg=String(page==null?"":page).trim();
+  if(pg!==""){setProgress(b,pg);to=parseInt(b.progress)||0;}
+  if(secs>=TIMER_MIN_S)b.sessions=(b.sessions||[]).concat([{at:t.since,secs,from,to,sprint:{mins:t.mins,guess:t.guess}}]).slice(-200);
+  const read=Math.max(0,to-from),off=Math.abs(read-t.guess),near=full&&read>0&&off<=Math.max(SPRINT_CLOSE,Math.round(t.guess/10));
+  timerSaid=full?`🏃 ${t.mins} minutes: ${read} page${read===1?"":"s"}, against a guess of ${t.guess}${off===0?" — exactly right":near?` — ${off} off, close enough`:` — ${off} ${read>t.guess?"more":"fewer"}`}.`
+    :`🏃 Stopped after ${minsSay(secs/60)}: ${read} page${read===1?"":"s"}. A sprint pays only when it runs to its end.`;
+  return {since:t.since,mins:t.mins,full,near,title:b.title||"a book"};
+}
+function sprintPay(r){
+  if(!r||!r.full)return;
+  questAward(SPRINT_XP,`A ${r.mins}-minute sprint — “${r.title}”`,"sp:"+r.since);
+  if(r.near)questAward(SPRINT_NEAR,"A sprint guessed close","sp:"+r.since+":near");
+  try{questCheck();}catch(e){}
+}
+const sprintsBetween=(from,to)=>{const led=(quests&&quests.led)||{};let n=0;
+  for(const k in led)if(/^sp:\d+$/.test(k)){const d=shelfDayOf(+k.slice(3));if(d>=from&&d<=to)n++;}return n;};
+function sprintPickHtml(b){
+  if(sprintOn(b)||timerOn(b))return "";
+  /* its own line under the bar: beside ⏱ in the bar's row it left the bar 30 px wide */
+  if(sprintPicking!==b.id)return `<div class="hrow2 sprintrow" style="gap:6px;margin:4px 0 0;align-items:center;flex-wrap:wrap"><button class="btn smallbtn" id="vSprint" title="A sprint: 15, 25 or 45 minutes counting down, and a guess at the pages">🏃 Sprint</button><span class="hint" style="margin:0">a clock counting down, against a guess at the pages</span></div>`;
+  const pph=sprintPph(b);
+  return `<div class="hcard sprintpick" style="margin:6px 0 8px;padding:8px 10px">
+    <div class="hrow2" style="gap:6px;flex-wrap:wrap;align-items:center"><span class="lbl" style="margin:0">🏃 A sprint of</span>${SPRINT_MINS.map(m=>`<button class="pill${m===sprintMins?" on":""}" data-spm="${m}">${m} min</button>`).join("")}</div>
+    <div class="hrow2" style="gap:6px;flex-wrap:wrap;align-items:center;margin-top:7px"><span class="hint" style="margin:0">Your guess:</span><input class="field nospin" type="number" min="0" id="spGuess" value="${Math.max(1,Math.round(pph*sprintMins/60))}" style="width:72px;text-align:center"><span class="hint" style="margin:0">pages</span>
+      <button class="btn pri smallbtn" id="spGo">🏃 Go</button><button class="btn smallbtn" id="spX">Cancel</button></div>
+    <div class="hint" style="margin:6px 0 0">The clock counts down; at the end, say your page. +${SPRINT_XP} XP for a sprint run to its end, +${SPRINT_NEAR} more for a guess within ${SPRINT_CLOSE} pages or a tenth. The guess is filled from about ${Math.round(pph)} pages an hour.</div></div>`;
+}
+const timerBtn=b=>sprintOn(b)
+  ?(sprintLeft(b)>0?`<button class="btn smallbtn pri tmbtn" id="vSprint" title="A ${b.sprint.mins}-minute sprint, guessing ${b.sprint.guess} pages — press to stop early">🏃 ${secsSay(sprintLeft(b))}</button>`
+    :`<button class="btn smallbtn pri tmbtn" id="vSprint" title="The sprint is over — say the page you reached">🏁 Time! Your page?</button>`)
+  :timerOn(b)
   ?`<button class="btn smallbtn pri tmbtn" id="vTimer" title="Reading since ${esc(new Date(b.timing.since).toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"}))} — press to stop; it asks the page you reached">⏹ ${secsSay(timerSecs(b))}</button>`
   :`<button class="btn smallbtn tmbtn" id="vTimer" title="Start a reading clock; Stop asks the page you reached and moves the bookmark">⏱ Start</button>`;
 /* ---- THE FORMAT LINE ----
@@ -27642,7 +27707,7 @@ async function rdSave(final,sitting){
      filing — stays quiet too */
   {const b=books.find(x=>x.id===id);if(!b)return;const t=parseInt(b.pages)||0;
    const moves=statusOf(b)==="reading"&&!b.dnf&&!isColl(b)&&(t?Math.round(f*t)>(parseInt(b.progress)||0):Math.round(f*100)>(parseInt(b.pct)||0));
-   const files=secs>=TIMER_MIN_S&&secs<=TIMER_MAX_H*3600&&!timerOn(b);
+   const files=secs>=TIMER_MIN_S&&secs<=TIMER_MAX_H*3600&&!timerOn(b)&&!sprintOn(b);
    if(!moves&&!files){rdQuietPos(id,f);return;}}
   const mut=bk=>{bk.readPos={f,at:Date.now()};
     const t=parseInt(bk.pages)||0;
@@ -27650,7 +27715,7 @@ async function rdSave(final,sitting){
     if(statusOf(bk)==="reading"&&!bk.dnf&&!isColl(bk)){
       if(t){const p=Math.round(f*t);if(p>(parseInt(bk.progress)||0))setProgress(bk,p);}
       else{const pc=Math.round(f*100);if(pc>(parseInt(bk.pct)||0))setPct(bk,pc);}}
-    if(secs>=TIMER_MIN_S&&secs<=TIMER_MAX_H*3600&&!timerOn(bk)){
+    if(secs>=TIMER_MIN_S&&secs<=TIMER_MAX_H*3600&&!timerOn(bk)&&!sprintOn(bk)){
       const from=t?Math.round(f0*t):0,to=t?Math.max(from,Math.round(f*t)):0;
       bk.sessions=(bk.sessions||[]).concat([{at,secs,from,to,auto:true}]).slice(-200);}
     return true;};
@@ -27704,7 +27769,10 @@ function rdClockTick(){
   const s=rdState;if(!s)return;const now=Date.now();
   if(!document.hidden&&now-s.lastAct<RD_IDLE_S*1000)s.secs+=(now-s.lastTick)/1000;
   s.lastTick=now;
-  const c=q("#rdClock",s.el);if(c){const m=Math.floor(s.secs/60);c.textContent=s.secs>=60?"⏱ "+minsSay(m)+" this sitting":"";}
+  const c=q("#rdClock",s.el);if(c){const m=Math.floor(s.secs/60),b=books.find(x=>x.id===s.id);
+    /* a sprint running on this book shows here instead — see THE READING SPRINT */
+    if(sprintOn(b)){const left=sprintLeft(b);c.textContent=left>0?"🏃 "+minsSay(Math.ceil(left/60))+" left":"🏁 Sprint over — say your page on the book's page";}
+    else c.textContent=s.secs>=60?"⏱ "+minsSay(m)+" this sitting":"";}
 }
 function closeReader(quiet,fromBack){
   const s=rdState;if(!s)return;
@@ -37919,6 +37987,7 @@ const SEA_SQ=[
   ["solo","A standalone","Something that isn't part of a series",c=>c.one(x=>!bgInSeries(x.u)&&!x.u.en)],
   ["quote","Keep a quote","A book you have kept a quote from",c=>c.one(x=>(x.u.book.quotes||[]).some(q=>stripHtml(q).trim()))],
   ["tag","Tag it","Anything wearing at least one of your tags",c=>c.one(x=>bgTags(x.u).length>0)],
+  ["sprint3","Three sprints","Three reading sprints run to their end this season — 🏃 beside the reading clock",c=>({have:sprintsBetween(c.from,c.to),need:3})],
 ];
 function seaDeal(k){
   const ok=SEA_SQ.filter(s=>{if(!s[4])return true;try{return !!s[4]();}catch(e){return false;}}).map(s=>s[0]).sort();
@@ -50526,7 +50595,7 @@ function renderBookView(){
             title="How far through you are — type a percent, and with a page count it becomes the page"
             style="border:none;background:transparent;font:inherit;color:var(--ink);font-weight:700;width:40px;text-align:center;padding:0">`;
           if(parseInt(b.pages))return `<div class="vprog"><span class="prog" id="vProgBar" style="flex:1"><i style="width:${pct||0}%"></i></span>
-            <span class="rr">${pcin}% · p.${pin('id="vProg"',b.progress,parseInt(b.pages),"The page you're on — type a new one and press Enter")} of ${esc(String(b.pages))}${audioAt(b)?` · ${audioAt(b)}`:""}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b)+uptoHtml(b);
+            <span class="rr">${pcin}% · p.${pin('id="vProg"',b.progress,parseInt(b.pages),"The page you're on — type a new one and press Enter")} of ${esc(String(b.pages))}${audioAt(b)?` · ${audioAt(b)}`:""}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b)+sprintPickHtml(b)+uptoHtml(b);
           /* No page count. There was no box here at all once, which made a book
              you are READING the one book with nowhere on this page to say where
              you are; then both numbers stood here and the bar waited on a total.
@@ -50535,7 +50604,7 @@ function renderBookView(){
              for, quietly, because a page is the better record where it exists. */
           return `<div class="vprog">${b.pct?`<span class="prog" style="flex:1"><i style="width:${pct||0}%"></i></span>`:""}
             <span class="rr">${pcin}% through</span>
-            <span class="rr">p.${pin('id="vProg"',b.progress,0,"The page you're on")} of ${pin('id="vPages"',"",0,"How many pages it has — a page is a better record than a percent")}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b)+uptoHtml(b);
+            <span class="rr">p.${pin('id="vProg"',b.progress,0,"The page you're on")} of ${pin('id="vPages"',"",0,"How many pages it has — a page is a better record than a percent")}</span>${timerBtn(b)}</div>`+paceLine(b)+sessionsLine(b)+sprintPickHtml(b)+uptoHtml(b);
         })():""}
         ${/* A finished book with no readings offers the fold so the dates can be
               typed in. A finished COLLECTION with none said "▸ no dates
@@ -50826,6 +50895,27 @@ function renderBookView(){
      if(timerOn(cur)){const tk=setInterval(()=>{if(!tb.isConnected||!cur||!timerOn(cur)){clearInterval(tk);return;}tb.textContent="⏹ "+secsSay(timerSecs(cur));},1000);}
      timerSaid="";   /* said once, in the draw just done */
    }}
+  /* the sprint — see THE READING SPRINT */
+  {const sb=q("#vSprint",page);
+   if(sb){
+     sb.onclick=e=>{e.stopPropagation();
+       if(sprintOn(cur)){
+         const early=sprintLeft(cur)>5;
+         const p=prompt(early?"Stop the sprint early? It is kept as a session but pays nothing.\n\nWhich page did you reach? Leave it empty to keep the bookmark where it is."
+           :"Time! Which page did you reach?",cur.progress||"");
+         if(p===null)return;
+         let r=null;quickEdit(bk=>{r=sprintStop(bk,p);return !!r;}).then(()=>sprintPay(r));
+       }else{sprintPicking=sprintPicking===cur.id?"":cur.id;renderBookView();}};
+     if(sprintOn(cur)&&sprintLeft(cur)>0){const tk=setInterval(()=>{
+       if(!sb.isConnected||!cur||!sprintOn(cur)){clearInterval(tk);return;}
+       const left=sprintLeft(cur);if(left<=0){clearInterval(tk);renderBookView();return;}
+       sb.textContent="🏃 "+secsSay(left);},1000);}
+   }
+   qa("[data-spm]",page).forEach(x=>x.onclick=e=>{e.stopPropagation();sprintMins=+x.dataset.spm;renderBookView();});
+   const go=q("#spGo",page),gx=q("#spX",page),gi=q("#spGuess",page);
+   if(gi)gi.onclick=e=>e.stopPropagation();
+   if(gx)gx.onclick=e=>{e.stopPropagation();sprintPicking="";renderBookView();};
+   if(go)go.onclick=e=>{e.stopPropagation();const g=gi?gi.value:0;sprintPicking="";quickEdit(bk=>sprintStart(bk,sprintMins,g));};}
   /* a map of your own — see THE ATLAS */
   try{wireOwnMap(page);}catch(e){}
   /* questions for later — see DO YOU STILL REMEMBER? */
