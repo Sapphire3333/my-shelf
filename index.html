@@ -4822,6 +4822,9 @@ body:has(:is(#helpSheet,#wrapPage,#bulkSheet,#isbnSheet,#kwSheet,#moveSheet,#pic
 .pcard .pcpic,.pcard .pcadd{cursor:pointer}
 .pcard .pcadd{color:var(--teal-ink);border-bottom:1px dashed var(--line)}
 .pcard .pcpic img{display:block;width:100%;height:100%;object-fit:cover}
+/* the town you walk to next, now every card offers a picture: its own edge and name in teal */
+.pcard.isnext{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal)}
+.pcard.isnext .pcname{color:var(--teal-ink);font-weight:700}
 .pcard .pcx{position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;border:0;padding:0;background:#000a;color:#fff;font-size:11px;line-height:20px;cursor:pointer}
 .pcard .pcname{font-size:11px;padding:2px 5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pcard.past .pcname{color:var(--ink)}
@@ -13084,6 +13087,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-27.14",go:["el:challenges:.postcards"],lines:["<b>🛤 Your pictures on the long road.</b> A picture of you or of a town could be kept and still show blank — the browser had opened it and drawn nothing, and the app saved the nothing. Now a picture is looked at as it comes in: drawn empty, it is opened a second way, and if that draws nothing too you are told so, and nothing is replaced. A picture that shows blank now is worth choosing again. Every town on the road takes a picture, reached or not, and the next one is outlined. <b>📋 Compare with your other device</b> under the road now says what happened to the last picture you gave."]},
   {v:"2026-10-27.13",lines:["<b>🎱 A bingo card stays where it is.</b> Pressing a square on the month's, the season's or the year's bingo — or a dated event's card — redraws 🎲 Challenges, and pressed a few times the card could walk down the page. Now the card is held to the spot it stood on, however the page above it settles."]},
   {v:"2026-10-27.12",lines:["<b>📖 Words you looked up.</b> In the app's reader, select a word — up to three — and press <b>📖 What does it mean?</b>: Claude says what it means in that very sentence, in English, whatever language the book is in, and the word is kept with the book, with its sentence and page. For a paper book, type the word under <b>📖 Words you looked up</b> on its page. ❝ Quotes lists every word you have looked up, and the crossword and the hangman now deal your own words back to you. Each look-up goes to Claude's cheapest model — well under 1¢."]},
   {v:"2026-10-27.11",lines:["<b>🏃 A reading sprint.</b> Under the bar of a book you are reading, 🏃 Sprint: pick 15, 25 or 45 minutes and guess how many pages — the guess is filled from your own pages an hour — and the clock counts down where ⏱ was. At the end, say your page: it moves the bookmark, keeps the sprint as a session, and says how close the guess was. <b>+10 XP</b> for a sprint run to its end, <b>+5</b> more for a guess within two pages or a tenth. The app's reader shows the minutes left, and the season's card can now deal a Three sprints square."]},
@@ -25172,10 +25176,50 @@ const PIC_ME_MAX=256,PIC_PEAK_MAX=1400,PIC_TOWN_MAX=480,PIC_ME_PX=28;
 let picFor=null,tbrTap=0,tbrFoot=null;
 const picsCfg=()=>{if(!quests)return {towns:{}};if(!quests.pics||typeof quests.pics!=="object")quests.pics={towns:{}};if(!quests.pics.towns)quests.pics.towns={};return quests.pics;};
 const picKeyOf=x=>(x&&x.key)||"";
+/* ┌─ A PICTURE THAT CAME THROUGH EMPTY ─────────────────────────────────────┐
+   │ The road's walker and its towns, and the mountain, were drawn blank on  │
+   │ a computer in Firefox: the picture was kept (the town said ✕) but      │
+   │ showed white. These went through pngResize, which keeps see-through,   │
+   │ and never looked at what it drew — so a picture the browser opened and │
+   │ then drew nothing of was saved as a clear square and shown as nothing. │
+   │ The same pictures, in Chromium, were kept and drawn whole. The covers  │
+   │ and the backgrounds have refused an empty picture since a pasted cover │
+   │ came out black in Firefox (see THE PICTURE THAT CAME IN). picDraw now  │
+   │ looks too (picLookAt): drawn see-through all over, it opens the file a │
+   │ second way (createImageBitmap) before giving up, and gives up in words │
+   │ (picEmpty, through picFail) rather than keeping a blank. Each try and  │
+   │ its result go into the picIn log, which the road's 📋 Compare readout  │
+   │ and 🖼 This cover both print.                                          │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+async function picDraw(file,maxDim,log){
+  const toCanvas=src=>{const w0=src.naturalWidth||src.width||0,h0=src.naturalHeight||src.height||0;let w=w0,h=h0;
+    if(w>maxDim||h>maxDim){const k=maxDim/Math.max(w,h);w=Math.max(1,Math.round(w*k));h=Math.max(1,Math.round(h*k));}
+    const c=document.createElement("canvas");c.width=w;c.height=h;
+    const ctx=c.getContext("2d",{willReadFrequently:true});if(w&&h)ctx.drawImage(src,0,0,w,h);
+    return {c,ctx,w,h,w0,h0};};
+  const tries=[
+    ["read as data",async()=>{const url=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file);});
+      return await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=url;});}],
+    ["the browser's own decoder",async()=>{if(typeof createImageBitmap!=="function")throw new Error("none");return await createImageBitmap(file);}]];
+  log.tries=[];
+  for(const [how,open] of tries){
+    let src;try{src=await open();}catch(e){log.tries.push(how+": couldn't open it");continue;}
+    const d=toCanvas(src),look=picLookAt(d.ctx,d.w,d.h);
+    log.w=d.w0;log.h=d.h0;if(look){log.clear=look.clear;log.dark=look.dark;}
+    log.tries.push(how+": "+d.w0+" × "+d.h0+(look?", "+Math.round(look.clear*100)+"% see-through":""));
+    if(d.w&&d.h&&!(look&&look.clear>=.995))return d.c;
+  }
+  const e=new Error("That picture came through empty — your browser opened it but drew nothing of it, so it wasn't used and nothing was replaced. Saving it again as a JPG or a PNG, or choosing it from another folder, usually gets round this.");
+  e.picEmpty=true;throw e;
+}
 async function picKeep(prefix,file,max){
+  const log={at:Date.now(),type:(file&&file.type)||"?",bytes:(file&&file.size)||0,for:prefix.replace(/\W/g,"")};
   let data=null;
-  try{data=await petEncode(await shrinkData(await pngResize(file,Math.max(max,1024)),max));}
-  catch(e){alert("That picture couldn't be read.");return "";}
+  try{const c=await picDraw(file,Math.max(max,1024),log);
+    data=await petEncode(await shrinkData(c.toDataURL("image/png"),max));
+    log.out="kept, "+Math.round(data.length/1024)+" KB";picInSave(log);}
+  catch(e){log.out=e&&e.picEmpty?"refused — nothing in it to keep":"refused — the browser couldn't open it";picInSave(log);
+    picFail(e,"That picture couldn't be read.");return "";}
   const key=prefix+uid();
   try{await dbPut("images",{key,data});}catch(e){alert("That picture couldn't be kept — the browser's storage may be full.");return "";}
   coverCache.set(key,data);
@@ -40186,6 +40230,10 @@ function roadDiag(){
       :"Road: "+R.name+" · "+((ROAD_PACE.find(p=>p[0]===(c.pace||100))||[0,(c.pace||100)+" m a page"])[1]),
     c?"Set off: "+at+(c.dayBase!=null?`, with ${(+c.dayBase||0).toLocaleString()} pages already read that day held back`:""):"",
     c&&R?"Walked: "+pages.toLocaleString()+" pages read since, "+Math.floor(km).toLocaleString()+" km (a finish with no date doesn't count)":"",
+    /* your pictures, and the last one taken in — see A PICTURE THAT CAME THROUGH EMPTY */
+    (()=>{const P=picsCfg(),n=Object.values(P.towns||{}).filter(x=>picKeyOf(x)).length;return "Pictures: "+(picKeyOf(P.me)?"one of you":"none of you")+", "+n+" town"+(n===1?"":"s");})(),
+    (()=>{const pin=picInLast();if(!pin)return "Last picture taken in: none recorded on this device";
+      return "Last picture taken in: "+new Date(pin.at).toLocaleString()+" · "+pin.type+" · "+(Math.round((pin.bytes||0)/102.4)/10)+" KB · "+(pin.out||"?")+(pin.tries&&pin.tries.length?" · "+pin.tries.join("; "):"");})(),
   ].filter(Boolean);
 }
 const roadDiagHtml=()=>`<details class="roadmore"><summary class="hint">📋 Compare with your other device</summary>
@@ -40213,8 +40261,8 @@ function roadHtml(){
   const stopsShown=R.loop?R.stops.slice(0,-1):R.stops,nxI=i+1;
   const cards=`<div class="postcards">${stopsShown.map(([nm,at],j)=>{
       const past=lap>0||km>=at,pic=picKeyOf(towns[R.k+":"+j]);
-      return `<div class="pcard${past?" past":""}">${pic?`<button class="pcpic" data-towntap="${j}" title="${esc(nm)} — tap for another picture"><img data-roompic="${esc(pic)}" alt=""></button><button class="pcx" data-townx="${j}" title="Take the picture off" aria-label="Take ${esc(nm)}'s picture off">✕</button>`
-        :past?`<button class="pcadd" data-towntap="${j}" title="A picture for ${esc(nm)}">＋ a picture</button>`:`<span class="pcnone">${j===nxI?"next":""}</span>`}<span class="pcname">${esc(nm)}</span></div>`;}).join("")}</div>`;
+      return `<div class="pcard${past?" past":""}${!past&&j===nxI?" isnext":""}"${!past&&j===nxI?` title="${esc(nm)} — the next town"`:""}>${pic?`<button class="pcpic" data-towntap="${j}" title="${esc(nm)} — tap for another picture"><img data-roompic="${esc(pic)}" alt=""></button><button class="pcx" data-townx="${j}" title="Take the picture off" aria-label="Take ${esc(nm)}'s picture off">✕</button>`
+        :`<button class="pcadd" data-towntap="${j}" title="A picture for ${esc(nm)}">＋ a picture</button>`}<span class="pcname">${esc(nm)}</span></div>`;}).join("")}</div>`;
   return `<div style="font-size:14px"><b>${esc(R.name)}</b></div>
     <div class="roadline${me?" pic":""}"><i class="roadgo" style="width:${pct.toFixed(1)}%"></i>${R.stops.map(([nm,at],j)=>
       `<span class="roadstop${km>=at?" past":""}" style="left:${(at/end*100).toFixed(2)}%" title="${esc(nm)} · ${at.toLocaleString()} km"></span>`).join("")}
@@ -40223,7 +40271,7 @@ function roadHtml(){
       :`${R.loop?`<b>Lap ${lap+1}</b>${lap?` (round ${lap===1?"once":lap+" times"} already)`:""} · `:""}<b>${Math.floor(km).toLocaleString()} km</b> ${R.loop?"into it":"walked"} (${pages.toLocaleString()} pages since ${esc(new Date(c.from+"T12:00").toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"}))})${i>=0?`, past ${esc(R.stops[i][0])}`:""} — <b>${Math.ceil(nx[1]-km).toLocaleString()} km</b> to ${esc(nx[0])}, about ${Math.ceil((nx[1]-km)*1000/(c.pace||100)).toLocaleString()} pages.`}</div>
     ${cards}
     <div class="hrow2" style="gap:6px;flex-wrap:wrap;margin-top:6px">${me?`<button class="btn smallbtn" data-roadme>🙂 Another picture of you</button><button class="btn smallbtn" data-roadmex>✕ 🚶 back</button>`
-      :`<button class="btn smallbtn" data-roadme title="The same picture climbs ⛰ the mountain on Insights">🙂 A picture of you to walk it…</button>`}<span class="hint" style="margin:0">A postcard for each town: give it a picture once you've reached it.</span></div>
+      :`<button class="btn smallbtn" data-roadme title="The same picture climbs ⛰ the mountain on Insights">🙂 A picture of you to walk it…</button>`}<span class="hint" style="margin:0">A postcard for each town — give any of them a picture, reached or not.</span></div>
     <details class="roadmore"><summary class="hint">Change the road, or the pace</summary>${pick}
       <div class="hint" style="margin:5px 0 0">Setting off again starts from nothing, today.</div></details>${roadDiagHtml()}`;
 }
