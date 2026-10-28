@@ -4080,6 +4080,9 @@ html[data-phone="1"] .bcgrid{grid-template-columns:repeat(auto-fill,minmax(82px,
 .seasonbox{margin:10px 0 0;padding:9px 11px;border:1px solid var(--line);border-left:4px solid var(--teal);border-radius:10px;font-size:13px;background:var(--card)}
 .setsrow{margin:10px 0 0;font-size:13px;display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center}
 .chip.setdone{background:#dcfce7;border-color:#86efac;color:#166534}
+/* the set chips open their set — see A SET, OPENED */
+.setsrow button.chip{font:inherit;cursor:pointer}
+.postrow.setmiss{background:var(--bg)}
 [data-theme="dark"] .chip.setdone{background:#14532d;border-color:#15803d;color:#bbf7d0}
 .wantrow .chip i{width:9px;height:9px;border-radius:50%;background:var(--bcc);display:inline-block}
 .postpanel{width:min(520px,calc(92vw/var(--uiz,1)))}
@@ -13115,6 +13118,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-28.6",go:["el:ach:.setsrow"],lines:["<b>✍️ An author is every book that credits them.</b> An author pack counted only books whose author line was spelt exactly alike, so a book written with someone else, or with the initials spaced differently, belonged to nobody's pack — an author could say every card was in the album while their series still had one missing. Now every name on a book counts, however it is dotted or spaced. And a set's chip under 🎴 Cards opens: every card of the series, in the album or missing, with who it is credited to; …and more lists every set still to finish."]},
   {v:"2026-10-28.5",go:["tab:challenges"],lines:["<b>🎲 Challenges, tidied.</b> Under Reading, Today · This week · This month · This year · Whenever you like are tabs now: one band at a time, and it remembers the one you were on. The cards sit in rows of two, both as tall as the taller one, so every row starts and ends level instead of a tall card standing beside a gap. A link to a card — from What's new, a medal, a level — opens the band that holds it."]},
   {v:"2026-10-28.4",go:["tab:care"],lines:["<b>🎬 Your books on screen.</b> A book's page has <b>🎬 On screen</b>: the films and series made of it, ticked when you have seen them — added by hand, or found by Claude with a web search (about 5¢). In 🧰 Shelf care, <b>Read before you watch</b> lists the books you haven't finished that have something on screen you haven't seen, and <b>✨ Which of my books are films or series?</b> looks at twenty books at a time, Want to read first, for about 10¢ — what it finds is one ↶ away from gone."]},
   {v:"2026-10-28.3",go:["tab:insights"],lines:["<b>✨ A year in stars.</b> On ✨ Insights, under Your year, wrapped: every book you finished in a year is a star in its genre's colour, a ten shining far brighter than a five, and a series — or three books by one author — joined into a named constellation. Pick any year you have read in; press a star to open its book; <b>⭳ Save as a picture</b> keeps the sky. On a phone the sky slides sideways so the names stay readable."]},
@@ -28324,15 +28328,27 @@ function packRoll(key,label){
    cards or more; a pack from a cut thinner than five cards holds what there
    is. The season and the wanted card still apply inside the cut. */
 const PACK_SLICE_XP=400,PACK_SLICE_MIN=5;
-const sliceOf=p=>{const sl=p&&p.slice;if(!sl||!sl.v)return null;const v=String(sl.v).toLowerCase();
-  return sl.kind==="author"?c=>String(c.author||"").toLowerCase()===v:c=>(c.genres||[]).some(g=>String(g).toLowerCase()===v);};
+/* ---- AN AUTHOR IS EVERY BOOK THAT CREDITS THEM ----
+   An author's cut took the whole author line, exactly as written, so a book
+   credited to two people, or to the same person spelt "B. A." against
+   "B.A.", was someone else's: an author's pack said every card was in the
+   album while their series still had one missing. Now each name on the line
+   counts (authorParts), and names are matched folded, with the dots and
+   spaces dropped (authKey). The cut is offered under the spelling most of
+   its books use; a pack bought before matches as it always did as well. */
+const authKey=a=>softFold(String(a||"")).replace(/[\s.]+/g,"");
+const cardAuthors=c=>authorParts(c&&c.author).map(a=>String(a).trim()).filter(Boolean);
+const sliceOf=p=>{const sl=p&&p.slice;if(!sl||!sl.v)return null;const v=String(sl.v).toLowerCase(),k=authKey(sl.v);
+  return sl.kind==="author"?c=>String(c.author||"").toLowerCase()===v||cardAuthors(c).some(a=>authKey(a)===k):c=>(c.genres||[]).some(g=>String(g).toLowerCase()===v);};
 /* the cuts on offer: every genre or author with PACK_SLICE_MIN cards, with
    how many of them the album still lacks */
 function packCuts(kind){
   const n=cardCounts(),by={};
-  cardPool().forEach(c=>{const vs=kind==="author"?[c.author]:(c.genres||[]);
-    vs.forEach(v=>{v=String(v||"").trim();if(!v)return;const k=v.toLowerCase();
-      const e=by[k]=by[k]||{v,n:0,miss:0};e.n++;if(!n[c.key])e.miss++;});});
+  cardPool().forEach(c=>{const vs=kind==="author"?cardAuthors(c):(c.genres||[]);
+    new Set(vs.map(v=>String(v||"").trim()).filter(Boolean)).forEach(v=>{const k=kind==="author"?authKey(v):v.toLowerCase();
+      const e=by[k]=by[k]||{v,n:0,miss:0,say:{}};e.n++;if(!n[c.key])e.miss++;e.say[v]=(e.say[v]||0)+1;});});
+  /* the spelling most of its books use */
+  Object.values(by).forEach(e=>{e.v=Object.keys(e.say).sort((a,b)=>e.say[b]-e.say[a]||a.localeCompare(b))[0]||e.v;});
   return Object.values(by).filter(e=>e.n>=PACK_SLICE_MIN).sort((a,b)=>b.miss-a.miss||a.v.localeCompare(b.v));
 }
 function packTypeShow(kind){
@@ -28597,11 +28613,33 @@ function seasonHtml(n){
     ${seasonOpen?`<div class="bcgrid" style="margin-top:8px">${st.keys.map(k=>{const c=byKey[k];if(!c)return "";return cardHtml(c,st.got.has(k)?(n[k]||1):0);}).join("")}</div>`:""}
   </div>`;
 }
+/* ---- A SET, OPENED ----
+   A set's chip said 5/6 and nothing about which card was the sixth. Pressed,
+   it opens setPanel: every card of the series or collection, in its order,
+   pulled or missing, with who it is credited to — so a book credited
+   differently from the rest shows as the one missing. "…and more" opens
+   every set still to finish. */
+function setPanel(id){
+  const old=document.getElementById("setPanel");if(old&&old.__close)old.__close();
+  const sets=cardSets(),pool=cardPool(),byKey={},n=cardCounts();pool.forEach(c=>{byKey[c.key]=c;});
+  const st=id?sets.find(x=>x.id===id):null;
+  const d=document.createElement("div");d.id="setPanel";d.className="ratepanel postpanel";
+  d.innerHTML=st?`<b class="serif" style="display:block;font-size:17px;margin:0 0 2px">🎴 ${esc(st.name)}</b>
+      <div class="hint" style="margin:0 0 10px">${st.got} of ${st.keys.length} in the album${st.done?` — complete, ${SET_XP} XP paid`:` — ${st.keys.length-st.got} missing; it pays ${SET_XP} XP once every card is in`}.</div>
+      <div class="postlist">${st.keys.map(k=>byKey[k]).filter(Boolean).map(c=>`<div class="postrow${n[c.key]?"":" setmiss"}" style="cursor:default"><b>${n[c.key]?"✓":"○"} ${esc(c.title)}</b><span class="hint" style="margin:0">${esc(c.author||"no author")} · ${n[c.key]?(n[c.key]>1?"in the album ×"+n[c.key]:"in the album"):"missing"}</span></div>`).join("")}</div>`
+    :`<b class="serif" style="display:block;font-size:17px;margin:0 0 2px">🎴 Sets still to finish</b>
+      <div class="postlist">${sets.filter(x=>!x.done).sort((a,b)=>(b.got/b.keys.length)-(a.got/a.keys.length)).map(x=>`<button class="postrow" data-setopen="${esc(x.id)}"><b>${esc(x.name)}</b><span class="hint" style="margin:0">${x.got} of ${x.keys.length}</span></button>`).join("")}</div>`;
+  d.innerHTML+=`<div class="hrow2" style="margin-top:12px;justify-content:flex-end"><button class="btn" id="setX">Close</button></div>`;
+  document.body.appendChild(d);
+  const close=dismissable(d);d.__close=close;
+  q("#setX",d).onclick=()=>close();
+  qa("[data-setopen]",d).forEach(b=>b.onclick=()=>{close();setPanel(b.dataset.setopen);});
+}
 function setsHtml(){
   const sets=cardSets();if(!sets.length)return "";
   const done=sets.filter(x=>x.done),todo=sets.filter(x=>!x.done).sort((a,b)=>(b.got/b.keys.length)-(a.got/a.keys.length));
   return `<div class="setsrow"><b>Sets</b> <span class="hint" style="margin:0">${done.length} of ${sets.length} complete · a full series or collection pays ${SET_XP} XP once</span>
-    ${done.map(x=>`<span class="chip setdone">✓ ${esc(x.name)}</span>`).join("")}${todo.slice(0,8).map(x=>`<span class="chip">${esc(x.name)} <b>${x.got}/${x.keys.length}</b></span>`).join("")}${todo.length>8?`<span class="hint" style="margin:0">…and ${todo.length-8} more</span>`:""}</div>`;
+    ${done.map(x=>`<button class="chip setdone" data-setopen="${esc(x.id)}">✓ ${esc(x.name)}</button>`).join("")}${todo.slice(0,8).map(x=>`<button class="chip" data-setopen="${esc(x.id)}" title="Which cards it has, and which it is missing">${esc(x.name)} <b>${x.got}/${x.keys.length}</b></button>`).join("")}${todo.length>8?`<button class="btn smallbtn" data-setopen="" title="Every set still to finish">…and ${todo.length-8} more</button>`:""}</div>`;
 }
 let cardsOpen=true,cardsFilter="all",cardsShow=CARDS_PAGE;
 function cardsHtml(){
@@ -28650,6 +28688,8 @@ function wireCards(m){
   qa("[data-packbuy]",m).forEach(b=>b.onclick=()=>{if(packBuy())renderAch();});
   qa("[data-packtrade]",m).forEach(b=>b.onclick=()=>{if(packTrade())renderAch();});
   qa("[data-post]",m).forEach(b=>b.onclick=()=>postShow());
+  /* a set opened to its cards — see A SET, OPENED */
+  qa(".setsrow [data-setopen]",m).forEach(b=>b.onclick=()=>setPanel(b.dataset.setopen));
   qa("[data-packtype]",m).forEach(b=>b.onclick=()=>packTypeShow(b.dataset.packtype));
   qa("[data-seasontog]",m).forEach(b=>b.onclick=()=>{seasonOpen=!seasonOpen;renderAch();});
   qa("[data-packopen]",m).forEach(b=>b.onclick=()=>{const r=packOpen(b.dataset.packopen);if(!r)return;renderAch();packShow(r);});
