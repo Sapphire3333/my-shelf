@@ -8905,6 +8905,10 @@ async function liftUnanimousGenres(){
 /* `z` raises the backdrop for a panel that opens over another full-screen
    sheet: the backdrop sits at 59, which is under everything the shared-text
    card draws, so a chooser opened from inside it had nothing to close it on */
+/* the ones open, oldest first: Escape closes only the newest. Two open at
+   once (a card up close over the pack it came out of) each heard the same
+   key on the same document, and one press shut both */
+const DISMISS_OPEN=[];
 function dismissable(wrap,onClose,z){
   const back=document.createElement("div");
   back.className="ratebackdrop";
@@ -8914,12 +8918,16 @@ function dismissable(wrap,onClose,z){
   const close=fromBack=>{
     if(shut)return;shut=true;
     document.removeEventListener("keydown",key,true);
+    {const i=DISMISS_OPEN.indexOf(wrap);if(i>=0)DISMISS_OPEN.splice(i,1);}
     back.remove();wrap.remove();
     if(bk&&fromBack!==true)backClosed(bk);
     if(onClose)onClose();
   };
   bk=backOpen(()=>close(true),()=>document.body.contains(wrap));
-  const key=e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();close();}};
+  DISMISS_OPEN.push(wrap);
+  const key=e=>{if(e.key!=="Escape")return;
+    const top=DISMISS_OPEN.filter(w=>w.isConnected).pop();if(top&&top!==wrap)return;
+    e.preventDefault();e.stopImmediatePropagation();close();};
   back.onmousedown=close;
   document.addEventListener("keydown",key,true);
   document.body.appendChild(back);
@@ -13178,6 +13186,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-28.14",go:["el:ach:#achCards"],lines:["<b>🎴 A pack stays open while you look at a card.</b> Tapping a card you had already turned closed the pack to show the card up close, and the cards still face down went into your album unseen. The card now opens on top of the pack; close it and the pack is still there, with the rest waiting to be turned. Esc closes only the window on top."]},
   {v:"2026-10-28.13",go:["day:"],lines:["<b>🌅 Your day.</b> The first time you open the app each day, one sheet holds the day's own things: the scratch card to rub right there, today's three tasks with their ticks, your three cards face down, today's game while a task asks for it, and the shop's special. <b>Close</b> puts it away, and <b>🌅</b> at the top opens it again any time. The scratch card and your three cards have moved into it, so Today is shorter by two cards."]},
   {v:"2026-10-28.12",go:["tab:challenges"],lines:["<b>🕹 The games on shelves.</b> 🎲 Challenges → 🕹 Games puts its 25 games on six shelves, a heading over each: Which book is it?, How well do you remember?, Put them in order, Words, Covers and pictures, and Against the clock. On a computer each shelf is one row. Above them, <b>Carry on</b> holds today's game while a task asks for it, a game you left in play and the one you opened last, one press each."]},
   {v:"2026-10-28.11",lines:["<b>↶ Undo brings a story back into its collection.</b> After ⤴ Give it its own page, ↶ only took back the collection's page count, which the editor then counted again, so the story never came back. The count is part of the same step now: one ↶ puts the story back and takes the separate book away.",
@@ -25616,7 +25625,7 @@ function wireTarot(m){
       const h=q("#tarotHint",sec);if(h)h.hidden=true;return;}
     const b=el.querySelector("[data-bcard]");if(!b)return;const key=b.dataset.bcard;
     /* up close is for a card the album holds; a card borrowed from the shelf for the day opens its book */
-    if(cardCounts()[key])cardBig(key);else{const c=cardPool().find(x=>x.key===key);if(c)openBook(c.id,false,false,c.en||undefined);}};});
+    if(cardCounts()[key])cardBig(key,95);else{const c=cardPool().find(x=>x.key===key);if(c)openBook(c.id,false,false,c.en||undefined);}};});
   try{hydrateCovers(sec);}catch(e){}
 }
 /* ┌─ 🌅 YOUR DAY ────────────────────────────────────────────────────────────┐
@@ -28670,7 +28679,9 @@ function cardInfo(key){
   return {c,b,en,fin,pages,quotes};
 }
 const finSay=fin=>{const d=new Date(fin+"T12:00");return isNaN(d)?fin:d.toLocaleDateString(undefined,{month:"long",year:"numeric"});};
-function cardBig(key){
+/* `z` lifts it over a window it was opened from (a pack, Your day), which
+   stays open underneath instead of being closed to make room */
+function cardBig(key,z){
   const info=cardInfo(key);if(!info)return;
   const n=cardCounts()[key]||0;if(!n)return;
   const {c,fin,pages,quotes}=info,t=CARD_TIERS[c.tier],lv=cardLevel(n);
@@ -28686,11 +28697,15 @@ function cardBig(key){
         <span class="hint">Pulled</span><span>×${n}${lv?" · "+lv.name:""}</span></div>
       ${quote?`<div class="cbquote">“${esc(quote.length>220?quote.slice(0,217)+"…":quote)}”</div>`:""}
       <div class="hrow2" style="gap:6px;margin-top:10px;flex-wrap:wrap"><button class="btn smallbtn pri" id="cbOpen">📖 Open the book</button><button class="btn smallbtn" id="cbPic">⬇ Picture</button><button class="btn smallbtn" id="cbX">Close</button></div></div></div>`;
+  if(z)d.style.zIndex=z;
   document.body.appendChild(d);
   try{hydrateCovers(d);}catch(e){}
-  const close=dismissable(d);d.__close=close;
+  const close=dismissable(d,null,z?z-1:0);d.__close=close;
   q("#cbX",d).onclick=()=>close();
-  q("#cbOpen",d).onclick=()=>{close();openBook(c.id,false,false,c.en||undefined);};
+  q("#cbOpen",d).onclick=()=>{close();
+    /* going to the book leaves the window under it as well */
+    if(z){const top=DISMISS_OPEN.filter(w=>w.isConnected).pop();if(top&&top.__close)top.__close();}
+    openBook(c.id,false,false,c.en||undefined);};
   q("#cbPic",d).onclick=()=>cardPicShow(key);
   /* the tilt: the card leans towards the pointer, the foil's sheen follows */
   const card=d.querySelector(".bcard"),tw=q("#cbTilt",d);
@@ -28893,8 +28908,10 @@ function packShow(r){
   };
   qa(".pflip",d).forEach(el=>{el.onclick=()=>{
     if(!el.classList.contains("turned")){turn(el);return;}
+    /* up close OVER the pack. Closing the pack to make room put the cards
+       not yet turned in the album unseen — the pack was spent when it opened */
     const b=el.querySelector("[data-bcard]");if(!b)return;
-    close();cardBig(b.dataset.bcard);};});
+    cardBig(b.dataset.bcard,95);};});
   q("#packAll",d).onclick=()=>{qa(".pflip:not(.turned)",d).forEach((el,i)=>setTimeout(()=>turn(el),i*320));};
   try{hydrateCovers(d);}catch(e){}
 }
