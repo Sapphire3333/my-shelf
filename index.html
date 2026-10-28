@@ -13104,6 +13104,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-28.4",go:["tab:care"],lines:["<b>🎬 Your books on screen.</b> A book's page has <b>🎬 On screen</b>: the films and series made of it, ticked when you have seen them — added by hand, or found by Claude with a web search (about 5¢). In 🧰 Shelf care, <b>Read before you watch</b> lists the books you haven't finished that have something on screen you haven't seen, and <b>✨ Which of my books are films or series?</b> looks at twenty books at a time, Want to read first, for about 10¢ — what it finds is one ↶ away from gone."]},
   {v:"2026-10-28.3",go:["tab:insights"],lines:["<b>✨ A year in stars.</b> On ✨ Insights, under Your year, wrapped: every book you finished in a year is a star in its genre's colour, a ten shining far brighter than a five, and a series — or three books by one author — joined into a named constellation. Pick any year you have read in; press a star to open its book; <b>⭳ Save as a picture</b> keeps the sky. On a phone the sky slides sideways so the names stay readable."]},
   {v:"2026-10-28.2",go:["el:challenges:.postcards"],lines:["<b>🙂 Only what is in the circle.</b> Choosing your picture for the road now shows, beside the circle, exactly how you will walk it, at its real size, and the picture outside the circle is darker, since none of it is kept. If the circle cannot be cut out on a browser, you are told so and nothing changes — before, the whole picture was quietly used instead. 📋 Compare under the road says how your circle was cut."]},
   {v:"2026-10-28.1",go:["el:challenges:.postcards"],lines:["<b>🙂 You, bigger, and a town up close.</b> Your picture on the long road is twice the size, and choosing it now opens it with a circle to drag onto your face — what is inside the circle walks the road and climbs the mountain; <b>The whole picture</b> is still a press away. Press a town's picture and it opens as big as the screen allows, with Change the picture and Take it off under it. Town pictures given from now on are kept sharp enough for that; one given before says so, and is sharp once chosen again."]},
@@ -37576,6 +37577,121 @@ const quizCut=()=>{const d=new Date(todayStr()+"T12:00");d.setMonth(d.getMonth()
 const quizReady=x=>String(x.at||"")<=quizCut();
 function quizOld(){return books.filter(b=>b&&(!isColl(b)||quizOf(b).length)&&!b.apart).map(b=>({b,qs:quizOf(b).filter(quizReady)})).filter(x=>x.qs.length);}
 const quizCan=b=>!!b&&!b._story&&((!isColl(b)&&statusOf(b)==="finished"&&!b.dnf)||quizOf(b).length>0);
+/* ┌─ YOUR BOOKS ON SCREEN ──────────────────────────────────────────────────┐
+   │ b.screen [{id, kind: film|series, title, year, seen}] says a book was   │
+   │ made into a film or a series, and whether you have seen it. On the     │
+   │ book's page, 🎬 On screen (screenLineHtml, screenPanel) lists them,     │
+   │ ticks one seen, takes one off, adds one by hand, or asks Claude about   │
+   │ this one book with a web search (screenAsk). In Shelf care, the 🎬 box  │
+   │ (refreshScreen) lists Read before you watch — books not yet finished   │
+   │ with something on screen you haven't seen — and ✨ looks SCREEN_N books │
+   │ at a time for what has been made of them (screenFind): books not yet    │
+   │ asked about (b.screenAsked), Want to read first, then the ones being   │
+   │ read, then the finished. What it finds goes on the books as one step,   │
+   │ so ↶ takes it all back. Not for a collection or a fic.                  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const SCREEN_N=20,SCREEN_KIND={film:"🎬 Film",series:"📺 Series"};
+const screenOf=b=>Array.isArray(b&&b.screen)?b.screen.filter(x=>x&&x.title):[];
+const screenCan=b=>!!b&&!isColl(b)&&!b._story&&!isFic(b);
+const screenSay=x=>`${SCREEN_KIND[x.kind]||"🎬"} ${x.title}${x.year?` (${x.year})`:""}`;
+/* adaptations Claude names, joined to what the book has: one by its title, a kept "seen" kept */
+function screenJoin(bk,found){
+  const have=screenOf(bk),key=x=>titleKey(x.title)+"|"+(x.kind||"");
+  const out=have.slice();let added=0;
+  (found||[]).forEach(f=>{const t=String(f&&f.title||"").trim();if(!t)return;
+    const x={id:uid(),kind:f.kind==="series"?"series":"film",title:t.slice(0,120),year:/^\d{4}$/.test(String(f.year||""))?String(f.year):"",seen:false};
+    if(out.some(y=>key(y)===key(x)))return;out.push(x);added++;});
+  if(out.length)bk.screen=out;
+  return added;
+}
+const SCREEN_SCHEMA={type:"object",properties:{adaptations:{type:"array",items:{type:"object",properties:{kind:{type:"string",enum:["film","series"]},title:{type:"string"},year:{type:"string"}},required:["kind","title","year"],additionalProperties:false}}},required:["adaptations"],additionalProperties:false};
+async function screenAsk(b){
+  const text=`Has the book “${b.title||"a book"}”${b.author?` by ${b.author}`:""}${pubYearOf(b)?` (${pubYearOf(b)})`:""} been made into a film or a television series? Search the web. List each one: kind film or series, its title as released, and its year (four digits, or "" if unknown). Only adaptations of this very book, not of another book of the same name; an empty list if there are none.`;
+  const j=await claudeAsk({kind:"ask",text,schema:SCREEN_SCHEMA,web:2,effort:"low",max_tokens:1200});
+  return (j.json&&j.json.adaptations)||[];
+}
+function screenLineHtml(b){
+  if(!screenCan(b))return "";
+  const l=screenOf(b);if(!l.length&&!claudeReady()&&!b.screenAsked)return `<div class="vloan"><button class="btn smallbtn" id="screenOpen">🎬 On screen</button><span class="hint" style="margin:0">a film or a series of it, and whether you've seen it</span></div>`;
+  const unseen=l.filter(x=>!x.seen).length;
+  return `<div class="vloan"><button class="btn smallbtn" id="screenOpen">🎬 On screen${l.length?` · ${l.length}`:""}</button><span class="hint" style="margin:0">${l.length
+    ?esc(l.slice(0,2).map(x=>screenSay(x)+(x.seen?" — seen":"")).join(" · "))+(l.length>2?" …":"")
+    :b.screenAsked?"nothing made of it, as far as Claude found":"a film or a series of it, and whether you've seen it"}</span></div>`;
+}
+function screenPanel(){
+  if(!cur)return;const id=cur.id;
+  const old=q("#screenPanel");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="screenPanel";d.className="ratepanel";
+  let busy=false,said="";
+  const paint=()=>{
+    if(!cur||cur.id!==id){close();return;}
+    const l=screenOf(cur);
+    d.innerHTML=`<div class="hrow2" style="margin-bottom:8px"><b style="font-size:14px">🎬 ${esc(cur.title||"This book")}, on screen</b><button class="btn" id="scX" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+      ${l.length?l.map(x=>`<div class="quizrow"><label class="chk" style="flex:1;min-width:0"><input type="checkbox" data-scseen="${esc(x.id)}"${x.seen?" checked":""}> <span><b>${esc(screenSay(x))}</b> <span class="hint" style="margin:0">${x.seen?"seen":"not seen yet"}</span></span></label><button class="btn smallbtn" data-scdel="${esc(x.id)}" title="Take it off">✕</button></div>`).join("")
+        :`<div class="hint" style="margin:0 0 6px">Nothing yet. Add a film or a series by hand${claudeReady()?", or let Claude look":""}.</div>`}
+      <div class="quizadd" style="margin-top:8px"><select class="field" id="scKind" style="flex:0 0 auto"><option value="film">🎬 Film</option><option value="series">📺 Series</option></select>
+        <input class="field" id="scTitle" maxlength="120" placeholder="Its title"><input class="field" id="scYear" maxlength="4" inputmode="numeric" placeholder="Year" style="flex:0 0 72px"><button class="btn pri" id="scAdd">Add</button></div>
+      ${claudeReady()?`<div class="hrow2" style="gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">${busy?`<span class="hint" style="margin:0">✨ Claude is looking…</span>`:`<button class="btn smallbtn" id="scAsk">✨ Ask Claude</button><span class="hint" style="margin:0">searches the web — about 5¢</span>`}</div>`:""}
+      ${said?`<div class="hint" style="margin:6px 0 0">${esc(said)}</div>`:""}`;
+    q("#scX",d).onclick=()=>close();
+    qa("[data-scseen]",d).forEach(c=>c.onchange=()=>{const sid=c.dataset.scseen,v=c.checked;quickEdit(bk=>{const x=screenOf(bk).find(y=>y.id===sid);if(!x)return false;x.seen=v;return true;}).then(paint);});
+    qa("[data-scdel]",d).forEach(c=>c.onclick=()=>{const sid=c.dataset.scdel;quickEdit(bk=>{const l2=screenOf(bk);if(!l2.some(y=>y.id===sid))return false;bk.screen=l2.filter(y=>y.id!==sid);if(!bk.screen.length)delete bk.screen;return true;}).then(paint);});
+    q("#scAdd",d).onclick=()=>{const t=q("#scTitle",d).value.trim();if(!t){q("#scTitle",d).focus();return;}
+      const f={kind:q("#scKind",d).value,title:t,year:q("#scYear",d).value.trim()};
+      quickEdit(bk=>screenJoin(bk,[f])>0).then(()=>{said="";paint();});};
+    const ak=q("#scAsk",d);if(ak)ak.onclick=async()=>{busy=true;said="";paint();
+      try{const f=await screenAsk(cur);let n=0;await quickEdit(bk=>{n=screenJoin(bk,f);bk.screenAsked=todayStr();return true;});
+        said=n?`Claude found ${n} more.`:f.length?"Claude found nothing you didn't already have.":"Claude found no film or series made of it.";}
+      catch(e){said="Claude couldn't — "+((e&&e.message)||"no answer");}
+      busy=false;paint();};
+  };
+  document.body.appendChild(d);
+  const close=dismissable(d,()=>{if(view==="book")renderBookView();});d.__close=close;
+  paint();
+}
+/* Shelf care's box: Read before you watch, and Claude looking SCREEN_N at a time */
+let screenBusy=false,screenSaid="";
+const screenWaiting=()=>books.filter(b=>screenCan(b)&&!b.apart&&!b.dnf&&statusOf(b)!=="finished"&&screenOf(b).some(x=>!x.seen));
+function screenQueue(){
+  const rank=b=>statusOf(b)==="want"?0:statusOf(b)==="reading"?1:2;
+  return books.filter(b=>screenCan(b)&&!b.apart&&!b.screenAsked&&String(b.title||"").trim()).sort((a,c)=>rank(a)-rank(c));
+}
+async function screenFind(){
+  const pool=screenQueue().slice(0,SCREEN_N);if(!pool.length)return {looked:0,found:0};
+  const schema={type:"object",properties:{books:{type:"array",items:{type:"object",properties:{n:{type:"integer"},adaptations:SCREEN_SCHEMA.properties.adaptations},required:["n","adaptations"],additionalProperties:false}}},required:["books"],additionalProperties:false};
+  const text=`For each of these books, has it been made into a film or a television series? Search the web where you are not sure. For each book that has, give its number and each adaptation: kind film or series, its title as released, its year (four digits, or ""). Only adaptations of that very book, never of another book with the same name; leave out books with none.\n\n`
+    +pool.map((b,i)=>`[${i}] ${b.title}${b.author?` by ${b.author}`:""}${pubYearOf(b)?` (${pubYearOf(b)})`:""}`).join("\n");
+  const j=await claudeAsk({kind:"ask",text,schema,web:3,effort:"low",max_tokens:4000});
+  const hits={};((j.json&&j.json.books)||[]).forEach(x=>{if(pool[x.n])hits[pool[x.n].id]=x.adaptations||[];});
+  const items=[];let found=0;
+  for(const b of pool){const before=JSON.parse(JSON.stringify(b));
+    if(hits[b.id]&&screenJoin(b,hits[b.id])>0)found++;
+    b.screenAsked=todayStr();touchBook(b,true);
+    if(!(await putOrRestore(b,before)))break;
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    try{await rebaseOpenBook(b.id);}catch(e){}}
+  if(items.length)pushOp({t:"bulk",items});
+  if(SYNC.on)flushQueue();
+  return {looked:items.length,found};
+}
+function refreshScreen(){
+  const box=q("#screenBox");if(!box)return;
+  const wait=screenWaiting(),left=screenQueue().length,ready=claudeReady();
+  if(!wait.length&&!ready){box.innerHTML="";return;}
+  box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">🎬 Read before you watch${wait.length?` <b>${wait.length}</b>`:""}</div>
+    <div class="hint" style="margin:0 0 7px">Books you haven't finished that were made into a film or a series you haven't seen. Tick one seen on the book's 🎬 On screen.</div>
+    ${wait.slice(0,40).map(b=>`<div class="snap" style="gap:7px;align-items:flex-start;flex-wrap:wrap"><button class="linkbtn" data-scopen="${esc(b.id)}" style="flex:1;min-width:0;text-align:left"><b>${esc(b.title||"Untitled")}</b>${b.author?` — ${esc(b.author)}`:""}</button>
+      <span class="hint" style="margin:0;flex:1 1 100%">${esc(screenOf(b).filter(x=>!x.seen).map(screenSay).join(" · "))}</span></div>`).join("")||`<div class="hint" style="margin:0">Nothing waiting.</div>`}
+    ${ready?`<div class="hrow2" style="margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap">${screenBusy?`<span class="hint" style="margin:0">✨ Claude is looking…</span>`
+      :left?`<button class="btn" id="scFind">✨ Which of my books are films or series? · ${Math.min(SCREEN_N,left)}</button>`:""}
+      <span class="hint" style="margin:0">${screenSaid?esc(screenSaid)+" · ":""}${left?`${left} book${left===1?"":"s"} not looked at yet, Want to read first · about 10¢ for ${SCREEN_N}`:"Every book has been looked at."}</span></div>`:""}`;
+  qa("[data-scopen]",box).forEach(b=>b.onclick=()=>openBook(b.dataset.scopen,false));
+  const f=q("#scFind",box);if(f)f.onclick=async()=>{screenBusy=true;screenSaid="";refreshScreen();
+    try{const r=await screenFind();screenSaid=`Looked at ${r.looked}: ${r.found} ${r.found===1?"has":"have"} a film or a series — ↶ takes it back`;}
+    catch(e){screenSaid="Claude couldn't — "+((e&&e.message)||"no answer");}
+    screenBusy=false;refreshScreen();};
+}
 function quizLineHtml(b){
   if(!quizCan(b))return "";
   const qs=quizOf(b),n=qs.length;
@@ -43190,6 +43306,7 @@ async function renderHub(part){
         <div id="tagDupBox"></div>
         <div id="capBox"></div>
         <div id="claudeTidyBox"></div>
+        <div id="screenBox"></div>
 </div>
     </div>
     <div class="sec">
@@ -43406,7 +43523,7 @@ async function renderHub(part){
   };
   /* the housekeeping half's wiring — every refresher looks its box up and
      returns when it is not on the page, and the two buttons are guarded here */
-  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshClaudeTidy();
+  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshClaudeTidy();refreshScreen();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
   /* many books off one picture — see ONE PHOTO, THREE ANSWERS */
   {const pb=q("#impPhoto"),pf=q("#impPhotoFile"),ps=q("#impPhotoSay");
@@ -50956,6 +51073,7 @@ function renderBookView(){
         ${loanHtml(b)}
         ${owlHtml(b)}
         ${quizLineHtml(b)}
+        ${screenLineHtml(b)}
         ${readerLineHtml(b)}
         ${ownMapHtml(b)}
         ${collPartWay(b)?`<div class="vprog">
@@ -51304,6 +51422,8 @@ function renderBookView(){
   try{wireOwnMap(page);}catch(e){}
   /* questions for later — see DO YOU STILL REMEMBER? */
   {const qo=q("#quizOpen",page);if(qo)qo.onclick=e=>{e.stopPropagation();quizPanel();};}
+  /* films and series of it — see YOUR BOOKS ON SCREEN */
+  {const so=q("#screenOpen",page);if(so)so.onclick=e=>{e.stopPropagation();screenPanel();};}
   /* where it stands — see YOUR BOOKCASES */
   qa("[data-bcopen]",page).forEach(x=>x.onclick=e=>{e.stopPropagation();openBookcases(x.dataset.bcopen);});
   /* a file of it, read here — see THE READER */
