@@ -4245,6 +4245,30 @@ html[data-phone="1"] .cbtilt,html[data-phone="1"] .cbtilt .bcard{width:118px}
 .postrow b{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .postrow:disabled{cursor:default;background:var(--bg)}
 @media(hover:hover){.postrow:not(:disabled):hover{border-color:var(--teal)}}
+/* the post's list by set — see THE POST BY SERIES */
+/* the window is a column whose list takes what room is left, so only the
+   list scrolls and Close stays in sight */
+#postPanel{display:flex;flex-direction:column}
+#postPanel>*{flex:none}
+#postPanel>.postbody{flex:0 1 auto;min-height:120px;overflow:auto;padding-right:2px}
+/* on a phone the tier buttons alone stand 228px and left the list 120px:
+   there the whole window scrolls, as one */
+html[data-phone="1"] #postPanel{display:block}
+html[data-phone="1"] #postPanel>.postbody{overflow:visible;padding-right:0}
+.postbody .postlist{max-height:none;overflow:visible}
+.posthead{display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;margin:10px 0 4px}
+.posthead:first-child{margin-top:2px}
+.posthead b{font-size:14px}
+.posthead .hint{margin:0}
+.postrow.postbuy{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 9px;align-items:center}
+/* on a phone the price goes under the title, which had 68px beside it */
+html[data-phone="1"] .postbuy .postcov{grid-row:span 2}
+html[data-phone="1"] .postbuy .postcost{grid-column:2;justify-self:start}
+.postbuy .postcov{width:30px}
+.postwho{flex:1;min-width:0;display:grid;gap:1px}
+.postwho .hint{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.postcost{flex:none;font-size:11px}
+.postcost.on{background:var(--teal);border-color:var(--teal);color:#fff}
 .pill.t-common.on,.pill.t-uncommon.on,.pill.t-rare.on,.pill.t-epic.on,.pill.t-legendary.on{background:var(--bcc);border-color:var(--bcc)}
 /* a slow sheen across epic and legendary — the foil */
 .bcard.foil .bcin::after{content:"";position:absolute;inset:0;pointer-events:none;mix-blend-mode:screen;
@@ -13511,6 +13535,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-10-30.4",go:["tab:ach"],lines:["<b>🏪 The trading post, by series.</b> A tier's missing cards now come grouped by the series or collection they belong to. Each group says how many of its cards are in the album and how many are missing, and <b>+100 when it's full</b> when only one is left. The series closest to full come first; <i>By series</i> orders them A–Z, and <i>Shelf order</i> is the single list it used to be.","Each missing card wears its own cover, small, and the whole row is the button that buys it. It says <i>Buy · 5 common</i> when you have the spares, or how many more you need."]},
   {v:"2026-10-30.3",go:["tab:challenges"],lines:["<b>🎯 A challenge of your own: 📚 Books that would fit opens on Search.</b> It used to be a cloud of titles under the card. Now it opens a list with covers, blurbs and pages, the way a colour of the rainbow or a bingo square does. A collection appears once, with the stories in it that fit. Books you haven't got yet are left out, and the list says so."]},
   {v:"2026-10-30.2",go:["tab:overview"],lines:["<b>🖼 Words on your background picture stay readable on every tab.</b> On Today's Series tab, “Series — the next book” and “Waiting to get hold of” stood bare on the picture, because the app looks for words on the picture only once, while that tab was still hidden. It looks again whenever a tab, a fold or an “…and more” opens."]},
   {v:"2026-10-30.1",go:["tab:care"],lines:["<b>✨ Claude reads your shelf for genres, tags and where it's set.</b> In 🧰 Shelf care → Tidying up, <i>Read the next 30</i> sends the whole blurb, your notes, what you liked and didn't, and each story in a collection on its own. The button says what it will cost before you press it. Each suggestion is a row of words: switch off any you don't want, then Change it. One ↶ undoes it.","<b>New genres, never audiences.</b> Claude uses your genres where one fits and marks a genre you don't have yet as <i>new</i>; it joins your list only when you say Change it. Young adult, middle grade and the rest stay in Audience.","<b>📍 Where it's set</b> goes into Set in, so the atlas and Where is it set? see it: every place a story uses, made-up worlds too. A book that already has a Set in is only flagged if the blurb clearly says otherwise.","<b>✨ Look it up online</b>, under the blurb on a book's page, asks the same with a web search: for the books with little or nothing written. It replaces <i>Genres that don't fit the blurb</i>; anything it suggested that you haven't answered is still there."]},
@@ -29719,11 +29744,44 @@ function postTrade(key){
   achToast({icon:"🏪",name:"Into the album",plain:"“"+c.title+"” — from the trading post",tiers:[],go:"el:ach:#achCards"},0,true);
   return true;
 }
-/* the post's window: spares by tier, and the missing cards of the tier chosen */
-let postTier=null;
+/* the post's window: spares by tier, and the missing cards of the tier chosen.
+   ---- THE POST BY SERIES ----
+   A missing card is worth most where it finishes a set (SET_XP), so the
+   tier's missing cards come grouped by the set they belong to (cardSets), a
+   heading over each saying how much of the set is in the album and how much
+   is missing in every tier. postSort: "few" puts the sets closest to full
+   first, "series" orders them by name, "shelf" is the one flat list it was.
+   Cards in no set come last. Each card wears its cover, small, and the whole
+   row is the button that buys it. */
+let postTier=null,postSort="few";
+const POST_CAP=120;
+const setPaid=st=>{const led=(quests&&quests.led)||{},paid=k=>!!led["set:"+k];
+  return paid(st.id)||(st.was&&paid(st.was))||(st.kind==="series"&&st.keys.some(k=>paid("sb:"+k)));};
+function postRowHtml(c,cur){
+  const can=cur.spare>=PACK_TRADE,tn=cur.t.name.toLowerCase();
+  return `<button class="postrow postbuy" data-postbuy="${esc(c.key)}"${can?"":" disabled"} title="${esc(can?"Trade "+PACK_TRADE+" spare "+tn+" cards for it":"Not enough spare "+tn+" cards yet")}">
+    <span class="recapcov postcov" data-cover="${esc(c.id)}"${c.cov?` data-covkey="${esc(c.cov)}"`:""}>${coverInner({id:c.id,_cover:c.cov,title:c.title,author:c.author,genres:c.genres},true)}</span>
+    <span class="postwho"><b>${esc(c.title)}</b><span class="hint">${esc(c.author)}${c.mark!=null?(c.author?" · ":"")+"★ "+c.mark:""}</span></span>
+    <span class="chip postcost${can?" on":""}">${can?`Buy · ${PACK_TRADE} ${esc(tn)}`:`${PACK_TRADE-cur.spare} more ${esc(tn)}`}</span></button>`;
+}
+function postBodyHtml(cur){
+  const list=rows=>`<div class="postlist">${rows.map(c=>postRowHtml(c,cur)).join("")}</div>`;
+  if(postSort==="shelf")return list(cur.missing.slice(0,POST_CAP))
+    +(cur.missing.length>POST_CAP?`<div class="hint">…and ${cur.missing.length-POST_CAP} more; the first ${POST_CAP} are shown.</div>`:"");
+  const inTier=new Map(cur.missing.map(c=>[c.key,c])),placed=new Set();
+  const sets=cardSets().map(st=>{const here=st.keys.filter(k=>inTier.has(k)).map(k=>inTier.get(k));
+      here.forEach(c=>placed.add(c.key));return {st,here,left:st.keys.length-st.got};}).filter(x=>x.here.length);
+  sets.sort(postSort==="few"?(a,b)=>a.left-b.left||a.st.name.localeCompare(b.st.name):(a,b)=>a.st.name.localeCompare(b.st.name));
+  const loose=cur.missing.filter(c=>!placed.has(c.key));
+  return sets.map(({st,here,left})=>`<div class="posthead"><b>${esc(st.name)}</b><span class="hint">${st.got} of ${st.keys.length} in the album · ${left} missing${here.length<left?`, ${here.length} of them ${esc(cur.t.name.toLowerCase())}`:""}${left===1&&!setPaid(st)?` · <b>+${SET_XP}</b> when it's full`:""}</span></div>${list(here)}`).join("")
+    +(loose.length?`<div class="posthead"><b>${sets.length?"Not in a series":"No series"}</b><span class="hint">${loose.length} missing</span></div>${list(loose.slice(0,POST_CAP))}`
+      +(loose.length>POST_CAP?`<div class="hint">…and ${loose.length-POST_CAP} more; the first ${POST_CAP} are shown.</div>`:""):"");
+}
 function postShow(){
   const old=document.getElementById("postPanel");if(old&&old.__close)old.__close();
   const d=document.createElement("div");d.id="postPanel";d.className="ratepanel postpanel";
+  /* it opens on the sets closest to full each time; the other orders are a press away */
+  postSort="few";
   const paint=()=>{
     const n=cardCounts(),pool=cardPool();
     const tiers=CARD_TIERS.map((t,i)=>({t,i,spare:spareOfTier(i),missing:pool.filter(c=>c.tier===i&&!n[c.key])}));
@@ -29731,12 +29789,15 @@ function postShow(){
     const cur=tiers[postTier];
     d.innerHTML=`<b class="serif" style="display:block;font-size:17px;margin:0 0 2px">🏪 The trading post</b>
       <div class="hint" style="margin:0 0 10px">${PACK_TRADE} spare cards of a tier buy any card of that tier the album is missing. The counts on your cards stay.</div>
-      <div class="hrow2" style="gap:5px;flex-wrap:wrap;margin:0 0 10px">${tiers.map(x=>`<button class="pill t-${x.t.k}${x.i===postTier?" on":""}" data-posttier="${x.i}">${x.t.name} <b>${x.spare}</b> spare</button>`).join("")}</div>
+      <div class="hrow2" style="gap:5px;flex-wrap:wrap;margin:0 0 8px">${tiers.map(x=>`<button class="pill t-${x.t.k}${x.i===postTier?" on":""}" data-posttier="${x.i}">${x.t.name} <b>${x.spare}</b> spare</button>`).join("")}</div>
       ${cur.missing.length?`<div class="hint" style="margin:0 0 6px">${cur.missing.length} ${cur.t.name.toLowerCase()} card${cur.missing.length===1?"":"s"} missing${cur.spare<PACK_TRADE?` — ${PACK_TRADE-cur.spare} more spare ${cur.t.name.toLowerCase()} card${PACK_TRADE-cur.spare===1?"":"s"} needed`:""}</div>
-        <div class="postlist">${cur.missing.slice(0,120).map(c=>`<button class="postrow" data-postbuy="${esc(c.key)}"${cur.spare<PACK_TRADE?" disabled":""}><b>${esc(c.title)}</b><span class="hint">${esc(c.author)}${c.mark!=null?" · ★ "+c.mark:""}</span></button>`).join("")}${cur.missing.length>120?`<div class="hint">…and ${cur.missing.length-120} more; the first 120 are shown.</div>`:""}</div>`
+        <div class="hrow2" style="gap:5px;flex-wrap:wrap;align-items:center;margin:0 0 6px"><span class="hint" style="margin:0">Sort:</span>${[["few","Fewest missing"],["series","By series"],["shelf","Shelf order"]].map(([k,l])=>`<button class="pill${postSort===k?" on":""}" data-postsort="${k}">${l}</button>`).join("")}</div>
+        <div class="postbody">${postBodyHtml(cur)}</div>`
         :`<div class="hint">Every ${cur.t.name.toLowerCase()} card is in the album.</div>`}
       <div class="hrow2" style="margin-top:12px;justify-content:flex-end"><button class="btn" id="postX">Close</button></div>`;
+    try{hydrateCovers(d);}catch(e){}
     qa("[data-posttier]",d).forEach(b=>b.onclick=()=>{postTier=+b.dataset.posttier;paint();});
+    qa("[data-postsort]",d).forEach(b=>b.onclick=()=>{postSort=b.dataset.postsort;paint();});
     qa("[data-postbuy]",d).forEach(b=>b.onclick=()=>{if(postTrade(b.dataset.postbuy)){paint();if(view==="ach")renderAch();}});
     q("#postX",d).onclick=()=>close();
   };
