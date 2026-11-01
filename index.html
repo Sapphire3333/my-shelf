@@ -2168,6 +2168,10 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
     width:min(430px,calc(92vw/var(--uiz,1)));max-height:calc(78vh/var(--uiz,1));
     overflow:auto;background:var(--card);
     border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 10px 34px rgba(0,0,0,.28)}
+  /* 💬 a character's answers — see TALK TO A CHARACTER */
+  .charbox{display:grid;gap:6px}
+  .charbox .chq{justify-self:end;max-width:85%;background:var(--teal);color:#fff;padding:7px 11px;border-radius:14px 14px 4px 14px;font-size:14px;overflow-wrap:anywhere}
+  .charbox .cha{justify-self:start;max-width:92%;background:var(--card);border:1px solid var(--line);padding:8px 12px;border-radius:14px 14px 14px 4px;font-size:14px;line-height:1.5;overflow-wrap:anywhere}
   /* ❄️ the snow globe — see SHAKE FOR A BOOK */
   .globepanel{text-align:center}
   .globe{position:relative;width:200px;height:200px;margin:10px auto 0;border-radius:50%;overflow:hidden;
@@ -13100,6 +13104,8 @@ const HOWTO=[
    ["Narrow the staged list with its search box if you want only some.","Press <b>☑ Tick all</b> in the section's head.","Then choose: as books, 🔗 as a series, 📚 as one collection, or 📥 into one you have.","<b>Add all</b> beside it skips the ticking and puts them in as plain books."]],
   ["🏠 Today","Say what page you are on","the ✎ on the progress line",
    ["On <b>Reading now</b>, press the <b>✎</b> at the end of the page line.","Type the page — or press <b>+10</b> / <b>+25</b>.","Enter saves, Escape folds it away.","This is what feeds the 📖 run and the pace line."]],
+  ["📖 A book's page","Ask a character a question","💬 Talk to a character",
+   ["Open a book you have finished.","Under the review, find <b>💬 Talk to a character</b>.","Say who, type a question, press <b>💬 Ask</b> (or Enter).","They answer in their own voice; three questions a day in all."]],
   ["🌅 Your day","Shake out a random book","❄️ The snow globe",
    ["Shake your phone, anywhere in the app — a proper shake, four quick jolts.","Or open <b>🌅 Your day</b> and press <b>❄️ Shake it</b> on the snow globe line.","The snow settles on one book from your whole shelf; <b>Open it</b> takes you there.","⚙ Settings → Sounds &amp; notes turns the shaking off."]],
   ["📖 A book's page","Read to rain or a fire","🌧 beside ⏱ Start",
@@ -13642,6 +13648,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-01.8",go:["tab:library"],lines:["<b>💬 Talk to a character.</b> On the page of a book you've finished, under the review, is <b>💬 Talk to a character</b>. Say who (a fic's own characters are suggested), ask them something, and Claude answers as them: in their voice, and from the whole book, ending included. Ask again and they remember what they've already told you. Three questions a day across all your books, about a cent each, kept on the device you asked on."]},
   {v:"2026-11-01.7",go:["el:challenges:#qBlind"],lines:["<b>💌 A blind date comes wrapped.</b> On the dare card, the three books of a blind date are brown-paper parcels tied with string, each blurb written on a gift tag. Pick one and its paper tears open to show the book, confetti falls, and it becomes your dare, worth the usual extra for choosing blind."]},
   {v:"2026-11-01.6",go:["day:"],lines:["<b>❄️ Shake for a book.</b> Shake your phone anywhere in the app and a snow globe swirls up, then settles on one book from your whole shelf, with a line from the owl and <b>Open it</b>. It takes a proper shake: a phone in your pocket while you walk won't set it off. On a computer, or whenever you like, it's in 🌅 Your day as <b>❄️ The snow globe</b>. To turn the shaking off, go to ⚙ Settings → <i>Sounds &amp; notes</i>."]},
   {v:"2026-11-01.5",go:["tab:library"],lines:["<b>🌧 Rain and fire while you read.</b> On the page of a book you're reading, a small button now sits beside <b>⏱ Start</b>: 🔇 quiet, 🌧 rain on the window, 🔥 a crackling fire, or 🌧🔥 both. Press it to choose and you'll hear a few seconds. After that, it plays whenever you start the reading clock or a sprint, keeps going behind other screens, and fades out when the clock stops. The app makes the sounds itself, so there's nothing to download and it works offline. Your choice is kept per device."]},
@@ -27380,6 +27387,56 @@ function reviewFacts(b){
   if(b.favorite)out.push("They gave it a heart.");
   return out;
 }
+/* ┌─ 💬 TALK TO A CHARACTER ─────────────────────────────────────────────────┐
+   │ On a finished book's page, under the review (chatHtml): say who — the  │
+   │ fic's own characters are offered, and whoever was asked last — ask, and │
+   │ Claude answers as them (chatAsk): first person, in their voice, two to  │
+   │ five sentences, the ending allowed since the book is finished, and a    │
+   │ deflection in character rather than an invented event where it is      │
+   │ unsure. The last three exchanges with the same character go with the    │
+   │ question, so a conversation can carry on. CHAT_DAY questions a day in   │
+   │ all (settings.chatDay), counted when an answer comes back; the last six │
+   │ exchanges per book, for thirty books, kept on this device               │
+   │ (settings.chats). About a cent an answer, the money window's 💬 line.   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const CHAT_DAY=3,CHAT_KEEP=6,CHAT_BOOKS=30;
+const chatUsed=()=>{const c=settings.chatDay;return c&&c.d===todayStr()?+c.n||0:0;};
+function chatHtml(b){
+  if(!b||isColl(b)||statusOf(b)!=="finished"||!claudeReady())return "";
+  const log=((settings.chats||{})[b.id]||[]),left=Math.max(0,CHAT_DAY-chatUsed());
+  const who=[...new Set([...log.map(x=>x.who).reverse(),...(b.characters||[]).map(String)])].filter(Boolean).slice(0,20);
+  return `<div id="secCharWrap"><div class="cap2" id="secChar">💬 Talk to a character</div><div class="charbox" data-chbook="${esc(b.id)}">
+    ${log.map(x=>`<div class="chq">${esc(x.q)}</div><div class="cha"><b>${esc(x.who)}:</b> ${esc(x.a)}</div>`).join("")}
+    <div class="hrow2" style="gap:6px;flex-wrap:nowrap;margin-top:6px"><input class="field" id="chWho" placeholder="Who? The narrator, a name…" list="chWhoL" value="${esc(who[0]||"")}" style="flex:1 1 auto;min-width:0" aria-label="Which character"><datalist id="chWhoL">${who.map(w=>`<option value="${esc(w)}">`).join("")}</datalist></div>
+    <div class="hrow2" style="gap:6px;flex-wrap:nowrap;margin-top:6px"><input class="field" id="chQ" placeholder="Ask them something" style="flex:1 1 auto;min-width:0" aria-label="Your question"${left?"":" disabled"}><button class="btn smallbtn pri" data-chgo="${esc(b.id)}" style="flex:none"${left?"":" disabled"}>💬 Ask</button></div>
+    <div class="hint" id="chSay" style="margin:6px 0 0">${left?`${left} of ${CHAT_DAY} questions left today · about a cent each`:`That's today's ${CHAT_DAY} — they'll talk again tomorrow.`}</div>
+  </div></div>`;
+}
+async function chatAsk(id,btn){
+  const b=books.find(x=>x.id===id),box=btn.closest(".charbox");if(!b||!box)return;
+  const who=q("#chWho",box).value.trim(),ask=q("#chQ",box).value.trim(),say=q("#chSay",box);
+  if(!who){say.textContent="Say who you'd like to talk to first.";return;}
+  if(!ask){say.textContent="Ask them something.";return;}
+  if(chatUsed()>=CHAT_DAY){say.textContent=`That's today's ${CHAT_DAY} — they'll talk again tomorrow.`;return;}
+  btn.disabled=true;say.textContent=`💬 ${who} is thinking…`;
+  const log=((settings.chats||{})[id]||[]),prior=log.filter(x=>x.who.toLowerCase()===who.toLowerCase()).slice(-3).map(x=>`The reader: ${x.q}\nYou: ${x.a}`).join("\n\n");
+  const blurb=cwBlurbOf(b).slice(0,500);
+  const system=`You are ${who}, a character in “${b.title||"a book"}”${b.author?` by ${b.author}`:""}. A reader who has finished the book is talking to you. Stay in character: answer in the first person, in your own voice and manner, in two to five sentences. You may speak of anything in the book, the ending included. If you are unsure of something that happens in it, deflect the way you would rather than inventing a specific event. Never mention being an AI, a model or a character in a book unless you would know you are one.`;
+  try{
+    const j=await claudeAsk({what:"💬 Talk to a character",kind:"ask",effort:"low",max_tokens:400,model:claudeSmallModel(),system,
+      text:`${blurb?`What the book is about: ${blurb}\n\n`:""}${prior?`What you have said to them already:\n${prior}\n\n`:""}The reader asks you: ${ask}`});
+    const a=String(j.text||"").trim();if(!a)throw new Error("nothing came back");
+    const all=Object.assign({},settings.chats||{});all[id]=log.concat([{who,q:ask,a,at:Date.now()}]).slice(-CHAT_KEEP);
+    const keep=Object.keys(all).sort((x,y)=>Math.max(...all[y].map(e=>e.at||0))-Math.max(...all[x].map(e=>e.at||0))).slice(0,CHAT_BOOKS);
+    settings.chats={};keep.forEach(k=>{settings.chats[k]=all[k];});
+    settings.chatDay={d:todayStr(),n:chatUsed()+1};saveSettings();
+    const w=document.getElementById("secCharWrap");if(w)w.outerHTML=chatHtml(b);
+    const nb=document.querySelector("#secCharWrap .cha:last-of-type");if(nb&&!TEST_RUN&&gfxLv()>=2&&!gfxCalm())nb.animate([{opacity:0,transform:"translateY(6px)"},{opacity:1,transform:"none"}],{duration:320,easing:"ease-out"});
+  }catch(err){btn.disabled=false;say.textContent="Claude couldn't — "+((err&&err.message)||"no answer");}
+}
+document.addEventListener("click",e=>{const t=e.target.closest&&e.target.closest("[data-chgo]");if(!t)return;e.stopPropagation();chatAsk(t.dataset.chgo,t);});
+document.addEventListener("keydown",e=>{if(e.key!=="Enter"||!e.target||e.target.id!=="chQ")return;e.preventDefault();
+  const b=e.target.closest(".charbox"),go=b&&b.querySelector("[data-chgo]");if(go&&!go.disabled)go.click();});
 function reviewHtml(b){
   if(!b||isColl(b)||statusOf(b)!=="finished"||!claudeReady())return "";
   const f=reviewFacts(b);if(!f.length)return "";
@@ -55501,6 +55558,7 @@ function renderBookView(){
     ${readNotesHtml(b)}
     ${hasNotes?`<div class="cap2" id="secNotes">Notes</div><div class="vtext note">${b.canvasText}</div>`:""}
     ${reviewHtml(b)}
+    ${chatHtml(b)}
     ${iywHtml(b)}
     ${!hasSummary&&!hasNotes&&!lists&&!hasQuotes&&!inYourWords(b)&&!readNotes(b).length?`<div class="empty" style="margin-top:18px">Nothing written down yet.<br>
       <button class="btn pri" id="toEdit2" style="margin-top:11px">✎ Start filling it in</button></div>`:""}
