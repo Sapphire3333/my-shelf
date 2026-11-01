@@ -4940,6 +4940,10 @@ html.petglow .petcorner,html.petglow .petbox,html.petglow .owlme{
 .wearrow{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:thin;padding-bottom:2px}
 .wearrow .pill{flex:none}
 .finfx{position:fixed;inset:0;z-index:2400;pointer-events:none;overflow:hidden}
+/* the games' sparks, confetti and floating XP — see THE GAMES MOVE */
+#gfxLayer{position:fixed;inset:0;z-index:2450;pointer-events:none;overflow:hidden}
+#gfxLayer>i{position:absolute;display:block}
+#gfxLayer>.gfxxp{position:absolute;color:var(--teal-ink);font-size:15px;white-space:nowrap;text-shadow:0 1px 0 var(--card),0 0 6px var(--card)}
 .finp{position:absolute;left:0;top:0;display:block;line-height:1;will-change:transform}
 .petbox .petemo{font-size:54px;line-height:1}
 .petbox.big .petemo{font-size:78px}
@@ -13608,6 +13612,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-01.1",go:["tab:challenges"],lines:["<b>🎆 The games react.</b> A right answer bounces, glows and throws a little spray of sparks, with the XP floating up off it. A wrong one shakes its head. A win drops confetti over the game. When a new round starts, its answers are dealt in one after another. On a phone that allows it, you feel it too: a tap for right, two for wrong, a run for a win. All of it happens with the sound muted as well. To tone it down or turn it off, go to ⚙ Settings → <i>Sounds &amp; notes</i>: <b>🎆 The games, when you answer</b> (Still, A glow, Lively or A lot) and <b>📳 Buzz on this phone</b>."]},
   {v:"2026-10-31.2",go:["day:"],lines:["<b>🔮 Your three cards come from your whole shelf.</b> In 🌅 Your day, the three are drawn at random each day from every book you have: read or not, given up on or waiting, with a card in your album or not. Past, Present and Future are just places in the spread now, not how far you have got with the book. The owl's line fits where you really are with each book, and <b>🔮 Ask the oracle</b> has Claude read the three as a prediction aimed at you. A book from yesterday's three almost never comes back the next day."]},
   {v:"2026-10-31.1",go:["tab:insights"],lines:["<b>🪞 Claude gets to know you.</b> Claude remembers nothing between asks, so the app now sends what it knows of you with each one: your taste profile, how you read (how many books a month, how long and in what format), what you are reading now and finished lately, when you read and use the app, and the games and features you use most, counted across both your devices. 🔮 The oracle and 🥠 the fortune cookie read all of it along with the hour you ask; suggestions and verdicts also see how you read. To see exactly what is sent, open ✨ Insights → <i>Your taste, as Claude reads it</i> → <b>🪞 What Claude is told about you</b>, where one tick leaves out the when and the app use. <b>↻ Read my shelf again</b> now includes your notes and lights up once five or more new books have been rated or written about since the last read.",
     "<b>🧩 The big picture's top bar follows your text size.</b> The count, the piece in hand and ✕ Close stayed small at every text size because they sit above the page. They now grow with the rest of the app, and so do the album's and any picture opened big."]},
@@ -36004,6 +36009,7 @@ function gameAward(n,label,key){
   if(!quests||!key||(quests.led&&quests.led[key]))return false;
   const full=Math.min(n,Math.max(0,GAME_CAP-gamePaidToday())),pay=full+gamePastPay(n-full);
   if(!questAward(pay,label,key))return false;
+  try{gfxXp(pay);}catch(e){}
   if(pay<n){
     quests.led[key][2]=n;questSave();
     if(gameCapSaid!==questToday()){gameCapSaid=questToday();
@@ -36052,9 +36058,135 @@ function sfxCtxGet(){
   return sfxCtx;
 }
 function gameSfx(kind){
+  try{gameFx(kind);}catch(e){}   /* the movement and the buzz, sound or no sound — THE GAMES MOVE */
   if(!sfxOn()||document.hidden)return;
   sfxPlay(kind,sfxSetNow());
 }
+/* ┌─ 🎆 THE GAMES MOVE ──────────────────────────────────────────────────────┐
+   │ Every game plays its right, wrong and win through gameSfx, so movement  │
+   │ rides on the same call (gameFx), muted or not: "ok", "yes" and "win"    │
+   │ pop the thing just pressed, glow it and throw a spray of sparks; "win"  │
+   │ also drops confetti over the game's card; "snap" (a piece home)         │
+   │ sparkles; "no" and "nope" shake it. The thing pressed is recorded on    │
+   │ the way down (gfxLast, capture phase, before any game redraws) and      │
+   │ found again by its first data-* attribute if the game drew itself       │
+   │ afresh in between, or by where it stood. XP a game pays floats up off   │
+   │ it (gameAward → gfxXp). A grid of answers (.qgrid4) holding answers it  │
+   │ did not hold when last drawn is dealt in, one card after another        │
+   │ (gfxDealWatch, a MutationObserver) — redrawn after an answer, the same  │
+   │ answers are not dealt again. On a phone that can, a buzz (gfxBuzz): a   │
+   │ tap for right, two for wrong, a thunk for a piece, a run for a win.     │
+   │ settings.gfx, this device's: 0 still, 1 calm (a glow, nothing moves),   │
+   │ 2 lively (the default), 3 a lot; settings.buzz=false, no buzz. Reduced  │
+   │ motion asked for is calm. Nothing of it in a test run (TEST_RUN), where │
+   │ a card caught mid-deal would be measured tilted.                        │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const gfxLv=()=>{const v=settings&&settings.gfx;return v==null||v===""?2:Math.max(0,Math.min(3,+v||0));};
+const gfxCalm=()=>gfxLv()<=1||matchMedia("(prefers-reduced-motion: reduce)").matches;
+let gfxLast=null;
+function gfxNote(e){
+  const b=e.target&&e.target.closest&&e.target.closest("button,[role=button],.pflip,[data-tslot]");if(!b)return;
+  const d=[...b.attributes].find(a=>a.name.startsWith("data-")&&a.value!=="");
+  let sel="";try{sel=d?`${b.tagName.toLowerCase()}[${d.name}="${CSS.escape(d.value)}"]`:"";}catch(x){}
+  gfxLast={el:b,t:Date.now(),sel,r:b.getBoundingClientRect()};
+}
+document.addEventListener("pointerdown",gfxNote,true);
+document.addEventListener("click",gfxNote,true);
+function gfxTarget(){
+  const L=gfxLast;if(!L||Date.now()-L.t>2500)return null;
+  if(L.el.isConnected)return L.el;
+  if(L.sel){try{const x=document.querySelector(L.sel);if(x)return x;}catch(e){}}
+  const p=document.elementFromPoint(L.r.left+L.r.width/2,L.r.top+L.r.height/2);
+  return (p&&p.closest&&p.closest("button,[role=button]"))||null;
+}
+function gfxLayer(){
+  let L=document.getElementById("gfxLayer");
+  if(!L){L=document.createElement("div");L.id="gfxLayer";L.setAttribute("aria-hidden","true");document.body.appendChild(L);}
+  return L;
+}
+const GFX_SPARK=["#14b8a6","#f59e0b","#22c55e","#fde68a","#f472b6"];
+function gfxSparks(x,y,n,cols){
+  const L=gfxLayer(),Rr=(a,b)=>a+Math.random()*(b-a),big=gfxLv()>2?1.3:1;
+  for(let i=0;i<n;i++){
+    const p=document.createElement("i"),sz=Rr(4,8)*big;
+    p.style.cssText=`left:${x}px;top:${y}px;width:${sz}px;height:${sz}px;border-radius:${i%3?"50%":"2px"};background:${(cols||GFX_SPARK)[i%(cols||GFX_SPARK).length]}`;
+    L.appendChild(p);
+    const a=Rr(0,Math.PI*2),d=Rr(26,62)*(.7+gfxLv()*.22);
+    p.animate([{transform:"translate(-50%,-50%) scale(1)",opacity:1},{transform:`translate(calc(-50% + ${Math.cos(a)*d}px),calc(-50% + ${Math.sin(a)*d}px)) scale(.4)`,opacity:0}],
+      {duration:Rr(450,760),easing:"cubic-bezier(.2,.7,.3,1)",fill:"forwards"}).onfinish=()=>p.remove();
+  }
+}
+function gfxConfetti(r,n){
+  const L=gfxLayer(),Rr=(a,b)=>a+Math.random()*(b-a),cols=["#f43f5e","#f59e0b","#22c55e","#3b82f6","#a855f7","#ec4899","#14b8a6"];
+  const top=Math.max(0,r.top),h=Math.min(innerHeight,r.bottom)-top;if(h<=0)return;
+  for(let i=0;i<n;i++){
+    const p=document.createElement("i");
+    p.style.cssText=`left:0;top:0;width:${Rr(5,9)}px;height:${Rr(8,14)}px;background:${cols[i%cols.length]};border-radius:2px`;
+    L.appendChild(p);
+    const x=r.left+Rr(0,r.width),drift=Rr(-.2,.2)*r.width,spin=Rr(-540,540);
+    p.animate([{transform:`translate(${x}px,${top-16}px) rotate(0)`,opacity:1},{transform:`translate(${x+drift}px,${top+h+16}px) rotate(${spin}deg)`,opacity:.25}],
+      {duration:Rr(1100,1900),delay:Rr(0,300),easing:"cubic-bezier(.25,.6,.4,1)",fill:"both"}).onfinish=()=>p.remove();
+  }
+}
+function gfxBuzz(kind){
+  if(TEST_RUN||!settings||settings.buzz===false||!navigator.vibrate)return;
+  const P={ok:12,yes:12,no:[25,45,25],nope:[25,45,25],snap:22,win:[20,50,20,50,40]}[kind];
+  if(P&&gfxLast&&Date.now()-gfxLast.t<2500)try{navigator.vibrate(P);}catch(e){}
+}
+function gameFx(kind){
+  if(TEST_RUN)return;
+  gfxBuzz(kind);
+  const lv=gfxLv();if(!lv)return;
+  const good=kind==="ok"||kind==="yes"||kind==="win"||kind==="snap",bad=kind==="no"||kind==="nope";
+  if(!good&&!bad)return;
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    const t=gfxTarget();if(!t)return;
+    const r=t.getBoundingClientRect();if(!r.width)return;
+    if(gfxCalm()){const c=good?"#0f766e":"#b3263a";
+      t.animate([{boxShadow:`0 0 0 0 ${c}00`},{boxShadow:`0 0 0 4px ${c}66`},{boxShadow:`0 0 0 0 ${c}00`}],{duration:700});return;}
+    if(good){
+      if(kind!=="snap")t.animate([{transform:"scale(1)"},{transform:`scale(${1.02+.02*lv})`,boxShadow:"0 0 0 4px #0f766e55,0 0 22px #14b8a688",offset:.4},{transform:"scale(1)"}],{duration:420,easing:"cubic-bezier(.3,1.6,.5,1)"});
+      gfxSparks(r.left+r.width/2,r.top+r.height/2,kind==="snap"?3+lv*2:4+lv*5);
+      if(kind==="win"){const card=t.closest(".hcard,.qcard,.gstage,.ratepanel,.zoomview")||t;gfxConfetti(card.getBoundingClientRect(),18+lv*18);}
+    }else{const a=2+lv*2.5;
+      t.animate([{transform:"none"},{transform:`translateX(-${a}px) rotate(-1deg)`},{transform:`translateX(${a}px) rotate(1deg)`},{transform:`translateX(-${a*.6}px)`},{transform:`translateX(${a*.4}px)`},{transform:"none"}],{duration:380});}
+  }));
+}
+/* the XP a game just paid, floating up off what was pressed */
+function gfxXp(n){
+  if(TEST_RUN||!n||gfxCalm())return;
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    const t=gfxTarget();if(!t)return;const r=t.getBoundingClientRect();if(!r.width)return;
+    const L=gfxLayer(),b=document.createElement("b");b.className="gfxxp";b.textContent=`+${n} XP`;
+    b.style.cssText=`left:${Math.min(innerWidth-70,r.right-8)}px;top:${r.top}px`;L.appendChild(b);
+    b.animate([{transform:"translate(-100%,4px)",opacity:0},{transform:"translate(-100%,-8px)",opacity:1,offset:.25},{transform:"translate(-100%,-36px)",opacity:0}],{duration:1150,easing:"ease-out",fill:"forwards"}).onfinish=()=>b.remove();
+  }));
+}
+/* a new round's answers, dealt in one after another */
+const gfxDealt=new Map();
+function gfxDeal(grid){
+  const bs=[...grid.children].filter(x=>x.tagName==="BUTTON");if(!bs.length)return;
+  const d=bs[0].getAttributeNames().find(n=>n.startsWith("data-"))||"";
+  /* the attribute and the words: Two truths numbers its answers 0, 1, 2 every round, and a book game's ids repeat in a new order */
+  const sig=bs.map(x=>(d?x.getAttribute(d)+"·":"")+x.textContent.trim().slice(0,40)).join("|"),key=d||"grid";
+  if(gfxDealt.get(key)===sig)return;
+  gfxDealt.set(key,sig);
+  const lv=gfxLv();if(!lv)return;
+  if(gfxCalm()){grid.animate([{opacity:0},{opacity:1}],{duration:220});return;}
+  bs.forEach((x,i)=>x.animate([{transform:`translateY(${18+lv*3}px) rotate(-${2+lv}deg) scale(.96)`,opacity:0},{transform:"none",opacity:1}],
+    {duration:340,delay:i*65,easing:"cubic-bezier(.2,.9,.3,1.2)",fill:"backwards"}));
+}
+function gfxDealWatch(){
+  if(TEST_RUN||typeof MutationObserver==="undefined")return;
+  new MutationObserver(ms=>{
+    for(const m of ms)for(const n of m.addedNodes){
+      if(n.nodeType!==1)continue;
+      if(n.classList.contains("qgrid4"))gfxDeal(n);
+      else if(n.firstElementChild)n.querySelectorAll(".qgrid4").forEach(gfxDeal);
+    }
+  }).observe(document.body,{childList:true,subtree:true});
+}
+gfxDealWatch();
 /* ┌─ SOUND SETS ─────────────────────────────────────────────────────────────┐
    │ The shop sells three more voices for the same nine sounds (sfx:<set>):  │
    │ chimes — bells, a sine and a partial 2.76 times above it, ringing on;  │
@@ -45960,6 +46092,12 @@ function renderSettings(){
           <div class="hrow2" style="flex-wrap:wrap;margin-top:4px"><span class="lbl">Marking a book finished:</span>
             ${[["note","The burst, and one note"],["quiet","Quietly — no burst, no note"]].map(([k,l])=>
               `<button class="pill ${(settings.quietFinish?"quiet":"note")===k?"on":""}" data-finq="${k}">${l}</button>`).join("")}</div>
+          <div class="hrow2" style="flex-wrap:wrap;margin-top:4px"><span class="lbl">🎆 The games, when you answer:</span>
+            ${[[0,"Still"],[1,"A glow"],[2,"Lively"],[3,"A lot"]].map(([k,l])=>
+              `<button class="pill ${gfxLv()===k?"on":""}" data-gfxlv="${k}" title="${["Nothing moves","Right and wrong glow; nothing moves","Right answers pop and sparkle, wrong ones shake, a new round is dealt in","All of that, bigger"][k]}">${l}</button>`).join("")}</div>
+          ${"vibrate" in navigator?`<div class="hrow2" style="flex-wrap:wrap;margin-top:4px"><span class="lbl">📳 Buzz on this phone:</span>
+            ${[["on","When you answer and place a piece"],["off","Never"]].map(([k,l])=>
+              `<button class="pill ${(settings.buzz===false?"off":"on")===k?"on":""}" data-gbuzz="${k}">${l}</button>`).join("")}</div>`:""}
           <div class="hrow2" style="margin-top:6px"><button class="btn" id="achTry">Show me one</button>
             <span class="none" style="font-size:12px">A browser won't make a sound until you've touched the page once, so a medal landing the moment the app opens is silent — and on the phone the ringer switch decides. Remembered per device, like the text size.</span></div>
         </div>
@@ -46248,6 +46386,10 @@ function wireSettings(m){
    });
    qa("[data-finq]",m).forEach(b=>b.onclick=()=>{settings.quietFinish=b.dataset.finq==="quiet";saveSettings();
      qa("[data-finq]",m).forEach(x=>x.classList.toggle("on",x===b));});
+   qa("[data-gfxlv]",m).forEach(b=>b.onclick=()=>{settings.gfx=+b.dataset.gfxlv;saveSettings();
+     qa("[data-gfxlv]",m).forEach(x=>x.classList.toggle("on",x===b));gameSfx("ok");});
+   qa("[data-gbuzz]",m).forEach(b=>b.onclick=()=>{if(b.dataset.gbuzz==="off")settings.buzz=false;else delete settings.buzz;saveSettings();
+     qa("[data-gbuzz]",m).forEach(x=>x.classList.toggle("on",x===b));gfxBuzz("win");});
    qa("[data-achxp]",m).forEach(b=>b.onclick=()=>{
      put("xp",b.dataset.achxp);
      qa("[data-achxp]",m).forEach(x=>x.classList.toggle("on",x===b));
