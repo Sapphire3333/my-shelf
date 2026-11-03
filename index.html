@@ -13648,6 +13648,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-03.2",go:["tab:library"],lines:["<b>🔮 Stories guess too.</b> A story in a collection, or a tale of a split book, that you mark 📖 Reading now asks <b>What will you give it?</b> on its own row of the collection's page, the way a book does on its page. Finish it, give it its mark, and within 1 of your guess pays 20 XP, counted toward the 🔮 medal like a book's."]},
   {v:"2026-11-03.1",go:["el:challenges:.qcustom"],lines:["<b>🎯 Your challenges count from the moment you make them.</b> A challenge started in the evening no longer counts the books you finished that morning, so a new one starts at nothing instead of half done, or done. Only one challenge of each kind runs at a time: the same kind twice counted the same books twice, so 🎯 Make one and ✨ Three made for you say which card already has it. And ✨ Three made for you is told what you're already running and what it offered before, so it brings different ideas instead of the same three."]},
   {v:"2026-11-01.8",go:["tab:library"],lines:["<b>💬 Talk to a character.</b> On the page of a book you've finished, under the review, is <b>💬 Talk to a character</b>. Say who (a fic's own characters are suggested), ask them something, and Claude answers as them: in their voice, and from the whole book, ending included. Ask again and they remember what they've already told you. Three questions a day across all your books, about a cent each, kept on the device you asked on."]},
   {v:"2026-11-01.7",go:["el:challenges:#qBlind"],lines:["<b>💌 A blind date comes wrapped.</b> On the dare card, the three books of a blind date are brown-paper parcels tied with string, each blurb written on a gift tag. Pick one and its paper tears open to show the book, confetti falls, and it becomes your dare, worth the usual extra for choosing blind."]},
@@ -30356,50 +30357,71 @@ const GUESS_MARK_XP=20,GUESS_MARK_TOL=1;
    gs:/gx:<id> for a first reading as before, gs:/gx:<id>:<n> after. A guess
    from an earlier reading is simply not this reading's — a book read again
    asks again. Guesses made before this carry no n and settle as they did. */
-const guessOf=b=>{const g=b&&b.guess;if(!g||!isFinite(+g.v))return null;
+/* ---- A STORY GUESSES TOO ----
+   A story in a collection, and a tale of a split volume, has its own stage,
+   readings and mark, yet nothing inside a collection was ever asked. One
+   whose OWN stage is Reading now asks on its row of the collection's page
+   (entGuessHtml) — its own, because one that only inherits a collection
+   being read would put the question on every story of the series. The answer
+   is en.guess, the shape a book's has; guessLine draws both, guessCheck
+   settles both, and a story's ledger lines are gs:/gx:<collection>/<story>
+   (guessKey with the collection), :<n> after a first reading. */
+const guessOf=(b,st)=>{const g=b&&b.guess;if(!g||!isFinite(+g.v))return null;
   if(g.n==null)return +g.v;
-  const done=doneReads(b).length,st=statusOf(b);
+  const done=doneReads(b).length;st=st||statusOf(b);
   return (st==="finished"?done-1:done)===g.n?+g.v:null;};
-const guessKey=b=>{const n=b&&b.guess&&b.guess.n;return b.id+(n?":"+n:"");};
+const guessKey=(b,coll)=>{const n=b&&b.guess&&b.guess.n;return (coll?coll.id+"/":"")+b.id+(n?":"+n:"");};
 /* still waiting for this reading's mark: the book carries the one it had
    when the guess was made, and Keep has not been pressed */
 const guessWaits=b=>{const g=b.guess,r=b.rating==null||b.rating===""?null:Number(b.rating);
   return !!g&&g.was!=null&&r!=null&&Number(g.was)===r&&!g.kept;};
 function guessHtml(b){
   if(!b||isColl(b)||collRow(b))return "";
-  const st=statusOf(b),g=guessOf(b),r=b.rating==null||b.rating===""?null:Number(b.rating);
+  return guessLine(b,statusOf(b),b.dnf,guessKey(b),v=>`data-vguess="${v}"`);
+}
+function entGuessHtml(coll,en){
+  if(!coll||!en||(!en.guess&&String(en.status||"")!=="reading"))return "";
+  return guessLine(en,entStatusOf(coll,en),entDnfOf(coll,en),guessKey(en,coll),v=>`data-enguess="${esc(en.id)}|${v}"`);
+}
+/* x is the book or the story; at(v) is the attribute its buttons carry */
+function guessLine(x,st,dnf,k0,at){
+  const g=guessOf(x,st),r=x.rating==null||x.rating===""?null:Number(x.rating);
   if(g==null){
-    if(st!=="reading"||b.dnf)return "";
+    if(st!=="reading"||dnf)return "";
     return `<div class="vguess"><b>What will you give it?</b> <span class="hint" style="margin:0">A guess, kept here and compared the day you finish — within ${GUESS_MARK_TOL} of your mark pays ${GUESS_MARK_XP} XP.</span>
-      <div class="hrow2" style="gap:4px;margin-top:5px;flex-wrap:wrap">${[4,5,6,7,8,9,10].map(n=>`<button class="pill" data-vguess="${n}">${n}</button>`).join("")}</div></div>`;
+      <div class="hrow2" style="gap:4px;margin-top:5px;flex-wrap:wrap">${[4,5,6,7,8,9,10].map(n=>`<button class="pill" ${at(n)}>${n}</button>`).join("")}</div></div>`;
   }
   /* the line reads what the ledger settled, not the mark as it is now: the
      guess is settled once, against the mark given when it was finished, and a
      mark changed afterwards showed "+20 XP" that was never paid */
-  const led0=(quests&&quests.led)||{},k0=guessKey(b);
-  if(st==="finished"&&!b.dnf&&r!=null&&guessWaits(b)&&!led0["gs:"+k0]&&!led0["gx:"+k0])
+  const led0=(quests&&quests.led)||{};
+  if(st==="finished"&&!dnf&&r!=null&&guessWaits(x)&&!led0["gs:"+k0]&&!led0["gx:"+k0])
     return `<div class="vguess"><span class="hint" style="margin:0">🔮 You expected <b>${g}</b>. Your mark is still <b>${r.toFixed(1)}</b> from the reading before — give it its mark for this one, or</span>
-      <button class="pill" data-vguess="keep" style="font-size:12px;padding:2px 9px">Keep ${r.toFixed(1)}</button></div>`;
-  if(st==="finished"&&!b.dnf&&r!=null){const hit=Math.abs(r-g)<=GUESS_MARK_TOL,led=led0;
+      <button class="pill" ${at("keep")} style="font-size:12px;padding:2px 9px">Keep ${r.toFixed(1)}</button></div>`;
+  if(st==="finished"&&!dnf&&r!=null){const hit=Math.abs(r-g)<=GUESS_MARK_TOL,led=led0;
     const tail=led["gs:"+k0]?` — called it: <b>+${GUESS_MARK_XP} XP</b>`
       :led["gx:"+k0]?(hit?` — within ${GUESS_MARK_TOL} now, but it was settled against the first mark you gave, and that one was further off`:" — not this time")
       :hit?` — within ${GUESS_MARK_TOL}: ${GUESS_MARK_XP} XP on its way`:" — not this time";
     return `<div class="vguess"><span class="hint" style="margin:0">🔮 You expected <b>${g}</b>, you gave <b>${r.toFixed(1)}</b>${tail}.</span></div>`;}
-  return `<div class="vguess"><span class="hint" style="margin:0">🔮 You expect <b>${g}</b>${st==="finished"?" — mark it and we'll see":""}.</span>${st==="finished"?"":` <button class="pill" data-vguess="clear" style="font-size:11px;padding:1px 8px">change</button>`}</div>`;
+  return `<div class="vguess"><span class="hint" style="margin:0">🔮 You expect <b>${g}</b>${st==="finished"?" — mark it and we'll see":""}.</span>${st==="finished"?"":` <button class="pill" ${at("clear")} style="font-size:11px;padding:1px 8px">change</button>`}</div>`;
 }
 function guessCheck(){
   if(!quests)return;
   const led=quests.led||{};
+  const one=(x,st,dnf,k)=>{
+    const g=guessOf(x,st);if(g==null)return;
+    if(st!=="finished"||dnf)return;
+    const r=x.rating==null||x.rating===""?null:Number(x.rating);if(r==null||!isFinite(r))return;
+    if(led["gs:"+k]||led["gx:"+k])return;
+    if(guessWaits(x))return;   /* this reading's mark not given yet — see A GUESS BELONGS TO ONE READING */
+    if(Math.abs(r-g)<=GUESS_MARK_TOL)questAward(GUESS_MARK_XP,"Called it: “"+(x.title||"Untitled")+"” — you expected "+g+", gave "+r.toFixed(1),"gs:"+k);
+    else questMark("gx:"+k);};
   for(const b of books){
-    if(!b||!b.id||isColl(b)||collRow(b))continue;
-    const g=guessOf(b);if(g==null)continue;
-    if(statusOf(b)!=="finished"||b.dnf)continue;
-    const r=b.rating==null||b.rating===""?null:Number(b.rating);if(r==null||!isFinite(r))continue;
-    const k=guessKey(b);
-    if(led["gs:"+k]||led["gx:"+k])continue;
-    if(guessWaits(b))continue;   /* this reading's mark not given yet — see A GUESS BELONGS TO ONE READING */
-    if(Math.abs(r-g)<=GUESS_MARK_TOL)questAward(GUESS_MARK_XP,"Called it: “"+(b.title||"Untitled")+"” — you expected "+g+", gave "+r.toFixed(1),"gs:"+k);
-    else questMark("gx:"+k);
+    if(!b||!b.id)continue;
+    /* a collection's stories — see A STORY GUESSES TOO */
+    if(isColl(b)){(b.entries||[]).forEach(en=>{if(en&&en.id&&en.guess)one(en,entStatusOf(b,en),entDnfOf(b,en),guessKey(en,b));});continue;}
+    if(collRow(b))continue;
+    one(b,statusOf(b),b.dnf,guessKey(b));
   }
 }
 /* ---- THE WANTED CARD OF THE WEEK ----
@@ -55567,6 +55589,7 @@ function renderBookView(){
                 +k.map(x=>`<button class="kw chipmenu" style="${kwStyle(x)}" data-cmenu="s|${esc(x)}" title="What this word can do">${esc(x)}</button>`).join(""):"")
               +`</div>`;})()}
           ${vEntReads===en.id?readListHtml(en,en.id,false):""}
+          ${entGuessHtml(b,en)}
           ${vEntStatus===en.id?`<div class="stpick vpick" style="position:static;margin:4px 0;min-width:0;max-width:100%">
             ${STATUSES.map(([k,l])=>`<button data-evst="${en.id}|${k}" class="${!en.dnf&&en.status===k?"on":""}">${k==="finished"?"✓":k==="reading"?"📖":"★"} ${esc(l)}</button>`).join("")}
             <button data-evst="${en.id}|hold" class="${holdOf(en)?"on":""}">⏸ On hold</button>
@@ -56197,6 +56220,17 @@ function renderBookView(){
          opens or closes a reading of this story, the way it does for a book. */
       markEntStatus(bk,en,v);});
     sayIfAutoDated();
+    if(v==="finished")setTimeout(()=>{try{guessCheck();}catch(e){}},900);
+  });
+  /* a story's guess — see A STORY GUESSES TOO; the same three answers a
+     book's buttons give */
+  qa("[data-enguess]",page).forEach(x=>x.onclick=e=>{
+    e.stopPropagation();
+    const i=x.dataset.enguess.lastIndexOf("|"),id=x.dataset.enguess.slice(0,i),v=x.dataset.enguess.slice(i+1);
+    quickEdit(bk=>{const en=findEn(bk,id);if(!en)return false;
+      if(v==="keep"){if(!en.guess)return false;en.guess=Object.assign({},en.guess,{kept:true});return;}
+      en.guess=v==="clear"?null:{v:+v,at:Date.now(),n:doneReads(en).length,was:en.rating==null||en.rating===""?null:Number(en.rating)};});
+    if(v==="keep")setTimeout(()=>{try{guessCheck();}catch(e){}},900);
   });
   qa("[data-enrate]",page).forEach(x=>x.onclick=e=>{
     e.stopPropagation();
@@ -56212,6 +56246,7 @@ function renderBookView(){
        left alone, it stayed stale until the editor was opened or the app
        restarted */
     quickEdit(bk=>{const en=findEn(bk,id);if(en)en.rating=v==="clear"?null:Number(v);if(isColl(bk))syncCollRating(bk);});
+    setTimeout(()=>{try{guessCheck();}catch(e){}},900);
   });
   /* the rating suggestion's Use / ? buttons — the book's own line and the one
      inside each story's rating panel. No chips live on this face; the words
