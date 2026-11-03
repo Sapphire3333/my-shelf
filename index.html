@@ -13665,6 +13665,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-03.6",go:["el:settings:#secBookFiles"],lines:["<b>📖 Your book files, in one place.</b> ⚙ Settings → You → <b>Books to read here</b> lists every file you've given 📖 Read it here: the book (tap to open it), how much room it takes on this device and in the cloud, and <b>Forget</b>, which ↶ undoes. Under it, everything of yours in the cloud against the 1 GB a free Supabase plan holds. Files from deleted books show how long they have left, and a file left in the cloud with no book can be taken down."]},
   {v:"2026-11-03.5",lines:["<b>¶ Broken sentences joined in the reader.</b> Some book files, often ones made from a printed page, start a new paragraph at the end of every line, so a sentence comes out in pieces. The reader now spots a file like that and joins the pieces back into whole paragraphs, leaving chapter headings and broken-off speech alone. Your file isn't changed: ☰ in the reader says how many were joined and can show the file as it is."]},
   {v:"2026-11-03.4",go:["el:insights:#secAtlas"],lines:["<b>🌍 A place opens its books.</b> On the atlas, tap a country or a US state on the map, or any name in the lines under it (Elsewhere included), and a list opens over the map: each book with its cover, where you are with it, and Open. <b>…and N more</b> now shows the rest of the names in place."]},
   {v:"2026-11-03.3",go:["el:insights:#secTimeline"],lines:["<b>🖼 Covers on Insights, stories included.</b> Your reading, drawn and the other rows of covers on Insights now load their own pictures. Before, a cover showed there only if the Library had already loaded it, so stories in a collection wore a drawn stand-in. A tale cut out of a split book also borrows its volume's picture on the timeline, challenge cards, an author's page and the card album, as it already did on the shelf."]},
@@ -25915,14 +25916,15 @@ function loansHtml(){
 }
 /* a change to a shelf book from a button that is not on its page — the
    road setFav takes: an undo step, the write, the cloud, the redraw */
-async function shelfMut(id,mut){
+async function shelfMut(id,mut,extra){
   /* the same fetch as quickEdit's, for the book open on screen */
   if(cur&&cur.id===id&&view==="book"&&heldNewer(id)&&!openDirty())await rdFreshen(id);
   const b=books.find(x=>x.id===id);if(!b)return false;
   const before=JSON.parse(JSON.stringify(b));
   if(mut(b)===false)return false;
   touchBook(b);
-  pushOp({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+  /* extra as quickEdit's: {imgs} lets ↶ put a file back with the book */
+  pushOp(Object.assign({t:"book",id:b.id,before,after:JSON.parse(JSON.stringify(b))},extra||null));
   try{await dbPut("books",b);}catch(e){alert("Couldn't save — storage may be full.");return false;}
   if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
   refreshShelfSub();renderMain();
@@ -30100,6 +30102,95 @@ async function rdForget(){
   rdCache.delete(id);
   if(SYNC.on)enqueue({kind:"imgDel",key:rdKey(id)});
   await quickEdit(bk=>{if(!bk.readFile)return false;delete bk.readFile;return true;},was?{imgs:{[rdKey(id)]:{before:was,after:null}}}:undefined);
+}
+/* ┌─ YOUR BOOK FILES, IN ONE PLACE ─────────────────────────────────────────┐
+   │ A file given to 📖 Read it here is kept on each device (the images      │
+   │ store, __read|<book>) and in the cloud (shelf/<user>/images/__read__    │
+   │ <book>.jpg), so the other device can fetch it. Forget deletes both at   │
+   │ once; a deleted book's file waits with it in Recently deleted and leaves │
+   │ the cloud when the book does (TRASH_DAYS, fileKeysOf). The storage      │
+   │ breakdown listed the files among everything else, by this device only.  │
+   │ ⚙ Settings → You → Books to read here (#bfCard, refreshBookFiles) lists │
+   │ them on their own: the book (Open), the size here and in the cloud,     │
+   │ when it was given, and Forget — undone by ↶ like the book page's. The   │
+   │ cloud is counted by listing the bucket (bfCloudCount, once a visit, and │
+   │ again on ↻): every file of yours there, covers and pictures too, against │
+   │ BF_FREE, the free plan's 1 GB of file storage; and a book file left in  │
+   │ the cloud with no book on the shelf or in the bin gets its own row and  │
+   │ ✕ to take it down.                                                        │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const BF_FREE=1024*1024*1024;
+let bfCloud=null;   /* {total, n, files: Map(bookId → bytes)} | {err} | null, this visit */
+async function bfCloudCount(){
+  if(!SYNC.on||!SYNC.supa||!SYNC.user)return null;
+  const s=SYNC.supa,files=new Map();let total=0,n=0;
+  for(const dir of ["covers","images"]){
+    for(let off=0;;off+=1000){
+      const {data,error}=await s.storage.from("shelf").list(SYNC.user.id+"/"+dir,{limit:1000,offset:off});
+      if(error)throw error;
+      (data||[]).forEach(o=>{const sz=+(o.metadata&&o.metadata.size)||0;total+=sz;n++;
+        if(dir==="images"&&/^__read__/.test(o.name))files.set(o.name.slice(8).replace(/\.jpg$/,""),sz);});
+      if(!data||data.length<1000)break;
+    }
+  }
+  return {total,n,files};
+}
+async function bfRows(){
+  const rows=[],seen=new Set();
+  const size=async id=>{try{const r=await dbGet("images",rdKey(id));return (r&&r.data||"").length;}catch(e){return 0;}};
+  for(const b of books){if(!rdFileOf(b))continue;seen.add(b.id);
+    rows.push({id:b.id,title:b.title||"Untitled",f:b.readFile,here:await size(b.id),state:"live"});}
+  const binned=new Set((await dbAllKeys("trash")).map(String));
+  for(const k of (await dbAllKeys("images")).map(String)){
+    if(k.indexOf("__read|")!==0)continue;const id=k.slice(7);if(seen.has(id))continue;seen.add(id);
+    let t=null;if(binned.has(id))try{t=await dbGet("trash",id);}catch(e){}
+    rows.push({id,title:(t&&t.book&&t.book.title)||"a book that is gone",f:t&&t.book&&t.book.readFile,here:await size(id),state:t?"bin":"gone",at:t&&t.at});}
+  if(bfCloud&&bfCloud.files)bfCloud.files.forEach((sz,id)=>{if(seen.has(id))return;
+    if(binned.has(id))rows.push({id,title:"a book in Recently deleted",here:0,state:"bin"});
+    else rows.push({id,title:"a book no longer on the shelf",here:0,state:"cloudonly"});});
+  return rows;
+}
+async function refreshBookFiles(again){
+  const box=q("#bfCard");if(!box)return;
+  if(again||!bfCloud){try{bfCloud=await bfCloudCount();}catch(e){bfCloud={err:(e&&e.message)||"no answer"};}}
+  if(!q("#bfCard"))return;
+  const rows=await bfRows(),cl=bfCloud&&bfCloud.files?bfCloud.files:null;
+  const here=rows.reduce((a,r)=>a+r.here,0),up=cl?rows.reduce((a,r)=>a+(cl.get(r.id)||0),0):0;
+  const left=r=>Math.max(0,TRASH_DAYS-Math.floor((Date.now()-(r.at||0))/864e5));
+  const line=r=>{const c=cl?cl.get(r.id):undefined;
+    const where=`${r.here?fmtBytes(r.here)+" here":"not on this device"} · ${!cl?"":c!=null?fmtBytes(c)+" in the cloud":"not in the cloud"}`.replace(/ · $/,"");
+    const what=r.state==="bin"?`in Recently deleted${r.at?` — it and its file go for good in ${left(r)} day${left(r)===1?"":"s"}`:""}`
+      :r.state==="gone"?"its book is gone; this device clears it at the next start"
+      :r.state==="cloudonly"?"left in the cloud with no book":`${esc((r.f&&r.f.name)||"")}${r.f&&r.f.words?` · ${r.f.words.toLocaleString()} words`:""}${r.f&&r.f.at?` · given ${esc(printDay(dayKeyOf(new Date(r.f.at))))}`:""}`;
+    return `<div class="snap bfrow"><div style="min-width:0;flex:1"><div class="when" style="font-size:14px">${r.state==="live"?`<button class="linkbtn" data-bfopen="${esc(r.id)}">${esc(r.title)}</button>`:esc(r.title)}</div>
+      <div class="meta">${where}</div><div class="meta">${what}</div></div>
+      ${r.state==="live"?`<button class="btn smallbtn" data-bfx="${esc(r.id)}" title="Delete the file here and in the cloud — your place and the bookmark stay">Forget</button>`
+        :r.state==="cloudonly"?`<button class="btn smallbtn" data-bfcx="${esc(r.id)}" title="Take it out of the cloud">✕</button>`:""}</div>`;};
+  const cloudLine=!SYNC.on?"Sync is off, so nothing is in the cloud."
+    :bfCloud&&bfCloud.err?`The cloud didn't answer (${esc(bfCloud.err)}).`
+    :bfCloud?`Everything of yours in the cloud — covers, pictures and these files — comes to <b>${fmtBytes(bfCloud.total)}</b> of the ${fmtBytes(BF_FREE)} a free Supabase plan holds.`
+    :"Sign in to count the cloud.";
+  box.innerHTML=`${rows.length?`<div class="hrow2" style="gap:8px;align-items:baseline;flex-wrap:wrap"><b>${rows.length} file${rows.length===1?"":"s"}</b><span class="none">${fmtBytes(here)} on this device${cl?` · ${fmtBytes(up)} in the cloud`:""}</span></div>
+      <div style="margin-top:6px">${rows.map(line).join("")}</div>`:`<div class="none">No files yet. 📖 Read it here, on a book's page, takes an EPUB, a web page or a text file of the book.</div>`}
+    <div class="hint" style="margin:8px 0 0">${cloudLine}${SYNC.on?` <button class="btn smallbtn" id="bfAgain">↻ Count again</button>`:""}</div>
+    ${bfCloud&&!bfCloud.err&&bfCloud.total>BF_FREE*0.8?`<div class="hint" style="color:var(--amber-ink);margin:6px 0 0">Past four-fifths of the free plan — forgetting files you've finished frees the most room.</div>`:""}
+    <div class="hint" style="margin:6px 0 0">Each file is kept on every device and once in the cloud. Forget takes it off both at once, and ↶ brings it back. A book you delete keeps its file in Recently deleted for ${TRASH_DAYS} days, then both go.</div>`;
+  qa("[data-bfopen]",box).forEach(b=>b.onclick=()=>openBook(b.dataset.bfopen,false));
+  qa("[data-bfx]",box).forEach(b=>b.onclick=async()=>{if(await rdForgetId(b.dataset.bfx))refreshBookFiles(true);});
+  qa("[data-bfcx]",box).forEach(b=>b.onclick=()=>{if(!confirm("Take this file out of the cloud? No book on your shelf or in Recently deleted uses it."))return;
+    enqueue({kind:"imgDel",key:rdKey(b.dataset.bfcx)});flushQueue();if(bfCloud&&bfCloud.files)bfCloud.files.delete(b.dataset.bfcx);refreshBookFiles();});
+  {const a=q("#bfAgain",box);if(a)a.onclick=()=>{a.disabled=true;a.textContent="Counting…";refreshBookFiles(true);};}
+}
+/* Forget, for any book — the same as the book page's, with ↶ (shelfMut's imgs) */
+async function rdForgetId(id){
+  const b=books.find(x=>x.id===id);if(!b||!rdFileOf(b))return false;
+  if(cur&&cur.id===id&&view==="book"){await rdForget();return true;}
+  if(!confirm(`Forget the file of “${b.title||"Untitled"}”? It is deleted on this device and in the cloud. Your place and the bookmark stay, and ↶ brings it back.`))return false;
+  let was=null;try{const r=await dbGet("images",rdKey(id));was=r&&r.data||null;}catch(e){}
+  try{await dbDel("images",rdKey(id));}catch(e){}
+  rdCache.delete(id);
+  if(SYNC.on)enqueue({kind:"imgDel",key:rdKey(id)});
+  return await shelfMut(id,bk=>{if(!bk.readFile)return false;delete bk.readFile;return true;},was?{imgs:{[rdKey(id)]:{before:was,after:null}}}:undefined);
 }
 function readerLineHtml(b){
   if(!b||b._story||(isColl(b)&&!b.readFile))return "";
@@ -46770,6 +46861,10 @@ function renderSettings(){
       <div class="hcard" id="stoCard"><span class="none">Checking…</span></div>
       <div class="hcard" id="stoBreak" hidden style="margin-top:9px"></div>
     </div>
+    <div class="sec" data-stab="you" id="secBookFiles">
+      <div class="heading"><h2 class="serif">Books to read here</h2></div>
+      <div class="hcard" id="bfCard"><span class="none">Checking…</span></div>
+    </div>
     <div class="sec" data-stab="you">
       <div class="heading"><h2 class="serif">Export &amp; import</h2></div>
       <div class="hcard">
@@ -50788,6 +50883,8 @@ async function refreshStorage(){
     q("#stoCard").innerHTML=`<div class="none">${counts}</div>${breakBtn}<div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}`;
   }
   wireBreakdown();
+  /* the files' own list, on ⚙ Settings — see YOUR BOOK FILES, IN ONE PLACE */
+  try{refreshBookFiles();}catch(e){}
   const hb=q("#stoHuntBtn");
   if(hb)hb.onclick=async()=>{
     const out=q("#stoHunt");
