@@ -13665,6 +13665,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-03.5",lines:["<b>¶ Broken sentences joined in the reader.</b> Some book files, often ones made from a printed page, start a new paragraph at the end of every line, so a sentence comes out in pieces. The reader now spots a file like that and joins the pieces back into whole paragraphs, leaving chapter headings and broken-off speech alone. Your file isn't changed: ☰ in the reader says how many were joined and can show the file as it is."]},
   {v:"2026-11-03.4",go:["el:insights:#secAtlas"],lines:["<b>🌍 A place opens its books.</b> On the atlas, tap a country or a US state on the map, or any name in the lines under it (Elsewhere included), and a list opens over the map: each book with its cover, where you are with it, and Open. <b>…and N more</b> now shows the rest of the names in place."]},
   {v:"2026-11-03.3",go:["el:insights:#secTimeline"],lines:["<b>🖼 Covers on Insights, stories included.</b> Your reading, drawn and the other rows of covers on Insights now load their own pictures. Before, a cover showed there only if the Library had already loaded it, so stories in a collection wore a drawn stand-in. A tale cut out of a split book also borrows its volume's picture on the timeline, challenge cards, an author's page and the card album, as it already did on the shelf."]},
   {v:"2026-11-03.2",go:["tab:library"],lines:["<b>🔮 Stories guess too.</b> A story in a collection, or a tale of a split book, that you mark 📖 Reading now asks <b>What will you give it?</b> on its own row of the collection's page, the way a book does on its page. Finish it, give it its mark, and within 1 of your guess pays 20 XP, counted toward the 🔮 medal like a book's."]},
@@ -30040,6 +30041,46 @@ async function rdImport(file){
   const mut=bk=>{bk.readFile={name,words,at};delete bk.readPos;return true;};
   if(view==="book"&&cur&&cur.id===id)await quickEdit(mut,{imgs:{[key]:{before:was,after:data}}});else await shelfMut(id,mut);
 }
+/* ┌─ LINES BROKEN WHERE THE PAGE ENDED ─────────────────────────────────────┐
+   │ A file made from a printed page — a PDF turned into an EPUB, a scan —   │
+   │ often carries a paragraph for every line or every page, so "his" and    │
+   │ "desk, leaning over" stood as two paragraphs and a name was cut from    │
+   │ its surname. rdMend joins a paragraph that stops mid-sentence (its last │
+   │ mark, quotes and brackets aside, is not . ! ? … or :) onto the next,    │
+   │ across the empty paragraphs between them and across the files an EPUB  │
+   │ was cut into (.rdch), but never into or out of a heading, a quote block │
+   │ or a list. It only acts on a file where at least RD_MEND_SHARE of the    │
+   │ paragraphs stop like that — a story's own fragments ("Silence." aside,  │
+   │ the odd "And then—") stay a handful. The stored copy is never changed;  │
+   │ ☰ in the reader turns it back to the file as given, per book on this    │
+   │ device (settings.rdJoin[id] false).                                      │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const RD_MEND_SHARE=0.12,RD_MEND_MIN=20;
+const rdHeadish=t=>t.length<70&&/^(chapter|part|book|prologue|epilogue|interlude|contents)\b|^[ivxlcdm]+\.?$|^\d+\.?$/i.test(t);
+const rdOpenEnd=t=>{if(!t||rdHeadish(t))return false;
+  const s=t.replace(/[\s"'”’»)\]*_]+$/,"");if(!s)return false;
+  /* a dash before a closing quote is a line broken off in speech, not a cut */
+  if(/[—–-]$/.test(s)&&s.length<t.length)return false;
+  return !/[.!?…:]$/.test(s);};
+function rdMend(html){
+  const box=document.createElement("div");box.innerHTML=html;
+  const ps=[...box.querySelectorAll("p")],full=ps.filter(p=>p.textContent.trim());
+  if(full.length<RD_MEND_MIN)return {html,n:0};
+  const open=full.filter(p=>rdOpenEnd(p.textContent.trim())).length;
+  if(open/full.length<RD_MEND_SHARE)return {html,n:0};
+  const sect=el=>el===box||(el&&el.classList&&el.classList.contains("rdch"));
+  let prev=null,gap=[],n=0;
+  box.querySelectorAll("p,h1,h2,h3,h4,h5,h6,hr,img,blockquote,ul,ol,pre,table,figure").forEach(el=>{
+    if(el.tagName!=="P"){if(!el.closest("p"))prev=null;gap=[];return;}
+    const t=el.textContent.trim();
+    if(!t&&!el.querySelector("img")){if(prev)gap.push(el);return;}
+    if(prev&&(prev.parentElement===el.parentElement||(sect(prev.parentElement)&&sect(el.parentElement)))&&rdOpenEnd(prev.textContent.trim())&&!rdHeadish(t)){
+      prev.appendChild(document.createTextNode(" "));while(el.firstChild)prev.appendChild(el.firstChild);
+      el.remove();gap.forEach(g=>g.remove());gap=[];n++;return;}
+    prev=el;gap=[];});
+  return {html:box.innerHTML,n};
+}
+const rdJoinOn=id=>!(settings&&settings.rdJoin&&settings.rdJoin[id]===false);
 async function rdLoad(id){
   if(rdCache.has(id))return rdCache.get(id);
   let d=null;try{d=await loadImgData(rdKey(id));}catch(e){}
@@ -30307,7 +30348,9 @@ function closeReader(quiet,fromBack){
 }
 async function openReader(id){
   const b=books.find(x=>x.id===id);if(!b)return;
-  const html=await rdLoad(id);
+  const raw=await rdLoad(id);
+  /* broken lines joined — see LINES BROKEN WHERE THE PAGE ENDED */
+  const mend=raw?rdMend(raw):{html:"",n:0},html=mend.n&&rdJoinOn(id)?mend.html:raw;
   if(!html){alert(rdFileOf(b)?"The file hasn't reached this device yet — it comes through the cloud from the device it was given on, when sync is on and you are online.":"There is no file to read yet.");return;}
   closeReader(true);
   const mode=(settings.rdMode&&settings.rdMode[id])==="pages"?"pages":"scroll";
@@ -30345,7 +30388,12 @@ async function openReader(id){
     if(view==="book"&&cur&&cur.id===id)await quickEdit(fn);else await shelfMut(id,fn);
     const bb=books.find(x=>x.id===id);if(bb&&statusOf(bb)==="reading"){st.remove();const n=q(".rdfoot .rdmark",el);if(n)n.textContent="the bookmark follows you";rdSave(true);}};}
   q("#rdToc",el).onclick=e=>{e.stopPropagation();const box=q("#rdTocBox",el);if(!box.hidden){box.hidden=true;return;}
-    const hs=rdHeads();box.innerHTML=hs.length?hs.map((h,i)=>`<button class="rdtocrow" data-rdh="${i}">${esc(h.textContent.trim().slice(0,80))}</button>`).join(""):`<div class="hint" style="margin:6px">No chapter heads in this file.</div>`;
+    const hs=rdHeads();
+    const join=mend.n?`<button class="rdtocrow rdjoin" id="rdJoin" title="This file breaks its sentences where the printed page did">${rdJoinOn(id)?`¶ ${mend.n.toLocaleString()} broken line${mend.n===1?"":"s"} joined · <u>show the file as it is</u>`:`¶ Shown as in the file · <u>join the broken lines</u>`}</button>`:"";
+    box.innerHTML=join+(hs.length?hs.map((h,i)=>`<button class="rdtocrow" data-rdh="${i}">${esc(h.textContent.trim().slice(0,80))}</button>`).join(""):`<div class="hint" style="margin:6px">No chapter heads in this file.</div>`);
+    {const jb=q("#rdJoin",box);if(jb)jb.onclick=()=>{box.hidden=true;s.f=rdPosNow();
+      settings.rdJoin=Object.assign({},settings.rdJoin||{},{[id]:!rdJoinOn(id)});if(settings.rdJoin[id])delete settings.rdJoin[id];saveSettings();
+      q("#rdText",el).innerHTML=rdJoinOn(id)?mend.html:raw;rdLayout();};}
     box.hidden=false;qa("[data-rdh]",box).forEach(bt=>bt.onclick=()=>{const h=hs[+bt.dataset.rdh];box.hidden=true;if(!h)return;
       if(s.mode==="pages")rdGo(Math.floor(h.offsetLeft/s.W));else{v.scrollTop=Math.max(0,h.offsetTop-12);rdShow();}});};
   v.addEventListener("scroll",()=>{act();if(s.mode==="scroll"){clearTimeout(s.st);s.st=setTimeout(rdShow,120);}},{passive:true});
