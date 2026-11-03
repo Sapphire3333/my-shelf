@@ -12118,6 +12118,11 @@ async function initSync(){
     {const binned=new Set((await dbAllKeys("trash")).map(k=>String(k)));
      for(const k of await dbAllKeys("images")){const s=String(k),id=s.indexOf("__read|")===0?s.slice(7):s.indexOf("__map|")===0?s.slice(6):null;
        if(id&&!live.has(id)&&!binned.has(id))await dbDel("images",k);}}
+    /* …and a Drive file's copy on this device lasts while its book is being
+       read — see BOOK FILES ON GOOGLE DRIVE */
+    for(const k of await dbAllKeys("images")){const s=String(k);if(s.indexOf("__drv|")!==0)continue;
+      const b=books.find(x=>x.id===s.slice(6));
+      if(!b||!b.driveFile||statusOf(b)!=="reading"||b.dnf)await dbDel("images",k);}
   }catch(e){}
   /* A book named in the address is opened HERE, as soon as the shelf is in
      memory — not wherever the first paint happens to come from, because that is
@@ -13702,6 +13707,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-03.9",go:["el:settings:#secDrive"],lines:["<b>☁ Book files on your Google Drive.</b> In ⚙ Settings → You → <b>Google Drive</b>, find your folder by name and choose it; Google asks you to sign in and allow it once, read-only. Then a book's page has <b>☁ From Drive</b> beside 📖 Read it here, and 📁 Fics from AO3 files has <b>☁ My Drive folder</b>, which reads every AO3 file in it and lets each fic remember its file. The reader opens the file from your Drive each time and keeps only your place. While a book is 📖 Reading now, a copy stays on this device so it opens without the internet; it goes once you finish."]},
   {v:"2026-11-03.8",go:["el:care:#impFicDir"],lines:["<b>📁 Fics from AO3 files.</b> In 🧰 Shelf care, under the import card: give it a folder of AO3 downloads (EPUB or HTML), or choose the files, and each one is opened here, read for its title, author, AO3 link, rating, warnings, fandoms, relationships, characters, tags, series, length and summary, and let go. Nothing is uploaded and no file is kept, about a kilobyte of details a fic. They come into the import list as ✓ Read with no date; a fic already on your shelf is found by its AO3 number, even under another title, and <b>Fill it in</b> touches only its empty fields."]},
   {v:"2026-11-03.7",go:["tab:library"],lines:["<b>✍️ Fics on a shelf of their own.</b> The Library opens on <b>📚 Books</b>, with <b>✍️ Fics</b> and <b>🤖 AI stories</b> as tabs beside it, each with its own counts and its own grouping; fics start grouped by fandom, and relationship is a grouping too. Search still finds every kind, each under its own heading, books first. Today's year and the dusty pick count books, and so does Insights, which has a <b>✍️ Your fics</b> card in You as a reader. ✨ Something to read and Ask your shelf have boxes for Books, Fics and AI stories, with Books ticked to start; tick Fics for fics from AO3."]},
   {v:"2026-11-03.6",go:["el:settings:#secBookFiles"],lines:["<b>📖 Your book files, in one place.</b> ⚙ Settings → You → <b>Books to read here</b> lists every file you've given 📖 Read it here: the book (tap to open it), how much room it takes on this device and in the cloud, and <b>Forget</b>, which ↶ undoes. Under it, everything of yours in the cloud against the 1 GB a free Supabase plan holds. Files from deleted books show how long they have left, and a file left in the cloud with no book can be taken down."]},
@@ -30175,7 +30181,8 @@ const rdJoinOn=id=>!(settings&&settings.rdJoin&&settings.rdJoin[id]===false);
 async function rdLoad(id){
   if(rdCache.has(id))return rdCache.get(id);
   let d=null;try{d=await loadImgData(rdKey(id));}catch(e){}
-  if(!d)return null;
+  /* none kept here: one on Drive, fetched — see BOOK FILES ON GOOGLE DRIVE */
+  if(!d){const b=books.find(x=>x.id===id);return b&&b.driveFile&&driveReady()?await drvHtml(b):null;}
   let html="";try{html=rdUnB64(String(d).split(",")[1]||"");}catch(e){return null;}
   /* cleaned when given, but a stored file can also arrive from a backup file
      or the cloud — the two inputs every other rich text is scrubbed against
@@ -30241,6 +30248,7 @@ async function bfRows(){
 }
 async function refreshBookFiles(again){
   const box=q("#bfCard");if(!box)return;
+  drvCardWire(document);   /* the Drive card stands beside this one on Settings */
   if(again||!bfCloud){try{bfCloud=await bfCloudCount();}catch(e){bfCloud={err:(e&&e.message)||"no answer"};}}
   if(!q("#bfCard"))return;
   const rows=await bfRows(),cl=bfCloud&&bfCloud.files?bfCloud.files:null;
@@ -30270,6 +30278,153 @@ async function refreshBookFiles(again){
     enqueue({kind:"imgDel",key:rdKey(b.dataset.bfcx)});flushQueue();if(bfCloud&&bfCloud.files)bfCloud.files.delete(b.dataset.bfcx);refreshBookFiles();});
   {const a=q("#bfAgain",box);if(a)a.onclick=()=>{a.disabled=true;a.textContent="Counting…";refreshBookFiles(true);};}
 }
+/* ┌─ BOOK FILES ON GOOGLE DRIVE ────────────────────────────────────────────┐
+   │ A file kept in the app is kept twice — on each device and in the cloud  │
+   │ bucket. One on your own Google Drive is kept nowhere here: the book      │
+   │ carries b.driveFile {id, name, size} and the reader fetches it (drvHtml) │
+   │ each time it opens, so only your place and the bookmark live in the     │
+   │ app. Sign-in is Google's own (GIS token client, loaded on demand from    │
+   │ accounts.google.com), read-only (DRIVE_SCOPE), the token held in memory  │
+   │ for its hour and never stored or synced. One folder is yours to choose   │
+   │ (settings.drive.folder, shared between devices) and is walked with its   │
+   │ subfolders (drvFolderFiles): the fic import reads AO3 downloads straight │
+   │ from it, each fic remembering its file, and ☁ From Drive on a book's    │
+   │ page attaches one. While a book is 📖 Reading now its cleaned text is   │
+   │ also kept on this device (__drv|<book>, never uploaded), so it opens    │
+   │ offline; the start-up sweep drops it once the book is no longer being  │
+   │ read. CFG.googleClientId empty, and none of this is drawn.              │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const DRIVE_SCOPE="https://www.googleapis.com/auth/drive.readonly",DRV_API="https://www.googleapis.com/drive/v3/";
+const DRV_TYPES=/\.(epub|x?html?|txt)$/i;
+const driveReady=()=>!!(CFG.googleClientId&&/\.apps\.googleusercontent\.com$/.test(CFG.googleClientId));
+const drvKey=id=>"__drv|"+id;
+let drvTok="",drvExp=0,drvGisP=null,drvFilesMemo=null;
+function drvLoadGis(){
+  if(window.google&&google.accounts&&google.accounts.oauth2)return Promise.resolve();
+  if(!drvGisP)drvGisP=new Promise((res,rej)=>{const s=document.createElement("script");s.src="https://accounts.google.com/gsi/client";s.async=true;
+    s.onload=()=>res();s.onerror=()=>{drvGisP=null;rej(new Error("Google's sign-in couldn't be reached — are you online?"));};document.head.appendChild(s);});
+  return drvGisP;
+}
+/* the token for this hour. Asked from a press, the Google window opens in the
+   same moment so no blocker stops it — the script is fetched ahead
+   (drvLoadGis, whenever a Drive button is drawn) for that reason */
+async function drvToken(){
+  if(drvTok&&Date.now()<drvExp-60000)return drvTok;
+  if(!(window.google&&google.accounts&&google.accounts.oauth2))await drvLoadGis();
+  return new Promise((res,rej)=>{
+    const c=google.accounts.oauth2.initTokenClient({client_id:CFG.googleClientId,scope:DRIVE_SCOPE,
+      callback:r=>{if(!r||r.error){rej(new Error((r&&(r.error_description||r.error))||"Google said no"));return;}
+        drvTok=r.access_token;drvExp=Date.now()+(+r.expires_in||3600)*1000;
+        if(!settings.driveAsked){settings.driveAsked=true;saveSettings();}res(drvTok);},
+      error_callback:e=>rej(new Error(e&&e.type==="popup_closed"?"the Google window was closed":e&&e.type==="popup_failed_to_open"?"the browser blocked Google's window — allow pop-ups for this page":"Google's sign-in failed"))});
+    c.requestAccessToken({prompt:settings.driveAsked?"":"consent"});});
+}
+async function drvGet(path,raw){
+  for(let tries=0;tries<2;tries++){
+    const r=await fetch(DRV_API+path,{headers:{Authorization:"Bearer "+await drvToken()}});
+    if(r.status===401){drvTok="";continue;}
+    if(!r.ok){let m="";try{m=(await r.json()).error.message;}catch(e){}throw new Error(m||("Drive answered "+r.status));}
+    return raw?r.blob():r.json();
+  }
+  throw new Error("Google didn't accept the sign-in");
+}
+async function drvList(qy,fields){
+  const out=[];let tok="";
+  do{const j=await drvGet(`files?q=${encodeURIComponent(qy)}&pageSize=1000&fields=${encodeURIComponent("nextPageToken,files("+fields+")")}${tok?"&pageToken="+encodeURIComponent(tok):""}&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+    out.push(...(j.files||[]));tok=j.nextPageToken||"";}while(tok);
+  return out;
+}
+const drvQ=s=>String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
+/* every readable file in the chosen folder and the folders inside it, once a visit */
+async function drvFolderFiles(again){
+  const f=settings.drive&&settings.drive.folder;if(!f)throw new Error("choose your Drive folder first, in ⚙ Settings → You → Google Drive");
+  if(drvFilesMemo&&drvFilesMemo.id===f.id&&!again)return drvFilesMemo.files;
+  const files=[],todo=[f.id],seen=new Set();
+  while(todo.length){const id=todo.shift();if(seen.has(id))continue;seen.add(id);
+    for(const x of await drvList(`'${drvQ(id)}' in parents and trashed=false`,"id,name,mimeType,size")){
+      if(x.mimeType==="application/vnd.google-apps.folder")todo.push(x.id);
+      else if(DRV_TYPES.test(x.name))files.push({id:x.id,name:x.name,size:+x.size||0});}}
+  drvFilesMemo={id:f.id,files};return files;
+}
+/* a book's Drive file as the reader's clean HTML — the copy on this device
+   while it is being read, otherwise fetched */
+async function drvHtml(b){
+  const k=drvKey(b.id),df=b.driveFile;
+  try{const r=await dbGet("images",k);if(r&&r.data&&r.v===df.id){const h=cleanHtml(rdUnB64(String(r.data).split(",")[1]||""));rdCache.set(b.id,h);return h;}}catch(e){}
+  const blob=await drvGet(`files/${encodeURIComponent(df.id)}?alt=media&supportsAllDrives=true`,true);
+  const head=new Uint8Array(await blob.slice(0,4).arrayBuffer());
+  let html;
+  if(/\.epub$/i.test(df.name||"")||(head[0]===0x50&&head[1]===0x4b))html=await rdFromEpub(await blob.arrayBuffer());
+  else{const text=await blob.text();html=(/\.x?html?$/i.test(df.name||"")||/<\/(p|div|body|html)>/i.test(text.slice(0,30000)))?rdFromHtml(text):rdFromText(text);}
+  html=cleanHtml(html);rdCache.set(b.id,html);
+  if(statusOf(b)==="reading"&&!b.dnf)try{await dbPut("images",{key:k,data:"data:text/html;base64,"+rdB64(html),v:df.id});}catch(e){}
+  return html;
+}
+/* ☁ From Drive on a book's page: the folder's files, the likeliest first */
+async function drvPickFor(id){
+  const b=books.find(x=>x.id===id);if(!b)return;
+  const old=q("#drvPick");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="drvPick";d.className="ratepanel";
+  d.innerHTML=`<div class="hrow2" style="margin-bottom:8px"><b style="font-size:14px">☁ A file from your Drive</b><button class="btn" id="dpX" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+    <input class="field" id="dpQ" placeholder="Part of the file's name" value="${esc(b.title||"")}" style="width:100%;box-sizing:border-box">
+    <div id="dpList" style="max-height:55vh;overflow:auto;margin-top:8px"><div class="hint">Looking in ${esc((settings.drive&&settings.drive.folder&&settings.drive.folder.name)||"your folder")}…</div></div>`;
+  document.body.appendChild(d);const close=dismissable(d);d.__close=close;q("#dpX",d).onclick=()=>close();
+  let files=[];
+  const words=s=>softFold(String(s||"")).split(/[^a-z0-9]+/).filter(w=>w.length>1);
+  const paint=()=>{const qw=words(q("#dpQ",d).value),box=q("#dpList",d);
+    const score=f=>{const n=words(f.name.replace(/\.[^.]+$/,"").replace(/_/g," "));return qw.filter(w=>n.includes(w)).length;};
+    const hits=files.map(f=>({f,s:score(f)})).filter(x=>!qw.length||x.s>0).sort((a,c)=>c.s-a.s||a.f.name.localeCompare(c.f.name)).slice(0,60);
+    box.innerHTML=hits.map(({f})=>`<div class="snap" style="padding:6px 10px"><div style="min-width:0;flex:1;overflow-wrap:anywhere;font-size:14px">${esc(f.name)}<div class="meta">${fmtBytes(f.size)}</div></div><button class="btn smallbtn" data-dpuse="${esc(f.id)}">Use it</button></div>`).join("")
+      ||`<div class="hint">Nothing in the folder by that name${files.length?` — ${files.length.toLocaleString()} files in it`:""}.</div>`;
+    qa("[data-dpuse]",box).forEach(bt=>bt.onclick=async()=>{const f=files.find(x=>x.id===bt.dataset.dpuse);if(!f)return;close();
+      const mut=bk=>{bk.driveFile={id:f.id,name:f.name,size:f.size};delete bk.readPos;return true;};
+      if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);});};
+  q("#dpQ",d).oninput=paint;
+  try{files=await drvFolderFiles();paint();}
+  catch(e){q("#dpList",d).innerHTML=`<div class="hint">Drive couldn't be read — ${esc(e.message)}.</div>`;}
+}
+/* ⚙ Settings → You → Google Drive */
+function drvCardHtml(){
+  if(!driveReady())return "";
+  drvLoadGis().catch(()=>{});
+  const f=settings.drive&&settings.drive.folder;
+  return `<div class="sec" data-stab="you" id="secDrive"><div class="heading"><h2 class="serif">Google Drive</h2></div><div class="hcard">
+    <div style="font-size:14px">${f?`Your folder: <b>${esc(f.name)}</b>`:"No folder chosen yet."}</div>
+    <div class="hrow2" style="gap:6px;margin-top:8px;flex-wrap:wrap"><input class="field" id="drvFq" placeholder="The folder's name, or part of it" style="flex:1;min-width:180px"><button class="btn" id="drvFgo">${f?"Choose another":"Find the folder"}</button></div>
+    <div id="drvFlist" style="margin-top:6px"></div>
+    <div class="hint" style="margin:8px 0 0">Keep your book and fic files in one Drive folder (folders inside it are fine). The reader opens them from there and keeps only your place; 📁 Fics from AO3 files can read the whole folder. Google asks you to sign in and allow it the first time, read-only: the app can open your files, never change or delete them.${drvTok&&Date.now()<drvExp?" Signed in for this visit.":""}</div></div></div>`;
+}
+function drvCardWire(m){
+  const go=q("#drvFgo",m);if(!go)return;
+  go.onclick=async()=>{const qv=q("#drvFq",m).value.trim(),box=q("#drvFlist",m);
+    box.innerHTML='<div class="hint">Looking…</div>';
+    try{const fs=await drvList(`mimeType='application/vnd.google-apps.folder' and trashed=false${qv?` and name contains '${drvQ(qv)}'`:""}`,"id,name");
+      box.innerHTML=fs.slice(0,40).map(x=>`<button class="pill" data-drvf="${esc(x.id)}" data-drvn="${esc(x.name)}">📁 ${esc(x.name)}</button>`).join(" ")||'<div class="hint">No folder by that name.</div>';
+      qa("[data-drvf]",box).forEach(b=>b.onclick=()=>{settings.drive=Object.assign({},settings.drive||{},{folder:{id:b.dataset.drvf,name:b.dataset.drvn}});drvFilesMemo=null;saveSettings();
+        const sec=q("#secDrive",m);if(sec){sec.outerHTML=drvCardHtml();drvCardWire(m);}});}
+    catch(e){box.innerHTML=`<div class="hint">Drive couldn't be read — ${esc(e.message)}.</div>`;}};
+}
+/* the fic import, from the Drive folder — see A FOLDER OF FICS, READ AND LET GO */
+async function ficsFromDrive(){
+  const say=q("#impFicSay");
+  try{
+    if(say)say.textContent="Asking your Drive for the folder's files…";
+    const files=(await drvFolderFiles(true)).filter(f=>/\.(epub|x?html?)$/i.test(f.name));
+    const rows=[];let not=0,bad=0,done=0;const t0=Date.now();
+    const one=async f=>{try{const blob=await drvGet(`files/${encodeURIComponent(f.id)}?alt=media&supportsAllDrives=true`,true);
+        const r=await ficFromFile(new File([blob],f.name,{type:blob.type}));
+        if(r){const row=ficFileRow(r);row.driveFile={id:f.id,name:f.name,size:f.size};rows.push(row);}else not++;}
+      catch(e){bad++;}
+      done++;if(say&&(done%10===0||done===files.length))say.textContent=`Reading ${done.toLocaleString()} of ${files.length.toLocaleString()} from your Drive…`;};
+    /* four at a time — enough to keep the line busy, few enough not to be refused */
+    for(let i=0;i<files.length;i+=4)await Promise.all(files.slice(i,i+4).map(one));
+    const res=rows.length?stageImportRows(rows,"AO3 files on Drive"):null;
+    if(rows.length)refreshImport();
+    if(say)say.textContent=`${files.length.toLocaleString()} file${files.length===1?"":"s"} read from your Drive in ${Math.max(1,Math.round((Date.now()-t0)/1000))} s: `
+      +(res?`${res.fresh.toLocaleString()} new on the list below${res.updated?`, ${res.updated.toLocaleString()} already on it`:""}`:"no fics found")
+      +(not?` · ${not} not an AO3 fic`:"")+(bad?` · ${bad} couldn't be opened`:"")+". Each fic remembers its file, so 📖 Read it here opens it from Drive.";
+  }catch(e){if(say)say.textContent="Drive couldn't be read — "+e.message+".";}
+}
 /* Forget, for any book — the same as the book page's, with ↶ (shelfMut's imgs) */
 async function rdForgetId(id){
   const b=books.find(x=>x.id===id);if(!b||!rdFileOf(b))return false;
@@ -30282,12 +30437,15 @@ async function rdForgetId(id){
   return await shelfMut(id,bk=>{if(!bk.readFile)return false;delete bk.readFile;return true;},was?{imgs:{[rdKey(id)]:{before:was,after:null}}}:undefined);
 }
 function readerLineHtml(b){
-  if(!b||b._story||(isColl(b)&&!b.readFile))return "";
-  const f=rdFileOf(b),pick=`<input type="file" id="rdFile" accept=".epub,.html,.htm,.xhtml,.txt,application/epub+zip,text/html,text/plain" hidden>`;
+  if(!b||b._story||(isColl(b)&&!b.readFile&&!b.driveFile))return "";
+  /* a file kept here first, else one on Drive — see BOOK FILES ON GOOGLE DRIVE */
+  const loc=rdFileOf(b),f=loc||(b.driveFile?{name:b.driveFile.name}:null),pick=`<input type="file" id="rdFile" accept=".epub,.html,.htm,.xhtml,.txt,application/epub+zip,text/html,text/plain" hidden>`;
+  const dr=driveReady()?`<button class="btn smallbtn" id="rdDrive" title="A file from your Google Drive folder — opened from there each time, nothing of it kept here">☁ From Drive</button>`:"";
+  if(dr)drvLoadGis().catch(()=>{});
   if(f){const pct=b.readPos?Math.round((+b.readPos.f||0)*100):0;
-    return `<div class="vloan"><button class="btn smallbtn pri" id="rdOpen" title="Read it here, where you left off">📖 Read it here</button><span class="hint" style="margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${esc(f.name)}${pct?` · ${pct}%`:""}</span><button class="btn smallbtn" id="rdAdd" title="Read from another file instead">⤓ Another file</button><button class="btn smallbtn" id="rdForget" title="Forget the file — your place and the bookmark stay">✕</button>${pick}</div>`;}
+    return `<div class="vloan"><button class="btn smallbtn pri" id="rdOpen" title="Read it here, where you left off">📖 Read it here</button><span class="hint" style="margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px">${loc?"":"☁ "}${esc(f.name)}${pct?` · ${pct}%`:""}</span><button class="btn smallbtn" id="rdAdd" title="Read from another file instead">⤓ Another file</button>${dr}<button class="btn smallbtn" id="${loc?"rdForget":"rdDriveX"}" title="${loc?"Forget the file — your place and the bookmark stay":"Unlink the Drive file — it stays in your Drive; your place stays here"}">✕</button>${pick}</div>`;}
   if(!isFic(b)&&statusOf(b)!=="reading")return "";
-  return `<div class="vloan"><button class="btn smallbtn" id="rdAdd" title="An EPUB, HTML or text file of it — a DRM-free ebook, an AO3 download, a saved page — read here, with the bookmark following you">📖 Read it here — a file…</button>${pick}</div>`;
+  return `<div class="vloan"><button class="btn smallbtn" id="rdAdd" title="An EPUB, HTML or text file of it — a DRM-free ebook, an AO3 download, a saved page — read here, with the bookmark following you">📖 Read it here — a file…</button>${dr}${pick}</div>`;
 }
 const rdView=()=>rdState&&q("#rdView",rdState.el);
 function rdPosNow(){
@@ -30528,7 +30686,8 @@ function closeReader(quiet,fromBack){
 }
 async function openReader(id){
   const b=books.find(x=>x.id===id);if(!b)return;
-  const raw=await rdLoad(id);
+  let raw=null;
+  try{raw=await rdLoad(id);}catch(e){alert("The file couldn't be opened from Google Drive — "+((e&&e.message)||"no answer")+".");return;}
   /* broken lines joined — see LINES BROKEN WHERE THE PAGE ENDED */
   const mend=raw?rdMend(raw):{html:"",n:0},html=mend.n&&rdJoinOn(id)?mend.html:raw;
   if(!html){alert(rdFileOf(b)?"The file hasn't reached this device yet — it comes through the cloud from the device it was given on, when sync is on and you are online.":"There is no file to read yet.");return;}
@@ -46954,6 +47113,7 @@ function renderSettings(){
       <div class="heading"><h2 class="serif">Books to read here</h2></div>
       <div class="hcard" id="bfCard"><span class="none">Checking…</span></div>
     </div>
+    ${drvCardHtml()}
     <div class="sec" data-stab="you">
       <div class="heading"><h2 class="serif">Export &amp; import</h2></div>
       <div class="hcard">
@@ -47775,7 +47935,7 @@ async function renderHub(part){
           <input type="file" id="impFicDirIn" webkitdirectory hidden><input type="file" id="impFicFilesIn" accept=".epub,.html,.htm,application/epub+zip,text/html" multiple hidden>`:""}
           <button class="btn" id="impClear" hidden>Clear the list</button></div>
         ${ficsOn()?`<div id="impFicBox" hidden style="margin:9px 0 0"><div class="hrow2" style="gap:6px;flex-wrap:wrap">
-          <button class="btn pri" id="impFicPickDir">📁 A whole folder</button><button class="btn" id="impFicPickFiles">📄 Choose files</button><button class="btn" id="impFicX">Cancel</button></div>
+          <button class="btn pri" id="impFicPickDir">📁 A whole folder</button><button class="btn" id="impFicPickFiles">📄 Choose files</button>${driveReady()?`<button class="btn" id="impFicDrive" title="Every AO3 file in your Google Drive folder (⚙ Settings → You → Google Drive); each fic remembers its file there">☁ My Drive folder</button>`:""}<button class="btn" id="impFicX">Cancel</button></div>
           <div class="hint" id="impFicSay" style="margin:6px 0 0">Each file is opened here, in the browser, and its first pages read for the title, author, AO3 link, rating, warnings, fandoms, relationships, characters, tags, series, length and summary. The file itself is let go: nothing is uploaded and nothing of it is kept but those details. Fics come in as ✓ Read with no date, into the list below, where ones already on your shelf can be filled in.</div></div>`:""}
         ${claudeReady()?`<div id="impPasteBox" hidden style="margin:9px 0 0">
           <textarea class="field" id="impPasteText" rows="6" style="width:100%;box-sizing:border-box;resize:vertical" placeholder="Paste anything with books in it — a list, an email, a message of recommendations, a page of AO3…"></textarea>
@@ -47977,6 +48137,7 @@ async function renderHub(part){
     fb.onclick=()=>{box.hidden=!box.hidden;};
     q("#impFicX").onclick=()=>{box.hidden=true;};
     q("#impFicPickDir").onclick=()=>dIn.click();q("#impFicPickFiles").onclick=()=>fIn.click();
+    {const dr=q("#impFicDrive");if(dr){drvLoadGis().catch(()=>{});dr.onclick=()=>ficsFromDrive();}}
     const go=e=>{const l=[...e.target.files];e.target.value="";if(l.length)ficsFromFiles(l);};
     dIn.onchange=go;fIn.onchange=go;}}
   {const pb=q("#impPaste"),box=q("#impPasteBox"),ta=q("#impPasteText"),go=q("#impPasteGo"),x=q("#impPasteX"),ps=q("#impPhotoSay");
@@ -56047,7 +56208,13 @@ function renderBookView(){
   {const ad=q("#rdAdd",page),fi=q("#rdFile",page),op=q("#rdOpen",page),fg=q("#rdForget",page);
    if(ad&&fi){ad.onclick=e=>{e.stopPropagation();fi.click();};fi.onchange=()=>{const f=fi.files&&fi.files[0];fi.value="";if(f)rdImport(f);};}
    if(op)op.onclick=e=>{e.stopPropagation();openReader(cur.id);};
-   if(fg)fg.onclick=e=>{e.stopPropagation();rdForget();};}
+   if(fg)fg.onclick=e=>{e.stopPropagation();rdForget();};
+   /* see BOOK FILES ON GOOGLE DRIVE */
+   const dv=q("#rdDrive",page),dx=q("#rdDriveX",page);
+   if(dv)dv.onclick=e=>{e.stopPropagation();drvPickFor(cur.id);};
+   if(dx)dx.onclick=async e=>{e.stopPropagation();const id=cur.id;
+     try{await dbDel("images",drvKey(id));}catch(x){}rdCache.delete(id);
+     await quickEdit(bk=>{if(!bk.driveFile)return false;delete bk.driveFile;return true;});};}
   /* the owl's card — see THE OWL'S THREE QUESTIONS */
   qa("[data-owlq],#owlLetter",page).forEach(i=>{i.onclick=e=>e.stopPropagation();
     i.oninput=()=>{
@@ -63552,7 +63719,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["fics","owl","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
+const SHARED_PREFS=["fics","owl","drive","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
@@ -65187,6 +65354,7 @@ function importFills(it,b,en){
   if(!en){
     if(!filled(b.maturity)&&it.maturity)f.push({k:"maturity",label:"its maturity"});
     if(!filled(b.link)&&it.link)f.push({k:"link",label:"a link to where it lives"});
+    if(!b.driveFile&&!b.readFile&&it.driveFile&&it.driveFile.id)f.push({k:"driveFile",label:"its file on your Drive"});
     const addList=(key,label)=>{
       const have=new Set((b[key]||[]).map(x=>String(x).toLowerCase()));
       const add=((it[key])||[]).filter(x=>x&&!have.has(String(x).toLowerCase()));
@@ -65210,6 +65378,7 @@ function applyImportFills(it,b,en,fills){
     else if(f.k==="author")T.author=String(it.author||"").trim();
     else if(f.k==="progress")T.progress=String(f.v);
     else if(f.k==="maturity")b.maturity=it.maturity;
+    else if(f.k==="driveFile")b.driveFile=Object.assign({},it.driveFile);
     else if(f.k==="format"){b.format=it.format;
       if(it.format==="audio"&&!(+b.audioMins>0)&&parseInt(b.pages))b.audioMins=Math.round(parseInt(b.pages)/AUDIO_PPH*60);}
     else if(f.k==="link")b.link=it.link;
@@ -65543,6 +65712,7 @@ async function importOne(it,extra,steps){
     /* a fic row carries what a fic is — the book rows never set these */
     ...(it.kind?{kind:it.kind}:{}),
     ...(it.link?{link:it.link}:{}),
+    ...(it.driveFile&&it.driveFile.id?{driveFile:Object.assign({},it.driveFile)}:{}),
     ...(it.maturity?{maturity:it.maturity}:{}),
     ...((it.fandoms||[]).length?{fandoms:it.fandoms.slice()}:{}),
     ...((it.characters||[]).length?{characters:it.characters.slice()}:{}),

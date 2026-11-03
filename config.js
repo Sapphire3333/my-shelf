@@ -42,5 +42,12 @@ window.SHELF_CONFIG = {
      was made under the editor's sample name and its title renamed after —
      the address kept the sample name. Not a secret: the feed key lives in
      the function's own GOODREADS_RSS secret, never here. */
-  goodreadsFunction: "smart-task"
+  goodreadsFunction: "smart-task",
+  /* Google Drive for the reader's files (see BOOK FILES ON GOOGLE DRIVE in
+     index.html). A Web client's ID from Google Cloud → Google Auth Platform →
+     Clients, with this site's address as its authorised JavaScript origin.
+     Not a secret: it opens nothing by itself — reading a Drive takes that
+     Drive's owner signing in and allowing it, read-only. Leave it "" to have
+     no Drive buttons at all. */
+  googleClientId: "1061941488524-631rn2o389pu4ijv9ci8irpn0jut1ofg.apps.googleusercontent.com"
 };
