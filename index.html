@@ -13707,6 +13707,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-03.10",go:["tab:care"],lines:["<b>✨ Claude reads the shelf once.</b> When every book has been read, it no longer starts the whole round again on the next press: it reads only new books, and ones whose blurb or notes you've changed. <b>↻ Read every one again</b> is its own button, with its price. If the last round started over on you, <b>✓ Count every one as read</b> puts it back. What's been read, and the suggestions waiting, now follow you between your devices."]},
   {v:"2026-11-03.9",go:["el:settings:#secDrive"],lines:["<b>☁ Book files on your Google Drive.</b> In ⚙ Settings → You → <b>Google Drive</b>, find your folder by name and choose it; Google asks you to sign in and allow it once, read-only. Then a book's page has <b>☁ From Drive</b> beside 📖 Read it here, and 📁 Fics from AO3 files has <b>☁ My Drive folder</b>, which reads every AO3 file in it and lets each fic remember its file. The reader opens the file from your Drive each time and keeps only your place. While a book is 📖 Reading now, a copy stays on this device so it opens without the internet; it goes once you finish."]},
   {v:"2026-11-03.8",go:["el:care:#impFicDir"],lines:["<b>📁 Fics from AO3 files.</b> In 🧰 Shelf care, under the import card: give it a folder of AO3 downloads (EPUB or HTML), or choose the files, and each one is opened here, read for its title, author, AO3 link, rating, warnings, fandoms, relationships, characters, tags, series, length and summary, and let go. Nothing is uploaded and no file is kept, about a kilobyte of details a fic. They come into the import list as ✓ Read with no date; a fic already on your shelf is found by its AO3 number, even under another title, and <b>Fill it in</b> touches only its empty fields."]},
   {v:"2026-11-03.7",go:["tab:library"],lines:["<b>✍️ Fics on a shelf of their own.</b> The Library opens on <b>📚 Books</b>, with <b>✍️ Fics</b> and <b>🤖 AI stories</b> as tabs beside it, each with its own counts and its own grouping; fics start grouped by fandom, and relationship is a grouping too. Search still finds every kind, each under its own heading, books first. Today's year and the dusty pick count books, and so does Insights, which has a <b>✍️ Your fics</b> card in You as a reader. ✨ Something to read and Ask your shelf have boxes for Books, Fics and AI stories, with Books ticked to start; tick Fics for fics from AO3."]},
@@ -27928,10 +27929,33 @@ function crUnits(){
   }
   return out;
 }
-const readSeen=()=>new Set(Array.isArray(settings.claudeReadSeen)?settings.claudeReadSeen:[]);
+/* ┌─ READ ONCE, THEN ONLY WHAT IS NEW OR CHANGED ───────────────────────────┐
+   │ Once every one had been read, the next press began the whole round      │
+   │ again — 1,368 things, about 46 presses — and the only warning was a line │
+   │ under the button. It never starts over by itself now. Each key read is  │
+   │ kept with readSig, a hash of the words sent about it (readWords: blurb, │
+   │ notes, likes) — not its genres or tags, which the answers themselves     │
+   │ change — so after a full round a press reads only what is new or whose  │
+   │ words changed. ✨ Read every one again (#crAgain) is its own press with  │
+   │ its price; ✓ Count every one as read (#crAllRead) marks the shelf read  │
+   │ as it stands. Kept as "key#sig" in settings.claudeReadSeen (a bare key, │
+   │ from before, still counts as read), and claudeRead and claudeReadSeen   │
+   │ are in SHARED_PREFS now — the door above said they followed you, and    │
+   │ they never had.                                                          │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const readSig=u=>(strHash(readWords(u.b,u.en))>>>0).toString(36);
+const readSeen=()=>{const m=new Map();
+  (Array.isArray(settings.claudeReadSeen)?settings.claudeReadSeen:[]).forEach(s=>{s=String(s);const i=s.lastIndexOf("#");
+    if(i>0)m.set(s.slice(0,i),s.slice(i+1));else m.set(s,"");});
+  return m;};
+const readIsRead=(u,seen)=>{const s=seen.get(readKey(u));return s!==undefined&&(s===""||s===readSig(u));};
+function readSeenSave(seen,all){
+  const live=new Set(all.map(readKey));
+  settings.claudeReadSeen=[...seen].filter(([k])=>live.has(k)).map(([k,s])=>s?k+"#"+s:k);
+}
 function readNext(){
   const all=crUnits(),seen=readSeen();
-  let fresh=all.filter(u=>!seen.has(readKey(u)));
+  let fresh=all.filter(u=>!readIsRead(u,seen));
   return {all,fresh,pool:fresh.slice(0,READ_N)};
 }
 const readGenresNow=u=>u.en?entGenresOf(u.b,u.en):(u.b.genres||[]);
@@ -28001,17 +28025,15 @@ function readKeep(items,n,usd){
   saveSettings();
 }
 async function readAsk(){
-  const {all,pool:p0}=readNext();
-  let pool=p0,seen=readSeen();
-  if(!pool.length&&all.length){seen=new Set();pool=all.slice(0,READ_N);}
-  if(!pool.length)throw new Error("nothing on the shelf has a blurb or notes long enough to read");
+  const {all,pool}=readNext(),seen=readSeen();
+  /* never round again by itself — see READ ONCE, THEN ONLY WHAT IS NEW OR CHANGED */
+  if(!pool.length)throw new Error(all.length?"every one has been read, and nothing is new or changed since":"nothing on the shelf has a blurb or notes long enough to read");
   const text=readRules()+"\n\n"+pool.map((u,i)=>readEntry(u,i)).join("\n\n");
   const u0=claudeMeter().usd||0;
   const j=await claudeAsk({what:"📚 Claude reads the shelf",kind:"ask",text,schema:READ_SCHEMA,effort:"low",max_tokens:8000});
   const items=((j.json&&j.json.items)||[]).map(x=>{const u=pool[x.n];return u?readItem(u,x):null;}).filter(Boolean);
-  pool.forEach(u=>seen.add(readKey(u)));
-  const live=new Set(all.map(readKey));
-  settings.claudeReadSeen=[...seen].filter(k=>live.has(k));
+  pool.forEach(u=>seen.set(readKey(u),readSig(u)));
+  readSeenSave(seen,all);
   readKeep(items,pool.length,(claudeMeter().usd||0)-u0);
   return items;
 }
@@ -28088,9 +28110,9 @@ function readRowHtml(it){
     <button class="btn" data-crx="${esc(it.k)}" style="margin-left:auto">Leave it</button></div>`;
 }
 function readTally(waiting){
-  const R=settings.claudeRead||{},all=crUnits(),seen=readSeen(),looked=all.filter(u=>seen.has(readKey(u))).length;
+  const R=settings.claudeRead||{},all=crUnits(),seen=readSeen(),looked=all.filter(u=>readIsRead(u,seen)).length;
   const parts=[`Read <b>${looked.toLocaleString()}</b> of ${all.length.toLocaleString()} books, collections and stories with a blurb or notes`
-    +(looked<all.length?` · ${(all.length-looked).toLocaleString()} still to read`:" · every one, so the next look starts over")];
+    +(looked<all.length?` · ${(all.length-looked).toLocaleString()} new, changed or still to read`:" · every one; from now on only new ones, or ones whose blurb or notes change, are read")];
   if(R.changed||R.left||waiting)parts.push(`${R.changed||0} changed, ${R.left||0} left, ${waiting} waiting`);
   if(R.usd)parts.push(`the last look cost ${claudeUsd(R.usd)}`);
   return parts.join(" · ");
@@ -28098,12 +28120,20 @@ function readTally(waiting){
 function readBoxHtml(ready){
   const W=readWaiting();
   if(!ready&&!W.length)return "";
-  const {pool}=readNext(),est=readEstimate(pool.length?pool:crUnits().slice(0,READ_N),0);
+  const {pool,all}=readNext(),est=readEstimate(pool.length?pool:all.slice(0,READ_N),0);
+  /* see READ ONCE, THEN ONLY WHAT IS NEW OR CHANGED: a round again is its own
+     press, priced for the whole shelf; marking it all read is offered once
+     the reading has been used */
+  const R=settings.claudeRead||{},used=(R.changed||0)+(R.left||0)>0;
+  const estAll=all.length?readEstimate(all.slice(0,READ_N),0)*Math.ceil(all.length/READ_N):0;
+  const again=`<button class="btn smallbtn" id="crAgain" title="Read all ${all.length.toLocaleString()} again, ${READ_N} at a time — the suggestions may differ, since the shelf has changed">↻ Read every one again · ${claudeUsd(estAll)}</button>`;
+  const allRead=used&&pool.length?`<button class="btn smallbtn" id="crAllRead" title="Mark everything on the shelf as read as it stands, so only new ones, or ones whose blurb or notes change, are read from now on">✓ Count every one as read</button>`:"";
   return `<div class="lbl" style="display:block;margin:14px 0 4px">✨ Claude reads the shelf${W.length?` <b>${W.length}</b>`:""}</div>
     <div class="hint" style="margin:0 0 7px">Genres, tags and where it's set, from the whole blurb, your notes and what you liked and didn't, and each story in a collection on its own. A genre you don't have yet is marked <i class="crnew">new</i>; audiences stay in Audience. Switch off any word you don't want, then Change it.</div>
     ${W.map(readRowHtml).join("")}
-    ${ready?`<div class="hrow2" style="margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap"><button class="btn${W.length?"":" pri"}" id="crGo">✨ Read the next ${Math.min(READ_N,(pool.length||crUnits().length))}</button>
-      <span class="hint" style="margin:0" id="crSay">sends their blurbs, notes, genres, tags and Set in to Claude (Opus) · ${claudeUsd(est)}</span></div>`:""}
+    ${ready?(pool.length?`<div class="hrow2" style="margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap"><button class="btn${W.length?"":" pri"}" id="crGo">✨ Read the next ${Math.min(READ_N,pool.length)}</button>
+      <span class="hint" style="margin:0" id="crSay">sends their blurbs, notes, genres, tags and Set in to Claude (Opus) · ${claudeUsd(est)}</span>${allRead}</div>`
+      :all.length?`<div class="hrow2" style="margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap"><span class="hint" style="margin:0" id="crSay">✓ Every one has been read. A new book, or a blurb or notes you change, is read on the next press.</span>${again}</div>`:""):""}
     <div class="hint" style="margin:6px 0 0">${readTally(W.length)}.</div>`;
 }
 /* on a book's page: its waiting rows, and the web button */
@@ -28123,7 +28153,7 @@ function readRedraw(){
   if(view==="book"&&cur){const box=q("#crBook");if(box){const w=document.createElement("div");w.innerHTML=readBookHtml(cur);box.replaceWith(w.firstElementChild||w);}}
 }
 document.addEventListener("click",async e=>{
-  const t=e.target.closest&&e.target.closest("[data-crp],[data-crok],[data-crx],[data-cropen],[data-crweb],#crGo");if(!t)return;
+  const t=e.target.closest&&e.target.closest("[data-crp],[data-crok],[data-crx],[data-cropen],[data-crweb],#crGo,#crAgain,#crAllRead");if(!t)return;
   e.stopPropagation();
   const find=k=>((settings.claudeRead&&settings.claudeRead.items)||[]).find(x=>x.k===k);
   if(t.dataset.crp!=null){const it=find(t.dataset.crp);if(!it)return;
@@ -28140,6 +28170,13 @@ document.addEventListener("click",async e=>{
     readWebBusy=b.id;readWebErr="";readWebSaid=b.id;readRedraw();
     try{await readWebAsk(b);}catch(err){readWebErr=(err&&err.message)||"no answer";}
     readWebBusy="";readRedraw();return;}
+  /* see READ ONCE, THEN ONLY WHAT IS NEW OR CHANGED */
+  if(t.id==="crAllRead"){const all=crUnits();
+    if(!confirm(`Count all ${all.length.toLocaleString()} as read, as they stand now? From then on only new ones, or ones whose blurb or notes change, are read.`))return;
+    const seen=readSeen();all.forEach(u=>seen.set(readKey(u),readSig(u)));readSeenSave(seen,all);saveSettings();readRedraw();return;}
+  if(t.id==="crAgain"){const all=crUnits();
+    if(!confirm(`Read all ${all.length.toLocaleString()} again, ${READ_N} at a time? It starts with the next press and costs about what it says on the button, spread over ${Math.ceil(all.length/READ_N)} presses.`))return;
+    settings.claudeReadSeen=[];saveSettings();readRedraw();return;}
   if(t.id==="crGo"){t.disabled=true;t.textContent="✨ Claude is reading…";
     try{await readAsk();readRedraw();}
     catch(err){t.disabled=false;t.textContent="✨ Try again";const s=q("#crSay");if(s)s.textContent="Claude couldn't — "+((err&&err.message)||"no answer");}}
@@ -63719,7 +63756,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["fics","owl","drive","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
+const SHARED_PREFS=["fics","owl","drive","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
