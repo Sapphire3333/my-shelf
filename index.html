@@ -13648,6 +13648,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-03.1",go:["el:challenges:.qcustom"],lines:["<b>🎯 Your challenges count from the moment you make them.</b> A challenge started in the evening no longer counts the books you finished that morning, so a new one starts at nothing instead of half done, or done. Only one challenge of each kind runs at a time: the same kind twice counted the same books twice, so 🎯 Make one and ✨ Three made for you say which card already has it. And ✨ Three made for you is told what you're already running and what it offered before, so it brings different ideas instead of the same three."]},
   {v:"2026-11-01.8",go:["tab:library"],lines:["<b>💬 Talk to a character.</b> On the page of a book you've finished, under the review, is <b>💬 Talk to a character</b>. Say who (a fic's own characters are suggested), ask them something, and Claude answers as them: in their voice, and from the whole book, ending included. Ask again and they remember what they've already told you. Three questions a day across all your books, about a cent each, kept on the device you asked on."]},
   {v:"2026-11-01.7",go:["el:challenges:#qBlind"],lines:["<b>💌 A blind date comes wrapped.</b> On the dare card, the three books of a blind date are brown-paper parcels tied with string, each blurb written on a gift tag. Pick one and its paper tears open to show the book, confetti falls, and it becomes your dare, worth the usual extra for choosing blind."]},
   {v:"2026-11-01.6",go:["day:"],lines:["<b>❄️ Shake for a book.</b> Shake your phone anywhere in the app and a snow globe swirls up, then settles on one book from your whole shelf, with a line from the owl and <b>Open it</b>. It takes a proper shake: a phone in your pocket while you walk won't set it off. On a computer, or whenever you like, it's in 🌅 Your day as <b>❄️ The snow globe</b>. To turn the shaking off, go to ⚙ Settings → <i>Sounds &amp; notes</i>."]},
@@ -27666,21 +27667,39 @@ function customSugFacts(){
   const f=a=>a.map(([k,n])=>`${k} (${n})`).join("; ")||"none";
   return {gs,ts,as,ls,ps,text:`Waiting to be read on their shelf, by genre: ${f(gs)}\nBy tag: ${f(ts)}\nBy author: ${f(as)}\nBy language: ${f(ls)}\nBy where it is set: ${f(ps)}\nBy length: ${len.short} under 200 pages, ${len.mid} of 200 to 400, ${len.long} over 400\nThe marks they give each genre on average: ${marks.map(([g,m])=>`${g} ${m}`).join("; ")||"none yet"}\nThey finish about ${Math.round(done/months*10)/10} books a month this year.`};
 }
+/* ---- NOT THE SAME THREE AGAIN ----
+   Claude was told only what waits on the shelf, so the same shelf drew the
+   same three — short reads every time, while three short-read cards already
+   ran. It is now told the cards running and made lately, and the ideas it
+   gave before (settings.customSugOff, the last CUSTOM_SUG_OFF on this
+   device), and asked for something else; an idea whose rule already runs is
+   dropped (customSameRunning), and ones offered before go after new ones. */
+const CUSTOM_SUG_OFF=15;
+const customSugSay=r=>`${r.k}${r.v?" "+r.v:""}`;
 async function customSugAsk(){
   const F=customSugFacts();
+  const had=(quests.custom||[]).filter(c=>c&&c.rule).sort((a,c)=>(c.at||0)-(a.at||0)).slice(0,12);
+  const off=((settings&&settings.customSugOff)||[]).slice(-CUSTOM_SUG_OFF);
   const kinds=["any","genre","tag","author","length","mark","lang","setin"];
   const schema={type:"object",properties:{challenges:{type:"array",items:{type:"object",properties:{name:{type:"string"},n:{type:"integer"},days:{type:"integer"},
     kind:{type:"string",enum:kinds},value:{type:"string"},why:{type:"string"}},required:["name","n","days","kind","value","why"],additionalProperties:false}}},required:["challenges"],additionalProperties:false};
   const text=`Propose three reading challenges for this reader, made from what is waiting on their own shelf, each different in kind and each something they could really finish at their pace. A challenge is: read n books of one kind within days days.\n${F.text}\n\n`
-    +`kind and value: genre, tag, author, lang or setin with a value written exactly as listed above; length with short, mid or long; mark with a number from 6 to 10 (books they will mark that or higher); any with an empty value. n at least ${CUSTOM_MIN_N}, days at least ${CUSTOM_MIN_DAYS}. name: short, like “Three fantasy by spring”. why: one line, to the reader as "you".`;
+    +(had.length?`Their own challenges, running now or made lately — propose none with the same kind and value as these: ${had.map(c=>`${c.name} (${customSugSay(c.rule)})`).join("; ")}\n`:"")
+    +(off.length?`Ideas already offered to them and not wanted — propose different ones: ${off.map(customSugSay).join("; ")}\n`:"")
+    +`\nkind and value: genre, tag, author, lang or setin with a value written exactly as listed above; length with short, mid or long; mark with a number from 6 to 10 (books they will mark that or higher); any with an empty value. n at least ${CUSTOM_MIN_N}, days at least ${CUSTOM_MIN_DAYS}. name: short, like “Three fantasy by spring”. why: one line, to the reader as "you".`;
   const j=await claudeAsk({what:"🎯 Challenge ideas",kind:"ask",text,schema,effort:"low",max_tokens:1500,model:claudeSmallModel()});
   const ok={genre:new Set(F.gs.map(x=>x[0])),tag:new Set(F.ts.map(x=>x[0])),author:new Set(F.as.map(x=>x[0])),lang:new Set(F.ls.map(x=>x[0])),setin:new Set(F.ps.map(x=>x[0]))};
-  return ((j.json&&j.json.challenges)||[]).map(c=>{const k=String(c.kind||"any"),v=String(c.value||"").trim();
+  const stale=new Set([...had.map(c=>customRuleKey(c.rule)),...off.map(customRuleKey)]);
+  const out=((j.json&&j.json.challenges)||[]).map(c=>{const k=String(c.kind||"any"),v=String(c.value||"").trim();
     if(ok[k]&&!ok[k].has(v))return null;
     if(k==="length"&&!["short","mid","long"].includes(v))return null;
     if(k==="mark"&&!(+v>=6&&+v<=10))return null;
     return {name:String(c.name||"").trim().slice(0,60),n:Math.max(CUSTOM_MIN_N,Math.min(100,parseInt(c.n)||CUSTOM_MIN_N)),days:Math.max(CUSTOM_MIN_DAYS,Math.min(366,parseInt(c.days)||30)),
-      rule:{k,v:customBare(k)?"":v},why:String(c.why||"").trim()};}).filter(Boolean).slice(0,3);
+      rule:{k,v:customBare(k)?"":v},why:String(c.why||"").trim()};}).filter(c=>c&&!customSameRunning(c.rule))
+    .sort((a,c)=>stale.has(customRuleKey(a.rule))-stale.has(customRuleKey(c.rule))).slice(0,3);
+  if(settings){const now=new Set(out.map(c=>customRuleKey(c.rule)));
+    settings.customSugOff=[...off.filter(r=>!now.has(customRuleKey(r))),...out.map(c=>c.rule)].slice(-CUSTOM_SUG_OFF);saveSettings();}
+  return out;
 }
 function customSugHtml(){
   if(!claudeReady())return "";
@@ -27691,7 +27710,8 @@ function customSugHtml(){
   return `<div style="flex:1 1 100%;display:grid;gap:6px;margin-top:4px">${S.items.map((c,i)=>{const by=dayBack(todayStr(),-c.days);
     return `<div class="customcard"><b>✨ ${esc(c.name)}</b><div class="hint" style="margin:2px 0 0">Read ${c.n} book${c.n===1?"":"s"} ${esc(customRuleSay(c))} by ${esc(printDay(by))} · +${CUSTOM_XP} a book, +${customFinXp(c.n)} at the finish</div>
       ${c.why?`<div class="hint" style="margin:3px 0 0">${esc(c.why)}</div>`:""}
-      <div class="hrow2" style="gap:6px;margin-top:6px">${c.made?`<span class="lbl">✓ started</span>`:`<button class="btn smallbtn pri" data-csgo="${i}"${full?` disabled title="${CUSTOM_MAX} running — finish or ✕ one first"`:""}>Start it</button>`}</div></div>`;}).join("")||`<div class="hint" style="margin:0">Claude had nothing it could make from your shelf.</div>`}
+      <div class="hrow2" style="gap:6px;margin-top:6px">${c.made?`<span class="lbl">✓ started</span>`:(()=>{const same=customSameRunning(c.rule);
+        return same?`<span class="hint" style="margin:0">“${esc(same.name)}” already counts these</span>`:`<button class="btn smallbtn pri" data-csgo="${i}"${full?` disabled title="${CUSTOM_MAX} running — finish or ✕ one first"`:""}>Start it</button>`;})()}</div></div>`;}).join("")||`<div class="hint" style="margin:0">Claude had nothing it could make from your shelf.</div>`}
     <div><button class="btn smallbtn" data-csug="1">↻ Three more</button></div></div>`;
 }
 document.addEventListener("click",async e=>{
@@ -27700,8 +27720,9 @@ document.addEventListener("click",async e=>{
   const redraw=()=>{if(view==="challenges")renderChallenges();};
   if(t.dataset.csgo!=null){const c=customSug&&customSug.items&&customSug.items[+t.dataset.csgo];if(!c||c.made)return;
     if(customRunning().length>=CUSTOM_MAX){alert(CUSTOM_MAX+" can run at once — finish or ✕ one first.");return;}
+    {const same=customSameRunning(c.rule);if(same){alert(`“${same.name}” is already counting these — finish or ✕ it first.`);return;}}
     const today=todayStr();
-    quests.custom=[...(quests.custom||[]),{id:uid(),name:c.name||("Read "+c.n+" "+customRuleSay(c)),n:c.n,by:dayBack(today,-c.days),rule:c.rule,since:today,at:Date.now()}];
+    quests.custom=[...(quests.custom||[]),{id:uid(),name:c.name||("Read "+c.n+" "+customRuleSay(c)),n:c.n,by:dayBack(today,-c.days),rule:c.rule,since:today,skip:customSkipNow(),at:Date.now()}];
     c.made=true;questSave();redraw();return;}
   customSug={busy:true};redraw();
   try{customSug={items:await customSugAsk()};}catch(err){customSug={err:(err&&err.message)||"no answer"};}
@@ -42614,6 +42635,21 @@ const customList=()=>((quests&&quests.custom)||[]).filter(c=>c&&c.id&&!c.gone);
 const customFinXp=n=>Math.max(CUSTOM_FIN_MIN,Math.min(CUSTOM_FIN_MAX,Math.round(CUSTOM_FIN_XP*n/5)));
 /* the ones you made: the month's trio (auto) never counts against the three */
 const customRunning=()=>customList().filter(c=>!c.done&&c.by>=todayStr()&&!c.auto);
+/* ┌─ ONE RUNNING PER RULE, COUNTED FROM THE MOMENT IT IS MADE ──────────────┐
+   │ A second "four under 200 pages" could be started beside the first; both  │
+   │ read the same books, so each book paid twice and the new card opened on  │
+   │ the old one's progress. A rule (kind and value, customRuleKey) now runs  │
+   │ once at a time — the month's trio included — and the builder and the     │
+   │ ✨ three say which card already has it. And `since` is a day, so books   │
+   │ finished earlier that same day counted for a card made in the evening:  │
+   │ made after three short reads, "three short reads" was done on arrival.  │
+   │ A card now carries `skip`, the readings already ended that day when it   │
+   │ was made (customSkipNow), and customHits passes over them. Cards made    │
+   │ before this carry none and count as they did.                           │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const customRuleKey=r=>((r&&r.k)||"any")+"|"+String((r&&r.v)||"").trim().toLowerCase();
+const customSameRunning=rule=>customList().find(c=>!c.done&&c.by>=todayStr()&&customRuleKey(c.rule)===customRuleKey(rule))||null;
+const customSkipNow=()=>readsBetween(todayStr(),todayStr()).map(r=>r.key);
 function customFits(c,u){
   const r=c.rule||{},v=String(r.v||""),x=u.en||u.book,low=s=>String(s).toLowerCase();
   switch(r.k){
@@ -42645,8 +42681,8 @@ const customBare=k=>k==="any"||k==="audio";
    ones it cannot read yet; they count once the colours are in. */
 function customHits(c){
   const seen=new Set(),out=[],wait=[];
-  const byColour=c.rule&&c.rule.k==="colour";
-  readsBetween(c.since,c.by).forEach(r=>{
+  const byColour=c.rule&&c.rule.k==="colour",skip=new Set(c.skip||[]);
+  readsBetween(c.since,c.by).forEach(r=>{if(skip.has(r.key))return;
     if(byColour){const hb=r.u.en?hueStory(r.u.book,r.u.en):r.u.book;if(hb&&hueOf(hb)===undefined){wait.push(hb.id);return;}}
     if(!customFits(c,r.u))return;const k=r.u.book.id+"|"+(r.u.en?r.u.en.id:"");if(seen.has(k))return;seen.add(k);out.push(r);});
   if(wait.length)hueQueue(wait);
@@ -42736,8 +42772,11 @@ function customMake(){
   q("#cmX",d).onclick=()=>close();
   const read=()=>{const n=Math.max(CUSTOM_MIN_N,Math.min(100,parseInt(q("#cmN",d).value)||CUSTOM_MIN_N)),k=q("#cmK",d).value,vv=q("#cmV",d),v=vv?String(vv.value||"").trim():"";return {n,k,v,by:q("#cmBy",d).value,name:q("#cmName",d).value.trim()};};
   const autoName=r=>r.k==="any"?`${r.n} book${r.n===1?"":"s"} by ${printDay(r.by)}`:`${r.n} book${r.n===1?"":"s"} ${customRuleSay({rule:{k:r.k,v:r.v}})}`;
-  const say=()=>{const r=read(),s=q("#cmSay",d);
-    if(s)s.textContent=(!customBare(r.k)&&!r.v)?"Pick one first.":`Read ${r.n} book${r.n===1?"":"s"} ${customRuleSay({rule:{k:r.k,v:r.v}})} by ${printDay(r.by)} — +${CUSTOM_XP} a book, +${customFinXp(r.n)} at the finish. Books finished from today count.`;
+  const say=()=>{const r=read(),s=q("#cmSay",d),same=customSameRunning({k:r.k,v:r.v}),go=q("#cmStart",d);
+    if(s)s.textContent=(!customBare(r.k)&&!r.v)?"Pick one first."
+      :same?`“${same.name}” is already counting books ${customRuleSay(same)} — the same books would count for both. Finish or ✕ it first, or pick something else.`
+      :`Read ${r.n} book${r.n===1?"":"s"} ${customRuleSay({rule:{k:r.k,v:r.v}})} by ${printDay(r.by)} — +${CUSTOM_XP} a book, +${customFinXp(r.n)} at the finish. Books finished from now on count.`;
+    if(go)go.disabled=!!same;
     const nm=q("#cmName",d);if(nm&&!nm.dataset.typed)nm.value=autoName(r);};
   const valueBox=()=>{const k=q("#cmK",d).value,w=q("#cmVWrap",d);
     w.innerHTML=k==="genre"?`<select class="field" id="cmV">${opt(gl)}</select>`
@@ -42757,7 +42796,8 @@ function customMake(){
     if(!customBare(r.k)&&!r.v){alert("Pick one first.");return;}
     if(!r.by||r.by<first){alert(`A challenge runs a week at least — pick ${printDay(first)} or later.`);return;}
     if(customRunning().length>=CUSTOM_MAX){alert(CUSTOM_MAX+" can run at once — finish or ✕ one first.");return;}
-    quests.custom=[...(quests.custom||[]),{id:uid(),name:(r.name||autoName(r)).slice(0,60),n:r.n,by:r.by,rule:{k:r.k,v:r.v},since:today,at:Date.now()}];
+    {const same=customSameRunning({k:r.k,v:r.v});if(same){alert(`“${same.name}” is already counting these — finish or ✕ it first.`);return;}}
+    quests.custom=[...(quests.custom||[]),{id:uid(),name:(r.name||autoName(r)).slice(0,60),n:r.n,by:r.by,rule:{k:r.k,v:r.v},since:today,skip:customSkipNow(),at:Date.now()}];
     questSave();close();renderChallenges();};
 }
 function customPic(id){
