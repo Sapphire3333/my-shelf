@@ -484,6 +484,7 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .bst.hitsin{background:var(--ac-50);color:var(--ac-700);border:1px solid var(--ac-200)}
   [data-theme="dark"] .bst.hitsin{background:color-mix(in srgb,var(--ac-900) 80%,#000);color:var(--ac-300);border-color:var(--ac-700)}
   /* a collection holding stories that have wandered off its own genres */
+  .bst.rowread{background:var(--card);color:var(--teal);border:1px solid var(--teal);cursor:pointer}
   .bst.stray{background:#fffbeb;color:#b45309;border:1px solid #fcd34d;font-weight:800;cursor:pointer}
   .bst.stray:hover{background:#fef3c7;border-color:#f59e0b}
   [data-theme="dark"] .bst.stray{background:#44341a;color:#fcd34d;border-color:#a16207}
@@ -13777,6 +13778,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.19",go:["el:care:#drvConnBox"],lines:["<b>☁ Finding your files on Drive.</b> Searching a Drive file now shows the ones with every word first, with the rest folded under <b>▸ more that match only some words</b>. On a book's page the author helps pick the right one. <b>🔗 Connect my files</b> in Shelf care matches the books and stories with no file to your Drive by title and author: one press connects the sure ones, and the rest are listed to choose from. Nothing downloads, and one press of ↶ takes them off.","<b>📖 Read on a fic's row.</b> A fic with a file has a Read button on its row in the Library."]},
   {v:"2026-11-04.18",go:["tab:library"],lines:["<b>🖍 Selecting in a PDF, with a mouse.</b> Pressing in a gap between lines could select from the top of the page. The app now takes the words nearest your pointer, so a sentence stays a sentence. A double press takes one word. If one still goes wrong, ☰ has <b>📋 Copy what the last selection did</b>."]},
   {v:"2026-11-04.17",go:["el:care:#claudeTidyBox"],lines:["<b>✨ Claude's look shows it's working.</b> With a big shelf it can take a minute or two, and the line beside it stayed on the old date meanwhile, looking stuck. It now counts the seconds, waits longer before giving up, and works out its price from how many names you have."]},
   {v:"2026-11-04.16",lines:["<b>✨ Claude no longer stops at “Invalid JWT”.</b> When your sign-in had just run out, anything asking Claude failed with those words. The app now renews it and asks again by itself, and nothing is charged for the refused try."]},
@@ -19320,6 +19322,7 @@ function rowHtml(b,withDel,note){
      the title's 7px gap and its own margin under EVERY plain book on the
      shelf, which is a few thousand rows paying for a line nothing is on. */
   const marks=[
+    !b._story&&isFic(b)&&(b.driveFile||rdFileOf(b))?`<button class="bst rowread" data-rowread="${esc(b.id)}" title="Read it here, where you left off">📖 Read</button>`:"",
     isColl(b)?`<span class="bst coll">COLLECTION · ${entWholes(b).length}</span>`:"",
     /* whether its stories stand in an order somebody chose — an answer
        worth having at a glance, so it rides on the row rather than making
@@ -30799,11 +30802,17 @@ async function drvHtml(rk,df,opts,keep){
 }
 /* any part of the name, most words matched first */
 const drvNorm=s=>String(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/\.[a-z0-9]+$/,"").replace(/[^a-z0-9]+/g," ").trim();
-function drvHits(files,text){
+/* ---- EVERY WORD FIRST ----
+   A file matching any one word counted, so a two-word title brought 158 of 20,691:
+   every "Stolen" on the Drive. `all` says a file has every word that decides a
+   match, the words in their order rank above that, and the author lifts the right
+   one over another of the same name. Callers show the `all` ones and fold the rest. */
+function drvHits(files,text,author){
   const qw=drvNorm(text).split(" ").filter(Boolean),big=qw.filter(w=>w.length>2||/^\d+$/.test(w)),need=big.length?big:qw;
-  return files.map(f=>{const n=drvNorm(f.name);
-      return {f,s:need.filter(w=>n.includes(w)).length,lead:qw.length&&(n.startsWith(qw[0])||n.includes(" "+qw[0]))?1:0};})
-    .filter(x=>!need.length||x.s>0).sort((a,c)=>c.s-a.s||(a.f.kind==="pdf")-(c.f.kind==="pdf")||c.lead-a.lead||a.f.name.localeCompare(c.f.name,undefined,{numeric:true}));
+  const phrase=qw.join(" "),au=drvNorm(author).split(" ").filter(w=>w.length>2);
+  return files.map(f=>{const n=drvNorm(f.name),hit=need.filter(w=>n.includes(w)).length;
+      return {f,s:hit,all:!!need.length&&hit===need.length,ph:phrase&&n.includes(phrase)?1:0,au:au.filter(w=>n.includes(w)).length,lead:qw.length&&(n.startsWith(qw[0])||n.includes(" "+qw[0]))?1:0};})
+    .filter(x=>!need.length||x.s>0).sort((a,c)=>c.s-a.s||c.ph-a.ph||c.au-a.au||(a.f.kind==="pdf")-(c.f.kind==="pdf")||c.lead-a.lead||a.f.name.localeCompare(c.f.name,undefined,{numeric:true}));
 }
 /* ☁ From Drive on a book's page: the folder's files, the likeliest first */
 async function drvPickFor(id,enId){
@@ -30820,10 +30829,12 @@ async function drvPickFor(id,enId){
   /* any part of the name: "stilt" finds Stilton, one letter finds the names
      that start with it first — whole words only found nothing for a half-typed
      name. Little words ("the", "of") do not decide a match on their own. */
-  const paint=()=>{const box=q("#dpList",d),hits=drvHits(files,q("#dpQ",d).value);
+  let dpSome=false;
+  const paint=()=>{const box=q("#dpList",d),found=drvHits(files,q("#dpQ",d).value,(en&&en.author)||b.author),every=found.filter(x=>x.all),hits=every.length&&!dpSome?every:found,some=found.length-every.length;
     const row=({f})=>`<div class="snap" style="padding:6px 10px"><div style="min-width:0;flex:1;overflow-wrap:anywhere;font-size:14px">${esc(f.name)}<div class="meta">${f.kind==="doc"?"Google Doc":fmtBytes(f.size)}${f.kind==="pdf"?" · PDF":""}</div></div><button class="btn smallbtn" data-dpuse="${esc(f.id)}">Use it</button></div>`;
-    box.innerHTML=(hits.length?`<div class="hint" style="margin:0 0 4px">${hits.length.toLocaleString()} of ${files.length.toLocaleString()} file${files.length===1?"":"s"}${hits.length>60?", the first 60":""}</div>`:"")
+    box.innerHTML=(hits.length?`<div class="hint" style="margin:0 0 4px">${hits.length.toLocaleString()} of ${files.length.toLocaleString()} file${files.length===1?"":"s"}${every.length&&!dpSome?` with every word`:""}${hits.length>60?", the first 60":""}</div>`:"")
       +hits.slice(0,60).map(row).join("")
+      +(every.length&&!dpSome&&some?`<button class="btn smallbtn" id="dpSome" style="margin-top:6px">▸ ${some.toLocaleString()} more that match${some===1?"es":""} only some words</button>`:"")
       ||`<div class="hint">Nothing in the folder by that name — ${files.length.toLocaleString()} files in it.</div>`;
     /* picking a file is asking to read it: it opens, with its bar, and a file
        still on its way is dropped — see ONE FILE OPENING AT A TIME */
@@ -30835,11 +30846,12 @@ async function drvPickFor(id,enId){
       rdCache.delete(rk);rdCacheDrv.delete(rk);
       if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);
       openReader(id,enId||"");});
+    {const ms=q("#dpSome",box);if(ms)ms.onclick=()=>{dpSome=true;paint();};}
     /* how old the list is, and the way to a fresh one */
     const st=q("#dpWhen",d);
     if(st&&drvFilesMemo&&drvFilesMemo.at)st.innerHTML=`<span class="hint" style="margin:0">List from ${esc(drvAgo(drvFilesMemo.at))}</span> <button class="btn smallbtn" id="dpAgain">↻ Look again</button>`;
     const ag=q("#dpAgain",d);if(ag)ag.onclick=()=>load(true);};
-  q("#dpQ",d).oninput=paint;
+  q("#dpQ",d).oninput=()=>{dpSome=false;paint();};
   const fname=(settings.drive&&settings.drive.folder&&settings.drive.folder.name)||"your folder";
   const load=async again=>{
     q("#dpList",d).innerHTML=drvBarHtml(`Looking in ${esc(fname)}…`,null);
@@ -30967,7 +30979,7 @@ function drvShelfDraw(box){
     q("#dsSet",box).onclick=()=>goTo("el:settings:#secDrive");return;}
   drvLoadGis().catch(()=>{});
   box.innerHTML=`<div class="hrow2" style="gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><input class="field" id="dsQ" placeholder="🔎 Any part of a name, in every folder" value="${esc(drvFind)}" style="flex:1;min-width:180px"><span id="dsWhen" class="hrow2" style="gap:6px;align-items:center"></span>${ficsOn()?`<button class="btn smallbtn" data-ficdrive="1">✍️ Bring in fics from a folder</button>`:""}</div><div id="dsBody"></div>`;
-  const body=q("#dsBody",box);let files=[],shown=DRV_PAGE;
+  const body=q("#dsBody",box);let files=[],shown=DRV_PAGE,dsSome=false;
   const paint=()=>{
     const memo=drvFilesMemo||{dirs:[]},dirs=memo.dirs||[],name={},up={};dirs.forEach(d=>{name[d.id]=d.name;up[d.id]=d.p;});name[fo.id]=fo.name;
     const count={};files.forEach(f=>{let p=f.p,guard=0;while(p&&guard++<40){count[p]=(count[p]||0)+1;if(p===fo.id)break;p=up[p];}});
@@ -30977,8 +30989,10 @@ function drvShelfDraw(box){
         <div class="meta">${f.kind==="doc"?"Google Doc":fmtBytes(f.size)}${where&&name[f.p]?" · 📁 "+esc(name[f.p]):""}${h?" · ✓ on your shelf"+(h.en?" in "+esc(h.b.title||"Untitled"):""):""}${((settings.drvMarks||{})[f.id]||[]).length?" · 🖍 "+settings.drvMarks[f.id].length:""}${f.kind==="pdf"?" · PDF":""}${drvKeptIds.has(f.id)?" · 📌 on this device":""}</div></div>
         <button class="btn smallbtn${h?"":" pri"}" data-dsread="${esc(f.id)}">📖 Read</button></div>`;};
     const more=n=>n>shown?`<div class="hrow2" style="justify-content:center;margin-top:8px"><button class="btn" id="dsMore">Show ${Math.min(DRV_PAGE,n-shown).toLocaleString()} more, of ${(n-shown).toLocaleString()}</button></div>`:"";
-    if(drvFind.trim()){const hits=drvHits(files,drvFind).map(x=>x.f);
-      body.innerHTML=`<div class="hint" style="margin:0 0 6px">${hits.length.toLocaleString()} of ${files.length.toLocaleString()} files</div>`+(hits.slice(0,shown).map(f=>row(f,true)).join("")||`<div class="none">Nothing in the folder by that name.</div>`)+more(hits.length);}
+    if(drvFind.trim()){const found=drvHits(files,drvFind),every=found.filter(x=>x.all),hits=(every.length&&!dsSome?every:found).map(x=>x.f),some=found.length-every.length;
+      body.innerHTML=`<div class="hint" style="margin:0 0 6px">${hits.length.toLocaleString()} of ${files.length.toLocaleString()} files${every.length&&!dsSome?" with every word":""}</div>`+(hits.slice(0,shown).map(f=>row(f,true)).join("")||`<div class="none">Nothing in the folder by that name.</div>`)+more(hits.length)
+        +(every.length&&!dsSome&&some?`<div class="hrow2" style="justify-content:center;margin-top:8px"><button class="btn smallbtn" id="dsSome">▸ ${some.toLocaleString()} more that match${some===1?"es":""} only some words</button></div>`:"");
+      {const ms=q("#dsSome",body);if(ms)ms.onclick=()=>{dsSome=true;paint();};}}
     else{const at=drvPath&&(drvPath===fo.id||name[drvPath])?drvPath:fo.id;
       const chain=[];for(let p=at,g=0;p&&g<40;g++){chain.unshift(p);if(p===fo.id)break;p=up[p];}
       const subs=dirs.filter(d=>d.p===at&&count[d.id]).sort((a,c)=>a.name.localeCompare(c.name,undefined,{numeric:true}));
@@ -30993,7 +31007,7 @@ function drvShelfDraw(box){
       if(h)openReader(h.b.id,h.en?h.en.id:"");else openReader("drv:"+f.id,"",drvFileOf(f));});
     const wh=q("#dsWhen",box);if(wh&&memo.at){wh.innerHTML=`<span class="hint" style="margin:0">List from ${esc(drvAgo(memo.at))}</span><button class="btn smallbtn" id="dsAgain">↻ Look again</button>`;q("#dsAgain",wh).onclick=()=>load(true);}
   };
-  q("#dsQ",box).oninput=e=>{drvFind=e.target.value;shown=DRV_PAGE;paint();};
+  q("#dsQ",box).oninput=e=>{drvFind=e.target.value;shown=DRV_PAGE;dsSome=false;paint();};
   const load=async again=>{
     body.innerHTML=drvBarHtml(`Looking in ${esc(fo.name)}…`,null);
     try{files=await drvFolderFiles(again,p=>{if(body.isConnected)body.innerHTML=drvListSay(p,fo.name);});await drvKeptRows();if(body.isConnected)paint();}
@@ -31136,6 +31150,120 @@ function ficScrollThere(){
   there();setTimeout(there,300);
 }
 document.addEventListener("click",e=>{const t=e.target.closest&&e.target.closest("[data-ficdrive]");if(!t)return;e.stopPropagation();ficDriveOpen();});
+/* ┌─ 🔗 CONNECT YOUR DRIVE FILES ───────────────────────────────────────────┐
+   │ Every book and story with no file is held against the saved Drive list    │
+   │ by title and author, in names like "Author, A - [Series 2] - Title (2005, │
+   │ Publisher).epub". drvConnectFind cuts what stands in brackets, and a file  │
+   │ is SURE when every word of the title is in it, the author is too, and      │
+   │ nothing else is left over, so "Sam the Stolen Puppy" can't answer for "The │
+   │ Stolen Puppy". An EPUB beats a PDF of the same book; two sure files, or one │
+   │ file sure for two books, go to the list to choose from. Nothing downloads  │
+   │ and no file changes. One press connects the sure ones as one step of ↶.    │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const DRV_LITTLE=new Set(["the","a","an"]);
+function drvConnectFind(files){
+  const held=new Set();books.forEach(b=>{if(!b)return;if(b.driveFile)held.add(b.driveFile.id);(b.entries||[]).forEach(en=>{if(en&&en.driveFile)held.add(en.driveFile.id);});});
+  const words=t=>drvNorm(t).split(" ").filter(w=>w&&!DRV_LITTLE.has(w));
+  const pool=files.filter(f=>!held.has(f.id)).map(f=>({f,all:new Set(words(f.name)),core:words(String(f.name).replace(/\[[^\]]*\]|\([^)]*\)/g," "))}));
+  const posting=new Map();pool.forEach((p,i)=>p.all.forEach(w=>{const l=posting.get(w);if(l)l.push(i);else posting.set(w,[i]);}));
+  const leave=new Set(settings.drvConnLeave||[]),units=[];
+  books.forEach(b=>{if(!b||b._story)return;
+    if(!isColl(b)&&!b.driveFile&&!rdFileOf(b))units.push({b,en:null,title:b.title,author:b.author});
+    (b.entries||[]).forEach(en=>{if(en&&en.id&&!en.driveFile&&!entFileHolder(b,en))units.push({b,en,title:en.title,author:en.author||b.author});});});
+  const rankKind=f=>f.kind==="file"?0:f.kind==="doc"?1:2;
+  const out=[];
+  units.forEach(u=>{
+    const key=u.b.id+(u.en?"|"+u.en.id:"");if(leave.has(key))return;
+    const tw=words(u.title);if(!tw.length)return;
+    const aw=words(u.author).filter(w=>w.length>1);
+    let rare=null;for(const w of tw){const l=posting.get(w);if(!l)return;if(!rare||l.length<rare.length)rare=l;}
+    const cand=[];
+    for(const i of rare){const p=pool[i];if(!tw.every(w=>p.all.has(w)))continue;
+      const auOk=aw.length?aw.some(w=>p.all.has(w)):false;
+      /* a lone letter is an author's initial, not another word of the title */
+      const left=p.core.filter(w=>w.length>1&&!tw.includes(w)&&!aw.includes(w)).length;
+      cand.push({f:p.f,auOk,left,sure:auOk&&left===0});}
+    /* one word and no author says too little to offer */
+    const fit=cand.filter(c=>c.auOk||tw.length>1).sort((a,c)=>(c.auOk-a.auOk)||(a.left-c.left)||(rankKind(a.f)-rankKind(c.f))||a.f.name.localeCompare(c.f.name));
+    if(!fit.length)return;
+    const sure=fit.filter(c=>c.sure),top=sure.length?sure.filter(c=>rankKind(c.f)===rankKind(sure.slice().sort((x,y)=>rankKind(x.f)-rankKind(y.f))[0].f)):[];
+    out.push({key,b:u.b,en:u.en,title:u.title,author:u.author,one:top.length===1?top[0].f:null,cands:fit.slice(0,3).map(c=>c.f),more:fit.length-Math.min(3,fit.length)});
+  });
+  /* a file sure for two books isn't sure for either */
+  const claims=new Map();out.forEach(u=>{if(u.one)claims.set(u.one.id,(claims.get(u.one.id)||0)+1);});
+  out.forEach(u=>{if(u.one&&claims.get(u.one.id)>1)u.one=null;});
+  return {sure:out.filter(u=>u.one),maybe:out.filter(u=>!u.one)};
+}
+async function drvConnectApply(rows){
+  const byBook=new Map();rows.forEach(r=>{if(!byBook.has(r.b.id))byBook.set(r.b.id,[]);byBook.get(r.b.id).push(r);});
+  const items=[];let full=false,n=0;
+  for(const [id,list] of byBook){
+    const b=books.find(x=>x.id===id);if(!b)continue;
+    const before=JSON.parse(JSON.stringify(b));
+    list.forEach(r=>{const x=r.en?(b.entries||[]).find(e=>e.id===r.en.id):b;if(x&&!x.driveFile)x.driveFile=drvFileOf(r.use);});
+    touchBook(b,true);
+    if(!(await putOrRestore(b,before))){full=true;break;}
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    try{await rebaseOpenBook(b.id);}catch(e){}
+    n+=list.length;
+  }
+  if(items.length)pushOp({t:"bulk",items});
+  if(SYNC.on)flushQueue();
+  if(full)alert(n+" connected. "+STORE_FULL_STOP);
+  return n;
+}
+let drvConn=null;
+function refreshDrvConnect(){
+  const box=q("#drvConnBox");if(!box)return;
+  const fo=settings.drive&&settings.drive.folder;
+  if(!fo){box.innerHTML=`<div class="hint" style="margin:0">Choose your Drive folder in ⚙ Settings → You → Google Drive, and your books and fics can be connected to their files here.</div>`;return;}
+  const intro=`<div class="hint" style="margin:0 0 8px">Finds the file for each book and story with none, by title and author. Nothing downloads and your files aren't changed. Each one then opens with 📖 Read it here.</div>`;
+  if(!drvConn){
+    box.innerHTML=intro+`<button class="btn pri" id="dcGo">🔗 Connect my files</button>`;
+    q("#dcGo",box).onclick=async()=>{
+      box.innerHTML=drvBarHtml(`Looking in ${esc(fo.name)}…`,null);
+      try{const files=await drvFolderFiles(false,p=>{if(box.isConnected)box.innerHTML=drvListSay(p,fo.name);});
+        drvConn=drvConnectFind(files);}
+      catch(e){box.innerHTML=`<div class="hint" style="margin:0">Drive couldn't be read — ${esc(e.message)}.</div>`;return;}
+      refreshDrvConnect();};
+    return;}
+  /* worked out afresh each time it is drawn: an ↶ or a book added since changes it */
+  if(drvFilesMemo&&drvFilesMemo.files)drvConn=drvConnectFind(drvFilesMemo.files);
+  const {sure,maybe}=drvConn;
+  const line=r=>`${esc(r.title||"Untitled")}${r.en?` <span class="meta" style="display:inline">· in ${esc(r.b.title||"Untitled")}</span>`:""}`;
+  const whenAt=drvFilesMemo&&drvFilesMemo.at?`List from ${esc(drvAgo(drvFilesMemo.at))}. `:"";
+  box.innerHTML=intro+`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      ${sure.length?`<button class="btn pri" id="dcSure">🔗 Connect the ${sure.length.toLocaleString()} sure one${sure.length===1?"":"s"}</button>`:`<b style="font-size:14px">No sure ones${maybe.length?"":" left"}</b>`}
+      <span class="hint" style="margin:0">${whenAt}${sure.length?"one ↶ undoes it":""}</span>
+      <button class="btn smallbtn" id="dcAgain" style="margin-left:auto">↻ Look again</button></div>
+    ${sure.length?`<details style="margin:0 0 10px"><summary style="cursor:pointer;font-size:13px">▸ See the ${sure.length.toLocaleString()} sure one${sure.length===1?"":"s"}</summary>
+      <div style="max-height:45vh;overflow:auto;margin-top:6px">${sure.slice(0,500).map(r=>`<div class="snap" style="display:block;padding:5px 10px;font-size:13px;overflow-wrap:anywhere">${line(r)}<div class="meta">☁ ${esc(r.one.name)}</div></div>`).join("")}</div></details>`:""}
+    ${maybe.length?`<div class="lbl" style="display:block;margin:0 0 4px">To check <b>${maybe.length.toLocaleString()}</b></div>
+      ${maybe.slice(0,40).map((r,i)=>`<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:6px;padding:7px 10px">
+        <div style="flex:1 1 100%;min-width:0;font-size:14px;overflow-wrap:anywhere"><b>${line(r)}</b>${r.author?`<div class="meta">${esc(r.author)}</div>`:""}</div>
+        ${r.cands.map((f,j)=>`<div class="hrow2" style="flex:1 1 100%;gap:6px;align-items:center"><span class="meta" style="flex:1;min-width:0;overflow-wrap:anywhere">☁ ${esc(f.name)}</span><button class="btn smallbtn" data-dcuse="${i}|${j}">Use it</button></div>`).join("")}
+        ${r.more?`<div class="meta" style="flex:1 1 100%">…and ${r.more} more. ☁ From Drive on its page lists them all.</div>`:""}
+        <button class="btn smallbtn" data-dcno="${i}">✕ None of these</button></div>`).join("")}
+      ${maybe.length>40?`<div class="hint" style="margin:6px 0 0">The first 40. These fill in as you go.</div>`:""}`:""}`;
+  const redo=()=>refreshDrvConnect();
+  q("#dcAgain",box).onclick=async()=>{box.innerHTML=drvBarHtml(`Looking in ${esc(fo.name)}…`,null);
+    try{await drvFolderFiles(true,p=>{if(box.isConnected)box.innerHTML=drvListSay(p,fo.name);});refreshDrvConnect();}
+    catch(e){box.innerHTML=`<div class="hint" style="margin:0">Drive couldn't be read — ${esc(e.message)}.</div>`;}};
+  {const go=q("#dcSure",box);if(go)go.onclick=async()=>{
+    if(!confirm(`Connect ${sure.length.toLocaleString()} book${sure.length===1?"":"s"} and fic${sure.length===1?"":"s"} to their files on your Drive?\n\n${sure.slice(0,4).map(r=>`“${r.title}”: ${r.one.name}`).join("\n")}${sure.length>4?`\n…and ${(sure.length-4).toLocaleString()} more`:""}\n\nOne press of ↶ Undo takes them all off.`))return;
+    go.disabled=true;go.textContent="Connecting…";
+    const n=await drvConnectApply(sure.map(r=>({b:r.b,en:r.en,use:r.one})));
+    undoSaid(`${n.toLocaleString()} connected to their files on your Drive.`);
+    await redo();};}
+  qa("[data-dcuse]",box).forEach(b=>b.onclick=async()=>{const [i,j]=b.dataset.dcuse.split("|"),r=maybe[+i];if(!r)return;b.disabled=true;
+    await drvConnectApply([{b:r.b,en:r.en,use:r.cands[+j]}]);undoSaid(`“${r.title}” is connected.`);await redo();});
+  qa("[data-dcno]",box).forEach(b=>b.onclick=async()=>{const r=maybe[+b.dataset.dcno];if(!r)return;
+    settings.drvConnLeave=[...new Set([...(settings.drvConnLeave||[]),r.key])];saveSettings();await redo();});
+}
+/* 📖 on a fic's own row, its page not needed first */
+document.addEventListener("click",e=>{const t=e.target.closest&&e.target.closest("[data-rowread]");if(!t)return;
+  e.stopPropagation();e.preventDefault();openReader(t.dataset.rowread);},true);
 /* the fic import, from the Drive folder — see A FOLDER OF FICS, READ AND LET GO */
 async function ficsFromDrive(again){
   const box=q("#impFicDrv");if(!box||ficRun)return;
@@ -49450,6 +49578,7 @@ async function renderHub(part){
         <div id="scanBox"></div>
       </div>
     </div>
+    ${driveReady()?`<div class="sec"><div class="heading"><h2 class="serif">Connect your Drive files</h2></div><div class="hcard" id="drvConnBox"></div></div>`:""}
     <div class="sec">
       <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph${ficsOn()?" / AO3":""}</h2><span class="n" id="impN"></span></div>
       <div class="hcard">
@@ -49641,7 +49770,7 @@ async function renderHub(part){
   };
   /* the housekeeping half's wiring — every refresher looks its box up and
      returns when it is not on the page, and the two buttons are guarded here */
-  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshClaudeTidy();refreshFandomTidy();refreshScreen();
+  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshClaudeTidy();refreshFandomTidy();refreshScreen();refreshDrvConnect();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
   /* many books off one picture — see ONE PHOTO, THREE ANSWERS */
   {const pb=q("#impPhoto"),pf=q("#impPhotoFile"),ps=q("#impPhotoSay");
@@ -65540,7 +65669,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["fics","ficCards","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
+const SHARED_PREFS=["fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
