@@ -664,6 +664,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   [data-theme="dark"] .atlas .pin{stroke:var(--card)}
   [data-theme="dark"] .atlas .pinn{fill:#0b0f0e}
   .atlas .pins{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:13px;margin-top:8px}
+  /* how far a Drive wait has got — see drvBarHtml */
+  .drvbar .prog{display:block;width:100%;height:8px}
+  .drvrun i{animation:drvrun 1.4s ease-in-out infinite alternate}
+  @keyframes drvrun{from{margin-left:0}to{margin-left:65%}}
+  @media (prefers-reduced-motion:reduce){.drvrun i{animation:none;width:100%!important;opacity:.5}}
+  #rdOpening{z-index:10050}
   /* the kinds apart — see FICS ON A SHELF OF THEIR OWN */
   .kindtabs{margin-bottom:8px}
   .kindtabs .pill{font-size:14px}
@@ -13707,6 +13713,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.1",go:["el:settings:#secDrive"],lines:["<b>☁ Drive shows what it's doing, and remembers.</b> Opening a Drive file now shows a bar, how much has downloaded, and Cancel. Picking a file opens it straight away, and an earlier file still on its way can no longer open on top of the one you're reading. Your folder's list is kept on this device, so after the first look it opens at once; <b>↻ Look again</b> fetches it fresh.","<b>¶ More broken lines joined.</b> A line that stops mid-sentence is joined to a next line starting on a small letter in any file now, not only in files full of them. ☰ in the reader says how many were joined, offers any others that stop mid-sentence, and can show the file as it is."]},
   {v:"2026-11-03.11",go:["el:settings:#secDrive"],lines:["<b>☁ Drive, quicker and better at finding.</b> A big Drive folder used to be read one folder at a time, so ☁ From Drive could sit on <i>Looking…</i> for minutes; it now takes a few seconds and says how far it has got. Typing finds any part of a name (<i>stilt</i> finds Stilton), Google Docs in the folder open in the reader too, and PDFs are listed, last, marked as ones the reader can't open yet."]},
   {v:"2026-11-03.10",go:["tab:care"],lines:["<b>✨ Claude reads the shelf once.</b> When every book has been read, it no longer starts the whole round again on the next press: it reads only new books, and ones whose blurb or notes you've changed. <b>↻ Read every one again</b> is its own button, with its price. If the last round started over on you, <b>✓ Count every one as read</b> puts it back. What's been read, and the suggestions waiting, now follow you between your devices."]},
   {v:"2026-11-03.9",go:["el:settings:#secDrive"],lines:["<b>☁ Book files on your Google Drive.</b> In ⚙ Settings → You → <b>Google Drive</b>, find your folder by name and choose it; Google asks you to sign in and allow it once, read-only. Then a book's page has <b>☁ From Drive</b> beside 📖 Read it here, and 📁 Fics from AO3 files has <b>☁ My Drive folder</b>, which reads every AO3 file in it and lets each fic remember its file. The reader opens the file from your Drive each time and keeps only your place. While a book is 📖 Reading now, a copy stays on this device so it opens without the internet; it goes once you finish."]},
@@ -30067,7 +30074,7 @@ function rdParseX(text){
   if(d.getElementsByTagName("parsererror").length||!d.body)d=new DOMParser().parseFromString(text,"text/html");
   return d;
 }
-async function rdFromEpub(buf){
+async function rdFromEpub(buf,onPart){
   const z=zipIndex(buf),low=new Map([...z.values()].map(e=>[e.name.toLowerCase(),e]));
   const get=n=>z.get(n)||low.get(String(n).toLowerCase())||null;
   const enc=get("META-INF/encryption.xml");
@@ -30099,7 +30106,9 @@ async function rdFromEpub(buf){
     if(e&&RD_PIC_TYPE[ext]&&shrunk.size<RD_PIC_MAX&&chars<RD_PIC_CHARS){try{d=await rdShrinkPic(await zipBlob(e,RD_PIC_TYPE[ext]));chars+=d.length;}catch(x){d="";}}
     shrunk.set(path,d);return d;};
   const doc=document.implementation.createHTMLDocument(""),out=doc.createElement("div");
+  let part=0;
   for(const it of spine){
+    part++;if(onPart)onPart(part,spine.length);
     const e=get(it.href);if(!e)continue;
     const d=rdParseX(await zipText(e));
     const pics=new Map();
@@ -30197,30 +30206,39 @@ const rdOpenEnd=t=>{if(!t||rdHeadish(t))return false;
   /* a dash before a closing quote is a line broken off in speech, not a cut */
   if(/[—–-]$/.test(s)&&s.length<t.length)return false;
   return !/[.!?…:]$/.test(s);};
-function rdMend(html){
+/* ---- A SHORT BOOK WITH A BROKEN LINE OR TWO ----
+   The share above decides for a whole file, and a picture book with mostly
+   whole sentences never reached it: "That's good advice," stood apart from
+   "said Ben." A paragraph that stops mid-sentence and a next one starting on a
+   small letter are one sentence on any evidence, so that join is made in any
+   file. force (☰ → join them too, settings.rdJoin[id] "all") takes the rest,
+   the ones where the next paragraph starts on a capital. */
+function rdMend(html,force){
   const box=document.createElement("div");box.innerHTML=html;
   const ps=[...box.querySelectorAll("p")],full=ps.filter(p=>p.textContent.trim());
-  if(full.length<RD_MEND_MIN)return {html,n:0};
   const open=full.filter(p=>rdOpenEnd(p.textContent.trim())).length;
-  if(open/full.length<RD_MEND_SHARE)return {html,n:0};
+  const all=!!force||(full.length>=RD_MEND_MIN&&open/full.length>=RD_MEND_SHARE);
+  if(!open)return {html,n:0,open,total:full.length,all};
   const sect=el=>el===box||(el&&el.classList&&el.classList.contains("rdch"));
   let prev=null,gap=[],n=0;
   box.querySelectorAll("p,h1,h2,h3,h4,h5,h6,hr,img,blockquote,ul,ol,pre,table,figure").forEach(el=>{
     if(el.tagName!=="P"){if(!el.closest("p"))prev=null;gap=[];return;}
     const t=el.textContent.trim();
     if(!t&&!el.querySelector("img")){if(prev)gap.push(el);return;}
-    if(prev&&(prev.parentElement===el.parentElement||(sect(prev.parentElement)&&sect(el.parentElement)))&&rdOpenEnd(prev.textContent.trim())&&!rdHeadish(t)){
+    if(prev&&(prev.parentElement===el.parentElement||(sect(prev.parentElement)&&sect(el.parentElement)))&&rdOpenEnd(prev.textContent.trim())&&!rdHeadish(t)&&(all||/^\p{Ll}/u.test(t))){
       prev.appendChild(document.createTextNode(" "));while(el.firstChild)prev.appendChild(el.firstChild);
       el.remove();gap.forEach(g=>g.remove());gap=[];n++;return;}
     prev=el;gap=[];});
-  return {html:box.innerHTML,n};
+  return {html:n?box.innerHTML:html,n,open,total:full.length,all};
 }
-const rdJoinOn=id=>!(settings&&settings.rdJoin&&settings.rdJoin[id]===false);
-async function rdLoad(id){
-  if(rdCache.has(id))return rdCache.get(id);
+/* which file a Drive book's text in rdCache came from — see ONE FILE OPENING AT A TIME */
+const rdCacheDrv=new Map();
+async function rdLoad(id,opts){
+  const bk=books.find(x=>x.id===id),dfid=bk&&!rdFileOf(bk)&&bk.driveFile?bk.driveFile.id:"";
+  if(rdCache.has(id)&&(!dfid||rdCacheDrv.get(id)===dfid))return rdCache.get(id);
   let d=null;try{d=await loadImgData(rdKey(id));}catch(e){}
   /* none kept here: one on Drive, fetched — see BOOK FILES ON GOOGLE DRIVE */
-  if(!d){const b=books.find(x=>x.id===id);return b&&b.driveFile&&driveReady()?await drvHtml(b):null;}
+  if(!d){const b=books.find(x=>x.id===id);return b&&b.driveFile&&driveReady()?await drvHtml(b,opts):null;}
   let html="";try{html=rdUnB64(String(d).split(",")[1]||"");}catch(e){return null;}
   /* cleaned when given, but a stored file can also arrive from a backup file
      or the cloud — the two inputs every other rich text is scrubbed against
@@ -30357,65 +30375,106 @@ async function drvToken(){
       error_callback:e=>rej(new Error(e&&e.type==="popup_closed"?"the Google window was closed":e&&e.type==="popup_failed_to_open"?"the browser blocked Google's window — allow pop-ups for this page":"Google's sign-in failed"))});
     c.requestAccessToken({prompt:settings.driveAsked?"":"consent"});});
 }
-async function drvGet(path,raw){
-  for(let tries=0;tries<2;tries++){
-    const r=await fetch(DRV_API+path,{headers:{Authorization:"Bearer "+await drvToken()}});
-    if(r.status===401){drvTok="";continue;}
-    if(!r.ok){let m="";try{m=(await r.json()).error.message;}catch(e){}throw new Error(m||("Drive answered "+r.status));}
-    return raw?r.blob():r.json();
+/* one answer from Drive: a stale token asked again, and "too many, too fast"
+   (429, a rate-limit 403, a passing 5xx) waited out twice before giving up */
+async function drvFetch(path,signal){
+  let authTries=0;
+  for(let tries=0;;tries++){
+    const r=await fetch(DRV_API+path,{headers:{Authorization:"Bearer "+await drvToken()},signal});
+    if(r.status===401&&authTries++<1){drvTok="";continue;}
+    if(r.ok)return r;
+    let m="";try{m=(await r.clone().json()).error.message;}catch(e){}
+    if(tries<2&&(r.status===429||r.status>=500||(r.status===403&&/rate|quota/i.test(m)))){await new Promise(res=>setTimeout(res,1000*(tries+1)));continue;}
+    throw new Error(r.status===401?"Google didn't accept the sign-in":(m||("Drive answered "+r.status)));
   }
-  throw new Error("Google didn't accept the sign-in");
 }
-async function drvList(qy,fields){
+async function drvGet(path,raw){const r=await drvFetch(path);return raw?r.blob():r.json();}
+/* a file's bytes, saying how far along as they come */
+async function drvDownload(path,size,onProg,signal){
+  const r=await drvFetch(path,signal);
+  if(!r.body||!onProg)return r.blob();
+  const total=+r.headers.get("content-length")||size||0,rd=r.body.getReader(),parts=[];let got=0;
+  for(;;){const {done,value}=await rd.read();if(done)break;parts.push(value);got+=value.length;onProg(got,total);}
+  return new Blob(parts,{type:r.headers.get("content-type")||""});
+}
+async function drvList(qy,fields,onPage){
   const out=[];let tok="";
-  do{const j=await drvGet(`files?q=${encodeURIComponent(qy)}&pageSize=1000&fields=${encodeURIComponent("nextPageToken,files("+fields+")")}${tok?"&pageToken="+encodeURIComponent(tok):""}&supportsAllDrives=true&includeItemsFromAllDrives=true`);
-    out.push(...(j.files||[]));tok=j.nextPageToken||"";}while(tok);
+  do{const j=await drvGet(`files?q=${encodeURIComponent(qy)}&pageSize=1000&fields=${encodeURIComponent("nextPageToken,files("+fields+")")}${tok?"&pageToken="+encodeURIComponent(tok):""}`);
+    const page=j.files||[];out.push(...page);tok=j.nextPageToken||"";if(onPage)onPage(out.length,page);}while(tok);
   return out;
 }
+/* a bar that says what it is doing; pct null runs back and forth, for a wait
+   whose length cannot be known */
+const drvBarHtml=(say,pct)=>`<div class="drvbar"><div class="hint" style="margin:0 0 4px">${say}</div><span class="prog${pct==null?" drvrun":""}"><i style="width:${pct==null?35:Math.max(2,Math.min(100,Math.round(pct)))}%"></i></span></div>`;
 const drvQ=s=>String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'");
-/* ---- A BIG FOLDER, LISTED IN A FEW ASKS ----
-   The folder was walked one subfolder at a time, a request each: on a
-   library of thousands of files in hundreds of folders that took minutes and
-   looked like nothing happening. Now every folder of the Drive is listed in
-   one go (a page per thousand), the tree under the chosen one is worked out
-   here, and its files are asked for forty folders at a time; onCount says
-   how many so far. A Google Doc counts (kind "doc", opened by export as
-   HTML — drvHtml), and a PDF is listed so it can be found, marked as one the
-   reader cannot open. */
+/* ---- A BIG FOLDER, LISTED ONCE ----
+   Walked a folder at a time this was hundreds of requests; forty folders to a
+   query was still minutes on a real Drive and a phone, with nothing to look
+   at meanwhile. Now it takes two listings of the whole Drive, however deep:
+   every folder (id, parents), then every file of a kind the reader cares for
+   (DRV_MIMES, with its parents), and what lies under the chosen folder is
+   worked out here. The answer is kept on this device (drvListSave, in
+   localStorage; never synced, never in a backup), so the next visit opens at
+   once and asks Google for nothing; ↻ Look again lists it fresh. onProg gets
+   {stage, n, found, est}: est is how many the last listing looked at, so
+   a second listing can show a real bar. A Google Doc counts (kind "doc",
+   opened by export as HTML — drvHtml), and a PDF is listed so it can be
+   found, marked as one the reader cannot open. */
 const DRV_DIR="application/vnd.google-apps.folder",DRV_DOC="application/vnd.google-apps.document";
+const DRV_MIMES=["application/epub+zip","text/html","application/xhtml+xml","text/plain","application/pdf",DRV_DOC,"application/octet-stream","application/zip","application/x-zip-compressed"];
 const drvKind=x=>x.mimeType===DRV_DOC?"doc":(x.mimeType==="application/pdf"||/\.pdf$/i.test(x.name))?"pdf"
   :(DRV_TYPES.test(x.name)||/epub|text\/html|text\/plain/.test(x.mimeType||""))?"file":"";
-async function drvFolderFiles(again,onCount){
+const DRV_LIST_KEY="shelfDriveList";
+function drvListSave(m){try{localStorage.setItem(DRV_LIST_KEY,JSON.stringify({id:m.id,at:m.at,looked:m.looked,files:m.files.map(f=>[f.id,f.name,f.size,f.mime,f.kind])}));}catch(e){}}
+function drvListLoad(){
+  try{const o=JSON.parse(localStorage.getItem(DRV_LIST_KEY)||"null");if(!o||!Array.isArray(o.files))return null;
+    return {id:o.id,at:o.at,looked:o.looked||0,files:o.files.map(([id,name,size,mime,kind])=>({id,name,size,mime,kind}))};}catch(e){return null;}
+}
+async function drvFolderFiles(again,onProg){
   const f=settings.drive&&settings.drive.folder;if(!f)throw new Error("choose your Drive folder first, in ⚙ Settings → You → Google Drive");
-  if(drvFilesMemo&&drvFilesMemo.id===f.id&&!again)return drvFilesMemo.files;
-  const dirs=await drvList(`mimeType='${DRV_DIR}' and trashed=false`,"id,parents");
+  if(!again){
+    if(drvFilesMemo&&drvFilesMemo.id===f.id)return drvFilesMemo.files;
+    const kept=drvListLoad();if(kept&&kept.id===f.id){drvFilesMemo=kept;return kept.files;}
+  }
+  const was=drvListLoad(),est=was&&was.looked||0;
+  const dirs=await drvList(`mimeType='${DRV_DIR}' and trashed=false`,"id,parents",n=>onProg&&onProg({stage:"folders",n}));
   const kids=new Map();dirs.forEach(d=>(d.parents||[]).forEach(p=>{if(!kids.has(p))kids.set(p,[]);kids.get(p).push(d.id);}));
   const inside=[f.id],seen=new Set(inside);
   for(let i=0;i<inside.length;i++)(kids.get(inside[i])||[]).forEach(c=>{if(!seen.has(c)){seen.add(c);inside.push(c);}});
   const files=[];
-  for(let i=0;i<inside.length;i+=40){
-    const par=inside.slice(i,i+40).map(id=>`'${drvQ(id)}' in parents`).join(" or ");
-    for(const x of await drvList(`(${par}) and mimeType!='${DRV_DIR}' and trashed=false`,"id,name,mimeType,size")){
-      const k=drvKind(x);if(k)files.push({id:x.id,name:x.name,size:+x.size||0,mime:x.mimeType,kind:k});}
-    if(onCount)onCount(files.length,Math.min(inside.length,i+40),inside.length);
-  }
-  drvFilesMemo={id:f.id,files};return files;
+  const looked=await drvList(`(${DRV_MIMES.map(m=>`mimeType='${m}'`).join(" or ")}) and trashed=false`,"id,name,mimeType,size,parents",(n,page)=>{
+    page.forEach(x=>{if(!(x.parents||[]).some(p=>seen.has(p)))return;
+      const k=drvKind(x);if(k)files.push({id:x.id,name:x.name,size:+x.size||0,mime:x.mimeType,kind:k});});
+    if(onProg)onProg({stage:"files",n,found:files.length,est});});
+  drvFilesMemo={id:f.id,at:Date.now(),looked:looked.length,files};drvListSave(drvFilesMemo);
+  return files;
 }
+const drvListSay=(p,fname)=>p.stage==="folders"
+  ?drvBarHtml(`Finding your folders on Drive… ${p.n.toLocaleString()} so far`,null)
+  :drvBarHtml(`Looking through your files… ${p.n.toLocaleString()} looked at, ${p.found.toLocaleString()} in ${esc(fname)}`,p.est?Math.min(99,p.n/p.est*100):null);
 /* a book's Drive file as the reader's clean HTML — the copy on this device
-   while it is being read, otherwise fetched */
-async function drvHtml(b){
-  const k=drvKey(b.id),df=b.driveFile;
-  try{const r=await dbGet("images",k);if(r&&r.data&&r.v===df.id){const h=cleanHtml(rdUnB64(String(r.data).split(",")[1]||""));rdCache.set(b.id,h);return h;}}catch(e){}
+   while it is being read, otherwise fetched. opts {onProg, signal}; onProg(say,
+   pct). The answer is dropped if the book has been given another file while
+   this one was on its way (see ONE FILE OPENING AT A TIME). */
+async function drvHtml(b,opts){
+  const k=drvKey(b.id),df=b.driveFile,o=opts||{},say=o.onProg||(()=>{});
+  try{const r=await dbGet("images",k);if(r&&r.data&&r.v===df.id){const h=cleanHtml(rdUnB64(String(r.data).split(",")[1]||""));rdCache.set(b.id,h);rdCacheDrv.set(b.id,df.id);return h;}}catch(e){}
   /* a Google Doc has no file to download; Drive hands it over as HTML */
   const isDoc=df.mime===DRV_DOC;
-  const blob=await drvGet(isDoc?`files/${encodeURIComponent(df.id)}/export?mimeType=text%2Fhtml`:`files/${encodeURIComponent(df.id)}?alt=media&supportsAllDrives=true`,true);
+  say(isDoc?"Asking Drive for the document…":"Starting the download…",null);
+  const blob=await drvDownload(isDoc?`files/${encodeURIComponent(df.id)}/export?mimeType=text%2Fhtml`:`files/${encodeURIComponent(df.id)}?alt=media`,df.size,
+    (got,total)=>say(total?`Downloading ${fmtBytes(got)} of ${fmtBytes(total)}`:`Downloading ${fmtBytes(got)}`,total?got/total*100:null),o.signal);
   const head=new Uint8Array(await blob.slice(0,4).arrayBuffer());
+  say("Getting it ready to read…",null);
   let html;
   if(isDoc)html=rdFromHtml(await blob.text());
-  else if(/\.epub$/i.test(df.name||"")||(head[0]===0x50&&head[1]===0x4b))html=await rdFromEpub(await blob.arrayBuffer());
+  else if(/\.epub$/i.test(df.name||"")||(head[0]===0x50&&head[1]===0x4b))html=await rdFromEpub(await blob.arrayBuffer(),(i,n)=>say(`Getting it ready to read… part ${i} of ${n}`,i/n*100));
   else{const text=await blob.text();html=(/\.x?html?$/i.test(df.name||"")||/<\/(p|div|body|html)>/i.test(text.slice(0,30000)))?rdFromHtml(text):rdFromText(text);}
-  html=cleanHtml(html);rdCache.set(b.id,html);
-  if(statusOf(b)==="reading"&&!b.dnf)try{await dbPut("images",{key:k,data:"data:text/html;base64,"+rdB64(html),v:df.id});}catch(e){}
+  html=cleanHtml(html);
+  const now=books.find(x=>x.id===b.id);
+  if(!now||!now.driveFile||now.driveFile.id!==df.id){const e=new Error("another file was chosen");e.name="AbortError";throw e;}
+  rdCache.set(b.id,html);rdCacheDrv.set(b.id,df.id);
+  if(statusOf(now)==="reading"&&!now.dnf)try{await dbPut("images",{key:k,data:"data:text/html;base64,"+rdB64(html),v:df.id});}catch(e){}
   return html;
 }
 /* ☁ From Drive on a book's page: the folder's files, the likeliest first */
@@ -30425,7 +30484,8 @@ async function drvPickFor(id){
   const d=document.createElement("div");d.id="drvPick";d.className="ratepanel";
   d.innerHTML=`<div class="hrow2" style="margin-bottom:8px"><b style="font-size:14px">☁ A file from your Drive</b><button class="btn" id="dpX" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
     <input class="field" id="dpQ" placeholder="Part of the file's name" value="${esc(b.title||"")}" style="width:100%;box-sizing:border-box">
-    <div id="dpList" style="max-height:55vh;overflow:auto;margin-top:8px"><div class="hint">Looking in ${esc((settings.drive&&settings.drive.folder&&settings.drive.folder.name)||"your folder")}…</div></div>`;
+    <div id="dpWhen" class="hrow2" style="gap:6px;align-items:center;margin-top:6px"></div>
+    <div id="dpList" style="max-height:55vh;overflow:auto;margin-top:8px"></div>`;
   document.body.appendChild(d);const close=dismissable(d);d.__close=close;q("#dpX",d).onclick=()=>close();
   let files=[];
   /* any part of the name: "stilt" finds Stilton, one letter finds the names
@@ -30441,14 +30501,29 @@ async function drvPickFor(id){
     box.innerHTML=(hits.length?`<div class="hint" style="margin:0 0 4px">${hits.length.toLocaleString()} of ${files.length.toLocaleString()} file${files.length===1?"":"s"}${hits.length>60?", the first 60":""}</div>`:"")
       +hits.slice(0,60).map(row).join("")
       ||`<div class="hint">Nothing in the folder by that name — ${files.length.toLocaleString()} files in it.</div>`;
+    /* picking a file is asking to read it: it opens, with its bar, and a file
+       still on its way is dropped — see ONE FILE OPENING AT A TIME */
     qa("[data-dpuse]",box).forEach(bt=>bt.onclick=async()=>{const f=files.find(x=>x.id===bt.dataset.dpuse);if(!f)return;close();
+      rdOpenCancel();
       const mut=bk=>{bk.driveFile={id:f.id,name:f.name,size:f.size,...(f.mime?{mime:f.mime}:{})};delete bk.readPos;return true;};
-      if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);});};
+      try{await dbDel("images",drvKey(id));}catch(e){}
+      rdCache.delete(id);rdCacheDrv.delete(id);
+      if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);
+      openReader(id);});
+    /* how old the list is, and the way to a fresh one */
+    const st=q("#dpWhen",d);
+    if(st&&drvFilesMemo&&drvFilesMemo.at)st.innerHTML=`<span class="hint" style="margin:0">List from ${esc(drvAgo(drvFilesMemo.at))}</span> <button class="btn smallbtn" id="dpAgain">↻ Look again</button>`;
+    const ag=q("#dpAgain",d);if(ag)ag.onclick=()=>load(true);};
   q("#dpQ",d).oninput=paint;
   const fname=(settings.drive&&settings.drive.folder&&settings.drive.folder.name)||"your folder";
-  try{files=await drvFolderFiles(false,(n,dn,dt)=>{const l=q("#dpList",d);if(l&&!files.length)l.innerHTML=`<div class="hint">Looking in ${esc(fname)}… ${dn.toLocaleString()} of ${dt.toLocaleString()} folders, ${n.toLocaleString()} files so far</div>`;});paint();}
-  catch(e){q("#dpList",d).innerHTML=`<div class="hint">Drive couldn't be read — ${esc(e.message)}.</div>`;}
+  const load=async again=>{
+    q("#dpList",d).innerHTML=drvBarHtml(`Looking in ${esc(fname)}…`,null);
+    try{files=await drvFolderFiles(again,p=>{const l=q("#dpList",d);if(l)l.innerHTML=drvListSay(p,fname);});paint();}
+    catch(e){q("#dpList",d).innerHTML=`<div class="hint">Drive couldn't be read — ${esc(e.message)}.</div><button class="btn smallbtn" id="dpAgain">Try again</button>`;
+      const ag=q("#dpAgain",d);if(ag)ag.onclick=()=>load(true);}};
+  load(false);
 }
+const drvAgo=at=>{const m=Math.round((Date.now()-at)/60000);return m<2?"just now":m<60?m+" minutes ago":m<2880?Math.round(m/60)+" hours ago":Math.round(m/1440)+" days ago";};
 /* ⚙ Settings → You → Google Drive */
 function drvCardHtml(){
   if(!driveReady())return "";
@@ -30474,14 +30549,15 @@ function drvCardWire(m){
 async function ficsFromDrive(){
   const say=q("#impFicSay");
   try{
-    if(say)say.textContent="Asking your Drive for the folder's files…";
-    const files=(await drvFolderFiles(true,(n,dn,dt)=>{if(say)say.textContent=`Asking your Drive… ${dn.toLocaleString()} of ${dt.toLocaleString()} folders, ${n.toLocaleString()} files so far`;})).filter(f=>f.kind==="file"&&/\.(epub|x?html?)$/i.test(f.name));
+    const fname=(settings.drive&&settings.drive.folder&&settings.drive.folder.name)||"your folder";
+    if(say)say.innerHTML=drvBarHtml(`Looking in ${esc(fname)}…`,null);
+    const files=(await drvFolderFiles(true,p=>{if(say)say.innerHTML=drvListSay(p,fname);})).filter(f=>f.kind==="file"&&/\.(epub|x?html?)$/i.test(f.name));
     const rows=[];let not=0,bad=0,done=0;const t0=Date.now();
     const one=async f=>{try{const blob=await drvGet(`files/${encodeURIComponent(f.id)}?alt=media&supportsAllDrives=true`,true);
         const r=await ficFromFile(new File([blob],f.name,{type:blob.type}));
         if(r){const row=ficFileRow(r);row.driveFile={id:f.id,name:f.name,size:f.size};rows.push(row);}else not++;}
       catch(e){bad++;}
-      done++;if(say&&(done%10===0||done===files.length))say.textContent=`Reading ${done.toLocaleString()} of ${files.length.toLocaleString()} from your Drive…`;};
+      done++;if(say&&(done%4===0||done===files.length))say.innerHTML=drvBarHtml(`Reading ${done.toLocaleString()} of ${files.length.toLocaleString()} from your Drive…`,done/files.length*100);};
     /* four at a time — enough to keep the line busy, few enough not to be refused */
     for(let i=0;i<files.length;i+=4)await Promise.all(files.slice(i,i+4).map(one));
     const res=rows.length?stageImportRows(rows,"AO3 files on Drive"):null;
@@ -30750,12 +30826,48 @@ function closeReader(quiet,fromBack){
   clearInterval(s.timer);clearInterval(s.clock);document.removeEventListener("keydown",s.onKey,true);window.removeEventListener("resize",s.onResize);document.removeEventListener("visibilitychange",s.onHide);document.removeEventListener("selectionchange",s.onSel);
   s.el.remove();document.documentElement.classList.remove("rdopen");rdState=null;
 }
+/* ┌─ ONE FILE OPENING AT A TIME ────────────────────────────────────────────┐
+   │ A Drive file can take a while to arrive, and nothing showed for it: a    │
+   │ press looked dead, so another file was chosen, and a minute into reading │
+   │ that one the first finished its download and opened over it. Every open  │
+   │ now takes a number (rdOpenSeq) and an AbortController: a newer open or   │
+   │ Cancel stops the download, and an answer that is no longer the newest is │
+   │ dropped. Past RD_OPEN_SHOW ms #rdOpening shows what is happening, with a │
+   │ bar. rdCacheDrv says which file a book's text came from, and drvHtml     │
+   │ throws away an answer for a file the book no longer has.                 │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const RD_OPEN_SHOW=250;
+let rdOpenSeq=0,rdOpening=null;
+function rdOpenCancel(){rdOpenSeq++;if(rdOpening){const o=rdOpening;rdOpening=null;clearTimeout(o.timer);try{o.ac.abort();}catch(e){}if(o.el)o.el.remove();}}
+function rdOpenBegin(b){
+  rdOpenCancel();
+  const o={id:b.id,file:(b.driveFile&&b.driveFile.id)||"",seq:++rdOpenSeq,ac:new AbortController(),el:null,say:"Opening…",pct:null};
+  const paint=()=>{if(!o.el)return;const bx=q(".rdobar",o.el);if(bx)bx.innerHTML=drvBarHtml(esc(o.say),o.pct);};
+  o.prog=(say,pct)=>{o.say=say;o.pct=pct;paint();};
+  o.timer=setTimeout(()=>{if(rdOpening!==o)return;
+    const d=document.createElement("div");d.id="rdOpening";d.className="ratepanel";
+    d.innerHTML=`<div style="font-size:14px;margin-bottom:8px">📖 <b>${esc(b.title||"Untitled")}</b></div><div class="rdobar"></div>
+      <div class="hrow2" style="margin-top:10px"><button class="btn" id="rdoX">Cancel</button></div>`;
+    document.body.appendChild(d);o.el=d;paint();q("#rdoX",d).onclick=()=>rdOpenCancel();},RD_OPEN_SHOW);
+  rdOpening=o;return o;
+}
 async function openReader(id){
   const b=books.find(x=>x.id===id);if(!b)return;
+  /* pressed again while this very file is on its way: it is already coming */
+  if(rdOpening&&rdOpening.id===id&&rdOpening.file===((b.driveFile&&b.driveFile.id)||""))return;
+  const op=rdOpenBegin(b);
   let raw=null;
-  try{raw=await rdLoad(id);}catch(e){alert("The file couldn't be opened from Google Drive — "+((e&&e.message)||"no answer")+".");return;}
-  /* broken lines joined — see LINES BROKEN WHERE THE PAGE ENDED */
-  const mend=raw?rdMend(raw):{html:"",n:0},html=mend.n&&rdJoinOn(id)?mend.html:raw;
+  try{raw=await rdLoad(id,{onProg:op.prog,signal:op.ac.signal});}
+  catch(e){if(op.seq!==rdOpenSeq)return;rdOpenCancel();
+    if(!(e&&e.name==="AbortError"))alert("The file couldn't be opened from Google Drive — "+((e&&e.message)||"no answer")+".");return;}
+  if(op.seq!==rdOpenSeq)return;   /* something newer asked, or Cancel */
+  rdOpenCancel();
+  /* broken lines joined — see LINES BROKEN WHERE THE PAGE ENDED and A SHORT BOOK
+     WITH A BROKEN LINE OR TWO. settings.rdJoin[id]: false as given, "all" every one */
+  const joinWay=()=>settings.rdJoin&&settings.rdJoin[id];
+  const mend=raw?rdMend(raw):{html:"",n:0};
+  const joinedNow=()=>joinWay()===false?raw:joinWay()==="all"?rdMend(raw,true).html:mend.html;
+  const html=raw?joinedNow():raw;
   if(!html){alert(rdFileOf(b)?"The file hasn't reached this device yet — it comes through the cloud from the device it was given on, when sync is on and you are online.":"There is no file to read yet.");return;}
   closeReader(true);
   const mode=(settings.rdMode&&settings.rdMode[id])==="pages"?"pages":"scroll";
@@ -30794,11 +30906,19 @@ async function openReader(id){
     const bb=books.find(x=>x.id===id);if(bb&&statusOf(bb)==="reading"){st.remove();const n=q(".rdfoot .rdmark",el);if(n)n.textContent="the bookmark follows you";rdSave(true);}};}
   q("#rdToc",el).onclick=e=>{e.stopPropagation();const box=q("#rdTocBox",el);if(!box.hidden){box.hidden=true;return;}
     const hs=rdHeads();
-    const join=mend.n?`<button class="rdtocrow rdjoin" id="rdJoin" title="This file breaks its sentences where the printed page did">${rdJoinOn(id)?`¶ ${mend.n.toLocaleString()} broken line${mend.n===1?"":"s"} joined · <u>show the file as it is</u>`:`¶ Shown as in the file · <u>join the broken lines</u>`}</button>`:"";
+    /* what was joined, what else could be, and the file as it is */
+    const way=joinWay(),every=mend.all?mend:rdMend(raw,true);
+    const jrow=(to,words)=>`<button class="rdtocrow rdjoin" data-rdjoin="${to}" title="Your file itself is never changed">${words}</button>`;
+    const say=n=>`${n.toLocaleString()} broken line${n===1?"":"s"}`;
+    const join=way===false?(every.n?jrow("auto",`¶ Shown as in the file · <u>join the broken lines</u>`):"")
+      :way==="all"?jrow("false",`¶ ${say(every.n)} joined · <u>show the file as it is</u>`)+(mend.n<every.n?jrow("auto",`¶ <u>Only the ${mend.n.toLocaleString()} that are certain</u>`):"")
+      :(mend.n?jrow("false",`¶ ${say(mend.n)} joined · <u>show the file as it is</u>`):"")
+       +(every.n>mend.n?jrow("all",`¶ ${(every.n-mend.n).toLocaleString()} more stop mid-sentence · <u>join them too</u>`):"");
     box.innerHTML=join+(hs.length?hs.map((h,i)=>`<button class="rdtocrow" data-rdh="${i}">${esc(h.textContent.trim().slice(0,80))}</button>`).join(""):`<div class="hint" style="margin:6px">No chapter heads in this file.</div>`);
-    {const jb=q("#rdJoin",box);if(jb)jb.onclick=()=>{box.hidden=true;s.f=rdPosNow();
-      settings.rdJoin=Object.assign({},settings.rdJoin||{},{[id]:!rdJoinOn(id)});if(settings.rdJoin[id])delete settings.rdJoin[id];saveSettings();
-      q("#rdText",el).innerHTML=rdJoinOn(id)?mend.html:raw;rdLayout();};}
+    qa("[data-rdjoin]",box).forEach(jb=>jb.onclick=()=>{box.hidden=true;s.f=rdPosNow();const to=jb.dataset.rdjoin;
+      const m=Object.assign({},settings.rdJoin||{});if(to==="auto")delete m[id];else m[id]=to==="all"?"all":false;
+      settings.rdJoin=m;saveSettings();
+      q("#rdText",el).innerHTML=joinedNow();rdLayout();});
     box.hidden=false;qa("[data-rdh]",box).forEach(bt=>bt.onclick=()=>{const h=hs[+bt.dataset.rdh];box.hidden=true;if(!h)return;
       if(s.mode==="pages")rdGo(Math.floor(h.offsetLeft/s.W));else{v.scrollTop=Math.max(0,h.offsetTop-12);rdShow();}});};
   v.addEventListener("scroll",()=>{act();if(s.mode==="scroll"){clearTimeout(s.st);s.st=setTimeout(rdShow,120);}},{passive:true});
