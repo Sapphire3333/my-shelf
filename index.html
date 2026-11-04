@@ -13777,6 +13777,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.16",lines:["<b>✨ Claude no longer stops at “Invalid JWT”.</b> When your sign-in had just run out, anything asking Claude failed with those words. The app now renews it and asks again by itself, and nothing is charged for the refused try."]},
   {v:"2026-11-04.15",go:["el:care:#fdTidyBox"],lines:["<b>✨ Claude tidies your fandoms.</b> In Shelf care, <b>✨ Look at my fandoms</b> has Claude read your fandom names and suggest which are one story in different versions, like every Iron Man under one <b>Iron Man</b>. Different stories in one universe stay apart. Confirm a row, press a name to keep that one instead, ✕ to leave it, or <b>✓ Accept all</b>. Characters move across with the name, and one press of ↶ puts it all back. Only the names and their counts go to Claude."]},
   {v:"2026-11-04.14",go:["set:how:#ficCardsChk"],lines:["<b>🎴 Fics are out of your booster packs, unless you want them.</b> With a whole folder of fics they would have filled the album, so they no longer count as cards. Fic cards you already pulled wait out of sight, with nothing deleted. <b>⚙ Settings → How it works → Booster packs → ✍️ Fics count as cards</b> brings them all back. AI stories count either way."]},
   {v:"2026-11-04.13",go:["el:care:#tagDupBox"],lines:["<b>🧰 Thousands of tag pairs, sorted.</b> <b>Tags that may be the same tag twice</b> now has a tab for each kind, with its count: Same word, Endings, Close spelling and One inside. On Same word, <b>⚡ Merge all</b> does them together, keeping the spelling more of your books and fics use, and one press of ↶ puts it all back. Close spellings are never swept in, because war and ward look close too."]},
@@ -29304,13 +29305,27 @@ async function claudeAsk(body){
   let tok="";try{const {data}=await SYNC.supa.auth.getSession();tok=(data&&data.session&&data.session.access_token)||"";}catch(e){}
   if(!tok)throw new Error("not signed in on this device");
   const base=String(CFG.url||"").replace(/\/+$/,"");
-  const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),90000);
-  let r;
-  try{r=await fetch(base+"/functions/v1/claude",{method:"POST",signal:ctl.signal,
-    headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+tok},body:JSON.stringify(body)});}
-  catch(e){throw new Error(e&&e.name==="AbortError"?"no answer in 90 seconds":"Supabase could not be reached");}
-  finally{clearTimeout(t);}
+  const send=async pass=>{
+    const ctl=new AbortController(),t=setTimeout(()=>ctl.abort(),90000);
+    try{return await fetch(base+"/functions/v1/claude",{method:"POST",signal:ctl.signal,
+      headers:{"Content-Type":"application/json","apikey":CFG.anonKey,"Authorization":"Bearer "+pass},body:JSON.stringify(body)});}
+    catch(e){throw new Error(e&&e.name==="AbortError"?"no answer in 90 seconds":"Supabase could not be reached");}
+    finally{clearTimeout(t);}};
+  let r=await send(tok);
   let j=null;try{j=await r.json();}catch(e){}
+  /* ---- A SIGN-IN THAT HAD JUST RUN OUT ----
+     getSession hands over the pass it holds and trusts this device's clock about
+     whether it is still good, so one look worked and the next came back
+     "Invalid JWT". Supabase refuses that at its door, before the function runs,
+     so nothing has been spent: a new pass is asked for and the question sent again,
+     once. If that fails too, the words say what to do. */
+  if(r.status===401&&/jwt|expired/i.test(String((j&&(j.message||j.msg||j.error))||""))){
+    let fresh="";try{const {data}=await SYNC.supa.auth.refreshSession();fresh=(data&&data.session&&data.session.access_token)||"";}catch(e){}
+    if(!fresh)throw new Error("your sign-in to My Shelf has run out and couldn't be renewed. Are you online? If this keeps happening, sign out and back in");
+    r=await send(fresh);
+    j=null;try{j=await r.json();}catch(e){}
+    if(r.status===401)throw new Error("Supabase refused your sign-in twice. Sign out of My Shelf and back in, and it should clear");
+  }
   if(j&&j.usage)claudeMeterAdd(body.kind,j.usage,j.model||body.model||CLAUDE_OPUS,what);
   if(r.status===404)throw new Error("the claude function is not in Supabase yet — step 2 in claude-function.ts");
   if(r.status===400&&j&&/unknown kind/i.test(String(j.error||"")))throw new Error("the claude function in Supabase is an older copy — paste claude-function.ts over it again and Deploy (step 2)");
