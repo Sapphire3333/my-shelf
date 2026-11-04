@@ -10500,21 +10500,38 @@ function saveKwListSoon(){clearTimeout(kwListTimer);kwListTimer=setTimeout(saveK
 /* the one door in. Case-insensitive on the way, so a word already known under
    different capitals does not become a second entry — the spelling already on
    the list wins, which is the same rule the merges keep. */
+/* ---- THE LIST READ ONCE PER RUN OF WORK ----
+   Each word looked through the whole list, in any capitals: at 9,000 tags that is
+   0.76 ms a word, and pushOp asks about every tag on every book it touches, so a
+   merge across 110 fics of thirty tags took 2.5 s and a bulk merge 35 s. The
+   words by their small letters are worked out once and kept until the current
+   piece of work ends (the microtask), so anything else that writes kwList, a pull
+   from the other device among them, can never leave them stale. */
+let kwLow=null;
+function kwLowNow(){
+  if(!kwLow){kwLow=new Map();
+    for(const k of Object.keys(kwList)){const l=k.toLowerCase(),a=kwLow.get(l);if(a)a.push(k);else kwLow.set(l,[k]);}
+    queueMicrotask(()=>{kwLow=null;});}
+  return kwLow;
+}
 function rememberKw(name,quiet){
   const w=String(name||"").trim();
   if(!w)return false;
   unmarkMetaDel("kw:"+w);
-  if(Object.keys(kwList).some(k=>sameWord(k,w)))return false;
-  kwList[w]=Date.now();
+  const low=kwLowNow(),l=w.toLowerCase();
+  if(low.has(l))return false;
+  kwList[w]=Date.now();low.set(l,[w]);
   if(quiet)saveKwListSoon();else saveKwList();
   return true;
 }
-/* and the one door out — used wherever a word is retired or merged away */
+/* and the one door out — used wherever a word is retired or merged away.
+   kwForgetQuiet: a bulk merge saves the list once, at its end */
+let kwForgetQuiet=false;
 function forgetKw(name){
-  const hit=Object.keys(kwList).filter(k=>sameWord(k,name));
-  if(!hit.length)return;
-  hit.forEach(k=>delete kwList[k]);
-  saveKwList();
+  const low=kwLowNow(),l=String(name||"").toLowerCase(),hit=low.get(l);
+  if(!hit||!hit.length)return;
+  hit.forEach(k=>delete kwList[k]);low.delete(l);
+  if(!kwForgetQuiet)saveKwList();
 }
 /* every word standing on a book is a word you have used, so it belongs on the
    list. Called from pushOp — the funnel every edit passes — and once at boot,
@@ -13760,6 +13777,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.13",go:["el:care:#tagDupBox"],lines:["<b>🧰 Thousands of tag pairs, sorted.</b> <b>Tags that may be the same tag twice</b> now has a tab for each kind, with its count: Same word, Endings, Close spelling and One inside. On Same word, <b>⚡ Merge all</b> does them together, keeping the spelling more of your books and fics use, and one press of ↶ puts it all back. Close spellings are never swept in, because war and ward look close too."]},
   {v:"2026-11-04.12",go:["el:care:#tagDupBox"],lines:["<b>🧰 Merging tags no longer freezes the page.</b> With thousands of tags from your fics, each choice in <b>Tags that may be the same tag twice</b> held the page for up to a minute. It now takes about a second, and it finds exactly the same pairs. The card also says how many of each kind there are."]},
   {v:"2026-11-04.11",go:["el:care:#impList"],lines:["<b>✍️ Fics apart from books on the import list.</b> In Shelf care, fics waiting to be added now stand in a <b>✍️ Fics</b> section of their own, above your books. Its <b>Add all</b> adds only the fics, and the books' sections add only books."]},
   {v:"2026-11-04.10",go:["ficdrive"],lines:["<b>↓ See the list.</b> After reading your fic folder, a button jumps straight down to the fics waiting at the foot of the import card, with how many there are."]},
@@ -17633,7 +17651,11 @@ async function applyOp(op,inv,quiet){
        pushes an undo step of its own, so one press of Fill in became four
        presses of ↶ Undo, with the new names still sitting in your genre list
        after the first. They ride here instead, and go back together. */
-    for(const lb of (Array.isArray(op.label)?op.label:(op.label?[op.label]:[]))){
+    const lbs=Array.isArray(op.label)?op.label:(op.label?[op.label]:[]);
+    /* a bulk merge's thousands of words: their lists are saved once, below */
+    const lbMany=lbs.length>20;
+    kwForgetQuiet=lbMany;
+    for(const lb of lbs){
       /* a cast changed in place, both ways round */
       if(lb.kind==="cast"){const to=(inv?lb.before:lb.after)||[];fandoms[lb.name]=[...to];
         to.forEach(c=>unmarkMetaDel("char:"+lb.name+"|"+c));
@@ -17660,7 +17682,7 @@ async function applyOp(op,inv,quiet){
         /* and back onto the list you own. Undo does not pass through pushOp, so
            it is the one restore that has to say so itself — without this,
            undoing a merge gave the word back to the books and not to the list. */
-        else{rememberKw(lb.name);
+        else{rememberKw(lb.name,lbMany);
              if(lb.color){kwColors[lb.name]=lb.color;unmarkMetaDel("kwcolor:"+lb.name);}
              if(lb.cat){kwCats[lb.name]=lb.cat;unmarkMetaDel("kwcat:"+lb.name);}}
       }else{
@@ -17674,8 +17696,10 @@ async function applyOp(op,inv,quiet){
         dbPut("meta",{k:"genres",v:genres});enqueue({kind:"meta",key:"genres"});touchMeta("genres");
       }else if(lb.kind==="fandom"){
         dbPut("meta",{k:"fandoms",v:fandoms});enqueue({kind:"meta",key:"fandoms"});touchMeta("fandoms");
-      }else{saveKwColors();saveKwCats();}
+      }else if(!lbMany){saveKwColors();saveKwCats();}
     }
+    kwForgetQuiet=false;
+    if(lbMany){saveKwList();saveKwColors();saveKwCats();}
     if(SYNC.on)flushQueue();
     if(view==="book"&&cur&&(op.items||[]).some(it=>it.id===cur.id)){
       /* The same care the single-book branch above takes, which this never had.
@@ -51663,6 +51687,66 @@ function refreshGenDupes(){
     await careAfterTidy(where);
   });
 }
+const TAG_PAIR_TABS=[["same word","Same word"],["the same word with an ending on it","Endings"],["close spelling","Close spelling"],["one inside the other","One inside"]];
+let tagPairTab="same word";
+/* the same-word pairs as who becomes whom: words joined through any pair stand
+   together (Post-Canon, Post canon, post canon) and take the spelling most used.
+   The count is case-blind, so "Smut" and "smut" tie; exact uses break the tie. A
+   word filed in another family from the winner stays out: that was a decision. */
+function tagSameWordMoves(pairs){
+  const up=new Map(),uses=new Map();
+  const root=w=>{let r=w;while(up.has(r)&&up.get(r)!==r)r=up.get(r);let c=w;while(up.has(c)&&up.get(c)!==r){const n=up.get(c);up.set(c,r);c=n;}return r;};
+  pairs.forEach(p=>{[[p.a,p.na],[p.b,p.nb]].forEach(([w,n])=>{if(!up.has(w))up.set(w,w);uses.set(w,n);});up.set(root(p.a),root(p.b));});
+  const exact=new Map();const tally=list=>(list||[]).forEach(x=>{if(uses.has(x))exact.set(x,(exact.get(x)||0)+1);});
+  for(const b of books){tally(b.keywords);if(isColl(b))for(const en of (b.entries||[]))tally(en.keywords);}
+  const groups=new Map();[...up.keys()].forEach(w=>{const r=root(w);if(!groups.has(r))groups.set(r,[]);groups.get(r).push(w);});
+  const out=[];
+  groups.forEach(g=>{
+    const keep=g.slice().sort((a,c)=>uses.get(c)-uses.get(a)||(exact.get(c)||0)-(exact.get(a)||0)||a.localeCompare(c))[0];
+    const fam=kwCats[keep]||"";
+    g.forEach(w=>{if(w===keep)return;const f=kwCats[w]||"";if(fam&&f&&f!==fam)return;out.push({from:w,to:keep});});
+  });
+  return out;
+}
+/* mergeTag for many words at once: one walk of the shelf, one step of ↶ */
+async function mergeTagsMany(moves,onProg){
+  const to=new Map(moves.map(m=>[String(m.from).toLowerCase(),m.to]));
+  moves.forEach(m=>to.set(String(m.to).toLowerCase(),m.to));
+  const moved=new Set(moves.map(m=>m.from));
+  const swap=list=>[...new Set((list||[]).map(x=>to.get(String(x).toLowerCase())||x))].filter(Boolean);
+  const differs=list=>(list||[]).some(x=>{const t=to.get(String(x).toLowerCase());return t&&t!==x;});
+  const hit=[];
+  for(const b of books){
+    const inStories=isColl(b)&&(b.entries||[]).some(en=>differs(en.keywords));
+    if(differs(b.keywords)||differs(b.kwBreaks)||inStories)hit.push(b);}
+  const items=[];let n=0;
+  for(const b of hit){
+    const was=JSON.parse(JSON.stringify(b));
+    b.keywords=swap(b.keywords);b.kwBreaks=swap(b.kwBreaks);
+    if(isColl(b))(b.entries||[]).forEach(en=>{if(differs(en.keywords))en.keywords=swap(en.keywords);});
+    touchBook(b,true);
+    try{await dbPut("books",b);}
+    catch(e){alert("This couldn't be saved — storage may be full.");break;}
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before:was,after:JSON.parse(JSON.stringify(b))});
+    if(onProg&&++n%25===0)onProg(n,hit.length);
+  }
+  const labels=[];
+  kwForgetQuiet=true;
+  for(const m of moves){
+    if(!moved.has(m.from))continue;
+    if(!kwColors[m.to]&&kwColors[m.from])kwColors[m.to]=kwColors[m.from];
+    if(!kwCats[m.to]&&kwCats[m.from])fileUnder(m.to,kwCats[m.from]);
+    labels.push({kind:"kw",name:m.from,color:kwColors[m.from],cat:kwCats[m.from]});
+    delete kwColors[m.from];delete kwCats[m.from];
+    markMetaDel("kw:"+m.from);unmarkMetaDel("kw:"+m.to);
+  }
+  kwForgetQuiet=false;
+  if(items.length)pushOp({t:"bulk",items,label:labels});
+  saveKwList();saveKwColors();saveKwCats();
+  if(SYNC.on)flushQueue();
+  return items.length;
+}
 function refreshTagDupes(){
   const box=q("#tagDupBox");if(!box)return;
   const left=tagLeft();
@@ -51692,11 +51776,22 @@ function refreshTagDupes(){
      belongs somewhere — folded, as it always is */
   if(!pairs.length){box.innerHTML=leftHtml;wireLeft();return;}
   const CAP=8;
+  /* ---- ONE KIND AT A TIME ----
+     A fic folder brought eight thousand pairs in one list, and most of those were
+     one tag inside another: Angst beside Angst with a Happy Ending, not a mistake
+     at all. Each kind has a tab with its count, so that pile waits on its own.
+     All the same-word pairs go at one press (tagSameWordMoves, mergeTagsMany):
+     only capitals, spacing, punctuation or a plural differ there. Close spellings
+     are never swept, since war and ward look close too. */
   const howMany={};pairs.forEach(p=>{howMany[p.how]=(howMany[p.how]||0)+1;});
-  box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">Tags that may be the same tag twice <b>${pairs.length}</b></div>
-    <div class="hint" id="tdKinds" style="margin:0 0 4px">${Object.keys(PAIR_RANK).filter(h=>howMany[h]).map(h=>`${esc(h)} <b>${howMany[h].toLocaleString()}</b>`).join(" · ")}</div>
+  if(!howMany[tagPairTab])tagPairTab=(TAG_PAIR_TABS.find(([h])=>howMany[h])||[""])[0];
+  const show=pairs.filter(p=>p.how===tagPairTab);
+  const moves=tagPairTab==="same word"?tagSameWordMoves(show):[];
+  box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">Tags that may be the same tag twice <b>${pairs.length.toLocaleString()}</b></div>
     <div class="hint" style="margin:0 0 7px">Merging puts every book under one word and takes the other off the shelf. One press of ↶ Undo puts it all back.</div>
-    ${pairs.slice(0,CAP).map((p,i)=>`<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:7px">
+    <div class="pills" role="tablist" style="margin:0 0 8px">${TAG_PAIR_TABS.filter(([h])=>howMany[h]).map(([h,l])=>`<button class="pill${h===tagPairTab?" on":""}" role="tab" aria-selected="${h===tagPairTab}" data-tdtab="${esc(h)}">${l} <b>${howMany[h].toLocaleString()}</b></button>`).join("")}</div>
+    ${moves.length?`<div class="hrow2" style="gap:8px;margin:0 0 8px;flex-wrap:wrap;align-items:center"><button class="btn pri" id="tdAll">⚡ Merge all ${show.length.toLocaleString()} same-word pair${show.length===1?"":"s"}</button><span class="hint" style="margin:0">keeps the spelling more use · one ↶ undoes it all</span></div>`:""}
+    ${show.slice(0,CAP).map((p,i)=>`<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:7px">
       <span class="dupehow">${p.how}</span>
       <button class="btn" data-tdm="${i}|a" title="Everything under “${esc(p.b)}” becomes “${esc(p.a)}”">${esc(p.a)} <b>${p.na}</b></button>
       <span class="lbl" style="margin:0">or</span>
@@ -51705,9 +51800,18 @@ function refreshTagDupes(){
       <button class="kwwhy" data-tdwho="${i}" style="flex:1 1 100%;text-align:left" title="Every book and story carrying either word — with the rest of its tags, so you can see whether a third word already covers this">▸ what carries them, and what else it's tagged?</button>
       <div class="kwwho" data-tdlist="${i}" style="flex:1 1 100%" hidden></div>
     </div>`).join("")}
-    ${pairs.length>CAP?`<div class="hint" style="margin:6px 0 0">…and ${pairs.length-CAP} more, once these are dealt with.</div>`:""}
+    ${show.length>CAP?`<div class="hint" style="margin:6px 0 0">…and ${(show.length-CAP).toLocaleString()} more of this kind, once these are dealt with.</div>`:""}
     ${leftHtml}`;
   wireLeft();
+  qa("[data-tdtab]",box).forEach(b=>b.onclick=()=>{tagPairTab=b.dataset.tdtab;refreshTagDupes();});
+  {const all=q("#tdAll",box);if(all)all.onclick=async()=>{
+    const eg=moves.slice(0,4).map(m=>`“${m.from}” becomes “${m.to}”`).join("\n");
+    if(!confirm(`Merge ${moves.length.toLocaleString()} spelling${moves.length===1?"":"s"} into the one more books and fics use?\n\n${eg}${moves.length>4?`\n…and ${(moves.length-4).toLocaleString()} more`:""}\n\nOnly capitals, spacing, punctuation or a plural differ in these. One press of ↶ Undo puts all of it back.`))return;
+    all.disabled=true;
+    const where=window.scrollY;
+    const done=await mergeTagsMany(moves,(n,of)=>{all.textContent=`Merging… ${n.toLocaleString()} of ${of.toLocaleString()} changed`;});
+    undoSaid(`${moves.length.toLocaleString()} spellings merged, on ${done.toLocaleString()} books and fics.`);
+    await careAfterTidy(where);};}
   /* ---- a pair alone said nothing about which books, whether the new tag is
      needed, or whether something already there could be taken instead.
      So the pair opens: every book and story carrying either word, each with
@@ -51726,7 +51830,7 @@ function refreshTagDupes(){
     return out;
   };
   qa("[data-tdwho]",box).forEach(btn=>btn.onclick=()=>{
-    const i=+btn.dataset.tdwho,p=pairs[i];if(!p)return;
+    const i=+btn.dataset.tdwho,p=show[i];if(!p)return;
     const who=q(`[data-tdlist="${i}"]`,box);
     if(!who.dataset.done){
       const pairL=[p.a.toLowerCase(),p.b.toLowerCase()];
@@ -51756,12 +51860,12 @@ function refreshTagDupes(){
     btn.textContent=(who.hidden?"▸ what carries them, and what else it's tagged?":"▾ hide the books");
   });
   qa("[data-tdx]",box).forEach(b=>b.onclick=()=>{
-    const p=pairs[+b.dataset.tdx];if(!p)return;
+    const p=show[+b.dataset.tdx];if(!p)return;
     leaveTagPair(p.a,p.b);refreshTagDupes();
   });
   qa("[data-tdm]",box).forEach(b=>b.onclick=async()=>{
     const [i,side]=b.dataset.tdm.split("|");
-    const p=pairs[+i];if(!p)return;
+    const p=show[+i];if(!p)return;
     const keep=side==="a"?p.a:p.b,drop=side==="a"?p.b:p.a;
     const users=kwUsers(drop);
     undoSaid(`Everything tagged “${drop}” is under “${keep}” now, and “${drop}” is off your list.`);
