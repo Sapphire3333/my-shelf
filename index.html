@@ -698,8 +698,8 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .rdpgo{display:flex;align-items:center;gap:6px;padding:6px;font-size:13px}
   .rdzoom{display:inline-flex;align-items:center;gap:2px}
   /* small: on a phone the foot's height comes off the page (see KEEP A DRIVE FILE HERE) */
-  #rdPin{padding:4px 8px;min-height:0;font-size:12px;line-height:1.3}
-  #rdPin[aria-pressed="true"]{border-color:var(--teal);color:var(--teal)}
+  #rdPin,#rdRtl{padding:4px 8px;min-height:0;font-size:12px;line-height:1.3}
+  #rdPin[aria-pressed="true"],#rdRtl[aria-pressed="true"]{border-color:var(--teal);color:var(--teal)}
   .rdhlbar{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}
   .rdhlbar[hidden]{display:none}
   .vmarks{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px 12px;margin:10px 0}
@@ -13760,6 +13760,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.7",go:["tab:library"],lines:["<b>⇠ Comics can read right to left.</b> The switch at the foot of a comic turns it into manga order: the next page is to the left, for swipes, edge taps and the arrow keys. It's remembered for that file on this device, and a comic that says it's right to left in its own details starts that way."]},
   {v:"2026-11-04.6",go:["tab:library"],lines:["<b>📖 Word, FB2 and comics in the reader.</b> <b>Word files (.docx)</b> and <b>FB2 books</b> open like an EPUB, with their chapters and pictures, and words highlighted in a Word file arrive in your waiting card. <b>Comics (.cbz)</b> open a page at a time, like a PDF. All of them work from your ☁ Drive or given with 📖 Read it here. Your saved Drive list doesn't know about these files yet: press <b>↻ Look again</b> once, whenever you like, to bring them in. A <b>.cbr</b> comic or an old <b>.doc</b> can't be opened, and the app says how to change it."]},
   {v:"2026-11-04.5",go:["el:settings:#secBookFiles"],lines:["<b>📌 Keep a Drive file on your device.</b> Open any file from your Drive and press <b>📌 Keep here</b> at the foot of the reader. It's saved on this device, so it opens without downloading, offline too, whether or not it's on your shelf. <b>⚙ Settings → You → Books to read here</b> lists every saved file with its size and <b>Forget</b>, and the ☁ Drive tab marks them. Each device keeps its own. A saved file stays as it was when you saved it: forget it and open it again to get a newer one from Drive."]},
   {v:"2026-11-04.4",go:["tab:library"],lines:["<b>📄 PDFs open in the reader.</b> Any PDF in your ☁ Drive, or given with 📖 Read it here, now opens page by page, as printed. Turn with a tap at either edge, a swipe or the arrow keys; <b>⇅ Scroll</b> stacks the pages instead; <b>− ＋</b> change the size; <b>☰</b> lists the PDF's own chapters and goes to any page. The first PDF fetches about 1.8 MB, once, and after that the reader works offline.","<b>🖍 Highlights come with the file.</b> Select words in a PDF and press 🖍 Highlight, with the printed page number kept beside them. Whatever is already highlighted inside a PDF, and highlighted words in a Google Doc, arrive in the same waiting card on the book's page. Each comes once: drop one and it stays dropped. A PDF that is only pictures of pages shows fine but has no words to select."]},
@@ -30835,6 +30836,7 @@ async function rdLooseMoved(s,id,enId){
   const f=s.loose,rk=enId?id+"|"+enId:id,html=rdCache.get(s.id);
   if(html){rdCache.set(rk,html);rdCacheDrv.set(rk,f.id);if(rdPdf.has(s.id)){const bl=rdPdf.get(s.id);rdPdf.delete(s.id);rdCache.delete(s.id);rdPdfPut(rk,bl);}}
   try{const r=await dbGet("images",drvKey(s.id));if(r){await dbPut("images",Object.assign({},r,{key:drvKey(rk)}));await dbDel("images",drvKey(s.id));}}catch(e){}
+  if(settings.rdRtl&&settings.rdRtl[s.id]!=null){const m=Object.assign({},settings.rdRtl);m[rk]=m[s.id];delete m[s.id];settings.rdRtl=m;saveSettings();}
   if(settings.drvPos&&settings.drvPos[f.id]){const m=Object.assign({},settings.drvPos);delete m[f.id];settings.drvPos=m;saveSettings();}
   if(settings.drvMarks&&settings.drvMarks[f.id]){const m=Object.assign({},settings.drvMarks);delete m[f.id];settings.drvMarks=m;saveSettings();}
   closeReader(true);openReader(id,enId||"");
@@ -31572,13 +31574,17 @@ async function pdfOpen(blob){
    through the PDF view as it is: cbzOpen answers the few questions that view
    asks of a PDF.js document, and a page is unpacked when it is about to be drawn,
    so a long volume costs no more than the pages near the one on screen. Nothing
-   is fetched for it. Pages run left to right. */
+   is fetched for it. #rdRtl turns it right to left, per file on this device
+   (settings.rdRtl); a file whose ComicInfo.xml says YesAndRightToLeft starts so. */
 const cbzIsPage=n=>RD_PIC_TYPE[(String(n).split(".").pop()||"").toLowerCase()]&&!/(^|\/)(__MACOSX|\.)/.test(n);
 class CbzNoText{render(){return Promise.resolve();}}
 async function cbzOpen(blob){
   const z=zipIndex(await blob.arrayBuffer());
   const list=[...z.values()].filter(e=>cbzIsPage(e.name)).sort((a,c)=>a.name.localeCompare(c.name,undefined,{numeric:true,sensitivity:"base"}));
   if(!list.length){const e=new Error("no pictures");e.name="NoPages";throw e;}
+  let rtl=false;
+  {const info=[...z.values()].find(e=>/(^|\/)comicinfo\.xml$/i.test(e.name));
+   if(info)try{rtl=/<Manga>\s*YesAndRightToLeft\s*<\/Manga>/i.test(await zipText(info));}catch(e){}}
   const dims=new Map();
   const decode=e=>zipBlob(e,RD_PIC_TYPE[e.name.split(".").pop().toLowerCase()]).then(b=>createImageBitmap(b));
   const doc={numPages:list.length,destroy(){},getPageLabels:async()=>null,getOutline:async()=>null,
@@ -31588,7 +31594,7 @@ async function cbzOpen(blob){
       return {getViewport:({scale})=>({width:w*scale,height:h*scale,scale,rotation:0}),
         render:({canvasContext:x})=>({promise:decode(e).then(bm=>{const c=x.canvas;x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);x.imageSmoothingQuality="high";x.drawImage(bm,0,0,c.width,c.height);if(bm.close)bm.close();})}),
         getTextContent:async()=>({items:[]}),getAnnotations:async()=>[]};}};
-  return {lib:{TextLayer:CbzNoText},doc,comic:true};
+  return {lib:{TextLayer:CbzNoText},doc,comic:true,rtl};
 }
 const pdfWhy=e=>{const n=e&&e.name;
   return n==="NoPages"?"There are no pictures in that comic."
@@ -31909,7 +31915,7 @@ async function openReader(id,enId,loose,goMark){
       <button class="btn smallbtn" id="rdMode" title="Turn between pages and one long scroll">${mode==="pages"?"⇅ Scroll":"⇆ Pages"}</button></div>
     ${loose?`<div class="rdloose" id="rdLoose"></div>`:""}
     <div class="rdview" id="rdView">${isPdf?`<article class="rdtext rdpdf" id="rdText"></article>`:`<article class="rdtext serif" id="rdText">${html}</article>`}</div>
-    <div class="rdfoot"><span id="rdPos"></span><button class="btn smallbtn pri" id="rdKeep" hidden title="Mark the words you selected; you decide later whether they become a quote">🖍 Highlight</button><span id="rdHlBar" class="rdhlbar" hidden></span>${driveF?`<button class="btn smallbtn" id="rdPin"></button>`:""}${claudeReady()?`<button class="btn smallbtn" id="rdWord" hidden title="What the word means in this sentence — kept with the book">📖 What does it mean?</button>`:""}<span id="rdSaid" class="hint" style="margin:0"></span><span id="rdClock" class="hint" style="margin:0"></span><span class="hint rdmark" style="margin:0">${loose?"not on your shelf — your place in this file is kept":reading?"the bookmark follows you":"not Reading now — your place is kept, the bookmark isn't moved"}</span></div>
+    <div class="rdfoot"><span id="rdPos"></span><button class="btn smallbtn pri" id="rdKeep" hidden title="Mark the words you selected; you decide later whether they become a quote">🖍 Highlight</button><span id="rdHlBar" class="rdhlbar" hidden></span>${driveF?`<button class="btn smallbtn" id="rdPin"></button>`:""}${isPdf&&pdfGot.comic?`<button class="btn smallbtn" id="rdRtl"></button>`:""}${claudeReady()?`<button class="btn smallbtn" id="rdWord" hidden title="What the word means in this sentence — kept with the book">📖 What does it mean?</button>`:""}<span id="rdSaid" class="hint" style="margin:0"></span><span id="rdClock" class="hint" style="margin:0"></span><span class="hint rdmark" style="margin:0">${loose?"not on your shelf — your place in this file is kept":reading?"the bookmark follows you":"not Reading now — your place is kept, the bookmark isn't moved"}</span></div>
     <div class="rdtocbox" id="rdTocBox" hidden></div>`;
   document.body.appendChild(el);document.documentElement.classList.add("rdopen");
   /* where you left off: your place in the file, or — the first time it is
@@ -31936,6 +31942,11 @@ async function openReader(id,enId,loose,goMark){
     q("#rdZi",el).onclick=()=>{const z=PDF_ZOOMS.find(y=>y>P.zoom);if(z)zset(z);};
     q("#rdZo",el).onclick=()=>{const z=[...PDF_ZOOMS].reverse().find(y=>y<P.zoom);if(z)zset(z);};
     zv.onclick=()=>zset(1);
+    /* which way a comic turns: yours for this file, or what it says of itself */
+    if(pdfGot.comic){const rb=q("#rdRtl",el),asked=(settings.rdRtl||{})[rk];P.rtl=asked==null?!!pdfGot.rtl:!!asked;
+      const rsay=()=>{rb.textContent=P.rtl?"⇠ Right to left":"⇢ Left to right";rb.setAttribute("aria-pressed",P.rtl?"true":"false");
+        rb.title=P.rtl?"Manga order: the next page is to the left. Press for left to right":"The next page is to the right. Press for manga order, right to left";};rsay();
+      rb.onclick=ev=>{ev.stopPropagation();P.rtl=!P.rtl;settings.rdRtl=Object.assign({},settings.rdRtl||{},{[rk]:P.rtl});saveSettings();rsay();};}
     /* the printed numbers, and the contents as the PDF has them */
     doc.getPageLabels().then(l=>{if(rdState===s&&l){P.labels=l;rdShow();}}).catch(()=>{});
     (async()=>{const out=[];const walk=async(items,depth)=>{for(const o of items||[]){if(out.length>=400)return;
@@ -31995,15 +32006,19 @@ async function openReader(id,enId,loose,goMark){
   v.addEventListener("pointerup",e=>{if(s.mode!=="pages"||x0==null)return;const dx=e.clientX-x0;x0=null;
     /* words being selected are not a swipe, and a page larger than the screen pans */
     const sel=window.getSelection&&String(window.getSelection()||"");if(sel)return;
-    if(Math.abs(dx)>50){if(!(s.pdf&&s.pdf.zoom>1))rdGo(s.page+(dx<0?1:-1));return;}
+    /* forward is to the left in a comic read right to left */
+    const fwd=s.pdf&&s.pdf.rtl?-1:1;
+    if(Math.abs(dx)>50){if(!(s.pdf&&s.pdf.zoom>1))rdGo(s.page+(dx<0?1:-1)*fwd);return;}
     if(e.target.closest&&e.target.closest("mark.rdhl"))return;
     const r=v.getBoundingClientRect(),fx=(e.clientX-r.left)/r.width;
-    if(fx<0.33)rdGo(s.page-1);else if(fx>0.67)rdGo(s.page+1);});
+    if(fx<0.33)rdGo(s.page-fwd);else if(fx>0.67)rdGo(s.page+fwd);});
   s.onKey=e=>{if(!rdState)return;act();
     if(e.key==="Escape"){e.preventDefault();e.stopPropagation();closeReader();return;}
     if(s.mode!=="pages"||(e.target&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName)))return;
-    if(["ArrowRight","PageDown"," "].includes(e.key)){e.preventDefault();e.stopPropagation();rdGo(s.page+1);}
-    else if(["ArrowLeft","PageUp"].includes(e.key)){e.preventDefault();e.stopPropagation();rdGo(s.page-1);}};
+    /* the arrows follow the page; Page Down and space always mean onward */
+    const rtl=s.pdf&&s.pdf.rtl;
+    if(e.key==="PageDown"||e.key===" "||e.key===(rtl?"ArrowLeft":"ArrowRight")){e.preventDefault();e.stopPropagation();rdGo(s.page+1);}
+    else if(e.key==="PageUp"||e.key===(rtl?"ArrowRight":"ArrowLeft")){e.preventDefault();e.stopPropagation();rdGo(s.page-1);}};
   document.addEventListener("keydown",s.onKey,true);
   s.onResize=()=>{clearTimeout(s.rt);s.rt=setTimeout(()=>{if(!rdState)return;s.f=rdPosNow();rdLayout();},150);};
   window.addEventListener("resize",s.onResize);
