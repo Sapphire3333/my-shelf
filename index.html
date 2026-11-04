@@ -13760,6 +13760,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.12",go:["el:care:#tagDupBox"],lines:["<b>🧰 Merging tags no longer freezes the page.</b> With thousands of tags from your fics, each choice in <b>Tags that may be the same tag twice</b> held the page for up to a minute. It now takes about a second, and it finds exactly the same pairs. The card also says how many of each kind there are."]},
   {v:"2026-11-04.11",go:["el:care:#impList"],lines:["<b>✍️ Fics apart from books on the import list.</b> In Shelf care, fics waiting to be added now stand in a <b>✍️ Fics</b> section of their own, above your books. Its <b>Add all</b> adds only the fics, and the books' sections add only books."]},
   {v:"2026-11-04.10",go:["ficdrive"],lines:["<b>↓ See the list.</b> After reading your fic folder, a button jumps straight down to the fics waiting at the foot of the import card, with how many there are."]},
   {v:"2026-11-04.9",go:["ficdrive"],lines:["<b>☁ A shorter way to your fics on Drive.</b> The Library's <b>☁ Drive</b> and <b>✍️ Fics</b> tabs each have a button that goes straight to choosing your fic folder. Shelf care still has it too, under <b>Import → 📁 Fics from AO3 files</b>."]},
@@ -51691,7 +51692,9 @@ function refreshTagDupes(){
      belongs somewhere — folded, as it always is */
   if(!pairs.length){box.innerHTML=leftHtml;wireLeft();return;}
   const CAP=8;
+  const howMany={};pairs.forEach(p=>{howMany[p.how]=(howMany[p.how]||0)+1;});
   box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">Tags that may be the same tag twice <b>${pairs.length}</b></div>
+    <div class="hint" id="tdKinds" style="margin:0 0 4px">${Object.keys(PAIR_RANK).filter(h=>howMany[h]).map(h=>`${esc(h)} <b>${howMany[h].toLocaleString()}</b>`).join(" · ")}</div>
     <div class="hint" style="margin:0 0 7px">Merging puts every book under one word and takes the other off the shelf. One press of ↶ Undo puts it all back.</div>
     ${pairs.slice(0,CAP).map((p,i)=>`<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:7px">
       <span class="dupehow">${p.how}</span>
@@ -52112,6 +52115,71 @@ function repeatedWords(b){
   return Object.entries(count).filter(([,n])=>n>=3)
     .sort((x,y)=>y[1]-x[1]||x[0].localeCompare(y[0])).slice(0,8);
 }
+/* ---- ONLY THE PAIRS THAT COULD BE ONE ----
+   Every tag was held against every other, and a folder of AO3 fics brings
+   thousands: 1,000 tags took 0.6 s, so 10,000 took a minute, and that ran again
+   after each press on the card. pairHow still has the last word on every pair;
+   this only finds the ones worth asking it about, a way for each of its kinds:
+   same word (the letters with the spaces out are one key), one inside the other
+   (the other holds this one's rarest word), an ending (the shorter word, or a
+   shared stem), close spelling (split the longer word in three: two changes can
+   touch only two of the parts, so a third stands in the other word within two
+   places of where it was). Returned in the order the old walk met them, so the
+   list sorts as it did. */
+function tagPairCandidates(names){
+  const n=names.length,got=new Set(),add=(i,j)=>{if(i===j)return;got.add(i<j?i*n+j:j*n+i);};
+  const forms=names.map(pairForm),byKey=new Map(),posting=new Map(),plainAt=new Map(),stemAt=new Map();
+  const push=(m,k,i)=>{const l=m.get(k);if(l)l.push(i);else m.set(k,[i]);};
+  const wordsOf=forms.map(([nm])=>nm?nm.split(" "):[]);
+  forms.forEach(([nm,pl],i)=>{
+    if(!nm)return;
+    push(byKey,nm.replace(/ /g,""),i);
+    new Set(wordsOf[i]).forEach(w=>push(posting,w,i));
+    if(pl&&!pl.includes(" ")){push(plainAt,pl,i);const st=endStem(pl);if(st.length>=4)push(stemAt,st,i);}
+  });
+  for(const m of [byKey,stemAt])for(const l of m.values())for(let x=0;x<l.length;x++)for(let y=x+1;y<l.length;y++)add(l[x],l[y]);
+  /* one inside the other */
+  const sets=wordsOf.map(w=>new Set(w));
+  sets.forEach((set,i)=>{
+    if(!set.size)return;
+    let rare=null;set.forEach(w=>{const l=posting.get(w);if(!rare||l.length<rare.length)rare=l;});
+    for(const j of rare){if(j===i||wordsOf[j].length===wordsOf[i].length)continue;
+      let all=true;for(const w of set)if(!sets[j].has(w)){all=false;break;}
+      if(all)add(i,j);}
+  });
+  /* the shorter word with a common ending on it */
+  forms.forEach(([nm,pl],i)=>{
+    if(!nm||!pl||pl.includes(" "))return;
+    for(const e of WORD_ENDINGS)if(pl.length-e.length>=4&&pl.endsWith(e)){const l=plainAt.get(pl.slice(0,pl.length-e.length));if(l)for(const j of l)add(i,j);}
+  });
+  /* close spelling */
+  const parts=L=>{const a=Math.floor(L/3),b=Math.floor((L-a)/2);return [[0,a],[a,b],[a+b,L-a-b]];};
+  const lens=new Set(),index=new Map();
+  forms.forEach(([nm],i)=>{
+    if(!nm||nm.length<5)return;
+    const L=nm.length;lens.add(L);
+    parts(L).forEach(([at,len],p)=>push(index,L+"|"+p+"|"+nm.substr(at,len),i));
+  });
+  forms.forEach(([nm],i)=>{
+    if(!nm||nm.length<5)return;
+    const T=nm.length;
+    for(let L=T;L<=T+2;L++){
+      if(!lens.has(L))continue;
+      parts(L).forEach(([at,len],p)=>{
+        for(let d=-2;d<=2;d++){
+          const from=at+d;if(from<0||from+len>T)continue;
+          const l=index.get(L+"|"+p+"|"+nm.substr(from,len));if(!l)continue;
+          for(const j of l){
+            if(j===i)continue;
+            const other=forms[j][0],lim=Math.min(T,L)>=9?2:1;
+            if(Math.abs(L-T)<=lim&&!got.has(i<j?i*n+j:j*n+i)&&editDist(nm,other)<=lim)add(i,j);
+          }
+        }
+      });
+    }
+  });
+  return [...got].sort((a,b)=>a-b).map(k=>[Math.floor(k/n),k%n]);
+}
 function tagDupePairs(){
   const names=[...new Set(books.flatMap(allKeywordsOf))].filter(Boolean);
   /* ---- EACH TAG'S BOOKS COUNTED ONCE ----
@@ -52124,7 +52192,7 @@ function tagDupePairs(){
   for(const b of books){tally(b.keywords);if(isColl(b))for(const en of (b.entries||[]))tally(en.keywords);}
   const usersOf=k=>uses.get(String(k).toLowerCase())||0;
   const out=[];
-  for(let i=0;i<names.length;i++)for(let j=i+1;j<names.length;j++){
+  for(const [i,j] of tagPairCandidates(names)){
     const a=names[i],b=names[j];
     const fa=kwCats[a]||"",fb=kwCats[b]||"";
     if(fa&&fb&&fa!==fb)continue;                       /* filed apart on purpose */
