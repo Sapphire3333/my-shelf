@@ -13777,6 +13777,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.18",go:["tab:library"],lines:["<b>🖍 Selecting in a PDF, with a mouse.</b> Pressing in a gap between lines could select from the top of the page. The app now takes the words nearest your pointer, so a sentence stays a sentence. A double press takes one word. If one still goes wrong, ☰ has <b>📋 Copy what the last selection did</b>."]},
   {v:"2026-11-04.17",go:["el:care:#claudeTidyBox"],lines:["<b>✨ Claude's look shows it's working.</b> With a big shelf it can take a minute or two, and the line beside it stayed on the old date meanwhile, looking stuck. It now counts the seconds, waits longer before giving up, and works out its price from how many names you have."]},
   {v:"2026-11-04.16",lines:["<b>✨ Claude no longer stops at “Invalid JWT”.</b> When your sign-in had just run out, anything asking Claude failed with those words. The app now renews it and asks again by itself, and nothing is charged for the refused try."]},
   {v:"2026-11-04.15",go:["el:care:#fdTidyBox"],lines:["<b>✨ Claude tidies your fandoms.</b> In Shelf care, <b>✨ Look at my fandoms</b> has Claude read your fandom names and suggest which are one story in different versions, like every Iron Man under one <b>Iron Man</b>. Different stories in one universe stay apart. Confirm a row, press a name to keep that one instead, ✕ to leave it, or <b>✓ Accept all</b>. Characters move across with the name, and one press of ↶ puts it all back. Only the names and their counts go to Claude."]},
@@ -31839,7 +31840,9 @@ async function pdfDraw(s,i){
     await new P.lib.TextLayer({textContentSource:tc,container:tl,viewport:vp}).render();
     if(rdState!==s)return;
     const end=document.createElement("div");end.className="endOfContent";tl.appendChild(end);
-    tl.addEventListener("pointerdown",()=>{tl.classList.add("selecting");document.addEventListener("pointerup",()=>tl.classList.remove("selecting"),{once:true});});
+    tl.addEventListener("pointerdown",e=>{tl.classList.add("selecting");document.addEventListener("pointerup",()=>tl.classList.remove("selecting"),{once:true});
+      P.press={how:e.pointerType||"?",on:e.target===tl?"the page, between words":String(e.target&&e.target.tagName||"?")+(e.target&&e.target.className?"."+e.target.className:""),page:i+1};});
+    pdfSelectWire(s,tl);
     pg.replaceChildren(c,tl);
     P.done.set(i,gen);
     pdfPaintPage(s,i);
@@ -31850,11 +31853,87 @@ async function pdfDraw(s,i){
     if(rdState===s&&!pg.firstChild)pg.innerHTML=`<div class="hint" style="padding:20px">This page couldn't be drawn.</div>`;
   }
 }
+/* ---- A SELECTION MADE BY THE APP, NOT THE BROWSER ----
+   A text layer is words floating on a picture, with nothing between them. A press
+   in a gap lands on the layer itself, and a browser then starts the selection at
+   the top of the page, so trying to mark a sentence took the whole page. On a
+   scan's text the gaps are wide and this is most presses. With a mouse the app
+   now keeps the selection itself: each end is the word nearest the pointer (the
+   nearest line first, then along it), the browser's own caret finding the letter
+   when it can and the word's width when it can't, and the result is an ordinary
+   selection everything else reads (pdfSelNow, Copy). A double press takes the word
+   and a triple press the run of words. Touch keeps the phone's own long press. */
+function pdfWordSpans(tl){return [...tl.querySelectorAll("span")].filter(x=>!x.classList.contains("markedContent")&&x.textContent.trim());}
+function pdfTextAt(span,at){
+  const w=document.createTreeWalker(span,NodeFilter.SHOW_TEXT);let n,last=null,left=at;
+  while((n=w.nextNode())){last=n;if(left<=n.nodeValue.length)return {n,o:left};left-=n.nodeValue.length;}
+  return last?{n:last,o:last.nodeValue.length}:null;
+}
+function pdfCaretAt(s,x,y){
+  const P=s.pdf;let tl=null,best=Infinity;
+  P.done.forEach((g,i)=>{const e=P.els[i];if(!e||!e.getClientRects().length)return;const t=q(".textLayer",e);if(!t)return;
+    const r=e.getBoundingClientRect(),d=Math.max(r.top-y,y-r.bottom,0)*4+Math.max(r.left-x,x-r.right,0);if(d<best){best=d;tl=t;}});
+  if(!tl)return null;
+  let span=null,box=null;best=Infinity;
+  for(const sp of pdfWordSpans(tl)){const r=sp.getBoundingClientRect(),d=Math.max(r.top-y,y-r.bottom,0)*4+Math.max(r.left-x,x-r.right,0);if(d<best){best=d;span=sp;box=r;}}
+  if(!span)return null;
+  const len=span.textContent.length;
+  if(x<=box.left)return pdfTextAt(span,0);
+  if(x>=box.right)return pdfTextAt(span,len);
+  const my=(box.top+box.bottom)/2;let node=null,off=0;
+  try{if(document.caretPositionFromPoint){const c=document.caretPositionFromPoint(x,my);if(c){node=c.offsetNode;off=c.offset;}}
+    else if(document.caretRangeFromPoint){const c=document.caretRangeFromPoint(x,my);if(c){node=c.startContainer;off=c.startOffset;}}}catch(e){}
+  if(node&&node.nodeType===3&&span.contains(node))return {n:node,o:off};
+  return pdfTextAt(span,Math.round((x-box.left)/Math.max(1,box.width)*len));
+}
+function pdfSelectWire(s,tl){
+  tl.addEventListener("mousedown",e=>{
+    if(e.button!==0||e.shiftKey||e.ctrlKey||e.metaKey)return;
+    const a=pdfCaretAt(s,e.clientX,e.clientY);if(!a)return;
+    e.preventDefault();
+    const sel=window.getSelection();
+    if(e.detail===2||e.detail===3){
+      const span=a.n.parentElement&&a.n.parentElement.closest("span");if(!span)return;
+      if(e.detail===3){const f=pdfTextAt(span,0),z=pdfTextAt(span,span.textContent.length);sel.setBaseAndExtent(f.n,f.o,z.n,z.o);return;}
+      const t=a.n.nodeValue;let b=a.o,c=a.o;
+      while(b>0&&/\S/.test(t[b-1]))b--;while(c<t.length&&/\S/.test(t[c]))c++;
+      sel.setBaseAndExtent(a.n,b,a.n,c);return;}
+    sel.collapse(a.n,a.o);
+    const v=rdView();
+    const move=m=>{const f=pdfCaretAt(s,m.clientX,m.clientY);if(f)try{sel.setBaseAndExtent(a.n,a.o,f.n,f.o);}catch(x){}
+      /* the browser no longer scrolls for a drag held near the edge */
+      if(v&&s.mode==="scroll"){const r=v.getBoundingClientRect();if(m.clientY>r.bottom-28)v.scrollTop+=18;else if(m.clientY<r.top+28)v.scrollTop-=18;}};
+    const up=()=>{document.removeEventListener("mousemove",move);document.removeEventListener("mouseup",up);};
+    document.addEventListener("mousemove",move);document.addEventListener("mouseup",up);
+  });
+}
+/* what the last selection did, to paste back if one still goes wrong: where the
+   press landed, how much of the page it took, and whether the words stand in
+   reading order. No words of the book, only counts. */
+function pdfSelReport(s){
+  const P=s.pdf,sel=s.sel,i=s.page,tl=P.els[i]&&q(".textLayer",P.els[i]),sp=tl?pdfWordSpans(tl):[];
+  let up=0,prev=-1e9;sp.forEach(x=>{const t=x.getBoundingClientRect().top;if(t<prev-2)up++;prev=t;});
+  const pageChars=tl?tl.textContent.length:0;
+  return [`PDF page ${i+1} of ${P.n}, ${P.comic?"comic":"pdf"}, ${s.mode}, zoom ${P.zoom}, build ${window.APP_VERSION||"?"}`,
+    `Press: ${P.press?`${P.press.how} on ${P.press.on}, page ${P.press.page}`:"none yet"}`,
+    `Selected: ${sel?`${sel.text.length} letters, pages ${sel.pg+1} to ${sel.pe+1}`:"nothing"}, of ${pageChars} on this page`,
+    `Word pieces: ${sp.length}, ${up} of them stand above the one before`,
+    `Browser: ${navigator.userAgent}`].join("\n");
+}
 /* a page's words as they stand, a line's end as \n, and where each text node starts */
 function pdfWords(tl){
-  const w=document.createTreeWalker(tl,NodeFilter.SHOW_TEXT|NodeFilter.SHOW_ELEMENT),nodes=[],starts=[];let txt="",n;
+  const w=document.createTreeWalker(tl,NodeFilter.SHOW_TEXT|NodeFilter.SHOW_ELEMENT),nodes=[],starts=[];let txt="",n,was=null,wasBox=null;
   while((n=w.nextNode())){
-    if(n.nodeType===3){nodes.push(n);starts.push(txt.length);txt+=n.nodeValue;}
+    if(n.nodeType===3){
+      /* a scan's words are often separate pieces with no space written between
+         them, only room on the page: "and how" "she liked" read "and howshe" */
+      const sp=n.parentElement&&n.parentElement.closest("span:not(.markedContent)");
+      if(sp&&sp!==was){const b=sp.getBoundingClientRect();
+        if(was&&wasBox&&txt&&!/\s$/.test(txt)&&!/^\s/.test(n.nodeValue)){
+          const flat=!b.height||!wasBox.height;
+          if(flat||(Math.abs(b.top-wasBox.top)<b.height/2&&b.left-wasBox.right>b.height*0.12))txt+=" ";}
+        was=sp;wasBox=b;}
+      nodes.push(n);starts.push(txt.length);txt+=n.nodeValue;}
     else if(n.tagName==="BR")txt+="\n";
   }
   return {txt,nodes,starts};
@@ -32139,8 +32218,11 @@ async function openReader(id,enId,loose,goMark){
     if(s.pdf){const P=s.pdf;
       box.innerHTML=`<div class="rdpgo">Page <input class="field" id="rdPgN" type="number" min="1" max="${P.n}" value="${s.page+1}" style="width:5.5em"> of ${P.n.toLocaleString()} <button class="btn smallbtn" id="rdPgGo">Go</button></div>`
         +((P.outline||[]).map((o,i)=>`<button class="rdtocrow" data-rdo="${i}" style="padding-left:${6+o.d*12}px">${esc(o.t.slice(0,80))} <span class="hint" style="margin:0">p. ${esc(pdfLabel(P,o.p))}</span></button>`).join("")
-          ||`<div class="hint" style="margin:6px">This file has no contents of its own.</div>`);
+          ||`<div class="hint" style="margin:6px">This file has no contents of its own.</div>`)
+        +(P.comic?"":`<button class="rdtocrow" id="rdSelCopy" title="Counts only, no words of the book: paste it to whoever is mending this">📋 Copy what the last selection did</button>`);
       box.hidden=false;
+      {const cp=q("#rdSelCopy",box);if(cp)cp.onclick=async()=>{const t=pdfSelReport(s);box.hidden=true;const n=q("#rdSaid",el);
+        try{await navigator.clipboard.writeText(t);if(n)n.textContent="📋 Copied";}catch(er){prompt("Copy this:",t);}};}
       const go=()=>{const n=parseInt(q("#rdPgN",box).value);if(n>=1){box.hidden=true;pdfGoPage(s,n-1);}};
       q("#rdPgGo",box).onclick=go;q("#rdPgN",box).onkeydown=ev=>{if(ev.key==="Enter"){ev.preventDefault();go();}};
       qa("[data-rdo]",box).forEach(bt=>bt.onclick=()=>{const o=P.outline[+bt.dataset.rdo];box.hidden=true;if(o)pdfGoPage(s,o.p);});
