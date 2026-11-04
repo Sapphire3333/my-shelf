@@ -13760,6 +13760,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.8",go:["tab:care"],lines:["<b>☁ Fics from one Drive folder.</b> In Shelf care, <b>📁 Fics from AO3 files → ☁ My Drive folder</b> now shows the folders inside yours and how many EPUB and web files each holds. Pick the one your fics are in and only that is read, so books elsewhere aren't downloaded to be skipped. It uses your saved Drive list, with no new scan. A long read shows its progress and time left and can be stopped: what it has read is already on the list below, and <b>▶</b> carries on with the rest."]},
   {v:"2026-11-04.7",go:["tab:library"],lines:["<b>⇠ Comics can read right to left.</b> The switch at the foot of a comic turns it into manga order: the next page is to the left, for swipes, edge taps and the arrow keys. It's remembered for that file on this device, and a comic that says it's right to left in its own details starts that way."]},
   {v:"2026-11-04.6",go:["tab:library"],lines:["<b>📖 Word, FB2 and comics in the reader.</b> <b>Word files (.docx)</b> and <b>FB2 books</b> open like an EPUB, with their chapters and pictures, and words highlighted in a Word file arrive in your waiting card. <b>Comics (.cbz)</b> open a page at a time, like a PDF. All of them work from your ☁ Drive or given with 📖 Read it here. Your saved Drive list doesn't know about these files yet: press <b>↻ Look again</b> once, whenever you like, to bring them in. A <b>.cbr</b> comic or an old <b>.doc</b> can't be opened, and the app says how to change it."]},
   {v:"2026-11-04.5",go:["el:settings:#secBookFiles"],lines:["<b>📌 Keep a Drive file on your device.</b> Open any file from your Drive and press <b>📌 Keep here</b> at the foot of the reader. It's saved on this device, so it opens without downloading, offline too, whether or not it's on your shelf. <b>⚙ Settings → You → Books to read here</b> lists every saved file with its size and <b>Forget</b>, and the ☁ Drive tab marks them. Each device keeps its own. A saved file stays as it was when you saved it: forget it and open it again to get a newer one from Drive."]},
@@ -30959,27 +30960,111 @@ function drvCardWire(m){
         const sec=q("#secDrive",m);if(sec){sec.outerHTML=drvCardHtml();drvCardWire(m);}});}
     catch(e){box.innerHTML=`<div class="hint">Drive couldn't be read — ${esc(e.message)}.</div>`;}};
 }
-/* the fic import, from the Drive folder — see A FOLDER OF FICS, READ AND LET GO */
-async function ficsFromDrive(){
+/* ┌─ THE FICS IN ONE DRIVE FOLDER ──────────────────────────────────────────┐
+   │ The import read every EPUB and web page under the chosen Drive folder,   │
+   │ whole, so a folder that also held books downloaded each book only to     │
+   │ find it wasn't a fic, and it listed Drive afresh at every press.         │
+   │ ☁ My Drive folder now starts from the saved list (drvFolderFiles; ↻ Look │
+   │ again asks for a new one), shows the folders under yours with how many   │
+   │ such files each holds, and reads only the one you pick and what's inside │
+   │ it (settings.drive.ficFolder). A long read can stop and carry on: each   │
+   │ FIC_BATCH rows go to the import list as they come, so closing the app    │
+   │ loses little, and a file already read is not fetched again (ficSeen, on  │
+   │ this device; a fic on the shelf or the list also counts) unless you      │
+   │ press ↻ Read all again. A download that fails is left to try next time,  │
+   │ and FIC_FAILS of them in a row stop the read with what is done so far.   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const FIC_SEEN_KEY="shelfFicSeen",FIC_BATCH=100,FIC_AT_ONCE=4,FIC_FAILS=8;
+const ficIsFile=f=>f.kind==="file"&&/\.(epub|x?html?)$/i.test(f.name);
+function ficSeen(){try{return new Set(JSON.parse(localStorage.getItem(FIC_SEEN_KEY)||"[]"));}catch(e){return new Set();}}
+function ficSeenSave(set){try{localStorage.setItem(FIC_SEEN_KEY,JSON.stringify([...set]));}catch(e){}}
+let ficRun=null;
+/* the folders under yours, in order, with how many fic-like files each holds, those inside it included */
+function ficFolders(){
+  const memo=drvFilesMemo,fo=settings.drive.folder,up={},kids=new Map(),count={};
+  (memo.dirs||[]).forEach(d=>{up[d.id]=d.p;if(!kids.has(d.p))kids.set(d.p,[]);kids.get(d.p).push(d);});
+  memo.files.filter(ficIsFile).forEach(f=>{let p=f.p,g=0;while(p&&g++<40){count[p]=(count[p]||0)+1;if(p===fo.id)break;p=up[p];}});
+  const out=[{id:fo.id,name:fo.name,depth:0,n:count[fo.id]||0}];
+  const walk=(id,depth)=>{(kids.get(id)||[]).slice().sort((a,c)=>a.name.localeCompare(c.name,undefined,{numeric:true})).forEach(d=>{
+    if(!count[d.id])return;out.push({id:d.id,name:d.name,depth,n:count[d.id]});walk(d.id,depth+1);});};
+  walk(fo.id,1);return out;
+}
+function ficFilesIn(id){
+  const memo=drvFilesMemo,inside=new Set([id]);let grew=true;
+  while(grew){grew=false;(memo.dirs||[]).forEach(d=>{if(inside.has(d.p)&&!inside.has(d.id)){inside.add(d.id);grew=true;}});}
+  return memo.files.filter(f=>ficIsFile(f)&&inside.has(f.p));
+}
+function ficDoneIds(){
+  const set=ficSeen(),add=x=>{if(x&&x.driveFile&&x.driveFile.id)set.add(x.driveFile.id);};
+  books.forEach(b=>{add(b);(b&&b.entries||[]).forEach(add);});importQueue.forEach(add);
+  return set;
+}
+function ficDriveDraw(pick){
+  const box=q("#impFicDrv");if(!box||ficRun)return;
+  const when=drvFilesMemo&&drvFilesMemo.at?`<span class="hint" style="margin:0">List from ${esc(drvAgo(drvFilesMemo.at))}</span> <button class="btn smallbtn" id="ifdAgain">↻ Look again</button>`:"";
+  const dirs=ficFolders(),ch=settings.drive.ficFolder,on=ch&&dirs.find(d=>d.id===ch.id);
+  if(pick||!on){
+    box.innerHTML=`<div style="font-size:14px;margin-bottom:6px"><b>Which folder are the fics in?</b> The folders inside it count too.</div>
+      <div style="max-height:45vh;overflow:auto">${dirs.slice(0,300).map(d=>`<button class="snap" data-ifd="${esc(d.id)}" style="display:flex;width:100%;text-align:left;cursor:pointer;gap:8px;padding:7px 10px 7px ${10+d.depth*14}px;box-sizing:border-box;font:inherit;color:inherit"><span style="flex:1;min-width:0;overflow-wrap:anywhere">📁 ${esc(d.name)}</span><span class="meta" style="flex:none">${d.n.toLocaleString()} EPUB or web file${d.n===1?"":"s"}</span></button>`).join("")}</div>
+      ${dirs.length>300?`<div class="hint" style="margin:4px 0 0">The first 300 folders.</div>`:""}
+      <div class="hrow2" style="gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">${when}</div>`;
+    qa("[data-ifd]",box).forEach(b=>b.onclick=()=>{const d=dirs.find(x=>x.id===b.dataset.ifd);if(!d)return;
+      settings.drive=Object.assign({},settings.drive,{ficFolder:{id:d.id,name:d.name}});saveSettings();ficDriveDraw();});
+  }else{
+    const files=ficFilesIn(on.id),done=ficDoneIds(),left=files.filter(f=>!done.has(f.id));
+    box.innerHTML=`<div style="font-size:14px"><b>📁 ${esc(on.name)}</b>: ${files.length.toLocaleString()} EPUB or web file${files.length===1?"":"s"}, ${(files.length-left.length).toLocaleString()} read already.</div>
+      <div class="hrow2" style="gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">
+        ${left.length?`<button class="btn pri" id="ifdGo">▶ ${left.length===files.length?"Read all "+files.length.toLocaleString():"Read the "+left.length.toLocaleString()+" left"}</button>`:`<span class="hint" style="margin:0">All read.</span>`}
+        ${files.length>left.length?`<button class="btn smallbtn" id="ifdAll">↻ Read all again</button>`:""}
+        <button class="btn smallbtn" id="ifdPick">Another folder…</button>${when}</div>`;
+    const g=q("#ifdGo",box);if(g)g.onclick=()=>ficDriveRead(left,on.name);
+    const al=q("#ifdAll",box);if(al)al.onclick=()=>ficDriveRead(files,on.name);
+    q("#ifdPick",box).onclick=()=>ficDriveDraw(true);
+  }
+  const ag=q("#ifdAgain",box);if(ag)ag.onclick=()=>ficsFromDrive(true);
+}
+async function ficDriveRead(list,name){
+  if(ficRun)return;
+  const run=ficRun={stop:false},seen=ficSeen(),batch=[],t0=Date.now();
+  let done=0,not=0,bad=0,fresh=0,updated=0,fails=0,why="",wake=null;
+  try{if(navigator.wakeLock)wake=await navigator.wakeLock.request("screen");}catch(e){}
+  const paint=()=>{const box=q("#impFicDrv");if(!box)return;
+    const secs=(Date.now()-t0)/1000,rest=done>=8?Math.round((list.length-done)*secs/done/60):null;
+    if(!q("#ifdBar",box)){box.innerHTML=`<div id="ifdBar"></div><div class="hrow2" style="margin-top:6px"><button class="btn" id="ifdStop">■ Stop</button></div><div class="hint" style="margin:6px 0 0">Keep this app open. What's read reaches the list below as it goes, and ▶ carries on from here.</div>`;}
+    q("#ifdBar",box).innerHTML=drvBarHtml(`Reading ${done.toLocaleString()} of ${list.length.toLocaleString()} in ${esc(name)}…${fresh?` ${fresh.toLocaleString()} fics so far.`:""}${rest!=null?` About ${rest<1?"a minute":rest+" minute"+(rest===1?"":"s")} left.`:""}`,done/list.length*100);
+    q("#ifdStop",box).onclick=()=>{run.stop=true;q("#ifdStop",box).disabled=true;q("#ifdStop",box).textContent="Stopping…";};};
+  const flush=()=>{if(batch.length){const r=stageImportRows(batch.splice(0),"AO3 files on Drive");fresh+=r.fresh;updated+=r.updated;}ficSeenSave(seen);};
+  const one=async f=>{let blob=null;
+    try{blob=await drvGet(`files/${encodeURIComponent(f.id)}?alt=media&supportsAllDrives=true`,true);fails=0;}
+    catch(e){fails++;why=(e&&e.message)||"no answer";bad++;done++;return;}
+    try{const r=await ficFromFile(new File([blob],f.name,{type:blob.type}));
+      if(r){const row=ficFileRow(r);row.driveFile=drvFileOf(f);batch.push(row);}else not++;}
+    catch(e){bad++;}
+    seen.add(f.id);done++;};
+  paint();
+  for(let i=0;i<list.length&&!run.stop&&fails<FIC_FAILS;i+=FIC_AT_ONCE){
+    await Promise.all(list.slice(i,i+FIC_AT_ONCE).map(one));
+    if(batch.length>=FIC_BATCH||done%FIC_BATCH<FIC_AT_ONCE)flush();
+    paint();
+  }
+  flush();
+  try{if(wake)await wake.release();}catch(e){}
+  ficRun=null;
+  const stopped=fails>=FIC_FAILS,word=`${done.toLocaleString()} of ${list.length.toLocaleString()} files read in ${Math.max(1,Math.round((Date.now()-t0)/1000))} s: `
+    +(fresh||updated?`${fresh.toLocaleString()} new on the list below${updated?`, ${updated.toLocaleString()} already on it`:""}`:"no new fics")
+    +(not?` · ${not.toLocaleString()} not an AO3 fic`:"")+(bad?` · ${bad.toLocaleString()} couldn't be opened`:"")
+    +(stopped?` · stopped, Drive stopped answering (${why}). Press ▶ to carry on`:run.stop?" · stopped. Press ▶ to carry on":"")+". Each fic remembers its file, so 📖 Read it here opens it from Drive.";
   const say=q("#impFicSay");
-  try{
-    const fname=(settings.drive&&settings.drive.folder&&settings.drive.folder.name)||"your folder";
-    if(say)say.innerHTML=drvBarHtml(`Looking in ${esc(fname)}…`,null);
-    const files=(await drvFolderFiles(true,p=>{if(say)say.innerHTML=drvListSay(p,fname);})).filter(f=>f.kind==="file"&&/\.(epub|x?html?)$/i.test(f.name));
-    const rows=[];let not=0,bad=0,done=0;const t0=Date.now();
-    const one=async f=>{try{const blob=await drvGet(`files/${encodeURIComponent(f.id)}?alt=media&supportsAllDrives=true`,true);
-        const r=await ficFromFile(new File([blob],f.name,{type:blob.type}));
-        if(r){const row=ficFileRow(r);row.driveFile=drvFileOf(f);rows.push(row);}else not++;}
-      catch(e){bad++;}
-      done++;if(say&&(done%4===0||done===files.length))say.innerHTML=drvBarHtml(`Reading ${done.toLocaleString()} of ${files.length.toLocaleString()} from your Drive…`,done/files.length*100);};
-    /* four at a time — enough to keep the line busy, few enough not to be refused */
-    for(let i=0;i<files.length;i+=4)await Promise.all(files.slice(i,i+4).map(one));
-    const res=rows.length?stageImportRows(rows,"AO3 files on Drive"):null;
-    if(rows.length)refreshImport();
-    if(say)say.textContent=`${files.length.toLocaleString()} file${files.length===1?"":"s"} read from your Drive in ${Math.max(1,Math.round((Date.now()-t0)/1000))} s: `
-      +(res?`${res.fresh.toLocaleString()} new on the list below${res.updated?`, ${res.updated.toLocaleString()} already on it`:""}`:"no fics found")
-      +(not?` · ${not} not an AO3 fic`:"")+(bad?` · ${bad} couldn't be opened`:"")+". Each fic remembers its file, so 📖 Read it here opens it from Drive.";
-  }catch(e){if(say)say.textContent="Drive couldn't be read — "+e.message+".";}
+  if(say){say.textContent=word;refreshImport();ficDriveDraw();}
+  else bannerNote("☁ "+word,12000);
+}
+/* the fic import, from the Drive folder — see A FOLDER OF FICS, READ AND LET GO */
+async function ficsFromDrive(again){
+  const box=q("#impFicDrv");if(!box||ficRun)return;
+  const fname=(settings.drive&&settings.drive.folder&&settings.drive.folder.name)||"your folder";
+  box.hidden=false;box.innerHTML=drvBarHtml(`Looking in ${esc(fname)}…`,null);
+  try{await drvFolderFiles(!!again,p=>{if(box.isConnected)box.innerHTML=drvListSay(p,fname);});if(box.isConnected)ficDriveDraw();}
+  catch(e){if(box.isConnected)box.innerHTML=`<div class="hint" style="margin:0">Drive couldn't be read — ${esc(e.message)}.</div>`;}
 }
 /* Forget, for any book — the same as the book page's, with ↶ (shelfMut's imgs) */
 async function rdForgetId(id){
@@ -49211,7 +49296,8 @@ async function renderHub(part){
           <input type="file" id="impFicDirIn" webkitdirectory hidden><input type="file" id="impFicFilesIn" accept=".epub,.html,.htm,application/epub+zip,text/html" multiple hidden>`:""}
           <button class="btn" id="impClear" hidden>Clear the list</button></div>
         ${ficsOn()?`<div id="impFicBox" hidden style="margin:9px 0 0"><div class="hrow2" style="gap:6px;flex-wrap:wrap">
-          <button class="btn pri" id="impFicPickDir">📁 A whole folder</button><button class="btn" id="impFicPickFiles">📄 Choose files</button>${driveReady()?`<button class="btn" id="impFicDrive" title="Every AO3 file in your Google Drive folder (⚙ Settings → You → Google Drive); each fic remembers its file there">☁ My Drive folder</button>`:""}<button class="btn" id="impFicX">Cancel</button></div>
+          <button class="btn pri" id="impFicPickDir">📁 A whole folder</button><button class="btn" id="impFicPickFiles">📄 Choose files</button>${driveReady()?`<button class="btn" id="impFicDrive" title="The AO3 files in a folder you pick on your Google Drive; each fic remembers its file there">☁ My Drive folder</button>`:""}<button class="btn" id="impFicX">Cancel</button></div>
+          <div id="impFicDrv" hidden style="margin:8px 0 0"></div>
           <div class="hint" id="impFicSay" style="margin:6px 0 0">Each file is opened here, in the browser, and its first pages read for the title, author, AO3 link, rating, warnings, fandoms, relationships, characters, tags, series, length and summary. The file itself is let go: nothing is uploaded and nothing of it is kept but those details. Fics come in as ✓ Read with no date, into the list below, where ones already on your shelf can be filled in.</div></div>`:""}
         ${claudeReady()?`<div id="impPasteBox" hidden style="margin:9px 0 0">
           <textarea class="field" id="impPasteText" rows="6" style="width:100%;box-sizing:border-box;resize:vertical" placeholder="Paste anything with books in it — a list, an email, a message of recommendations, a page of AO3…"></textarea>
