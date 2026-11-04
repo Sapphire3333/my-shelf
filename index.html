@@ -13778,6 +13778,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-04.20",go:["el:care:#drvConnBox"],lines:["<b>🔗 Connect my files is surer of itself.</b> A file with the title as its own part of the name and the author anywhere in it now counts as sure, so an illustrator's credit beside the author or “by” in the name no longer puts it on the list to check. Files with no author in the name, or a “Vol. 1” the book's title doesn't have, are still yours to choose."]},
   {v:"2026-11-04.19",go:["el:care:#drvConnBox"],lines:["<b>☁ Finding your files on Drive.</b> Searching a Drive file now shows the ones with every word first, with the rest folded under <b>▸ more that match only some words</b>. On a book's page the author helps pick the right one. <b>🔗 Connect my files</b> in Shelf care matches the books and stories with no file to your Drive by title and author: one press connects the sure ones, and the rest are listed to choose from. Nothing downloads, and one press of ↶ takes them off.","<b>📖 Read on a fic's row.</b> A fic with a file has a Read button on its row in the Library."]},
   {v:"2026-11-04.18",go:["tab:library"],lines:["<b>🖍 Selecting in a PDF, with a mouse.</b> Pressing in a gap between lines could select from the top of the page. The app now takes the words nearest your pointer, so a sentence stays a sentence. A double press takes one word. If one still goes wrong, ☰ has <b>📋 Copy what the last selection did</b>."]},
   {v:"2026-11-04.17",go:["el:care:#claudeTidyBox"],lines:["<b>✨ Claude's look shows it's working.</b> With a big shelf it can take a minute or two, and the line beside it stayed on the old date meanwhile, looking stuck. It now counts the seconds, waits longer before giving up, and works out its price from how many names you have."]},
@@ -31153,18 +31154,29 @@ document.addEventListener("click",e=>{const t=e.target.closest&&e.target.closest
 /* ┌─ 🔗 CONNECT YOUR DRIVE FILES ───────────────────────────────────────────┐
    │ Every book and story with no file is held against the saved Drive list    │
    │ by title and author, in names like "Author, A - [Series 2] - Title (2005, │
-   │ Publisher).epub". drvConnectFind cuts what stands in brackets, and a file  │
-   │ is SURE when every word of the title is in it, the author is too, and      │
-   │ nothing else is left over, so "Sam the Stolen Puppy" can't answer for "The │
-   │ Stolen Puppy". An EPUB beats a PDF of the same book; two sure files, or one │
-   │ file sure for two books, go to the list to choose from. Nothing downloads  │
-   │ and no file changes. One press connects the sure ones as one step of ↶.    │
+   │ Publisher).epub". drvConnectFind cuts what stands in brackets and splits   │
+   │ the rest at " - ", the last " by " and a subtitle's colon. A file is SURE   │
+   │ when the author is anywhere in the name and either one of those parts is   │
+   │ the title and nothing more, or no other word is left in the name at all.   │
+   │ An illustrator's credit beside the author changes nothing, yet "Sam the    │
+   │ Lost Boat" can't answer for "The Lost Boat". An EPUB beats                 │
+   │ a PDF of the same book; two sure files, or one file sure for two books, go │
+   │ to the list to choose from. Nothing downloads and no file changes. One     │
+   │ press connects the sure ones as one step of ↶.                             │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const DRV_LITTLE=new Set(["the","a","an"]);
 function drvConnectFind(files){
   const held=new Set();books.forEach(b=>{if(!b)return;if(b.driveFile)held.add(b.driveFile.id);(b.entries||[]).forEach(en=>{if(en&&en.driveFile)held.add(en.driveFile.id);});});
   const words=t=>drvNorm(t).split(" ").filter(w=>w&&!DRV_LITTLE.has(w));
-  const pool=files.filter(f=>!held.has(f.id)).map(f=>({f,all:new Set(words(f.name)),core:words(String(f.name).replace(/\[[^\]]*\]|\([^)]*\)/g," "))}));
+  const parts=name=>{const c=String(name).replace(/\.[a-z0-9]{2,5}$/i,"").replace(/\[[^\]]*\]|\([^)]*\)/g," "),out=new Set();
+    c.split(/\s+[-–—]+\s+|\s+[-–—]+$|^[-–—]+\s+/).forEach(seg=>{const add=x=>{const k=words(x).join(" ");if(k)out.add(k);};
+      add(seg);
+      /* the last "by" only: "Walk by Night by Someone" is not a book called "Night" */
+      const by=seg.toLowerCase().lastIndexOf(" by ");if(by>0)add(seg.slice(0,by));
+      /* a subtitle may go, a sequel may not: "Title_ Part Two" is not "Title" */
+      const cut=seg.match(/^(.+?)[_:]\s+(.+)$/);if(cut&&!/\b(part|vol|volume|book|\d+)\b/i.test(cut[2]))add(cut[1]);});
+    return out;};
+  const pool=files.filter(f=>!held.has(f.id)).map(f=>({f,all:new Set(words(f.name)),core:words(String(f.name).replace(/\[[^\]]*\]|\([^)]*\)/g," ")),parts:parts(f.name)}));
   const posting=new Map();pool.forEach((p,i)=>p.all.forEach(w=>{const l=posting.get(w);if(l)l.push(i);else posting.set(w,[i]);}));
   const leave=new Set(settings.drvConnLeave||[]),units=[];
   books.forEach(b=>{if(!b||b._story)return;
@@ -31182,9 +31194,10 @@ function drvConnectFind(files){
       const auOk=aw.length?aw.some(w=>p.all.has(w)):false;
       /* a lone letter is an author's initial, not another word of the title */
       const left=p.core.filter(w=>w.length>1&&!tw.includes(w)&&!aw.includes(w)).length;
-      cand.push({f:p.f,auOk,left,sure:auOk&&left===0});}
+      const whole=p.parts.has(tw.join(" "));
+      cand.push({f:p.f,auOk,left,whole,sure:auOk&&(whole||left===0)});}
     /* one word and no author says too little to offer */
-    const fit=cand.filter(c=>c.auOk||tw.length>1).sort((a,c)=>(c.auOk-a.auOk)||(a.left-c.left)||(rankKind(a.f)-rankKind(c.f))||a.f.name.localeCompare(c.f.name));
+    const fit=cand.filter(c=>c.auOk||tw.length>1).sort((a,c)=>(c.sure-a.sure)||(c.whole-a.whole)||(c.auOk-a.auOk)||(a.left-c.left)||(rankKind(a.f)-rankKind(c.f))||a.f.name.localeCompare(c.f.name));
     if(!fit.length)return;
     const sure=fit.filter(c=>c.sure),top=sure.length?sure.filter(c=>rankKind(c.f)===rankKind(sure.slice().sort((x,y)=>rankKind(x.f)-rankKind(y.f))[0].f)):[];
     out.push({key,b:u.b,en:u.en,title:u.title,author:u.author,one:top.length===1?top[0].f:null,cands:fit.slice(0,3).map(c=>c.f),more:fit.length-Math.min(3,fit.length)});
