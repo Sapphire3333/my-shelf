@@ -8455,6 +8455,7 @@ const markTarget=(coll,en)=>isSplitTale(coll,en)?markHolder(coll,en):en;
 /* one file too, for the same reason — see A FILE, WHOEVER HOLDS IT. Whether its
    holder is "being read" is the volume's answer: the first tale may be long
    finished while the third is open in the reader */
+const DRV_RECENT=20,DRV_RECENT_MAX=20*1024*1024;   /* see KEEP A DRIVE FILE HERE */
 const entFileTarget=markTarget;
 const entFileReading=(coll,h)=>isSplitTale(coll,h)?volState(coll,markHolder(coll,h)).status==="reading":(entStatusOf(coll,h)==="reading"&&!entDnfOf(coll,h));
 function volMarkLive(coll,h){
@@ -12202,13 +12203,8 @@ async function initSync(){
        if(id&&!live.has(id)&&!binned.has(id))await dbDel("images",k);}}
     /* …and a Drive file's copy on this device lasts while its book is being
        read — see BOOK FILES ON GOOGLE DRIVE */
-    for(const k of await dbAllKeys("images")){const s=String(k);if(s.indexOf("__drv|")!==0)continue;
-      const [bid,eid]=s.slice(6).split("|"),b=books.find(x=>x.id===bid),en=b&&eid?(b.entries||[]).find(x=>x.id===eid):null;
-      const live=eid?(en&&en.driveFile&&entFileReading(b,en)):(b&&b.driveFile&&statusOf(b)==="reading"&&!b.dnf);
-      if(live)continue;
-      /* 📌 Keep here holds it, as long as its book does — see KEEP A DRIVE FILE HERE */
-      const rec=await dbGet("images",k);
-      if(!(rec&&rec.keep&&(bid.startsWith("drv:")||(b&&(!eid||en)))))await dbDel("images",k);}
+    /* later, so reading the copies never slows the shelf's first paint */
+    setTimeout(()=>{drvRecentPrune();},8000);
   }catch(e){}
   /* A book named in the address is opened HERE, as soon as the shelf is in
      memory — not wherever the first paint happens to come from, because that is
@@ -13793,6 +13789,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.7",go:["el:settings:#secBookFiles"],lines:["<b>☁ The last 20 files you open stay.</b> A Drive file you opened without marking it Reading now was only held until the app closed, then it downloaded again, and it never appeared on any list. The last 20 stay on this device now and open with no download, offline too, listed under <b>Books to read here</b> with Forget. The oldest goes by itself. Anything over 20 MB stays out unless you press 📌 Keep here, and each device keeps its own."]},
   {v:"2026-11-05.6",go:["tab:library"],lines:["<b>📖 One file for a whole split book.</b> Choose a Drive file for one tale and every tale of that volume opens the same file at the same place, without downloading it again. Tales you had already given a file share it too, and ✕ on any of them unlinks it from all. Reading a tale through the volume's file now counts as reading: the bookmark follows you, and 📖 Start it starts the tale you opened, not the volume's first."]},
   {v:"2026-11-05.5",go:["tab:library"],lines:["<b>🎭 Your 10 biggest fandoms first.</b> On the Library's ✍️ Fics tab, the row of fandoms above your fics and the 🎭 Fandoms cards show the 10 with the most stories, and the rest wait behind <b>See the other fandoms</b>, so your fics come sooner. It stays open if you leave it open. Relationships fold the same way when you group by them."]},
   {v:"2026-11-05.4",go:["el:care:#volMarkSec"],lines:["<b>🧹 Page trails to put right.</b> In Shelf care, a split volume that ✓ on one tale sent to its last page shows what that added to the day and what your next page lost. One press takes the false entry off, so your pages add up, and your bookmark stays where it is. One ↶ takes it back. It only appears if a volume needs it."]},
@@ -30720,7 +30717,7 @@ async function refreshBookFiles(again){
     :"Sign in to count the cloud.";
   const keptLine=r=>`<div class="snap bfrow"><div style="min-width:0;flex:1"><div class="when" style="font-size:14px;overflow-wrap:anywhere"><button class="linkbtn" data-bfdopen="${esc(r.key)}">${esc(r.title)}</button></div>
       <div class="meta">☁ ${esc((r.df&&r.df.name)||"")}${r.df&&r.df.name?" · ":""}${fmtBytes(r.size)} here</div>
-      <div class="meta">${r.keep?"📌 kept until you forget it":"while it's Reading now, then it goes by itself"}</div></div>
+      <div class="meta">${r.keep?"📌 kept until you forget it":r.live?"kept while it's Reading now":`opened recently, goes by itself when ${DRV_RECENT} newer ones have come`}</div></div>
       <button class="btn smallbtn" data-bfdx="${esc(r.key)}" title="Take this copy off the device — the file stays on your Drive">Forget</button></div>`;
   const keptHtml=kept.length?`<div class="hrow2" style="gap:8px;align-items:baseline;flex-wrap:wrap;margin-top:12px"><b>${kept.length} from your Drive</b><span class="none">${fmtBytes(kept.reduce((a,r)=>a+r.size,0))} on this device, none in the cloud</span></div>
       <div style="margin-top:6px">${kept.map(keptLine).join("")}</div>
@@ -30753,10 +30750,10 @@ async function refreshBookFiles(again){
    │ (settings.drive.folder, shared between devices) and is walked with its   │
    │ subfolders (drvFolderFiles): the fic import reads AO3 downloads straight │
    │ from it, each fic remembering its file, and ☁ From Drive on a book's    │
-   │ page attaches one. While a book is 📖 Reading now its cleaned text is   │
-   │ also kept on this device (__drv|<book>, never uploaded), so it opens    │
-   │ offline; the start-up sweep drops it once the book is no longer being  │
-   │ read. CFG.googleClientId empty, and none of this is drawn.              │
+   │ page attaches one. A file's cleaned text is also kept on this device    │
+   │ (__drv|<book>, never uploaded), so it opens offline: while its book is  │
+   │ 📖 Reading now, and otherwise among the last DRV_RECENT opened (see KEEP │
+   │ A DRIVE FILE HERE). CFG.googleClientId empty, and none of this is drawn. │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const DRIVE_SCOPE="https://www.googleapis.com/auth/drive.readonly",DRV_API="https://www.googleapis.com/drive/v3/";
 const DRV_TYPES=/\.(epub|x?html?|txt|docx|fb2|fb2\.zip|cbz)$/i;
@@ -30871,8 +30868,10 @@ const drvListSay=(p,fname)=>p.stage==="folders"
 async function drvHtml(rk,df,opts,keep){
   const k=drvKey(rk),o=opts||{},say=o.onProg||(()=>{});
   try{const r=await dbGet("images",k);
-    if(r&&r.pdf&&r.v===df.id){rdPdfPut(rk,r.pdf);rdCache.set(rk,RD_PDF);rdCacheDrv.set(rk,df.id);return RD_PDF;}
-    if(r&&r.data&&r.v===df.id){const h=cleanHtml(rdUnB64(String(r.data).split(",")[1]||""));rdCache.set(rk,h);rdCacheDrv.set(rk,df.id);return h;}}catch(e){}
+    /* opened again: it is the newest of the recent ones now */
+    const fresh=()=>{if(!r.keep)dbPut("images",Object.assign({},r,{at:Date.now()})).catch(()=>{});};
+    if(r&&r.pdf&&r.v===df.id){fresh();rdPdfPut(rk,r.pdf);rdCache.set(rk,RD_PDF);rdCacheDrv.set(rk,df.id);return RD_PDF;}
+    if(r&&r.data&&r.v===df.id){fresh();const h=cleanHtml(rdUnB64(String(r.data).split(",")[1]||""));rdCache.set(rk,h);rdCacheDrv.set(rk,df.id);return h;}}catch(e){}
   /* a Google Doc has no file to download; Drive hands it over as HTML */
   const isDoc=df.mime===DRV_DOC;
   say(isDoc?"Asking Drive for the document…":"Starting the download…",null);
@@ -30887,7 +30886,7 @@ async function drvHtml(rk,df,opts,keep){
     if(!keep.still()){const e=new Error("another file was chosen");e.name="AbortError";throw e;}
     const bl=new Blob([blob],{type:kind==="pdf"?"application/pdf":"application/zip"});
     rdPdfPut(rk,bl);rdCache.set(rk,RD_PDF);rdCacheDrv.set(rk,df.id);
-    if(keep.reading()&&bl.size<=RD_PDF_KEEP)try{await dbPut("images",{key:k,data:"",pdf:bl,v:df.id,df:drvFileOf(df)});drvKeptIds.add(df.id);}catch(e){}
+    if(bl.size<=(keep.reading()?RD_PDF_KEEP:DRV_RECENT_MAX))try{await dbPut("images",{key:k,data:"",pdf:bl,v:df.id,df:drvFileOf(df),at:Date.now()});drvKeptIds.add(df.id);if(!keep.reading())drvRecentPrune();}catch(e){}
     return RD_PDF;
   }
   let html;
@@ -30898,7 +30897,8 @@ async function drvHtml(rk,df,opts,keep){
   html=cleanHtml(html);
   if(!keep.still()){const e=new Error("another file was chosen");e.name="AbortError";throw e;}
   rdCache.set(rk,html);rdCacheDrv.set(rk,df.id);
-  if(keep.reading())try{await dbPut("images",{key:k,data:"data:text/html;base64,"+rdB64(html),v:df.id,df:drvFileOf(df)});drvKeptIds.add(df.id);}catch(e){}
+  try{const data="data:text/html;base64,"+rdB64(html),rd=keep.reading();
+    if(rd||data.length<=DRV_RECENT_MAX){await dbPut("images",{key:k,data,v:df.id,df:drvFileOf(df),at:Date.now()});drvKeptIds.add(df.id);if(!rd)drvRecentPrune();}}catch(e){}
   return html;
 }
 /* any part of the name, most words matched first */
@@ -31932,16 +31932,38 @@ function rdOpenBegin(rk,title,file){
   rdOpening=o;return o;
 }
 /* ┌─ KEEP A DRIVE FILE HERE ────────────────────────────────────────────────┐
-   │ A Drive file is fetched each time the app starts, unless its book is     │
-   │ 📖 Reading now, when a copy waits on this device (__drv|<holder>). 📌 Keep │
-   │ here, in the reader's foot, makes that copy for any Drive file, on a     │
-   │ shelf or not, and marks it keep:true, so the start-up sweep leaves it for │
-   │ as long as its book or story stands. The record says which file it is    │
-   │ (df) and is never uploaded or put in a backup. ⚙ Settings → You → Books  │
-   │ to read here lists every such copy with Forget (drvKeptRows); the Drive  │
-   │ tab marks them (drvKeptIds). A copy is the file as it was when saved:    │
-   │ nothing checks Drive for a newer one until it is forgotten.              │
+   │ A copy of a Drive file waits on this device (__drv|<holder>) while its   │
+   │ book is 📖 Reading now, and for the last DRV_RECENT opened of any other,  │
+   │ up to DRV_RECENT_MAX each: it opens again with no download, offline too, │
+   │ and drvRecentPrune lets the oldest go, by `at`, after a new one lands and │
+   │ a little after start-up. A copy whose book has stopped being read joins  │
+   │ those. 📌 Keep here, in the reader's foot, marks one keep:true, of any    │
+   │ size, on a shelf or not, for as long as its book or story stands. The     │
+   │ record says which file it is (df) and is never uploaded or put in a      │
+   │ backup. ⚙ Settings → You → Books to read here lists every such copy with │
+   │ Forget (drvKeptRows); the Drive tab marks them (drvKeptIds). A copy is   │
+   │ the file as it was when saved: nothing checks Drive for a newer one until │
+   │ it is forgotten.                                                          │
    └──────────────────────────────────────────────────────────────────────────┘ */
+const drvCopyHolder=key=>{const [bid,eid]=String(key).slice(6).split("|"),b=books.find(x=>x.id===bid),en=b&&eid?(b.entries||[]).find(x=>x.id===eid):null;return {bid,eid,b,en,loose:bid.startsWith("drv:")};};
+const drvCopyLive=key=>{const {eid,b,en}=drvCopyHolder(key);return !!(eid?(en&&en.driveFile&&entFileReading(b,en)):(b&&b.driveFile&&statusOf(b)==="reading"&&!b.dnf));};
+async function drvRecentPrune(){
+  try{
+    const spare=[];
+    /* one at a time and let go of at once: these hold whole books */
+    for(const k of await dbAllKeys("images")){const s=String(k);if(s.indexOf("__drv|")!==0||drvCopyLive(s))continue;
+      const r=await dbGet("images",k);if(!r)continue;
+      const {eid,b,en,loose}=drvCopyHolder(s),stands=loose||(b&&(!eid||en));
+      if(r.keep&&stands)continue;
+      const size=(r.pdf?r.pdf.size:0)||String(r.data||"").length;
+      const linked=loose||(stands&&(en||b).driveFile&&(en||b).driveFile.id===r.v);
+      if(!linked||size>DRV_RECENT_MAX){await dbDel("images",k);if(r.v)drvKeptIds.delete(r.v);continue;}
+      spare.push({k,at:r.at||0,v:r.v});}
+    spare.sort((a,c)=>c.at-a.at);
+    for(const x of spare.slice(DRV_RECENT)){await dbDel("images",x.k);if(x.v)drvKeptIds.delete(x.v);}
+    if(spare.length)sizeReport=null;
+  }catch(e){}
+}
 const drvKeptIds=new Set();
 async function drvKeptRows(){
   let recs=[];try{recs=await dbAllRange("images",IDBKeyRange.bound("__drv|","__drv|\uffff"));}catch(e){}
@@ -31949,7 +31971,7 @@ async function drvKeptRows(){
   return recs.map(r=>{
     const [bid,eid]=String(r.key).slice(6).split("|"),loose=bid.startsWith("drv:"),b=loose?null:books.find(x=>x.id===bid),en=b&&eid?(b.entries||[]).find(x=>x.id===eid):null;
     const df=r.df||(en||b||{}).driveFile||null;if(r.v)drvKeptIds.add(r.v);
-    return {key:r.key,bid,eid:eid||"",loose,df,keep:!!r.keep,size:(r.pdf?r.pdf.size:0)||String(r.data||"").length,
+    return {key:r.key,bid,eid:eid||"",loose,df,keep:!!r.keep,live:drvCopyLive(r.key),size:(r.pdf?r.pdf.size:0)||String(r.data||"").length,
       title:(en&&en.title)||(b&&b.title)||(df&&df.name)||"A file from your Drive"};
   }).sort((a,c)=>c.size-a.size);
 }
@@ -53390,7 +53412,7 @@ async function measureStorage(){
     const n=(r&&r.pdf?r.pdf.size:0)||(r&&r.data||"").length;if(!n)return;
     const key=String(r.key||"");
     if(key.startsWith("__drv|")){const [bid,eid]=key.slice(6).split("|"),b=byId.get(bid),en=b&&eid?(b.entries||[]).find(x=>x.id===eid):null;
-      kind.files+=n;items.push({n,what:`${r.keep?"A Drive file kept here":"A Drive file kept while you read it"} — ${((en||b)&&(en||b).title)||(r.df&&r.df.name)||"a book that is gone"}`,k:"files",note:r.keep?"📌 until you forget it, in Books to read here":"☁ goes by itself when you stop reading it",go:b?{t:"book",id:b.id}:null});return;}
+      kind.files+=n;items.push({n,what:`${r.keep?"A Drive file kept here":"A Drive file you read here"} — ${((en||b)&&(en||b).title)||(r.df&&r.df.name)||"a book that is gone"}`,k:"files",note:r.keep?"📌 until you forget it, in Books to read here":`☁ goes by itself after ${DRV_RECENT} newer ones, unless it's Reading now`,go:b?{t:"book",id:b.id}:null});return;}
     if(key.startsWith("__bg|")){kind.bg+=n;items.push({n,what:"A background",k:"bg",note:"",go:{t:"look"}});return;}
     if(key.startsWith("__pad|")){kind.pad+=n;items.push({n,what:"A notepad skin",k:"pad",note:"",go:{t:"look"}});return;}
     if(key.startsWith("__gart|")){
