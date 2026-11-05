@@ -10698,6 +10698,7 @@ const libTicking=()=>libSelMode&&view==="library";
    stylesheet for why the two screens differ. */
 let selSheetOpen=false;
 let libFandomMode=false;                      /* the shelf shown as fandom cards */
+const FD_TOP=10,FD_FOLD_FROM=12;let fdMore=false;   /* past FD_TOP the cards fold, on lists over FD_FOLD_FROM */
 let libDriveMode=false;                       /* the ☁ Drive tab — see THE DRIVE TAB */
 let libSeriesMode=false;                      /* the shelf shown as series progress cards */
 let gavPick=null;                             /* showing one group on its own; forgotten on reload */
@@ -13787,6 +13788,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.5",go:["tab:library"],lines:["<b>🎭 Your 10 biggest fandoms first.</b> On the Library's ✍️ Fics tab, the row of fandoms above your fics and the 🎭 Fandoms cards show the 10 with the most stories, and the rest wait behind <b>See the other fandoms</b>, so your fics come sooner. It stays open if you leave it open. Relationships fold the same way when you group by them."]},
   {v:"2026-11-05.4",go:["el:care:#volMarkSec"],lines:["<b>🧹 Page trails to put right.</b> In Shelf care, a split volume that ✓ on one tale sent to its last page shows what that added to the day and what your next page lost. One press takes the false entry off, so your pages add up, and your bookmark stays where it is. One ↶ takes it back. It only appears if a volume needs it."]},
   {v:"2026-11-05.3",go:["day:"],lines:["<b>📖 ✓ on one tale no longer sends a split volume to its last page.</b> When a volume's other tales had no stage of their own, they answered ✓ along with it, so ✓ on one tale looked like finishing the whole volume: its full length went onto that day's pages and the bookmark to the end. The next page you typed then read as going backwards, with no pages counted and no stamp. Now the bookmark logs no pages unless that press really completes the volume, and a page typed lower than the last still counts as a day you read."]},
   {v:"2026-11-05.2",go:["day:"],lines:["<b>📮 A stamp for every day you read.</b> The card counted only a page number going up on a bookmark, so a day in the reader, a book kept in percent or a book finished earned nothing, and a day taken off a book's trail by an older copy from another device was simply gone. Those all count now, and so does any day in your 📖 reading run. Press a stamp to see what's on record for that day and the page trail of what you're reading."]},
@@ -22885,8 +22887,16 @@ function renderLibrary(){
       ${many?`<button class="pill${picking?" on":""}" id="gavAct" title="What tapping one of these does">${picking?"▽ Tap shows only that":"⤓ Tap skips to it"}</button>`:""}
       ${gavPick?`<button class="pill on2" id="gavClear" title="Show every group again">✕ ${esc(gavPick)} only</button>`:""}
       <span class="lbl">Tap a heading to fold it away${groupBy==="genre"?" · give a group its own picture with 🖼":""}</span></div>`;
+    /* fandoms and relationships come biggest first and can run to hundreds, so the
+       row above the books stops at the top ones. Each keeps its own number for
+       data-gjump; the "none yet" heading and the one you picked stay in sight */
+    const foldHeads=(groupBy==="fandom"||groupBy==="ship")&&gsAll.length>FD_FOLD_FROM;
+    const noneHead=groupBy==="fandom"?"No fandom yet":"No relationship yet";
+    const headOn=(g,i)=>!foldHeads||fdMore||i<FD_TOP||g.label===noneHead||g.label===gavPick;
+    const headsHid=foldHeads?gsAll.filter((g,i)=>i>=FD_TOP&&g.label!==noneHead&&g.label!==gavPick).length:0;
     if(many)html+=pics
       ?`<div class="gavatars">${gsAll.map((g,i)=>{
+          if(!headOn(g,i))return "";
           const art=groupArt[groupBy+"|"+g.label];
           const col=g.color||"#78716c";
           const init=esc((g.label||"?").trim().charAt(0).toUpperCase());
@@ -22894,8 +22904,10 @@ function renderLibrary(){
             ${art?`<img data-gartimg="${esc(art.img)}"${art.fx!=null?` style="object-position:${Math.round(art.fx*100)}% ${Math.round((art.fy==null?0.5:art.fy)*100)}%"`:""} data-gavcol="${col}" data-gavinit="${init}" alt="">`
                  :`<img data-gavbook="${coverPicks(g.items)}" data-gavcol="${col}" data-gavinit="${init}" alt="">`}
             <span class="gavname">${esc(g.label)} <b>${g.items.length}</b></span></button>`;}).join("")}</div>`
-      :`<div class="pills" style="margin-bottom:10px">${gsAll.map((g,i)=>
+      :`<div class="pills" style="margin-bottom:10px">${gsAll.map((g,i)=>!headOn(g,i)?"":
           `<button class="pill${gavPick===g.label?" on":""}" data-gjump="${i}" data-glabel="${esc(g.label)}" title="${picking?"Show only":"Skip to"} ${esc(g.label)}"${g.color&&gavPick!==g.label?` style="border-color:${g.color}"`:""}>${esc(g.label)} <b>${g.items.length}</b></button>`).join("")}</div>`;
+    if(many&&foldHeads&&(fdMore||headsHid)){const nm=groupBy==="fandom"?"fandoms":"relationships";
+      html+=`<div class="pills" style="margin-bottom:10px"><button class="pill" id="gsMore" aria-expanded="${fdMore}">${fdMore?`▾ Fewer ${nm}`:`▸ See the other ${headsHid.toLocaleString()} ${nm}`}</button></div>`;}
     /* where each heading falls in the run, for skipping to one on another page */
     {let at=0;libGroupAt=gsAll.map(g=>{const a=at;if(!collapsed.has(groupBy+"|"+g.label))at+=g.items.length;return a;});}
     html+=startPages(gs.reduce((s,g)=>s+(collapsed.has(groupBy+"|"+g.label)?0:g.items.length),0))+gs.map(g=>{
@@ -22950,14 +22962,22 @@ function renderLibrary(){
       count[f].n++;(b.characters||[]).forEach(c=>count[f].chars.add(c));}));
     const loose=pool.filter(b=>!(b.fandoms||[]).length).length;
     const rows=Object.entries(count).sort((a,b)=>b[1].n-a[1].n||a[0].localeCompare(b[0]));
-    m.innerHTML=kindTabs+kindRow+seriesRow+`<div class="fdgrid">${
-      rows.map(([f,v])=>`<button class="fdcard" data-fdgo="${esc(f)}">
+    const card=([f,v])=>`<button class="fdcard" data-fdgo="${esc(f)}">
         <div class="fdname">${esc(f)}</div>
         <div class="fdmeta">${v.n} ${v.n===1?"story":"stories"}${v.chars.size?` · ${v.chars.size} character${v.chars.size===1?"":"s"}`:""}</div>
-      </button>`).join("")
+      </button>`;
+    /* the most popular stand open and the long tail folds behind one button, which
+       stays as you left it when a fandom's list sends you away and back. A list
+       only just over the line stays whole: a fold hiding one or two cards hides nothing */
+    const fold=rows.length>FD_FOLD_FROM,top=fold?rows.slice(0,FD_TOP):rows,rest=fold?rows.slice(FD_TOP):[];
+    m.innerHTML=kindTabs+kindRow+seriesRow+`<div class="fdgrid">${
+      top.map(card).join("")
       ||'<div class="none">No fandoms yet — add one to a fic and it appears here.</div>'}
       ${loose?`<button class="fdcard" data-fdgo=""><div class="fdname">No fandom yet</div>
-        <div class="fdmeta">${loose} ${loose===1?"story":"stories"}</div></button>`:""}</div>`;
+        <div class="fdmeta">${loose} ${loose===1?"story":"stories"}</div></button>`:""}</div>
+      ${rest.length?`<button class="btn" id="fdMore" aria-expanded="${fdMore}" style="margin:10px 0 0">${fdMore?"▾ Fewer fandoms":`▸ See the other ${rest.length.toLocaleString()} fandoms`}</button>
+        ${fdMore?`<div class="fdgrid" id="fdRest" style="margin-top:10px">${rest.map(card).join("")}</div>`:""}`:""}`;
+    {const fm=q("#fdMore",m);if(fm)fm.onclick=()=>{fdMore=!fdMore;renderLibrary();};}
     qa("[data-fdgo]",m).forEach(b=>b.onclick=()=>{
       const f=b.dataset.fdgo;
       /* the scopes it replaces come back with the next thing typed — see A JUMP'S SCOPE */
@@ -23212,6 +23232,7 @@ function renderLibrary(){
     if(h)h.scrollIntoView({behavior:scrollBeh(),block:"start"});
   });
   hydrateGroupArt(m);
+  {const gm=q("#gsMore",m);if(gm)gm.onclick=()=>{fdMore=!fdMore;renderLibrary();};}
   const stg=q("#selTog",m);
   if(stg)stg.onclick=()=>{libSelMode=!libSelMode;
     if(!libSelMode){libSel.clear();selSheetOpen=false;}renderLibrary();};
