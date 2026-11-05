@@ -13890,6 +13890,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.16",go:["tab:library"],lines:["<b>🖍 A deleted quote gives its highlight back.</b> Delete a quote that came from a highlight and the highlight returns to the 🖍 waiting list on the book's page, to keep again, or ✕ Remove to take it off the list and out of the text. Quotes you deleted before this come back on that list too. In the reader a highlight like that is no longer amber and offers ❝ Keep it again."]},
   {v:"2026-11-05.15",go:["tab:library"],lines:["<b>📖 Selecting on a phone, done by the app.</b> Hold on a word for a moment and it is taken, even if your finger is just beside it; move before you lift to take more. Two round handles then move each end a word at a time, and on to the next page from the page's edge. It stays until you tap the page, or press 🖍 Highlight, 📋 Copy or 📖 What does it mean?, which all stand at the foot of the page. The phone's own menu no longer comes up in the reader's text, so 📋 Copy is there in its place."]},
   {v:"2026-11-05.14",go:["tab:library"],lines:["<b>📖 The reader keeps your place by the words.</b> It kept how far down the file you were, which shifts with the screen and the text size, so a book left at a chapter's head could open a couple of screens past it on another device. It remembers the words now, from the next time you read. Selecting is easier too. With a mouse, a drag started between two paragraphs takes the next paragraph from its start, not the end of the one before. On a phone, a long press that lands beside a word takes that word, moving your finger before you lift it takes more, and a long press at the edge no longer turns the page. The reader's bars are larger on a phone, and ☰ can copy what your last selection did if one still goes wrong."]},
   {v:"2026-11-05.13",go:["el:insights:#secTimeline"],lines:["<b>📜 Your reading, big and in ribbons.</b> On Insights, Your reading, drawn now shows each reading as a ribbon with its cover stood on it and its title and dates on it where they fit, on bands of months with a line at today. ⛶ Bigger opens it over the whole window: covers three times the size, two months across, the same ◂ ▸ − + to move and widen it. Press a ribbon for its book, and coming back brings the big window back. A story wears its own genre's colour now, not its collection's."]},
@@ -32304,9 +32305,22 @@ document.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target&&(e.target.
    └──────────────────────────────────────────────────────────────────────────┘ */
 const HL_CTX=240;
 const hlListOf=x=>Array.isArray(x&&x.marks)?x.marks:[];
-const hlWaiting=b=>{const out=[];hlListOf(b).forEach(m=>{if(!m.kept)out.push({m,en:null});});
-  (b.entries||[]).forEach(en=>hlListOf(en).forEach(m=>{if(!m.kept)out.push({m,en});}));return out;};
 const hlNorm=t=>String(t||"").replace(/\s+/g," ").trim();
+/* ---- KEPT MEANS THE QUOTE IS STILL THERE ----
+   m.kept says a highlight was made a quote, and nothing took it back when the quote
+   went: the mark stayed in the text saying "Kept as a quote", and was never offered
+   again. So the flag only counts while the book still has that quote. It is worked
+   out on reading rather than cleared on deleting, because a quote goes from the book's
+   page, from ❝ Quotes, from another device or from ↶, and this holds for all of them,
+   for those already deleted, and comes right again if the quote comes back. Words are
+   compared with the spaces left out, and either way round, so a quote tidied after
+   keeping still answers; one rewritten past that shows its highlight as waiting. A
+   story's marks are on the story and its quotes on the collection, so b is the book. */
+const hlSqueeze=t=>hlNorm(stripHtml(t)).replace(/\s/g,"").toLowerCase();
+const hlIsKept=(b,m)=>{if(!m||!m.kept)return false;const t=hlNorm(m.t).replace(/\s/g,"").toLowerCase();
+  return ((b&&b.quotes)||[]).some(q=>{const w=hlSqueeze(q);return w.includes(t)||(w.length>=12&&t.includes(w));});};
+const hlWaiting=b=>{const out=[];hlListOf(b).forEach(m=>{if(!hlIsKept(b,m))out.push({m,en:null});});
+  (b.entries||[]).forEach(en=>hlListOf(en).forEach(m=>{if(!hlIsKept(b,m))out.push({m,en});}));return out;};
 /* the words either side of a selection, a line break where a paragraph ends:
    textContent runs "the storm.Below him" together */
 function hlAround(root,rg){
@@ -32322,7 +32336,7 @@ function hlAround(root,rg){
 }
 function rdMarksOf(s){
   if(s.loose)return (settings.drvMarks||{})[s.loose.id]||[];
-  const b=books.find(x=>x.id===s.id);return hlListOf(rdX(s,b));
+  const b=books.find(x=>x.id===s.id);return hlListOf(rdX(s,b)).map(m=>m.kept&&!hlIsKept(b,m)?Object.assign({},m,{kept:false}):m);
 }
 function rdMarksEdit(s,fn){
   if(s.loose){const m=Object.assign({},settings.drvMarks||{}),l=fn(m[s.loose.id]||[]);if(l.length)m[s.loose.id]=l;else delete m[s.loose.id];settings.drvMarks=m;saveSettings();return;}
@@ -32408,7 +32422,7 @@ function rdHlTap(s,el){
     qa(`mark[data-rdm="${id}"]`,s.el).forEach(mk=>mk.classList.add("kept"));};
 }
 function hlKeepInto(bk,en,id){
-  const x=en||bk,m=hlListOf(x).find(y=>y.id===id);if(!m||m.kept)return false;
+  const x=en||bk,m=hlListOf(x).find(y=>y.id===id);if(!m||hlIsKept(bk,m))return false;
   const i=pushQuote(bk,esc(m.t).replace(/\n/g,"<br>"));
   /* a story's quote stands on its collection, saying which story */
   bk.quotesFrom[i]=TYPED+(en&&en.title?en.title+" · ":"")+(m.src||"");
@@ -32434,24 +32448,24 @@ function hlRowHtml(b,{m,en}){
     <button class="btn smallbtn pri" data-hl="keep" data-hli="${esc(m.id)}">❝ Keep</button>
     <button class="btn smallbtn" data-hl="l" data-hli="${esc(m.id)}" title="One more word at the start"${m.b?"":" disabled"}>◂</button>
     <button class="btn smallbtn" data-hl="r" data-hli="${esc(m.id)}" title="One more word at the end"${m.a?"":" disabled"}>▸</button>
-    <button class="btn smallbtn" data-hl="s" data-hli="${esc(m.id)}" title="The whole sentence">⤢ Sentence</button>
+    <button class="btn smallbtn" data-hl="s" data-hli="${esc(m.id)}" title="The whole sentence"${m.b||m.a?"":" disabled"}>⤢ Sentence</button>
     ${m.o?`<button class="btn smallbtn" data-hl="back" data-hli="${esc(m.id)}" title="Back to what you marked">↺</button>`:""}
     ${file?`<button class="btn smallbtn" data-hl="go" data-hli="${esc(m.id)}">📖 Go to it</button>`:""}
-    <button class="btn smallbtn" data-hl="drop" data-hli="${esc(m.id)}" title="Drop this highlight" style="margin-left:auto">✕</button></div>`;
+    <button class="btn smallbtn" data-hl="drop" data-hli="${esc(m.id)}" title="Take it off this list and out of the book's text. ↶ Undo puts it back" style="margin-left:auto">✕ Remove</button></div>`;
 }
 function marksCardHtml(b){
   const W=hlWaiting(b);if(!W.length)return "";
   return `<div class="vmarks" id="vMarks"><div class="hrow2" style="gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><b>🖍 ${W.length.toLocaleString()} highlight${W.length===1?"":"s"} waiting</b>
-      <button class="btn smallbtn" data-hlall="keep" style="margin-left:auto">❝ Keep all</button><button class="btn smallbtn" data-hlall="drop">Drop all</button></div>${W.map(w=>hlRowHtml(b,w)).join("")}</div>`;
+      <button class="btn smallbtn" data-hlall="keep" style="margin-left:auto">❝ Keep all</button><button class="btn smallbtn" data-hlall="drop" title="Take all of these off this list and out of the book's text">✕ Remove all</button></div>${W.map(w=>hlRowHtml(b,w)).join("")}</div>`;
 }
 document.addEventListener("click",async e=>{
   const t=e.target.closest&&e.target.closest("[data-hl],[data-hlall]");if(!t||!cur)return;
   e.stopPropagation();
   if(t.dataset.hlall){const keep=t.dataset.hlall==="keep";
-    if(!keep&&!confirm("Drop every waiting highlight on this book?"))return;
+    if(!keep&&!confirm("Remove every waiting highlight on this book, from this list and from the text?"))return;
     quickEdit(bk=>{let any=false;[bk,...(bk.entries||[])].forEach(x=>{const en=x===bk?null:x;
-      hlListOf(x).filter(m=>!m.kept).forEach(m=>{any=true;if(keep)hlKeepInto(bk,en,m.id);});
-      if(!keep&&hlListOf(x).length){x.marks=hlListOf(x).filter(m=>m.kept);if(!x.marks.length)delete x.marks;}});return any;});return;}
+      hlListOf(x).filter(m=>!hlIsKept(bk,m)).forEach(m=>{any=true;if(keep)hlKeepInto(bk,en,m.id);});
+      if(!keep&&hlListOf(x).length){x.marks=hlListOf(x).filter(m=>hlIsKept(bk,m));if(!x.marks.length)delete x.marks;}});return any;});return;}
   const how=t.dataset.hl,id=t.dataset.hli;
   const find=bk=>{for(const x of [bk,...(bk.entries||[])]){const m=hlListOf(x).find(y=>y.id===id);if(m)return {x,m,en:x===bk?null:x};}return null;};
   const f=find(cur);if(!f)return;
