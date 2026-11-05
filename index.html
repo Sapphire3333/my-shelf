@@ -13787,6 +13787,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.4",go:["el:care:#volMarkSec"],lines:["<b>🧹 Page trails to put right.</b> In Shelf care, a split volume that ✓ on one tale sent to its last page shows what that added to the day and what your next page lost. One press takes the false entry off, so your pages add up, and your bookmark stays where it is. One ↶ takes it back. It only appears if a volume needs it."]},
   {v:"2026-11-05.3",go:["day:"],lines:["<b>📖 ✓ on one tale no longer sends a split volume to its last page.</b> When a volume's other tales had no stage of their own, they answered ✓ along with it, so ✓ on one tale looked like finishing the whole volume: its full length went onto that day's pages and the bookmark to the end. The next page you typed then read as going backwards, with no pages counted and no stamp. Now the bookmark logs no pages unless that press really completes the volume, and a page typed lower than the last still counts as a day you read."]},
   {v:"2026-11-05.2",go:["day:"],lines:["<b>📮 A stamp for every day you read.</b> The card counted only a page number going up on a bookmark, so a day in the reader, a book kept in percent or a book finished earned nothing, and a day taken off a book's trail by an older copy from another device was simply gone. Those all count now, and so does any day in your 📖 reading run. Press a stamp to see what's on record for that day and the page trail of what you're reading."]},
   {v:"2026-11-05.1",go:["el:insights:#secAtlas"],lines:["<b>🌍 The map zooms as your fingers move.</b> A pinch ran away to the map's closest view within a few pixels, so it was either the whole world or empty sea. Fingers twice as far apart now means twice as close, however slowly you do it; lifting one finger no longer throws the map across the screen; two fingers sliding together carry it along; and − and + take smaller steps. A year in stars zooms the same way."]},
@@ -31297,6 +31298,60 @@ async function drvConnectApply(rows){
   if(SYNC.on)flushQueue();
   if(full)alert(n+" connected. "+STORE_FULL_STOP);
   return n;
+}
+/* ┌─ PAGE TRAILS TO PUT RIGHT ───────────────────────────────────────────────┐
+   │ ✓ on one tale of a volume whose other tales answered "finished" by default │
+   │ used to write the volume's whole length onto that day (see markEntStatus, │
+   │ volWas), and the page typed next read as going backwards: the first day    │
+   │ gained pages nobody read, the next gained none. volTrailFinds looks for     │
+   │ what that left: a split volume not finished, with a tale being read that   │
+   │ has never been finished, and a trail entry at the last page followed by a │
+   │ lower one. A volume read to its end and begun again has a finished reading │
+   │ on that tale, and a last page with nothing after it may be true, so both   │
+   │ are left alone. A press, not a repair at start-up: a book syncs as a whole │
+   │ copy, and a device that hadn't caught up would send its older copy over a  │
+   │ newer one. Only the entry goes; the bookmark stays. One ↶ takes it back.   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function volTrailFinds(){
+  const out=[];
+  for(const b of books){if(!b||!isColl(b))continue;
+    for(const h of (b.entries||[])){if(!h||entIsPart(b,h)||!Array.isArray(h.progLog))continue;
+      const t=parseInt(h.pages)||0,ts=volTales(b,h);if(!t||ts.length<2)continue;
+      if(volState(b,h).status==="finished")continue;
+      if(!ts.some(x=>entStatusOf(b,x)==="reading"&&!doneReads(x).length))continue;
+      const lg=h.progLog.filter(l=>l&&!l.pc),bad=lg.filter((l,i)=>(parseInt(l.p)||0)>=t&&lg[i+1]&&(parseInt(lg[i+1].p)||0)<t);
+      if(!bad.length)continue;
+      const after=Object.assign({},h,{progLog:h.progLog.filter(l=>!bad.includes(l))}),was=trailSteps(h),now=trailSteps(after);
+      const sum=a=>a.reduce((m,[,n])=>m+n,0);
+      out.push({b,h,bad,off:sum(was.filter(([d])=>bad.some(l=>l.d===d))),on:Math.max(0,sum(now)-sum(was)+sum(was.filter(([d])=>bad.some(l=>l.d===d))))});}}
+  return out;
+}
+async function volTrailApply(rows){
+  const items=[];let full=false;
+  for(const r of rows){
+    const b=books.find(x=>x.id===r.b.id),h=b&&(b.entries||[]).find(x=>x.id===r.h.id);if(!h)continue;
+    const before=JSON.parse(JSON.stringify(b)),gone=new Set(r.bad.map(l=>l.d+"|"+l.p));
+    h.progLog=h.progLog.filter(l=>!(l&&!l.pc&&gone.has(l.d+"|"+l.p)));
+    touchBook(b,true);
+    if(!(await putOrRestore(b,before))){full=true;break;}
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    try{await rebaseOpenBook(b.id);}catch(e){}
+  }
+  if(items.length)pushOp({t:"bulk",items});
+  if(SYNC.on)flushQueue();
+  if(full)alert(items.length+" put right. "+STORE_FULL_STOP);
+  return items.length;
+}
+function refreshVolTrail(){
+  const sec=q("#volMarkSec"),box=q("#volMarkBox");if(!sec||!box)return;
+  const rows=volTrailFinds();sec.hidden=!rows.length;if(!rows.length){box.innerHTML="";return;}
+  const short=d=>new Date(d+"T12:00").toLocaleDateString(undefined,{day:"numeric",month:"short"});
+  box.innerHTML=`<div class="hint" style="margin:0 0 8px">✓ on one tale of a split volume used to count the whole volume as read that day, and the next page you typed as going backwards. This takes those false entries off the page trail, so your pages add up. Your bookmark stays where it is.</div>
+    ${rows.map(r=>`<div class="snap" style="display:block;padding:6px 10px;font-size:14px;overflow-wrap:anywhere"><b>${esc(r.h.title||"Untitled")}</b> <span class="meta" style="display:inline">· in ${esc(r.b.title||"Untitled")}</span>
+      <div class="meta">p.${esc(String(r.bad[0].p))} on ${esc(r.bad.map(l=>short(l.d)).join(", "))} comes off: ${r.off.toLocaleString()} pages out, ${r.on.toLocaleString()} back in on the day you typed your real page</div></div>`).join("")}
+    <div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px"><button class="btn pri" id="vmFix">Put ${rows.length===1?"it":"these "+rows.length} right</button><span class="hint" style="margin:0">one ↶ undoes it</span></div>`;
+  q("#vmFix",box).onclick=async e=>{e.target.disabled=true;await volTrailApply(volTrailFinds());refreshVolTrail();};
 }
 let drvConn=null;
 function refreshDrvConnect(){
@@ -49663,6 +49718,7 @@ async function renderHub(part){
         <div id="scanBox"></div>
       </div>
     </div>
+    <div class="sec" id="volMarkSec" hidden><div class="heading"><h2 class="serif">Page trails to put right</h2></div><div class="hcard" id="volMarkBox"></div></div>
     ${driveReady()?`<div class="sec"><div class="heading"><h2 class="serif">Connect your Drive files</h2></div><div class="hcard" id="drvConnBox"></div></div>`:""}
     <div class="sec">
       <div class="heading"><h2 class="serif">Import from Goodreads / StoryGraph${ficsOn()?" / AO3":""}</h2><span class="n" id="impN"></span></div>
@@ -49855,7 +49911,7 @@ async function renderHub(part){
   };
   /* the housekeeping half's wiring — every refresher looks its box up and
      returns when it is not on the page, and the two buttons are guarded here */
-  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshClaudeTidy();refreshFandomTidy();refreshScreen();refreshDrvConnect();
+  refreshDupes();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshClaudeTidy();refreshFandomTidy();refreshScreen();refreshDrvConnect();refreshVolTrail();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
   /* many books off one picture — see ONE PHOTO, THREE ANSWERS */
   {const pb=q("#impPhoto"),pf=q("#impPhotoFile"),ps=q("#impPhotoSay");
