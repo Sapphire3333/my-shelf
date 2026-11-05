@@ -8631,7 +8631,11 @@ function markEntStatus(coll,en,what){
      applyReading for the same reason the book's does: whether you have a thing
      says nothing about your readings of it. */
   else if(what==="unowned"){en.unowned=!en.unowned;return true;}
-  else{en.dnf=false;en.hold=false;en.status=what;
+  else{
+    /* before this press: a volume whose silent tales already answer ✓ is not
+       completed by ✓ on one of them, however it looks afterwards */
+    const volWas=isSplitTale(coll,en)?volState(coll,markHolder(coll,en)).status:"";
+    en.dnf=false;en.hold=false;en.status=what;
     if(what==="reading"||what==="finished")en.unowned=false;
     /* a tale is a note about the tale, not a book finished — see A PIECE OF A
        VOLUME IS NEVER A THING OF ITS OWN — so a split volume pays its one pack
@@ -8645,12 +8649,15 @@ function markEntStatus(coll,en,what){
       /* a tale of a split volume moves no bookmark of its own — see ONE BOOK,
          ONE BOOKMARK. The volume's goes to its end when this finish is the
          one that completes it, onto today's trail if this tale was being
-         read today, the way finishProgress does it for a book */
+         read today, the way finishProgress does it for a book. Only a press
+         that really completes it reaches the trail: a volume already counted
+         finished wrote its whole length onto today, and the next page typed on
+         the tale after it read as going backwards, so no pages and no stamp */
       else{const h=markHolder(coll,en);
         if(volState(coll,h).status==="finished"){
-          const t=parseInt(h.pages)||0;
-          if(t&&(parseInt(h.progress)||0)<t){if(openRead(en))setProgress(h,t);else{h.progress=t;if(h.pct)h.pct="";}}
-          else if(!t&&(parseInt(h.pct)||0)<100){if(openRead(en))setPct(h,100);else h.pct=100;}
+          const t=parseInt(h.pages)||0,logs=openRead(en)&&volWas!=="finished";
+          if(t&&(parseInt(h.progress)||0)<t){if(logs)setProgress(h,t);else{h.progress=t;if(h.pct)h.pct="";}}
+          else if(!t&&(parseInt(h.pct)||0)<100){if(logs)setPct(h,100);else h.pct=100;}
         }}
     }}
   return applyReading(en,en.status,en.dnf||en.hold,what==="dnf"||what==="hold");
@@ -13780,6 +13787,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.3",go:["day:"],lines:["<b>📖 ✓ on one tale no longer sends a split volume to its last page.</b> When a volume's other tales had no stage of their own, they answered ✓ along with it, so ✓ on one tale looked like finishing the whole volume: its full length went onto that day's pages and the bookmark to the end. The next page you typed then read as going backwards, with no pages counted and no stamp. Now the bookmark logs no pages unless that press really completes the volume, and a page typed lower than the last still counts as a day you read."]},
   {v:"2026-11-05.2",go:["day:"],lines:["<b>📮 A stamp for every day you read.</b> The card counted only a page number going up on a bookmark, so a day in the reader, a book kept in percent or a book finished earned nothing, and a day taken off a book's trail by an older copy from another device was simply gone. Those all count now, and so does any day in your 📖 reading run. Press a stamp to see what's on record for that day and the page trail of what you're reading."]},
   {v:"2026-11-05.1",go:["el:insights:#secAtlas"],lines:["<b>🌍 The map zooms as your fingers move.</b> A pinch ran away to the map's closest view within a few pixels, so it was either the whole world or empty sea. Fingers twice as far apart now means twice as close, however slowly you do it; lifting one finger no longer throws the map across the screen; two fingers sliding together carry it along; and − and + take smaller steps. A year in stars zooms the same way."]},
   {v:"2026-11-04.20",go:["el:care:#drvConnBox"],lines:["<b>🔗 Connect my files is surer of itself.</b> A file with the title as its own part of the name and the author anywhere in it now counts as sure, so an illustrator's credit beside the author or “by” in the name no longer puts it on the list to check. Files with no author in the name, or a “Vol. 1” the book's title doesn't have, are still yours to choose."]},
@@ -27091,8 +27099,9 @@ const miniPay=M=>Math.max(10,MINI_XP-5*((M&&M.hints)||0))+(M&&M.ccHard?MINI_CC:0
 const weekDaysOf=day=>{const dow=(new Date(day+"T12:00Z").getUTCDay()+6)%7;return Array.from({length:7},(_,i)=>dayBack(day,dow-i));};
 /* ┌─ WHAT EARNS A STAMP ─────────────────────────────────────────────────────┐
    │ pagesPerDay is a sum of page numbers, and the year's totals add it up, so  │
-   │ it stays as it is. A day of reading is wider: pages up on a bookmark, a    │
-   │ percent up on a book with no length, a sitting of a minute or more in the  │
+   │ it stays as it is. A day of reading is wider: a page said on a bookmark,   │
+   │ higher or lower than the last, a percent up on a book with no length, a    │
+   │ sitting of a minute or more in the                                         │
    │ reader or on the timer (a book not marked Reading now files only those),  │
    │ a reading ended that day, or a day in the 📖 run. The run's days merge from │
    │ every device (mergeStreaks), where a book's trail is only ever the copy   │
@@ -27103,17 +27112,21 @@ const weekDaysOf=day=>{const dow=(new Date(day+"T12:00Z").getUTCDay()+6)%7;retur
    └──────────────────────────────────────────────────────────────────────────┘ */
 const STAMP_SIT_S=60;
 function stampRecord(days){
-  const want=new Set(days),out={};days.forEach(d=>{out[d]={pages:[],pct:[],sat:[],ended:[],run:!!(streaks&&streaks.read&&streaks.read.days&&streaks.read.days[d])};});
+  const want=new Set(days),out={};days.forEach(d=>{out[d]={pages:[],back:[],pct:[],sat:[],ended:[],run:!!(streaks&&streaks.read&&streaks.read.days&&streaks.read.days[d])};});
   const one=(o,title)=>{
     if(o.progLog){trailSteps(o).forEach(([d,n])=>{if(want.has(d))out[d].pages.push([title,n]);});
-      let prev=0;for(const l of o.progLog){if(!l||!l.pc)continue;const p=parseInt(l.p)||0;if(p>prev&&want.has(l.d))out[l.d].pct.push(title);prev=p;}}
+      /* a page said lower than the last is still a page said: a re-read begun,
+         or a bookmark that had been standing too far on */
+      let prev=0,pg=0;for(const l of o.progLog){if(!l)continue;const p=parseInt(l.p)||0;
+        if(l.pc){if(p>prev&&want.has(l.d))out[l.d].pct.push(title);prev=p;}
+        else{if(p>0&&p<pg&&want.has(l.d))out[l.d].back.push([title,p]);pg=p;}}}
     if(o.readings)for(const r of o.readings){if(r&&want.has(r.end))out[r.end].ended.push(title);}};
   for(const b of books){if(!b)continue;const t=b.title||"Untitled";one(b,t);
     if(b.sessions)for(const x of b.sessions){if(!x||!((+x.secs||0)>=STAMP_SIT_S))continue;const at=new Date(x.at).getTime();if(!at)continue;const d=shelfDayOf(at);if(want.has(d))out[d].sat.push([t,Math.round(x.secs/60)]);}
     if(isColl(b))for(const en of (b.entries||[]))if(en)one(en,en.title||t);}
   return out;
 }
-const stampOn=r=>!!(r&&(r.pages.length||r.pct.length||r.sat.length||r.ended.length||r.run));
+const stampOn=r=>!!(r&&(r.pages.length||r.back.length||r.pct.length||r.sat.length||r.ended.length||r.run));
 function stampCheck(){
   const day=questToday();
   [day,dayBack(day,7)].forEach(d0=>{const ds=weekDaysOf(d0);
@@ -27139,7 +27152,7 @@ async function stampSay(t){
   if(was){box.hidden=true;return;}
   t.setAttribute("aria-expanded","true");
   const r=stampRecord([d])[d],line=s=>`<div>${s}</div>`,head=new Date(d+"T12:00").toLocaleDateString(undefined,{weekday:"long",day:"numeric",month:"long"});
-  const lines=[...r.pages.map(([a,n])=>line(`📖 ${esc(a)}: ${n} page${n===1?"":"s"}`)),...r.pct.map(a=>line(`📖 ${esc(a)}: further on, in percent`)),
+  const lines=[...r.pages.map(([a,n])=>line(`📖 ${esc(a)}: ${n} page${n===1?"":"s"}`)),...r.back.map(([a,p])=>line(`📖 ${esc(a)}: bookmark moved back to p.${p}`)),...r.pct.map(a=>line(`📖 ${esc(a)}: further on, in percent`)),
     ...r.sat.map(([a,m])=>line(`⏱ ${esc(a)}: ${m} min`)),...r.ended.map(a=>line(`✓ ${esc(a)}: finished`)),...(r.run?[line("🔥 Counted in your 📖 reading run")]:[])];
   /* the day's receipts, and whether what they said is still on the book's trail */
   const rc=histLog.filter(h=>h&&h.id&&shelfDayOf(h.t)===d&&(h.what||[]).some(w=>w==="progress"||w==="readings"||w==="finish date")).slice(0,8);
