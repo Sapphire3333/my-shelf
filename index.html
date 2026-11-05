@@ -8452,6 +8452,11 @@ const isSplitTale=(coll,en)=>!!en&&volTales(coll,entWholeOf(coll,en)||en).length
 const markHolder=(coll,en)=>entWholeOf(coll,en)||en;
 /* the entry a tale's page or percent is written to */
 const markTarget=(coll,en)=>isSplitTale(coll,en)?markHolder(coll,en):en;
+/* one file too, for the same reason — see A FILE, WHOEVER HOLDS IT. Whether its
+   holder is "being read" is the volume's answer: the first tale may be long
+   finished while the third is open in the reader */
+const entFileTarget=markTarget;
+const entFileReading=(coll,h)=>isSplitTale(coll,h)?volState(coll,markHolder(coll,h)).status==="reading":(entStatusOf(coll,h)==="reading"&&!entDnfOf(coll,h));
 function volMarkLive(coll,h){
   if(volState(coll,h).status==="finished")return true;
   const t=parseInt(h.pages)||0;
@@ -12199,7 +12204,7 @@ async function initSync(){
        read — see BOOK FILES ON GOOGLE DRIVE */
     for(const k of await dbAllKeys("images")){const s=String(k);if(s.indexOf("__drv|")!==0)continue;
       const [bid,eid]=s.slice(6).split("|"),b=books.find(x=>x.id===bid),en=b&&eid?(b.entries||[]).find(x=>x.id===eid):null;
-      const live=eid?(en&&en.driveFile&&entStatusOf(b,en)==="reading"&&!entDnfOf(b,en)):(b&&b.driveFile&&statusOf(b)==="reading"&&!b.dnf);
+      const live=eid?(en&&en.driveFile&&entFileReading(b,en)):(b&&b.driveFile&&statusOf(b)==="reading"&&!b.dnf);
       if(live)continue;
       /* 📌 Keep here holds it, as long as its book does — see KEEP A DRIVE FILE HERE */
       const rec=await dbGet("images",k);
@@ -13788,6 +13793,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.6",go:["tab:library"],lines:["<b>📖 One file for a whole split book.</b> Choose a Drive file for one tale and every tale of that volume opens the same file at the same place, without downloading it again. Tales you had already given a file share it too, and ✕ on any of them unlinks it from all. Reading a tale through the volume's file now counts as reading: the bookmark follows you, and 📖 Start it starts the tale you opened, not the volume's first."]},
   {v:"2026-11-05.5",go:["tab:library"],lines:["<b>🎭 Your 10 biggest fandoms first.</b> On the Library's ✍️ Fics tab, the row of fandoms above your fics and the 🎭 Fandoms cards show the 10 with the most stories, and the rest wait behind <b>See the other fandoms</b>, so your fics come sooner. It stays open if you leave it open. Relationships fold the same way when you group by them."]},
   {v:"2026-11-05.4",go:["el:care:#volMarkSec"],lines:["<b>🧹 Page trails to put right.</b> In Shelf care, a split volume that ✓ on one tale sent to its last page shows what that added to the day and what your next page lost. One press takes the false entry off, so your pages add up, and your bookmark stays where it is. One ↶ takes it back. It only appears if a volume needs it."]},
   {v:"2026-11-05.3",go:["day:"],lines:["<b>📖 ✓ on one tale no longer sends a split volume to its last page.</b> When a volume's other tales had no stage of their own, they answered ✓ along with it, so ✓ on one tale looked like finishing the whole volume: its full length went onto that day's pages and the bookmark to the end. The next page you typed then read as going backwards, with no pages counted and no stamp. Now the bookmark logs no pages unless that press really completes the volume, and a page typed lower than the last still counts as a day you read."]},
@@ -30935,8 +30941,10 @@ async function drvPickFor(id,enId){
        still on its way is dropped — see ONE FILE OPENING AT A TIME */
     qa("[data-dpuse]",box).forEach(bt=>bt.onclick=async()=>{const f=files.find(x=>x.id===bt.dataset.dpuse);if(!f)return;close();
       rdOpenCancel();
-      const rk=enId?id+"|"+enId:id;
-      const mut=bk=>{const x=enId?(bk.entries||[]).find(e=>e.id===enId):bk;if(!x)return false;x.driveFile=drvFileOf(f);delete x.readPos;return true;};
+      /* a tale's file is its whole volume's: every tale of it opens the same one */
+      const tgt=en?entFileTarget(b,en):null,rk=tgt?id+"|"+tgt.id:id;
+      const mut=bk=>{const e=enId?(bk.entries||[]).find(y=>y.id===enId):null;if(enId&&!e)return false;
+        const x=e?entFileTarget(bk,e):bk;x.driveFile=drvFileOf(f);delete x.readPos;if(e&&e!==x)delete e.driveFile;return true;};
       try{await dbDel("images",drvKey(rk));}catch(e){}
       rdCache.delete(rk);rdCacheDrv.delete(rk);
       if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);
@@ -30984,7 +30992,7 @@ function drvShelfMatch(meta){
   const keys=[meta.title,meta.alt].filter(Boolean).map(titleKey).filter(Boolean);if(!keys.length)return null;
   let hit=null;
   for(const b of books){if(!b||b._story)continue;
-    for(const en of (b.entries||[]))if(en&&keys.includes(titleKey(en.title))){const h={b,en};if(!en.driveFile)return h;hit=hit||h;}
+    for(const en of (b.entries||[]))if(en&&keys.includes(titleKey(en.title))){const h={b,en};if(!entFileHolder(b,en))return h;hit=hit||h;}
     if(!isColl(b)&&keys.includes(titleKey(b.title))){const h={b,en:null};if(!b.driveFile&&!b.readFile)return h;hit=hit||h;}}
   return hit;
 }
@@ -31001,22 +31009,24 @@ function rdLooseDraw(s){
   q("#rlAdd",box).onclick=()=>rdLooseAdd(s);
 }
 /* it has a holder now: the text already here and the place go with it */
-async function rdLooseMoved(s,id,enId){
+async function rdLooseMoved(s,id,enId,asked){
   const f=s.loose,rk=enId?id+"|"+enId:id,html=rdCache.get(s.id);
   if(html){rdCache.set(rk,html);rdCacheDrv.set(rk,f.id);if(rdPdf.has(s.id)){const bl=rdPdf.get(s.id);rdPdf.delete(s.id);rdCache.delete(s.id);rdPdfPut(rk,bl);}}
   try{const r=await dbGet("images",drvKey(s.id));if(r){await dbPut("images",Object.assign({},r,{key:drvKey(rk)}));await dbDel("images",drvKey(s.id));}}catch(e){}
   if(settings.rdRtl&&settings.rdRtl[s.id]!=null){const m=Object.assign({},settings.rdRtl);m[rk]=m[s.id];delete m[s.id];settings.rdRtl=m;saveSettings();}
   if(settings.drvPos&&settings.drvPos[f.id]){const m=Object.assign({},settings.drvPos);delete m[f.id];settings.drvPos=m;saveSettings();}
   if(settings.drvMarks&&settings.drvMarks[f.id]){const m=Object.assign({},settings.drvMarks);delete m[f.id];settings.drvMarks=m;saveSettings();}
-  closeReader(true);openReader(id,enId||"");
+  closeReader(true);openReader(id,asked||enId||"");
 }
 async function rdLooseLink(s,id,enId){
   const pos={f:+rdPosNow().toFixed(4),at:Date.now()},f=s.loose;
   const carried=(settings.drvMarks||{})[f.id]||[];
-  const mut=bk=>{const x=enId?(bk.entries||[]).find(e=>e.id===enId):bk;if(!x)return false;x.driveFile=drvFileOf(f);x.readPos=pos;
+  const b0=books.find(x=>x.id===id),e0=b0&&enId?(b0.entries||[]).find(e=>e.id===enId):null,tgt=e0?entFileTarget(b0,e0):null;
+  const mut=bk=>{const e=enId?(bk.entries||[]).find(y=>y.id===enId):null;if(enId&&!e)return false;
+    const x=e?entFileTarget(bk,e):bk;x.driveFile=drvFileOf(f);x.readPos=pos;if(e&&e!==x)delete e.driveFile;
     if(carried.length)x.marks=[...hlListOf(x),...carried];return true;};
   if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);
-  rdLooseMoved(s,id,enId);
+  rdLooseMoved(s,id,tgt?tgt.id:"",enId);
 }
 async function rdLooseAdd(s){
   const f=s.loose,meta=s.meta||drvNameMeta(f.name),pos={f:+rdPosNow().toFixed(4),at:Date.now()};
@@ -31038,7 +31048,7 @@ function drvLinkPanel(s){
   const units=[];books.forEach(b=>{if(!b||b._story)return;if(!isColl(b))units.push({b,en:null});(b.entries||[]).forEach(en=>{if(en)units.push({b,en});});});
   const paint=()=>{const qw=drvNorm(q("#dlQ",d).value).split(" ").filter(Boolean);
     const hits=units.filter(u=>{const n=drvNorm((u.en||u.b).title);return qw.length&&qw.every(w=>n.includes(w));}).slice(0,40);
-    q("#dlList",d).innerHTML=hits.map((u,i)=>`<div class="snap" style="padding:6px 10px"><div style="min-width:0;flex:1;font-size:14px;overflow-wrap:anywhere">${esc((u.en||u.b).title||"Untitled")}<div class="meta">${u.en?"in "+esc(u.b.title||"Untitled"):esc(u.b.author||"")}${(u.en||u.b).driveFile?" · has a file already":""}</div></div><button class="btn smallbtn" data-dli="${i}">Link it</button></div>`).join("")
+    q("#dlList",d).innerHTML=hits.map((u,i)=>`<div class="snap" style="padding:6px 10px"><div style="min-width:0;flex:1;font-size:14px;overflow-wrap:anywhere">${esc((u.en||u.b).title||"Untitled")}<div class="meta">${u.en?"in "+esc(u.b.title||"Untitled"):esc(u.b.author||"")}${(u.en?entFileHolder(u.b,u.en):u.b.driveFile)?" · has a file already":""}</div></div><button class="btn smallbtn" data-dli="${i}">Link it</button></div>`).join("")
       ||`<div class="hint">${qw.length?"Nothing on your shelf by that name.":"Type part of its title."}</div>`;
     qa("[data-dli]",d).forEach(bt=>bt.onclick=()=>{const u=hits[+bt.dataset.dli];close();rdLooseLink(s,u.b.id,u.en?u.en.id:"");});};
   q("#dlQ",d).oninput=paint;paint();
@@ -31047,7 +31057,7 @@ function drvLinkPanel(s){
 function entFileBtnsHtml(b,en){
   if(!driveReady())return "";
   const h=entFileHolder(b,en);
-  return h?`<button class="btn smallbtn pri" data-enread="${esc(en.id)}" title="${esc(h.driveFile.name||"")} — read it here, where you left off">📖 Read</button>${h===en?`<button class="btn smallbtn" data-endrivex="${esc(en.id)}" title="Unlink the Drive file — it stays in your Drive">✕</button>`:""}`
+  return h?`<button class="btn smallbtn pri" data-enread="${esc(en.id)}" title="${esc(h.driveFile.name||"")} — read it here, where you left off">📖 Read</button><button class="btn smallbtn" data-endrivex="${esc(h.id)}" title="${h===en&&!isSplitTale(b,en)?"Unlink the Drive file":"Unlink the Drive file from every tale that shares it"} — it stays in your Drive">✕</button>`
     :`<button class="btn smallbtn" data-endrive="${esc(en.id)}" title="A file of this one from your Google Drive folder">☁</button>`;
 }
 document.addEventListener("click",async e=>{
@@ -31307,13 +31317,14 @@ async function drvConnectApply(rows){
   for(const [id,list] of byBook){
     const b=books.find(x=>x.id===id);if(!b)continue;
     const before=JSON.parse(JSON.stringify(b));
-    list.forEach(r=>{const x=r.en?(b.entries||[]).find(e=>e.id===r.en.id):b;if(x&&!x.driveFile)x.driveFile=drvFileOf(r.use);});
+    let wrote=0;
+    list.forEach(r=>{const e=r.en?(b.entries||[]).find(y=>y.id===r.en.id):null,x=e?entFileTarget(b,e):(r.en?null:b);if(x&&!x.driveFile){x.driveFile=drvFileOf(r.use);wrote++;}});
     touchBook(b,true);
     if(!(await putOrRestore(b,before))){full=true;break;}
     if(SYNC.on)enqueue({kind:"book",id:b.id});
     items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
     try{await rebaseOpenBook(b.id);}catch(e){}
-    n+=list.length;
+    n+=wrote;
   }
   if(items.length)pushOp({t:"bulk",items});
   if(SYNC.on)flushQueue();
@@ -31558,7 +31569,7 @@ async function rdSave(final,sitting){
   /* the bookmark's holder: the book, or the story and through it the volume
      (markTarget) — see A FILE, WHOEVER HOLDS IT */
   const holder=bk=>enId?(bk.entries||[]).find(e=>e.id===enId)||null:bk;
-  const inRead=(bk,x)=>enId?(entStatusOf(bk,x)==="reading"&&!entDnfOf(bk,x)):(statusOf(bk)==="reading"&&!bk.dnf&&!isColl(bk));
+  const inRead=(bk,x)=>enId?entFileReading(bk,x):(statusOf(bk)==="reading"&&!bk.dnf&&!isColl(bk));
   {const b=books.find(x=>x.id===id);if(!b)return;const x=holder(b);if(!x)return;const m=enId?markTarget(b,x):b,t=parseInt(m.pages)||0;
    const moves=inRead(b,x)&&(t?Math.round(f*t)>(parseInt(m.progress)||0):Math.round(f*100)>(parseInt(m.pct)||0));
    const files=secs>=TIMER_MIN_S&&secs<=TIMER_MAX_H*3600&&!timerOn(b)&&!sprintOn(b);
@@ -32386,14 +32397,18 @@ function docHlFind(text){
    │ three holders: a book (openReader(id)); a story or volume in a collection │
    │ (openReader(id,story): en.driveFile and en.readPos on the story, the     │
    │ bookmark through markTarget, a tale with no file of its own using its    │
-   │ volume's — entFileHolder); or nobody yet (openReader("drv:<file>","",f)  │
+   │ volume's or a fellow tale's — entFileHolder; a file chosen for a tale goes │
+   │ on the volume, entFileTarget, so every tale opens it at one place, and    │
+   │ "being read" is the volume's answer, entFileReading); or nobody yet       │
+   │ (openReader("drv:<file>","",f)                                            │
    │ from the ☁ Drive tab: the place kept per file in settings.drvPos, nothing │
    │ on the shelf, no quotes or sessions). rk is whose it is, for the cache,  │
    │ the page mode and the join choice. A file on nobody's shelf gets a strip │
    │ (rdLooseDraw): the shelf's closest title, a story included, to link it   │
    │ to, or ＋ Add to my shelf; linking carries the place over.               │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const entFileHolder=(b,en)=>{if(!b||!en)return null;if(en.driveFile)return en;const w=entWholeOf(b,en);return w&&w.driveFile?w:null;};
+const entFileHolder=(b,en)=>{if(!b||!en)return null;if(en.driveFile)return en;if(!isSplitTale(b,en))return null;
+  const w=markHolder(b,en);return w.driveFile?w:volTales(b,w).find(t=>t&&t.driveFile)||null;};
 const rdX=(s,b)=>s.en&&b?((b.entries||[]).find(e=>e.id===s.en)||b):b;
 const drvMeta=new Map();
 async function openReader(id,enId,loose,goMark){
@@ -32411,7 +32426,7 @@ async function openReader(id,enId,loose,goMark){
     :(rdCache.has(rk)&&rdCacheDrv.get(rk)===df.id)?rdCache.get(rk)
     :await drvHtml(rk,df,loadOpts,loose?{still:()=>true,reading:()=>false,onBlob:async bl=>{drvMeta.set(df.id,await drvFileMeta(bl,df));}}
       :{still:()=>{const n=books.find(y=>y.id===id),e=n&&(n.entries||[]).find(y=>y.id===hold.id);return !!(e&&e.driveFile&&e.driveFile.id===df.id);},
-        reading:()=>{const n=books.find(y=>y.id===id),e=n&&(n.entries||[]).find(y=>y.id===hold.id);return !!(e&&entStatusOf(n,e)==="reading"&&!entDnfOf(n,e));}});}
+        reading:()=>{const n=books.find(y=>y.id===id),e=n&&(n.entries||[]).find(y=>y.id===hold.id);return !!(e&&entFileReading(n,e));}});}
   catch(e){if(op.seq!==rdOpenSeq)return;rdOpenCancel();
     if(!(e&&e.name==="AbortError"))alert(e&&e.plain?e.message:"The file couldn't be opened from Google Drive — "+((e&&e.message)||"no answer")+".");return;}
   if(op.seq!==rdOpenSeq)return;   /* something newer asked, or Cancel */
@@ -32434,7 +32449,7 @@ async function openReader(id,enId,loose,goMark){
   const askedMode=settings.rdMode&&settings.rdMode[rk];
   const mode=isPdf?(askedMode==="scroll"?"scroll":"pages"):askedMode==="pages"?"pages":"scroll";
   const el=document.createElement("div");el.id="readerPage";el.className="rdpage "+mode+(isPdf?" rdpdfon":"");
-  const reading=loose?false:hold?(entStatusOf(b,hold)==="reading"&&!entDnfOf(b,hold)):(statusOf(b)==="reading"&&!b.dnf);
+  const reading=loose?false:hold?entFileReading(b,hold):(statusOf(b)==="reading"&&!b.dnf);
   const driveF=df||(b&&!rdFileOf(b)&&b.driveFile)||null;
   /* whose highlights: the Drive file's, or the one given here at that moment */
   const hlKey=driveF?driveF.id:"read:"+id+":"+((b&&b.readFile&&b.readFile.at)||0);
@@ -32499,10 +32514,11 @@ async function openReader(id,enId,loose,goMark){
   q("#rdMode",el).onclick=()=>{s.f=rdPosNow();s.mode=s.mode==="pages"?"scroll":"pages";el.className="rdpage "+s.mode+(s.pdf?" rdpdfon":"");
     settings.rdMode=Object.assign({},settings.rdMode||{},{[rk]:s.mode});saveSettings();
     q("#rdMode",el).textContent=s.mode==="pages"?"⇅ Scroll":"⇆ Pages";rdLayout();};
-  {const st=q("#rdStart",el);if(st)st.onclick=async()=>{const fn=bk=>{if(!hold)return markStatus(bk,"reading");const e=(bk.entries||[]).find(y=>y.id===hold.id);if(!e)return false;markEntStatus(bk,e,"reading");};
+  /* 📖 Start it starts the tale you opened, not whichever one holds the file */
+  {const st=q("#rdStart",el);if(st)st.onclick=async()=>{const fn=bk=>{if(!hold)return markStatus(bk,"reading");const e=(bk.entries||[]).find(y=>y.id===asked.id);if(!e)return false;markEntStatus(bk,e,"reading");};
     if(view==="book"&&cur&&cur.id===id)await quickEdit(fn);else await shelfMut(id,fn);
     const bb=books.find(y=>y.id===id),be=bb&&hold?(bb.entries||[]).find(y=>y.id===hold.id):null;
-    if(bb&&(hold?entStatusOf(bb,be)==="reading":statusOf(bb)==="reading")){st.remove();const n=q(".rdfoot .rdmark",el);if(n)n.textContent="the bookmark follows you";rdSave(true);}};}
+    if(bb&&(hold?(be&&entFileReading(bb,be)):statusOf(bb)==="reading")){st.remove();const n=q(".rdfoot .rdmark",el);if(n)n.textContent="the bookmark follows you";rdSave(true);}};}
   q("#rdToc",el).onclick=e=>{e.stopPropagation();const box=q("#rdTocBox",el);if(!box.hidden){box.hidden=true;return;}
     if(s.pdf){const P=s.pdf;
       box.innerHTML=`<div class="rdpgo">Page <input class="field" id="rdPgN" type="number" min="1" max="${P.n}" value="${s.page+1}" style="width:5.5em"> of ${P.n.toLocaleString()} <button class="btn smallbtn" id="rdPgGo">Go</button></div>`
