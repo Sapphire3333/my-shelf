@@ -311,3 +311,7 @@ open it in a browser, done.
 *Vanilla JS, no build step, no framework, no npm. The only runtime dependencies are
 `@supabase/supabase-js` (CDN, optional — the app runs fine without it) and
 `tesseract.js` (CDN, fetched only if you use the read-a-photo quick add).*
+
+## Sounds
+
+The recordings in `art/sounds/` are by Joseph Sardin of [BigSoundBank](https://bigsoundbank.com), CC0: Summer Rain on Terrace (its first 70 seconds), Fireplace #2 and Forest.
