@@ -14008,6 +14008,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.28",go:["el:insights:#secChapters"],lines:["<b>📖 The chapters of your reading life.</b> On Insights under Time, below Your reading, drawn: Claude names the stretches of your years, about six a year, with a few words on each. You keep, rename or drop each one before it goes on the timeline, and pressing a chapter takes the timeline to those months. Your own named stretches stay yours, and Claude may offer a new name that changes nothing until you say. The button shows its price before you press, and only readings with dates can go in a chapter."]},
   {v:"2026-11-05.27",go:["el:settings:#secSeasons"],lines:["<b>🍂 Seasons and hours.</b> The app's look now follows the real world, faintly: the page warms towards evening and more at night, and frost, petals or leaves sit at the corners of the screen, with only warmth in summer. A background of your own keeps only the warmth, and the reader keeps its own lamp. One switch turns it off, in Settings under How it works."]},
   {v:"2026-11-05.26",go:["tab:overview"],lines:["<b>📖 The book in your hands.</b> Today now opens on the book or story you read last, with its cover big, your place, 📖 Read if it has a file and ✎ Log my page. Everything else you're reading is under Also reading, and the tabs are where they were. <b>🌅 Your day</b> no longer opens by itself over your book: it waits on a button underneath, with a dot until you've opened it that day."]},
   {v:"2026-11-05.25",go:["el:care:#drvConnBox"],lines:["<b>🔗 See every file a book might be.</b> On the To check list in Connect my files, a book or story with more than three possible files only said how many more there were, with nothing to press. <b>▸ See the other files</b> now opens them right there, each with its own Use it."]},
@@ -30564,7 +30565,15 @@ function tlBodyHtml(big,areaW,all,fit){
     for(;dayKeyOf(d)<to;d.setDate(d.getDate()+7))if(d.getDate()!==1)lines+=`<i style="left:${pct(dayKeyOf(d)).toFixed(2)}%"></i>`;}
   const eras=eraList().filter(e=>e.to>=from&&e.from<=to);
   const tints=eras.map(e=>`<div class="tlera" style="left:${pct(e.from).toFixed(2)}%;width:${Math.max(.5,pct(e.to)-pct(e.from)).toFixed(2)}%"></div>`).join("");
-  const eraRow=eras.length?`<div class="tlrow tleras">${ribbons?"<span></span>":`<span class="hint" style="margin:0;font-size:11px">Named stretches</span>`}<div class="tlerasl">${eras.map(e=>`<button class="tlerab" data-era="${esc(e.id)}" style="left:${Math.min(pct(e.from),80).toFixed(2)}%" title="${esc(printDay(e.from))} – ${esc(printDay(e.to))} · rename it, or empty the name to take it off">${esc(e.name)}</button>`).join("")}</div></div>`:"";
+  /* names that would run into each other take another row: six chapters a year
+     and a stretch of your own all want the same strip */
+  const eraEnds=[];
+  const eraBtns=eras.slice().sort((a,b)=>String(a.from).localeCompare(String(b.from))).map(e=>{
+    const wpx=Math.min(170,String(e.name).length*6.2+26),at=Math.max(0,Math.min(pct(e.from)/100*areaW,areaW-wpx));
+    let r=eraEnds.findIndex(end=>end+4<=at);if(r<0){eraEnds.push(0);r=eraEnds.length-1;}
+    eraEnds[r]=at+wpx;
+    return `<button class="tlerab" data-era="${esc(e.id)}" style="left:${(at/areaW*100).toFixed(2)}%;top:${2+r*24}px" title="${esc(printDay(e.from))} – ${esc(printDay(e.to))} · rename it, or empty the name to take it off">${esc(e.name)}</button>`;}).join("");
+  const eraRow=eras.length?`<div class="tlrow tleras">${ribbons?"<span></span>":`<span class="hint" style="margin:0;font-size:11px">Named stretches</span>`}<div class="tlerasl" style="height:${Math.max(1,eraEnds.length)*24}px">${eraBtns}</div></div>`:"";
   /* ---- RIBBONS (settings.tlView, "lines" for the line a reading) ----
      Readings that do not overlap share a lane, laid oldest first: a rounded ribbon
      from the start to the finish, its cover stood on it like a book on a shelf, and
@@ -30690,6 +30699,149 @@ function tlWireDrag(box,big,redraw){
     quests.eras=[...(quests.eras||[]),{id:uid(),from:f,to:t,name:nm.trim().slice(0,60),at:Date.now()}];questSave();redraw();};
   box.addEventListener("pointerup",end);box.addEventListener("pointercancel",()=>{x0=null;sel.hidden=true;});
 }
+/* ┌─ THE CHAPTERS OF YOUR READING LIFE ──────────────────────────────────────┐
+   │ Claude reads the timeline's dated readings (tlBars: books and stories,     │
+   │ under booksOnly, so no fics) and cuts them into named chapters with a few  │
+   │ words each. A kept chapter is an era like a stretch named by hand, in      │
+   │ quests.eras with by:"claude" and say, so it is tinted and named on the     │
+   │ timeline and joined between devices by id as those are. #secChapters lists │
+   │ them, oldest first; a press takes the timeline to those months. The answer │
+   │ waits in settings.chapterDraft on this device until each is kept, renamed  │
+   │ or dropped, so a look that was paid for survives closing the tab. Stretches│
+   │ you named yourself are sent as yours: Claude never moves them, and may     │
+   │ offer a new name, which changes nothing until you say. A later press sends │
+   │ only what has been read since the last chapter; ↻ rewrites them all, and   │
+   │ the old ones go at the first one kept. Anything with no date can't be      │
+   │ placed, and the card says how many that is. Nothing is spent but on a press.│
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const CHAPTERS_A_YEAR=6,CH_READ_MAX=2500;
+let chBusyAt=0,chTick=0,chErr="";
+const chDone=()=>eraList().filter(e=>e.by==="claude").sort((a,b)=>String(a.from).localeCompare(String(b.from)));
+function chReadings(after){
+  return tlBars().filter(b=>!after||b.to>after).sort((a,c)=>a.from.localeCompare(c.from));
+}
+function chBooks(from,to){
+  const seen=new Set(),out=[];
+  tlBars().filter(b=>b.to>=from&&b.from<=to).forEach(b=>{const k=b.id+"|"+b.en;if(!seen.has(k)){seen.add(k);out.push(b);}});
+  return out;
+}
+const chUndated=()=>readUnits().filter(u=>(u.times||0)>0&&!(u.reads||[]).some(r=>String((r&&r.end)||(r&&r.start)||"").length>=10)).length;
+const chYears=list=>list.length?new Set(list.map(b=>b.from.slice(0,4))).size:0;
+/* about 30 tokens a reading to read and 70 a chapter to answer, at the app's prices */
+function chCostSay(list){
+  const P=CLAUDE_PRICES[claudeSmallModel()||CLAUDE_OPUS]||CLAUDE_PRICES[CLAUDE_OPUS];
+  const c=((Math.min(list.length,CH_READ_MAX)*30+600)*P.input+(chYears(list)*CHAPTERS_A_YEAR*70+200)*P.output)/1e4;
+  return c<1?"under 1¢":"about "+Math.max(1,Math.round(c))+"¢";
+}
+async function chaptersAsk(full){
+  const prior=full?[]:chDone(),after=prior.length?prior[prior.length-1].to:"";
+  const list=booksOnly(()=>ruHold(()=>chReadings(after))).slice(-CH_READ_MAX);
+  if(!list.length)throw new Error("there is nothing new with a date");
+  const mine=eraList().filter(e=>e.by!=="claude");
+  const line=b=>{const x=b.en?(b.b.entries||[]).find(en=>en.id===b.en):b.b,v=x&&x.rating!=null&&x.rating!==""?Number(x.rating):NaN;
+    const g=(b.view.genres||[]).slice(0,2).join(", ");
+    return `${b.from}..${b.to}${b.open?" (still reading)":""} | ${String(b.title).slice(0,70)}${b.view.author?` | ${String(b.view.author).slice(0,40)}`:""}${g?` | ${g}`:""}${isFinite(v)?` | ${v}/10`:""}`;};
+  const S2={type:"string"};
+  const schema={type:"object",properties:{
+    chapters:{type:"array",items:{type:"object",properties:{from:S2,to:S2,name:S2,say:S2},required:["from","to","name","say"],additionalProperties:false}},
+    renames:{type:"array",items:{type:"object",properties:{id:S2,name:S2},required:["id","name"],additionalProperties:false}}},
+    required:["chapters","renames"],additionalProperties:false};
+  const text=`These are a reader's dated readings, one a line: start..finish | title | author | genres | mark.\n\n${list.map(line).join("\n")}\n\n`
+    +`Cut them into chapters of this reader's reading life, in date order, not overlapping. Aim for about ${CHAPTERS_A_YEAR} chapters in a calendar year with plenty of readings, and fewer where there are few. A chapter should follow what really changed in what they read or how they read it.\n`
+    +`name: two to six words that place the stretch in time and say what it was, in the manner of "the autumn of ghost stories", from what was actually read. Different for each chapter. No quotation marks.\n`
+    +`say: one or two short sentences to the reader as "you", from these lines alone. Invent nothing about the books beyond their titles, genres, marks and dates.\n`
+    +`from and to: dates as YYYY-MM-DD, from the first reading's start to the last one's finish.\n`
+    +(prior.length?`These chapters already exist and stay as they are, so carry on after them and repeat none of their names: ${prior.map(c=>`"${c.name}"`).join(", ")}.\n`:"")
+    +(mine.length?`The reader named these stretches themselves. A chapter may run through one, but do not reuse its name: ${mine.map(e=>`[id ${e.id}] "${e.name}" ${e.from}..${e.to}`).join("; ")}. In renames, offer a new name for one only if it is clearly better, and otherwise leave renames empty.\n`:`Leave renames empty.\n`);
+  const cap=Math.min(16000,1500+chYears(list)*CHAPTERS_A_YEAR*200);
+  const j=await claudeAsk({what:"📖 Chapters of your reading",kind:"ask",text,schema,effort:"medium",max_tokens:cap,model:claudeSmallModel(),waitMs:CLAUDE_BIG_WAIT});
+  const o=j.json||{},dated=s=>/^\d{4}-\d{2}-\d{2}$/.test(String(s||""));
+  const items=(Array.isArray(o.chapters)?o.chapters:[]).map(c=>({id:uid(),from:String(c&&c.from||""),to:String(c&&c.to||""),name:String(c&&c.name||"").trim().slice(0,60),say:String(c&&c.say||"").trim().slice(0,500)}))
+    .filter(c=>dated(c.from)&&dated(c.to)&&c.from<=c.to&&c.name).sort((a,c)=>a.from.localeCompare(c.from));
+  if(!items.length)throw new Error("the answer held no chapters");
+  const known=new Map(mine.map(e=>[e.id,e]));
+  const renames=(Array.isArray(o.renames)?o.renames:[]).map(r=>({id:String(r&&r.id||""),name:String(r&&r.name||"").trim().slice(0,60)})).filter(r=>r.name&&known.has(r.id)&&known.get(r.id).name!==r.name);
+  settings.chapterDraft={at:Date.now(),full:!!full,items,renames};saveSettings();
+}
+function chaptersHtml(){
+  const done=chDone(),dr=settings.chapterDraft,ready=claudeReady(),all=tlBars();
+  if(!all.length&&!done.length)return "";
+  if(!ready&&!done.length&&!dr)return "";
+  const when=(c,n)=>`${esc(printDay(c.from))} – ${esc(printDay(c.to))} · ${n} book${n===1?"":"s"}`;
+  const head=`<div class="heading"><h2 class="serif">The chapters of your reading life</h2>${done.length>1?`<span class="n">(${done.length})</span>`:""}</div>`;
+  const noDate=chUndated();
+  const askLine=`${all.length.toLocaleString()} reading${all.length===1?"":"s"} with dates, books and stories alike.${noDate?` Another ${noDate.toLocaleString()} you've read ${noDate===1?"has":"have"} no date, so ${noDate===1?"it":"they"} can't be placed in a chapter.`:""}`;
+  const busy=!!chBusyAt;
+  const say=`<div class="hint" style="margin:6px 0 0" id="chSay">${busy?"":chErr?`Claude couldn't: ${esc(chErr)}`:""}</div>`;
+  if(dr&&(dr.items.length||dr.renames.length)){
+    return `<div class="sec" id="secChapters">${head}<div class="hcard">
+      <div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center">${dr.items.length?`<button class="btn pri" data-chkeepall>✓ Keep all ${dr.items.length}</button>`:""}<span class="hint" style="margin:0;flex:1 1 200px">Not on your timeline until you keep them. Rename in place, or ✕ what doesn't fit.</span><button class="btn smallbtn" data-chdropall>Throw these away</button></div>
+      ${dr.items.map((c,i)=>{const n=chBooks(c.from,c.to).length;return `<div class="snap" style="display:block;margin-top:6px">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input class="field" data-chname="${i}" maxlength="60" value="${esc(c.name)}" aria-label="The chapter's name" style="flex:1 1 180px;min-width:0;width:auto;font:600 15px Georgia,'Times New Roman',serif;padding:4px 8px"><button class="btn smallbtn" data-chkeep="${i}">✓ Keep</button><button class="btn smallbtn" data-chdrop="${i}" aria-label="Drop this chapter">✕</button></div>
+        <div class="meta" style="margin-top:4px">${when(c,n)}</div><div style="font-size:14px;margin-top:4px">${esc(c.say)}</div></div>`;}).join("")}
+      ${dr.renames.map((r,i)=>{const e=eraList().find(x=>x.id===r.id);return e?`<div class="snap" style="display:block;margin-top:6px"><div class="lbl" style="margin:0 0 4px">One of yours</div><div><b class="serif">${esc(e.name)}</b> could be <b class="serif">${esc(r.name)}</b></div><div class="hrow2" style="gap:6px;margin-top:6px;flex-wrap:wrap"><button class="btn smallbtn" data-chrename="${i}|1">Use the new name</button><button class="btn smallbtn" data-chrename="${i}|0">Keep mine</button></div></div>`:"";}).join("")}
+    </div></div>`;
+  }
+  const last=done.length?done[done.length-1].to:"",fresh=chReadings(last);
+  const askBtn=(attr,label,pri)=>`<button class="btn${pri?" pri":""}" ${attr}${busy?" disabled":""}>${label}</button>`;
+  if(!done.length)return `<div class="sec" id="secChapters">${head}<div class="hcard">
+      <div class="hint" style="margin:0 0 8px">Claude names the stretches of your reading years, about ${CHAPTERS_A_YEAR} a year, with a few words on each. You look them over before any goes on the timeline.</div>
+      ${ready?askBtn('data-chask="new"',busy?"✨ Claude is reading your years…":`✨ Write the chapters of my reading life · ${chCostSay(all)}`,true):""}
+      <div class="hint" style="margin:6px 0 0">${askLine}</div>${say}</div></div>`;
+  const byYear=new Map();done.forEach(c=>{const y=c.from.slice(0,4);if(!byYear.has(y))byYear.set(y,[]);byYear.get(y).push(c);});
+  return `<div class="sec" id="secChapters">${head}<div class="hcard">
+    ${[...byYear].map(([y,list])=>`<div class="lbl" style="margin:8px 0 2px">${esc(y)}</div>${list.map(c=>{const bs=chBooks(c.from,c.to);return `<div class="snap" data-chgo="${esc(c.id)}" role="button" tabindex="0" style="display:block;margin-top:6px;cursor:pointer">
+        <div style="display:flex;gap:6px;align-items:flex-start"><b class="serif" style="font-size:16px;flex:1;min-width:0;overflow-wrap:anywhere">${esc(c.name)}</b><button class="kwwhy tdbtn" data-chedit="${esc(c.id)}" title="Rename it" aria-label="Rename it">✎</button><button class="kwwhy tdbtn" data-chx="${esc(c.id)}" title="Take it off" aria-label="Take it off">✕</button></div>
+        <div class="meta">${when(c,bs.length)}</div>${c.say?`<div style="font-size:14px;margin-top:4px">${esc(c.say)}</div>`:""}
+        ${bs.length?`<div class="recapcovs" style="margin-top:6px">${bs.slice(0,5).map(b=>`<span class="recapcov" data-cover="${esc(b.id)}"${b.cov?` data-covkey="${esc(b.cov)}"`:""}>${coverInner(b.view,false)}</span>`).join("")}</div>`:""}</div>`;}).join("")}`).join("")}
+    ${ready?`<div class="hrow2" style="gap:8px;margin-top:10px;flex-wrap:wrap">${fresh.length?askBtn('data-chask="new"',busy?"✨ Claude is reading…":`✨ Write the next chapter · ${chCostSay(fresh)}`,false):""}${askBtn('data-chask="all"',`↻ Write them all again · ${chCostSay(all)}`,false)}</div>`:""}
+    ${noDate?`<div class="hint" style="margin:6px 0 0">${noDate.toLocaleString()} you've read ${noDate===1?"has":"have"} no date, so ${noDate===1?"it isn't":"they aren't"} in a chapter.</div>`:""}${say}</div></div>`;
+}
+function chRefresh(){
+  if(view!=="insights")return;
+  tlCardRefresh();
+  const old=q("#secChapters"),html=booksOnly(()=>ruHold(chaptersHtml));
+  if(!old){if(html)renderInsights();return;}
+  old.outerHTML=html||"";
+  const sec=q("#secChapters");if(sec)try{hydrateCovers(sec);}catch(e){}
+  chSayNow();
+}
+function chSayNow(){const s=q("#chSay");if(s&&chBusyAt)s.textContent=`${Math.round((Date.now()-chBusyAt)/1000)} s so far. A long shelf can take a minute or two, and you can leave this page: the answer waits here.`;}
+function chKeep(c,dr){
+  if(dr.full&&!dr.cleared){chDone().forEach(o=>{o.gone=true;o.at=Date.now();});dr.cleared=true;}
+  quests.eras=[...(quests.eras||[]),{id:c.id,from:c.from,to:c.to,name:c.name,say:c.say,by:"claude",at:Date.now()}];
+}
+function chDraftDone(){const d=settings.chapterDraft;if(d&&!d.items.length&&!d.renames.length)delete settings.chapterDraft;saveSettings();}
+document.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target&&e.target.dataset&&e.target.dataset.chgo)e.target.click();});
+document.addEventListener("input",e=>{const i=e.target&&e.target.dataset&&e.target.dataset.chname;
+  if(i===undefined||!settings.chapterDraft)return;const c=settings.chapterDraft.items[+i];if(c){c.name=e.target.value;saveSettings();}});
+document.addEventListener("click",async e=>{
+  const t=e.target.closest&&e.target.closest("[data-chask],[data-chkeepall],[data-chkeep],[data-chdrop],[data-chdropall],[data-chrename],[data-chedit],[data-chx],[data-chgo]");if(!t)return;
+  const d=t.dataset,dr=settings.chapterDraft;
+  if(d.chask!==undefined){
+    if(chBusyAt)return;
+    if(d.chask==="all"&&!confirm("Write every chapter again? The ones you have stay until you keep the first new one."))return;
+    chBusyAt=Date.now();chErr="";chRefresh();clearInterval(chTick);chTick=setInterval(chSayNow,1000);
+    try{await chaptersAsk(d.chask==="all");}catch(x){chErr=(x&&x.message)||"no answer";}
+    chBusyAt=0;clearInterval(chTick);chRefresh();return;}
+  if(d.chkeepall!==undefined){if(!dr)return;const c=dr.items.slice().map(x=>({...x,name:x.name.trim()})).filter(x=>x.name);c.forEach(x=>chKeep(x,dr));dr.items=[];questSave();chDraftDone();chRefresh();return;}
+  if(d.chkeep!==undefined){if(!dr)return;const c=dr.items[+d.chkeep];if(!c||!c.name.trim())return;chKeep({...c,name:c.name.trim()},dr);dr.items.splice(+d.chkeep,1);questSave();chDraftDone();chRefresh();return;}
+  if(d.chdrop!==undefined){if(!dr)return;dr.items.splice(+d.chdrop,1);chDraftDone();chRefresh();return;}
+  if(d.chdropall!==undefined){if(!confirm("Throw away what Claude suggested? Asking again costs again."))return;delete settings.chapterDraft;saveSettings();chRefresh();return;}
+  if(d.chrename!==undefined){if(!dr)return;const [i,yes]=d.chrename.split("|"),r=dr.renames[+i];if(!r)return;
+    if(yes==="1"){const er=eraList().find(x=>x.id===r.id);if(er){er.name=r.name;er.at=Date.now();questSave();}}
+    dr.renames.splice(+i,1);chDraftDone();chRefresh();return;}
+  if(d.chedit!==undefined){e.stopPropagation();const er=chDone().find(x=>x.id===d.chedit);if(!er)return;
+    const nm=prompt("A name for this chapter",er.name||"");if(nm===null||!nm.trim())return;
+    er.name=nm.trim().slice(0,60);er.at=Date.now();questSave();chRefresh();return;}
+  if(d.chx!==undefined){e.stopPropagation();const er=chDone().find(x=>x.id===d.chx);if(!er||!confirm(`Take “${er.name}” off?`))return;
+    er.gone=true;er.at=Date.now();questSave();chRefresh();return;}
+  if(d.chgo!==undefined){const c=chDone().find(x=>x.id===d.chgo);if(!c)return;
+    const span=Math.ceil(daysApart(c.from,c.to)/30)+1,end=dayBack(c.to,-14);
+    settings.tlMonths=Math.max(3,Math.min(60,Math.max(tlMonths()>12?3:tlMonths(),span)));settings.tlEnd=end>=todayStr()?"":end;saveSettings();
+    tlCardRefresh();const s=q("#secTimeline");if(s)s.scrollIntoView({block:"start"});
+    const nm=q(`#secTimeline [data-era="${c.id}"]`);if(nm){nm.classList.add("sethit");setTimeout(()=>nm.classList.remove("sethit"),2000);}}
+});
 /* ═══ 📖 THE READER ════════════════════════════════════════════════════════
    A book can carry a file of itself — an HTML file such as an AO3 download,
    or plain text — read inside the app. rdImport cleans it once on the way
@@ -57178,6 +57330,7 @@ function renderInsightsNow(){
         </div></div>`;
     })()}
     ${(()=>{try{return tlHtml();}catch(e){return "";}})()}
+    ${(()=>{try{return chaptersHtml();}catch(e){return "";}})()}
     ${(()=>{try{return recapRowHtml();}catch(e){return "";}})()}
     ${(()=>{try{return atlasHtml();}catch(e){return "";}})()}
     ${(()=>{try{return tbrHtml();}catch(e){return "";}})()}
@@ -57379,7 +57532,7 @@ const INS_TABS=[
   ["year","🎁","Your year","wrapped, the stars, month by month",/^(your year, wrapped|a year in stars|month by month)/i],
   ["reader","🪞","You as a reader","your taste, something to read, genres",/^(✍️ your fics|you, as a reader|genres, honestly rated)/i],
   ["numbers","🔢","Numbers","pages, time, formats, decades",/^(the numbers|pages a day|time read|print, ebook, audio|by decade|read in|who sends you books)/i],
-  ["time","🗓","Time","when you finish, your reading drawn",/^(when you finish|your reading, drawn|what you read, and when)/i],
+  ["time","🗓","Time","when you finish, your reading drawn",/^(when you finish|your reading, drawn|the chapters of your reading|what you read, and when)/i],
   ["places","🌍","Places and the pile","the atlas, the mountain",/^(the atlas|the mountain of unread)/i]];
 function insTabsApply(m){
   const kids=[...m.children].filter(el=>!el.classList.contains("pagetoc"));
