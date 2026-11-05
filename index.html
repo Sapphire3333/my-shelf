@@ -3392,6 +3392,22 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
     background:none;cursor:pointer;flex:none}
   .dupehow{font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;
     color:var(--faint);border:1px solid var(--line);border-radius:6px;padding:2px 7px;flex:none}
+  /* the tag pairs on one list with ticks — see ONE LIST WITH TICKS */
+  .ratepanel.tagticks{width:min(640px,calc(94vw/var(--uiz,1)));max-height:calc(86vh/var(--uiz,1));display:flex;flex-direction:column;overflow:hidden;gap:6px}
+  .tagticklist{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain}
+  .tdtick{flex-wrap:wrap;gap:6px;padding:6px 10px;margin-top:4px}
+  .tdtick input[type=checkbox]{width:18px;height:18px;margin:0;flex:none}
+  .tdnames{flex:1 1 0;min-width:0;overflow-wrap:anywhere;font-size:14px;font-weight:400}
+  .tdnames b{font-weight:700}
+  .tdnames .meta{display:inline}
+  .tdnames .lbl{margin:0 2px}
+  .tdbtn{flex:none;padding:2px 5px;font-size:14px}
+  mark.tddiff{background:color-mix(in srgb,var(--amber) 38%,transparent);color:inherit;border-radius:2px;padding:0 1px}
+  .tdgap{border-left:2px solid var(--amber);margin:0 1px}
+  .tdfoot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:none}
+  .tdsaid{flex:none;margin:0;background:color-mix(in srgb,var(--teal) 14%,var(--card));border-color:var(--teal);color:var(--ink)}
+  html[data-phone="1"] .tdtick input[type=checkbox]{width:22px;height:22px}
+  html[data-phone="1"] .tdbtn{padding:6px 8px;font-size:16px}
   /* the key's swatch: the first few colours actually in that band, stacked */
   .bandswatch{display:flex;flex-direction:column;width:30px;flex:none;border-radius:8px;overflow:hidden;
     border:1px solid var(--line)}
@@ -13968,6 +13984,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.24",go:["el:care:#tagDupBox"],lines:["<b>🧰 The tag pairs that were left.</b> In Shelf care, <b>Tags that may be the same tag twice</b>: close spellings now open as one list over the page, likeliest typos first with the letters that differ marked. Tick the real ones, press Merge once, and one ↶ undoes it all; ⇄ swaps which spelling stays, and Leave the rest clears the tab. <b>Only a tail</b> is a new tab for tags that differ by nothing but “- Freeform” or a leftover word like Fic or AU, ticked to start, and the shorter name stays. Narrower tags, one inside another, are shut in a fold and no longer count as work to do. Stories in collections are merged along with books and fics."]},
   {v:"2026-11-05.23",lines:["<b>📲 Shortcuts on the icon.</b> Long-press My Shelf on your phone for Log my page, Open what I'm reading and Add a book, straight in without passing through Today. Your phone picks these up by itself, which can take a few days."]},
   {v:"2026-11-05.22",lines:["<b>✨ More room for a long series.</b> In a collection's 📋 The rest of the series…, Ask Claude could fail with “answer could not be read”. It now has room for a much longer list and waits longer for it. If it still fails, the button says how much Claude wrote, so please send that."]},
   {v:"2026-11-05.21",lines:["<b>☑ Every book in a collection at once.</b> Beside Contents on a collection's page: set them all to Want to read or Finished, or take Don't have it yet off them all, with one ↶ to undo. Finished this way has no date, so nothing lands on today, and pays no packs. Anything you've already finished, are reading, set aside or given up stays as it is unless you tick the box."]},
@@ -52904,9 +52921,11 @@ function saveTidy(){
   saveSettings();
   dbPut("meta",{k:"tidyKeep",v:tidyRulings()}).then(()=>enqueue({kind:"meta",key:"tidyKeep"})).catch(()=>{});
 }
-function tidyAdd(which,val){
-  settings[which]=[...new Set([...(settings[which]||[]),val])];
-  unmarkMetaDel(TIDY_LISTS[which]+val);
+function tidyAdd(which,val){tidyAddMany(which,[val]);}
+/* many at one press, with one save rather than one per entry */
+function tidyAddMany(which,vals){
+  settings[which]=[...new Set([...(settings[which]||[]),...vals])];
+  vals.forEach(val=>unmarkMetaDel(TIDY_LISTS[which]+val));
   saveTidy();
 }
 /* `ci` for the kept words, which are matched without regard to case wherever
@@ -53371,8 +53390,220 @@ function refreshGenDupes(){
     await careAfterTidy(where);
   });
 }
-const TAG_PAIR_TABS=[["same word","Same word"],["the same word with an ending on it","Endings"],["close spelling","Close spelling"],["one inside the other","One inside"]];
-let tagPairTab="same word";
+const TAG_PAIR_TABS=[["same word","Same word"],["the same word with an ending on it","Endings"],["close spelling","Close spelling"],["only a tail","Only a tail"]];
+let tagPairTab="same word",tagInsideOpen=false;
+/* ---- ONLY A TAIL, AND THE NARROWER TAGS ----
+   "One inside the other" is two different things. Smut and Smut - Freeform are
+   one tag: Freeform is a mark AO3 adds, and a leftover Fic, Fiction, AU, Trope or
+   Tag says nothing either. Angst and Angst with a Happy Ending are two tags, and
+   the longer one means something the shorter does not. So the first kind has a
+   tab with its ticks already on, and the second sits shut in a fold that counts
+   for nothing in the card's heading. Leaving every narrower pair by hand would
+   write 32 bytes a pair into rulings that sync, about 215 KB at 6,776 pairs; the
+   fold writes nothing. Book and Story are left off the tail words on purpose:
+   Magic Book is not Magic, and Love Story is not Love. pairHow still answers "one
+   inside the other" for all of it, because the genre pairs share that function. */
+const TAG_TAIL=new Set(["freeform","fic","fiction","au","trope","tag","the","a","an"]);
+function tagTailPair(a,b){
+  const wa=pairForm(a)[0].split(" "),wb=pairForm(b)[0].split(" ");
+  const [s,l]=wa.length<wb.length?[wa,wb]:[wb,wa];
+  if(s.every(w=>TAG_TAIL.has(w)))return false;
+  const inS=new Set(s);
+  return l.every(w=>inS.has(w)||TAG_TAIL.has(w));
+}
+function tagPairKind(p){return p.how==="one inside the other"?(tagTailPair(p.a,p.b)?"only a tail":"narrower"):p.how;}
+/* true when the letters that differ are half or more of the word they land in:
+   Heavy Cats and Heavy War are two different words a spelling rule happens to
+   find close. Only ever used to sort, never to drop: it also catches Fairy Tale
+   and Fairy Tail, which is a real slip. */
+function tagWordChanged(a,b){
+  const wa=pairForm(a)[0].split(" "),wb=pairForm(b)[0].split(" ");
+  if(wa.length!==wb.length)return false;
+  return wa.some((w,i)=>w!==wb[i]&&editDist(w,wb[i])*2>=Math.min(w.length,wb[i].length));
+}
+/* the likeliest typos first: one letter apart, then the most lopsided use, and a
+   whole different word last. Tails stay in tagDupePairs' order, the busiest first. */
+function tagTickOrder(list,kind){
+  if(kind==="only a tail")return list;
+  const rank=new Map(list.map(p=>[p,[tagWordChanged(p.a,p.b)?1:0,editDist(pairForm(p.a)[0],pairForm(p.b)[0]),-Math.max(p.na,p.nb)/Math.max(1,Math.min(p.na,p.nb))]]));
+  return list.slice().sort((x,y)=>{const a=rank.get(x),b=rank.get(y);return a[0]-b[0]||a[1]-b[1]||a[2]-b[2];});
+}
+/* mergeTagsMany wants each word sent straight to where it ends up. Ticks can make
+   a chain (Pinning into Pining, Pining into Pinnng) or a ring, and one word can be
+   told to go two ways: the first tick wins, a tick that would close a ring is
+   passed over, and a word filed in another family from where it ends up stays out,
+   as it does for tagSameWordMoves. What is passed over is still on the list after. */
+function tagMovesResolved(moves){
+  const to=new Map();
+  const end=w=>{while(to.has(w))w=to.get(w);return w;};
+  moves.forEach(m=>{if(!to.has(m.from)&&end(m.to)!==m.from)to.set(m.from,m.to);});
+  const out=[];
+  to.forEach((_,from)=>{const t=end(from),f=kwCats[from]||"",g=kwCats[t]||"";if(!f||!g||f===g)out.push({from,to:t});});
+  return out;
+}
+/* the letters that differ, marked: what is left after the shared start and end,
+   or a thin bar where the other word has letters this one has not */
+function tagDiffMark(w,other){
+  let a=0;while(a<w.length&&a<other.length&&w[a].toLowerCase()===other[a].toLowerCase())a++;
+  let z=0;while(z<w.length-a&&z<other.length-a&&w[w.length-1-z].toLowerCase()===other[other.length-1-z].toLowerCase())z++;
+  const mid=w.slice(a,w.length-z);
+  return esc(w.slice(0,a))+(mid?`<mark class="tddiff">${esc(mid)}</mark>`:`<span class="tdgap"></span>`)+esc(w.slice(w.length-z));
+}
+/* every book and story carrying a word, with its tags */
+function tagHoldersOf(w){
+  const kl=String(w).toLowerCase(),out=[];
+  for(const b of books){
+    if((b.keywords||[]).some(x=>String(x).toLowerCase()===kl))
+      out.push({id:b.id,en:"",title:b.title,in:"",tags:(b.keywords||[])});
+    if(isColl(b))for(const en of (b.entries||[]))
+      if((en.keywords||[]).some(x=>String(x).toLowerCase()===kl))
+        out.push({id:b.id,en:en.id,title:en.title||"Untitled",in:b.title,tags:(en.keywords||[])});
+  }
+  return out;
+}
+/* ---- a pair alone said nothing about which books, whether the new tag is
+   needed, or whether something already there could be taken instead.
+   So the pair opens: every book and story carrying either word, each with
+   the REST of its tags beside it — the rest is what answers the second
+   half, because a third word that already covers the idea is visible right
+   there. Built on first press, toggled after, like the panel next door. */
+function tagWhoFill(who,p,beforeOpen,afterOff){
+  const pairL=[p.a.toLowerCase(),p.b.toLowerCase()];
+  /* the title is the way in as well as the Open button beside it */
+  const side=(w)=>tagHoldersOf(w).map(x=>{
+    const rest=(x.tags||[]).filter(t=>!pairL.includes(String(t).toLowerCase()));
+    return `<div class="kwbk" style="flex-wrap:wrap">
+      <span class="t"><button class="linkbtn" data-tdopen="${esc(x.id)}" data-tden="${esc(x.en)}" title="Open it">${esc(x.title)||"Untitled"}</button>${x.in?` <span class="meta" style="display:inline">· in ${esc(x.in)}</span>`:""}</span>
+      <button class="btn smallbtn" data-tdopen="${esc(x.id)}" data-tden="${esc(x.en)}">Open</button>
+      <div class="meta" style="flex:1 1 100%">${rest.length
+        ?`also tagged: ${rest.slice(0,8).map(esc).join(", ")}${rest.length>8?", …":""}`
+        :"no other tags"}</div>
+    </div>`;}).join("");
+  /* neither of the two may be wanted at all — "fiction" on nine books says
+     nothing — so each side can simply go */
+  const offBtn=w=>`<button class="btn smallbtn" data-tdoff="${esc(w)}" title="Take this tag off every book and story that has it — ↶ puts it back">✕ Take “${esc(w)}” off all ${kwUsers(w).length}</button>`;
+  who.innerHTML=`<div class="lbl" style="display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;margin:4px 0 2px">“${esc(p.a)}” ${offBtn(p.a)}</div>${side(p.a)||'<div class="none">on nothing — it may live only in a colour or family</div>'}
+    <div class="lbl" style="display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;margin:8px 0 2px">“${esc(p.b)}” ${offBtn(p.b)}</div>${side(p.b)||'<div class="none">on nothing — it may live only in a colour or family</div>'}`;
+  who.dataset.done="1";
+  qa("[data-tdopen]",who).forEach(o=>o.onclick=()=>{if(beforeOpen)beforeOpen();openBook(o.dataset.tdopen,false,false,o.dataset.tden||"");});
+  qa("[data-tdoff]",who).forEach(o=>o.onclick=async()=>{
+    const w=o.dataset.tdoff;o.disabled=true;o.textContent="Taking it off…";
+    undoSaid(`“${w}” is off every book and story that had it.`);
+    const where=window.scrollY;await dropTag(w);await careAfterTidy(where);if(afterOff)afterOff();});
+}
+/* ---- ONE LIST WITH TICKS ----
+   Close spellings came 8 at a time, each row 125 px tall in a card 392 px wide,
+   and each one had to be pressed even to leave it, with a step of ↶ for each
+   merge. A list of real typos beside look-alikes wants reading through first. So
+   the whole kind opens over the page: tick the ones that are mistakes, ⇄ swaps
+   which spelling stays, Merge is one step of ↶, Leave the rest clears the tab. A
+   row is 38 px, and 15 fit at once on a 900 px screen. Close spellings start with nothing ticked
+   and are never swept in, because Bottom Dean and Bottom Sean look close too;
+   tails start with everything ticked. TAG_TICK_PAGE limits what is drawn, never
+   what Merge, Leave or Tick all act on. Merging reaches stories in collections
+   and kwBreaks through mergeTagsMany. */
+const TAG_TICK_PAGE=300;
+const TAG_TICK_SAY={
+  "close spelling":"Likeliest typos first. Nothing is merged until you press Merge.",
+  "the same word with an ending on it":"Some of these are one word, like Humor and Humorous, and some are two. Nothing is merged until you press Merge.",
+  "only a tail":"Only a mark like “- Freeform” or a word like Fic or AU differs. Ticked to start. The shorter name stays.",
+};
+function openTagTicks(kind){
+  const old=q("#tagTickPanel");if(old&&old.__close)old.__close();
+  const on=new Map(),swap=new Set(),startOn=kind==="only a tail";
+  const tab=(TAG_PAIR_TABS.find(([h])=>h===kind)||["",kind])[1];
+  let list=[],limit=TAG_TICK_PAGE,said="",canUndo=false,busy=false;
+  const isOn=p=>on.has(p.key)?on.get(p.key):startOn;
+  const fresh=()=>{
+    const left=tagLeft();
+    list=tagTickOrder(tagDupePairs().filter(p=>!left.has(leaveKey(p.a,p.b))&&tagPairKind(p)===kind),kind);
+    list.forEach(p=>{p.key=leaveKey(p.a,p.b);});
+  };
+  /* who stays unless ⇄ says otherwise: the shorter name for a tail, the spelling
+     more use for the rest */
+  const sides=p=>{
+    const fa=pairForm(p.a)[0].split(" ").length,fb=pairForm(p.b)[0].split(" ").length;
+    let aStays=kind==="only a tail"?fa<fb:p.na>=p.nb;
+    if(swap.has(p.key))aStays=!aStays;
+    return aStays?{keep:p.a,nk:p.na,drop:p.b,nd:p.nb}:{keep:p.b,nk:p.nb,drop:p.a,nd:p.na};
+  };
+  const namesOf=p=>{const s=sides(p);return `<b>${tagDiffMark(s.keep,s.drop)}</b> <span class="meta">${s.nk}</span> <span class="lbl">←</span> ${tagDiffMark(s.drop,s.keep)} <span class="meta">${s.nd}</span>`;};
+  const rowOf=(p,i)=>{const s=sides(p);return `<div class="snap tdtick">
+      <input type="checkbox" data-tton="${i}"${isOn(p)?" checked":""} aria-label="Merge “${esc(s.drop)}” into “${esc(s.keep)}”">
+      <span class="tdnames" data-ttnames="${i}">${namesOf(p)}</span>
+      <button class="kwwhy tdbtn" data-ttswap="${i}" title="Keep the other one" aria-label="Keep the other one">⇄</button>
+      <button class="kwwhy tdbtn" data-ttwho="${i}" title="What carries them, and what else it's tagged" aria-label="What carries them" aria-expanded="false">▸</button>
+      <div class="kwwho" data-ttlist="${i}" style="flex:1 1 100%" hidden></div>
+    </div>`;};
+  const d=document.createElement("div");d.id="tagTickPanel";d.className="ratepanel tagticks";
+  const foot=()=>{
+    const ticked=list.filter(isOn).length,rest=list.length-ticked;
+    const m=q("#ttMerge",d),l=q("#ttLeave",d),a=q("#ttAll",d);
+    if(m){m.textContent=`Merge the ${ticked.toLocaleString()} ticked`;m.disabled=busy||!ticked;}
+    if(l){l.textContent=`Leave the ${rest.toLocaleString()} not ticked`;l.disabled=busy||!rest;}
+    if(a){a.textContent=rest?"Tick all":"Untick all";a.disabled=busy;}
+  };
+  const again=async()=>{const where=window.scrollY;await careAfterTidy(where);};
+  const draw=()=>{
+    const keepAt=q(".tagticklist",d)?q(".tagticklist",d).scrollTop:0;
+    d.innerHTML=`<div class="hrow2" style="flex:none"><b style="font-size:14px">🧰 ${esc(tab)} · ${list.length.toLocaleString()}</b><button class="btn" id="ttX" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+      ${said?`<div class="snap tdsaid"><span style="flex:1;min-width:0">${esc(said)}</span>${canUndo?`<button class="btn" id="ttUndo">↶ Undo</button>`:""}</div>`:""}
+      ${list.length?`<div class="hint" style="margin:0;flex:none">${TAG_TICK_SAY[kind]||""}</div>
+      <div class="tagticklist">${list.slice(0,limit).map(rowOf).join("")}
+        ${list.length>limit?`<div class="hint" style="margin:6px 0 0"><button class="btn" id="ttMore">Show the next ${Math.min(TAG_TICK_PAGE,list.length-limit).toLocaleString()}</button> ${(list.length-limit).toLocaleString()} more are on the list and count in the buttons below.</div>`:""}</div>
+      <div class="tdfoot"><button class="btn pri" id="ttMerge"></button><button class="btn" id="ttLeave"></button><button class="btn" id="ttAll"></button></div>
+      <div class="hint" style="margin:0;flex:none">The bold one stays · ⇄ keeps the other · ▸ shows what carries them · one ↶ undoes a whole merge</div>`
+      :`<div class="none">Nothing left of this kind.</div>`}`;
+    const box=q(".tagticklist",d);if(box)box.scrollTop=keepAt;
+    q("#ttX",d).onclick=()=>d.__close();
+    foot();wire();
+  };
+  const wire=()=>{
+    const u=q("#ttUndo",d);if(u)u.onclick=async()=>{
+      if(busy)return;busy=true;u.disabled=true;
+      /* undoing redraws the whole page behind the panel, which lands it at the top */
+      const where=window.scrollY;
+      await doUndo();keepPlaceAfterRedraw(where);
+      busy=false;said="Put back as it was.";canUndo=false;
+      await again();fresh();draw();};
+    const more=q("#ttMore",d);if(more)more.onclick=()=>{limit+=TAG_TICK_PAGE;draw();};
+    const all=q("#ttAll",d);if(all)all.onclick=()=>{
+      const to=list.some(p=>!isOn(p));list.forEach(p=>on.set(p.key,to));
+      qa("[data-tton]",d).forEach(c=>{c.checked=to;});foot();};
+    const merge=q("#ttMerge",d);if(merge)merge.onclick=async()=>{
+      const moves=tagMovesResolved(list.filter(isOn).map(p=>{const s=sides(p);return {from:s.drop,to:s.keep};}));
+      if(!moves.length||busy)return;
+      busy=true;foot();
+      const done=await mergeTagsMany(moves,(n,of)=>{merge.textContent=`Merging… ${n.toLocaleString()} of ${of.toLocaleString()}`;});
+      busy=false;
+      said=`${moves.length.toLocaleString()} spelling${moves.length===1?"":"s"} merged, on ${done.toLocaleString()} books and fics, stories included.`;
+      canUndo=true;
+      await again();fresh();draw();};
+    const leave=q("#ttLeave",d);if(leave)leave.onclick=async()=>{
+      if(busy)return;
+      const rest=list.filter(p=>!isOn(p));if(!rest.length)return;
+      tidyAddMany("tagLeave",rest.map(p=>p.key));
+      said=`${rest.length.toLocaleString()} pair${rest.length===1?"":"s"} left alone. They wait under “Pairs you told me to leave”.`;
+      canUndo=false;
+      await again();fresh();draw();};
+    const rows=q(".tagticklist",d);if(!rows)return;
+    rows.onclick=e=>{
+      const t=e.target.closest("[data-tton],[data-ttswap],[data-ttwho]");if(!t)return;
+      if(t.dataset.tton!==undefined){on.set(list[+t.dataset.tton].key,t.checked);foot();return;}
+      if(t.dataset.ttswap!==undefined){
+        const i=+t.dataset.ttswap,p=list[i];
+        swap.has(p.key)?swap.delete(p.key):swap.add(p.key);
+        q(`[data-ttnames="${i}"]`,d).innerHTML=namesOf(p);return;}
+      const i=+t.dataset.ttwho,p=list[i],who=q(`[data-ttlist="${i}"]`,d);
+      if(!who.dataset.done)tagWhoFill(who,p,()=>d.__close(),()=>{fresh();draw();});
+      who.hidden=!who.hidden;
+      t.textContent=who.hidden?"▸":"▾";t.setAttribute("aria-expanded",String(!who.hidden));
+    };
+  };
+  fresh();
+  document.body.appendChild(d);d.__close=dismissable(d);
+  draw();
+}
 /* the same-word pairs as who becomes whom: words joined through any pair stand
    together (Post-Canon, Post canon, post canon) and take the spelling most used.
    The count is case-blind, so "Smut" and "smut" tie; exact uses break the tie. A
@@ -53434,7 +53665,9 @@ async function mergeTagsMany(moves,onProg){
 function refreshTagDupes(){
   const box=q("#tagDupBox");if(!box)return;
   const left=tagLeft();
-  const pairs=tagDupePairs().filter(p=>!left.has(leaveKey(p.a,p.b)));
+  const every=tagDupePairs().filter(p=>!left.has(leaveKey(p.a,p.b)));
+  every.forEach(p=>{p.kind=tagPairKind(p);});
+  const pairs=every.filter(p=>p.kind!=="narrower"),narrow=every.filter(p=>p.kind==="narrower");
   /* an entry whose words no longer both exist has nothing to say any more */
   const live=new Set([...new Set(books.flatMap(allKeywordsOf))]);
   const leftRows=[...left].filter(k=>k.split(" | ").every(w=>live.has(w)));
@@ -53445,7 +53678,7 @@ function refreshTagDupes(){
   const leftHtml=leftRows.length?`<div class="heading" style="margin:14px 0 4px">
       <button class="btn foldbtn" id="tdLeftFold">${tagLeftOpen?"▾ Hide":"▸ Show"}</button>
       <span class="lbl" style="margin:0">Pairs you told me to leave</span><span class="n">${leftRows.length}</span></div>
-    ${tagLeftOpen?`<div class="hint" style="margin:0 0 6px">These stay out of the list above. Put one back if you change your mind.</div>
+    ${tagLeftOpen?`<div class="hint" style="margin:0 0 6px">These stay out of the list above. Put one back if you change your mind.${leftRows.length>1?` <button class="btn smallbtn" id="tdBackAll">Ask me about all ${leftRows.length} again</button>`:""}</div>
     ${leftRows.map(k=>`<div class="snap" style="gap:7px">
       <span style="flex:1;min-width:0;font-size:13px;overflow-wrap:anywhere">${esc(k)}</span>
       <button class="btn" data-tdback="${esc(k)}">Ask me again</button></div>`).join("")}`:""}`:"";
@@ -53455,27 +53688,17 @@ function refreshTagDupes(){
     qa("[data-tdback]",box).forEach(b=>b.onclick=()=>{
       unleaveTagPair(b.dataset.tdback);refreshTagDupes();
     });
+    const ba=q("#tdBackAll",box);
+    if(ba)ba.onclick=()=>{leftRows.forEach(k=>tidyDrop("tagLeave",k));refreshTagDupes();};
   };
   /* nothing left to offer, but the list of pairs you have quieted still
      belongs somewhere — folded, as it always is */
-  if(!pairs.length){box.innerHTML=leftHtml;wireLeft();return;}
+  if(!every.length){box.innerHTML=leftHtml;wireLeft();return;}
   const CAP=8;
-  /* ---- ONE KIND AT A TIME ----
-     A fic folder brought eight thousand pairs in one list, and most of those were
-     one tag inside another: Angst beside Angst with a Happy Ending, not a mistake
-     at all. Each kind has a tab with its count, so that pile waits on its own.
-     All the same-word pairs go at one press (tagSameWordMoves, mergeTagsMany):
-     only capitals, spacing, punctuation or a plural differ there. Close spellings
-     are never swept, since war and ward look close too. */
-  const howMany={};pairs.forEach(p=>{howMany[p.how]=(howMany[p.how]||0)+1;});
-  if(!howMany[tagPairTab])tagPairTab=(TAG_PAIR_TABS.find(([h])=>howMany[h])||[""])[0];
-  const show=pairs.filter(p=>p.how===tagPairTab);
-  const moves=tagPairTab==="same word"?tagSameWordMoves(show):[];
-  box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">Tags that may be the same tag twice <b>${pairs.length.toLocaleString()}</b></div>
-    <div class="hint" style="margin:0 0 7px">Merging puts every book under one word and takes the other off the shelf. One press of ↶ Undo puts it all back.</div>
-    <div class="pills" role="tablist" style="margin:0 0 8px">${TAG_PAIR_TABS.filter(([h])=>howMany[h]).map(([h,l])=>`<button class="pill${h===tagPairTab?" on":""}" role="tab" aria-selected="${h===tagPairTab}" data-tdtab="${esc(h)}">${l} <b>${howMany[h].toLocaleString()}</b></button>`).join("")}</div>
-    ${moves.length?`<div class="hrow2" style="gap:8px;margin:0 0 8px;flex-wrap:wrap;align-items:center"><button class="btn pri" id="tdAll">⚡ Merge all ${show.length.toLocaleString()} same-word pair${show.length===1?"":"s"}</button><span class="hint" style="margin:0">keeps the spelling more use · one ↶ undoes it all</span></div>`:""}
-    ${show.slice(0,CAP).map((p,i)=>`<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:7px">
+  /* the rows on screen, whichever list each came from: their buttons carry an
+     index into this */
+  const act=[];
+  const pairRows=list=>list.map(p=>{const i=act.push(p)-1;return `<div class="snap" style="align-items:flex-start;flex-wrap:wrap;gap:7px">
       <span class="dupehow">${p.how}</span>
       <button class="btn" data-tdm="${i}|a" title="Everything under “${esc(p.b)}” becomes “${esc(p.a)}”">${esc(p.a)} <b>${p.na}</b></button>
       <span class="lbl" style="margin:0">or</span>
@@ -53483,11 +53706,38 @@ function refreshTagDupes(){
       <button class="btn" data-tdx="${i}" style="margin-left:auto">Leave them</button>
       <button class="kwwhy" data-tdwho="${i}" style="flex:1 1 100%;text-align:left" title="Every book and story carrying either word — with the rest of its tags, so you can see whether a third word already covers this">▸ what carries them, and what else it's tagged?</button>
       <div class="kwwho" data-tdlist="${i}" style="flex:1 1 100%" hidden></div>
-    </div>`).join("")}
-    ${show.length>CAP?`<div class="hint" style="margin:6px 0 0">…and ${(show.length-CAP).toLocaleString()} more of this kind, once these are dealt with.</div>`:""}
+    </div>`;}).join("");
+  /* ---- ONE KIND AT A TIME ----
+     A fic folder brought eight thousand pairs in one list, and most of those were
+     one tag inside another: Angst beside Angst with a Happy Ending, not a mistake
+     at all. Each kind has a tab with its count; narrower tags wait in a fold (ONLY
+     A TAIL, AND THE NARROWER TAGS). All the same-word pairs go at one press
+     (tagSameWordMoves, mergeTagsMany): only capitals, spacing, punctuation or a
+     plural differ there. The other kinds open as a list with ticks (ONE LIST WITH
+     TICKS), and close spellings are never swept in. */
+  const howMany={};pairs.forEach(p=>{howMany[p.kind]=(howMany[p.kind]||0)+1;});
+  if(!howMany[tagPairTab])tagPairTab=(TAG_PAIR_TABS.find(([h])=>howMany[h])||[""])[0];
+  const show=pairs.filter(p=>p.kind===tagPairTab);
+  const moves=tagPairTab==="same word"?tagSameWordMoves(show):[];
+  const narrowHtml=narrow.length?`<div class="heading" style="margin:14px 0 4px">
+      <button class="btn foldbtn" id="tdInFold">${tagInsideOpen?"▾ Hide":"▸ Show"}</button>
+      <span class="lbl" style="margin:0">Narrower tags, one inside another. These aren't mistakes.</span><span class="n">${narrow.length.toLocaleString()}</span></div>
+    ${tagInsideOpen?`<div class="hint" style="margin:0 0 6px">Merge one only if you want it gone. Nothing here is waiting on you.</div>
+    ${pairRows(narrow.slice(0,CAP))}
+    ${narrow.length>CAP?`<div class="hint" style="margin:6px 0 0">…and ${(narrow.length-CAP).toLocaleString()} more, once these are dealt with.</div>`:""}`:""}`:"";
+  box.innerHTML=`${pairs.length?`<div class="lbl" style="display:block;margin:14px 0 4px">Tags that may be the same tag twice <b>${pairs.length.toLocaleString()}</b></div>
+    <div class="hint" style="margin:0 0 7px">Merging puts every book and story under one word and takes the other off the shelf. One press of ↶ Undo puts it all back.</div>
+    <div class="pills" role="tablist" style="margin:0 0 8px">${TAG_PAIR_TABS.filter(([h])=>howMany[h]).map(([h,l])=>`<button class="pill${h===tagPairTab?" on":""}" role="tab" aria-selected="${h===tagPairTab}" data-tdtab="${esc(h)}">${l} <b>${howMany[h].toLocaleString()}</b></button>`).join("")}</div>
+    ${moves.length?`<div class="hrow2" style="gap:8px;margin:0 0 8px;flex-wrap:wrap;align-items:center"><button class="btn pri" id="tdAll">⚡ Merge all ${show.length.toLocaleString()} same-word pair${show.length===1?"":"s"}</button><span class="hint" style="margin:0">keeps the spelling more use · one ↶ undoes it all</span></div>`:""}
+    ${tagPairTab==="same word"?`${pairRows(show.slice(0,CAP))}
+    ${show.length>CAP?`<div class="hint" style="margin:6px 0 0">…and ${(show.length-CAP).toLocaleString()} more of this kind, once these are dealt with.</div>`:""}`
+    :`<div class="hint" style="margin:0 0 6px">${TAG_TICK_SAY[tagPairTab]||""}</div><button class="btn pri" id="tdTicks">Go through all ${show.length.toLocaleString()}</button>`}`:""}
+    ${narrowHtml}
     ${leftHtml}`;
   wireLeft();
   qa("[data-tdtab]",box).forEach(b=>b.onclick=()=>{tagPairTab=b.dataset.tdtab;refreshTagDupes();});
+  {const t=q("#tdTicks",box);if(t)t.onclick=()=>openTagTicks(tagPairTab);}
+  {const f=q("#tdInFold",box);if(f)f.onclick=()=>{tagInsideOpen=!tagInsideOpen;refreshTagDupes();};}
   {const all=q("#tdAll",box);if(all)all.onclick=async()=>{
     const eg=moves.slice(0,4).map(m=>`“${m.from}” becomes “${m.to}”`).join("\n");
     if(!confirm(`Merge ${moves.length.toLocaleString()} spelling${moves.length===1?"":"s"} into the one more books and fics use?\n\n${eg}${moves.length>4?`\n…and ${(moves.length-4).toLocaleString()} more`:""}\n\nOnly capitals, spacing, punctuation or a plural differ in these. One press of ↶ Undo puts all of it back.`))return;
@@ -53496,60 +53746,20 @@ function refreshTagDupes(){
     const done=await mergeTagsMany(moves,(n,of)=>{all.textContent=`Merging… ${n.toLocaleString()} of ${of.toLocaleString()} changed`;});
     undoSaid(`${moves.length.toLocaleString()} spellings merged, on ${done.toLocaleString()} books and fics.`);
     await careAfterTidy(where);};}
-  /* ---- a pair alone said nothing about which books, whether the new tag is
-     needed, or whether something already there could be taken instead.
-     So the pair opens: every book and story carrying either word, each with
-     the REST of its tags beside it — the rest is what answers the second
-     half, because a third word that already covers the idea is visible right
-     there. Built on first press, toggled after, like the panel next door. */
-  const holdersOf=w=>{
-    const kl=String(w).toLowerCase(),out=[];
-    for(const b of books){
-      if((b.keywords||[]).some(x=>String(x).toLowerCase()===kl))
-        out.push({id:b.id,en:"",title:b.title,in:"",tags:(b.keywords||[])});
-      if(isColl(b))for(const en of (b.entries||[]))
-        if((en.keywords||[]).some(x=>String(x).toLowerCase()===kl))
-          out.push({id:b.id,en:en.id,title:en.title||"Untitled",in:b.title,tags:(en.keywords||[])});
-    }
-    return out;
-  };
   qa("[data-tdwho]",box).forEach(btn=>btn.onclick=()=>{
-    const i=+btn.dataset.tdwho,p=show[i];if(!p)return;
+    const i=+btn.dataset.tdwho,p=act[i];if(!p)return;
     const who=q(`[data-tdlist="${i}"]`,box);
-    if(!who.dataset.done){
-      const pairL=[p.a.toLowerCase(),p.b.toLowerCase()];
-      /* the title is the way in as well as the Open button beside it */
-      const side=(w)=>holdersOf(w).map(x=>{
-        const rest=(x.tags||[]).filter(t=>!pairL.includes(String(t).toLowerCase()));
-        return `<div class="kwbk" style="flex-wrap:wrap">
-          <span class="t"><button class="linkbtn" data-tdopen="${esc(x.id)}" data-tden="${esc(x.en)}" title="Open it">${esc(x.title)||"Untitled"}</button>${x.in?` <span class="meta" style="display:inline">· in ${esc(x.in)}</span>`:""}</span>
-          <button class="btn smallbtn" data-tdopen="${esc(x.id)}" data-tden="${esc(x.en)}">Open</button>
-          <div class="meta" style="flex:1 1 100%">${rest.length
-            ?`also tagged: ${rest.slice(0,8).map(esc).join(", ")}${rest.length>8?", …":""}`
-            :"no other tags"}</div>
-        </div>`;}).join("");
-      /* neither of the two may be wanted at all — "fiction" on nine books says
-         nothing — so each side can simply go */
-      const offBtn=w=>`<button class="btn smallbtn" data-tdoff="${esc(w)}" title="Take this tag off every book and story that has it — ↶ puts it back">✕ Take “${esc(w)}” off all ${kwUsers(w).length}</button>`;
-      who.innerHTML=`<div class="lbl" style="display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;margin:4px 0 2px">“${esc(p.a)}” ${offBtn(p.a)}</div>${side(p.a)||'<div class="none">on nothing — it may live only in a colour or family</div>'}
-        <div class="lbl" style="display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;margin:8px 0 2px">“${esc(p.b)}” ${offBtn(p.b)}</div>${side(p.b)||'<div class="none">on nothing — it may live only in a colour or family</div>'}`;
-      who.dataset.done="1";
-      qa("[data-tdopen]",who).forEach(o=>o.onclick=()=>openBook(o.dataset.tdopen,false,false,o.dataset.tden||""));
-      qa("[data-tdoff]",who).forEach(o=>o.onclick=async()=>{
-        const w=o.dataset.tdoff;o.disabled=true;o.textContent="Taking it off…";
-        undoSaid(`“${w}” is off every book and story that had it.`);
-        const where=window.scrollY;await dropTag(w);await careAfterTidy(where);});
-    }
+    if(!who.dataset.done)tagWhoFill(who,p);
     who.hidden=!who.hidden;
     btn.textContent=(who.hidden?"▸ what carries them, and what else it's tagged?":"▾ hide the books");
   });
   qa("[data-tdx]",box).forEach(b=>b.onclick=()=>{
-    const p=show[+b.dataset.tdx];if(!p)return;
+    const p=act[+b.dataset.tdx];if(!p)return;
     leaveTagPair(p.a,p.b);refreshTagDupes();
   });
   qa("[data-tdm]",box).forEach(b=>b.onclick=async()=>{
     const [i,side]=b.dataset.tdm.split("|");
-    const p=show[+i];if(!p)return;
+    const p=act[+i];if(!p)return;
     const keep=side==="a"?p.a:p.b,drop=side==="a"?p.b:p.a;
     const users=kwUsers(drop);
     undoSaid(`Everything tagged “${drop}” is under “${keep}” now, and “${drop}” is off your list.`);
