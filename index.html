@@ -8729,6 +8729,62 @@ function startDropOk(x,what){
   undoSaid(`“${nm}” is back to not started, and the reading begun on ${printDay(o.start)} came off with it.`);
   return true;
 }
+/* ┌─ EVERY BOOK IN A COLLECTION AT ONCE ─────────────────────────────────────┐
+   │ ☑ All at once beside Contents: every story or book of a collection to      │
+   │ 🔖 Want to read or ✓ Finished, or ⌛ Don't have it yet taken off them all, │
+   │ the collection's own mark included. One step of ↶. Each goes through      │
+   │ markEntStatus, so a split volume's tales and its bookmark behave as they   │
+   │ do pressed one by one, but entBulkOn holds back the pack and the finish   │
+   │ note: forty packs for one press is not what a press is worth. A story     │
+   │ marked finished this way has no date, by READ, AND WHEN IS NOT KNOWN, so  │
+   │ it counts as read and adds nothing to today. Stories you have already     │
+   │ decided about (finished, being read, on hold, given up) are left alone     │
+   │ unless the box says otherwise, because Want to read over them would cost  │
+   │ an open reading its start date.                                            │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+let entBulkOn=false;
+function collAllTargets(b,to,withMarked){
+  return (b.entries||[]).filter(en=>{
+    const own=String(en.status||"").trim(),decided=en.dnf||en.hold||own==="finished"||own==="reading";
+    if(to==="off")return !!en.unowned;
+    if(!withMarked&&decided)return false;
+    /* what it answers, not what it says: an unmarked story in a collection not read yet is already Want to read */
+    return entStatusOf(b,en)!==to||!!en.dnf||!!en.hold;});
+}
+function collAllDraw(d,b,withMarked){
+  const n=k=>collAllTargets(b,k,withMarked).length,off=(b.entries||[]).filter(en=>entUnownedOf(b,en)).length;
+  const decided=(b.entries||[]).filter(en=>en.dnf||en.hold||String(en.status||"")==="finished"||String(en.status||"")==="reading").length;
+  const row=(k,label,c,say)=>`<div class="hrow2" style="gap:8px;align-items:center;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)"><span style="min-width:0;flex:1 1 170px">${say}</span><button class="btn smallbtn pri" data-collto="${k}"${c?"":" disabled"}>${label}${c?` · ${c.toLocaleString()}`:""}</button></div>`;
+  d.innerHTML=`<div class="hrow2" style="margin-bottom:8px"><b style="font-size:16px">☑ All at once</b><button class="btn smallbtn" data-collx style="margin-left:auto">✕</button></div>
+    <div class="hint" style="margin:0 0 8px">Everything in “${esc(b.title||"Untitled")}”, ${(b.entries||[]).length.toLocaleString()} in all. One press of ↶ Undo puts it all back.</div>
+    ${row("want","🔖 Want to read",n("want"),"Not read yet")}
+    ${row("finished","✓ Finished",n("finished"),"Read, with no date, so nothing lands on today. No packs for these.")}
+    ${row("off","⌛ Take it off",off||(b.unowned?1:0),"Don't have it yet: you have them all")}
+    ${decided?`<label class="hrow2" style="gap:6px;align-items:center;margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:14px"><input type="checkbox" id="collWith"${withMarked?" checked":""}> Also the ${decided.toLocaleString()} already finished, being read, on hold or given up</label>
+    <div class="hint" style="margin:3px 0 0">Left unticked, those stay as they are. Want to read drops a reading in progress, and its start date.</div>`:""}`;
+  const w=q("#collWith",d);if(w)w.onchange=()=>collAllDraw(d,b,w.checked);
+  qa("[data-collto]",d).forEach(x=>x.onclick=()=>collAllGo(d,x.dataset.collto,withMarked));
+  q("[data-collx]",d).onclick=()=>d.__close();
+}
+function collAllOpen(){
+  const old=q("#collAllPanel");if(old&&old.__close)old.__close();
+  if(!cur||!isColl(cur))return;
+  const d=document.createElement("div");d.id="collAllPanel";d.className="ratepanel";d.setAttribute("role","dialog");d.setAttribute("aria-label","Every book in this collection at once");
+  document.body.appendChild(d);d.__close=dismissable(d);collAllDraw(d,cur,false);
+}
+async function collAllGo(d,to,withMarked){
+  let n=0;
+  await quickEdit(bk=>{
+    const list=collAllTargets(bk,to,withMarked);n=list.length;
+    if(to==="off"){const had=!!bk.unowned;n=list.length+(had?1:0);list.forEach(en=>{en.unowned=false;});bk.unowned=false;return n>0;}
+    if(!n)return false;
+    entBulkOn=true;
+    try{list.forEach(en=>{if(en.dnf)en.dnf=false;if(en.hold)en.hold=false;markEntStatus(bk,en,to);});}finally{entBulkOn=false;}
+    return true;});
+  if(d.__close)d.__close();
+  if(n)bannerNote(to==="off"?"⌛ Taken off. ↶ Undo puts it back.":`${to==="finished"?"✓":"🔖"} ${n.toLocaleString()} set. ↶ Undo puts them back.`,5000);
+}
+document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest("[data-collall]")){e.preventDefault();e.stopPropagation();collAllOpen();}});
 function markEntStatus(coll,en,what){
   const finWas=en.status==="finished"&&!en.dnf;
   /* the first tale of a split volume is one tale — see A VOLUME IS ITS TALES */
@@ -8767,7 +8823,7 @@ function markEntStatus(coll,en,what){
     /* a tale is a note about the tale, not a book finished — see A PIECE OF A
        VOLUME IS NEVER A THING OF ITS OWN — so a split volume pays its one pack
        (under the volume's own id) when the tale that completes it is marked */
-    if(what==="finished"&&!finWas){
+    if(what==="finished"&&!finWas&&!entBulkOn){
       const split=isSplitTale(coll,en),h=markHolder(coll,en);
       if(!split||volState(coll,h).status==="finished"){finNoteBegin((split?h:en).title);finFxSoon();
         try{packGrant("fin:"+coll.id+"|"+(split?h.id:en.id),"finish","“"+((split?h:en).title||"Untitled")+"”");}catch(e){}}}
@@ -13911,6 +13967,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-05.21",lines:["<b>☑ Every book in a collection at once.</b> Beside Contents on a collection's page: set them all to Want to read or Finished, or take Don't have it yet off them all, with one ↶ to undo. Finished this way has no date, so nothing lands on today, and pays no packs. Anything you've already finished, are reading, set aside or given up stays as it is unless you tick the box."]},
   {v:"2026-11-05.20",go:["el:settings:#secQuiet"],lines:["<b>🤫 Quiet days.</b> Press 🤫 in the top corner, or find it in Settings under How it works, for a quiet today or a quiet week: no notes, XP on the header, owl, games' sounds or confetti, and Your day waits to be asked for. Everything still counts, and packs wait in 🏅 Medals."]},
   {v:"2026-11-05.19",go:["tab:library"],lines:["<b>📖 The reader's side panel takes your text size.</b> The head, the tabs and 🎧 Listen and lamp under ☰ follow it now, as the page and the bars do, and the panel widens to fit. A message about a sound that couldn't load now goes away by itself."]},
   {v:"2026-11-05.18",go:["tab:library"],lines:["<b>🎵 Real recordings, and a smoother voice.</b> Rain, fire and forest are real recordings now, for the ⏱ clock and under 🎧 Listen and lamp; each downloads the first time you play it. Sea, wind, the café and the creaky house are gone. Read aloud takes several sentences in a breath, so it stops less often; the voice itself is still your device's."]},
@@ -59136,7 +59193,7 @@ function renderBookView(){
          postage stamp. The covers are the part that stops it being a list —
          they are what you recognise a story by. */
       const gcol=chipInk(genres[(b.genres||[])[0]]||"#78716c");
-      return `<div class="cap2">Contents ${regroupBtnHtml(b)}</div>
+      return `<div class="cap2">Contents ${regroupBtnHtml(b)} <button class="btn smallbtn" data-collall title="Every book in this collection to Want to read or Finished, or Don't have it yet taken off them all">☑ All at once</button></div>
         <div class="hint tocsum">${bits.join(" · ")}</div>
         <div class="toclist tinted" style="${gcol?`--tocbg:${gcol.bg};--tocrail:${gcol.fg}`:""}">${(()=>{const NUM=entNumbers(b);
           /* the collection's own tags, and any on every story, are said in the side */
