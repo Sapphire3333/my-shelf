@@ -14138,6 +14138,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.26",lines:["<b>📓 The notebook knows a split volume.</b> It says it covers the whole file and which tale you're on, and Claude is now told the file holds all those tales, where it was told only the first one's name. “At the end of the book” no longer turns up when you've only finished the first tale.","<b>⚖ Compare no longer stops the reading.</b> While a comparison sat open waiting for Use or Close, nothing else got read, and nothing said so. Now the rest of the book reads on once the comparison is done, and the parts being compared say they're waiting.","<b>🕸 The web keeps people where they are.</b> It used to redraw itself into a new shape after each part it read. Now everyone stays put and only newcomers find a place.","<b>Sonnet can read too,</b> at about half Opus's price, in Who reads and in ⚖ Compare. And the lines offered for keeping are held to a higher bar, so expect fewer and better ones from now on."]},
   {v:"2026-11-06.25",go:["tab:library"],lines:["<b>🏛 Free to borrow keeps its place.</b> While it was asking, it hardly ever saved what it had learned, so reloading the app sent it back to where it last saved. It now saves at least every 15 seconds and whenever you leave the app."]},
   {v:"2026-11-06.24",lines:["<b>📖 A book's page uses its room.</b> On a computer the fact card, See it on, genres and tags used to run down one column far past the cover, with an empty stretch beside them. They now spread across the page under the cover, in up to three columns, so Blurb and Contents come up much sooner. A phone looks as it did."]},
   {v:"2026-11-06.23",go:["tab:library"],lines:["<b>🏛 Free to borrow finds more.</b> The app was asking Open Library for books marked as being in your language, so a copy with no language on record never came back. It now takes those too, and it also understands a title that carries its series, like “Series: The Book: Book 16”. It's asking again about the ones it said no to, by itself, which takes about half an hour with the app open. Some will still say no, and rightly: many copies are only for readers with a print disability, or the only copy is in another language.","<b>It keeps going on a computer with the tab behind others,</b> though browsers slow it down there. A phone still waits until the app is showing. The panel now says what this device has asked."]},
@@ -29839,7 +29840,7 @@ const CLAUDE_FN_NEED=3;
    │ cost and took: the judgement is yours, not the app's. Web asks never go  │
    │ to Haiku (the function keeps those on Opus whatever is named).          │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const CLAUDE_OPUS="claude-opus-5-5",CLAUDE_HAIKU="claude-haiku-5-5";
+const CLAUDE_OPUS="claude-opus-5-5",CLAUDE_HAIKU="claude-haiku-5-5",CLAUDE_SONNET="claude-sonnet-5-5";
 const claudeSmallModel=()=>settings&&settings.claudeSmall?CLAUDE_HAIKU:undefined;
 const claudeModelName=m=>/haiku/i.test(m)?"Haiku":/sonnet/i.test(m)?"Sonnet":"Opus";
 /* ---- WHAT CLAUDE HAS COST, ON THIS DEVICE ----
@@ -33746,7 +33747,7 @@ async function rdSave(final,sitting){
   /* the notebook's parts read this sitting: see THE BOOK'S OWN NOTEBOOK */
   const nbAdd=s.nbAdd||{};s.nbAdd={};
   const mut=bk=>{const x=holder(bk);if(!x)return false;x.readPos={f,at:Date.now(),...(c!=null?{c}:{})};
-    nbMerge(x,nbAdd);if(f>=0.995)nbCastFill(x);
+    {const nx=enId?markTarget(bk,x):x;nbMerge(nx,nbAdd);if(f>=0.995)nbCastFill(nx);}
     {const l=[...hlListOf(x).filter(m=>!hlDel.has(m.id)&&!hlAdd[m.id]),...Object.values(hlAdd)];if(l.length)x.marks=l;else delete x.marks;}
     const m=enId?markTarget(bk,x):bk,t=parseInt(m.pages)||0;
     /* a collection's place is its stories', never one number of its own */
@@ -34120,15 +34121,43 @@ document.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target&&(e.target.
    │ by rdSave with the sitting (nbMerge), the way highlights are, so a chapter │
    │ read is no step of ↶ and no upload of its own. x.nb {on, ahead, src, ch:   │
    │ [{k, t, sum, who:[{n, d}], where, m, at} | {k, t, skip} | {k, t, gone}]}.   │
-   │ The model is settings.nbModel, Haiku unless Opus is chosen; ⚖ Compare     │
-   │ reads up to three parts with both and shows them one under the other.      │
+   │ The model is settings.nbModel: Haiku, Sonnet or Opus (NB_MODELS). ⚖ Compare │
+   │ reads up to three parts with Haiku and one other and shows them one under  │
+   │ the other. Those parts then wait for Use or Close (s.nbCmp.keys, nbWant);  │
+   │ the rest of the book reads on once the comparison is done. It used to hold │
+   │ everything until pressed, and said nothing.                                │
+   │ A SPLIT VOLUME HAS ONE NOTEBOOK. Its tales are one file, and s.en is the   │
+   │ file's holder, not the tale asked for (that is s.tale). Parts are cut by   │
+   │ page or chapter with no regard for where a tale ends, so the notes belong  │
+   │ to the whole: nbHolder gives it (markTarget) even where a tale holds the   │
+   │ file, and nbGather folds in what such a tale kept. nbTitle names all the   │
+   │ tales to Claude, where it used to name the first alone, and nbAtEnd asks   │
+   │ the volume, not the first tale, whether the book is finished.              │
    │ Each part's text goes to Claude through the reader's own key, as a photo  │
    │ does. A part under NB_MIN_CHARS letters is noted as skipped and not sent.  │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const NB_MIN_CHARS=400,NB_CHUNK=50000,NB_FREE_PART=24000,NB_PDF_PAGES=15,NB_FAILS=3;
-const nbModel=()=>settings.nbModel==="opus"?CLAUDE_OPUS:CLAUDE_HAIKU;
+const NB_MODELS={haiku:[CLAUDE_HAIKU,"Haiku"],sonnet:[CLAUDE_SONNET,"Sonnet"],opus:[CLAUDE_OPUS,"Opus"]};
+const nbModelKey=()=>NB_MODELS[settings.nbModel]?settings.nbModel:"haiku";
+const nbModel=()=>NB_MODELS[nbModelKey()][0];
 const nbOf=x=>(x&&x.nb&&typeof x.nb==="object")?x.nb:null;
-function nbHolder(s){if(!s||s.loose)return null;const b=books.find(x=>x.id===s.id);if(!b)return null;return s.en?((b.entries||[]).find(e=>e.id===s.en)||null):b;}
+function nbHolder(s){if(!s||s.loose)return null;const b=books.find(x=>x.id===s.id);if(!b)return null;if(!s.en)return b;const en=(b.entries||[]).find(e=>e.id===s.en);return en?markTarget(b,en):null;}
+/* what a tale of a split volume noted on its own, from before the tales shared */
+async function nbGather(s){
+  const b=books.find(y=>y.id===s.id),en=b&&s.en&&(b.entries||[]).find(e=>e.id===s.en);
+  if(!en||!isSplitTale(b,en))return;
+  if(!volTales(b,markHolder(b,en)).some((t,i)=>i&&nbOf(t)))return;
+  const src=nbSrc(s);
+  await nbSet(s,(x,bk)=>{
+    (bk.entries||[]).filter(t=>t.partOf===x.id&&nbOf(t)).forEach(t=>{
+      const o=t.nb;if(o.src&&src&&o.src!==src)return;
+      const nb=x.nb=x.nb||{v:1,ch:[],src:o.src||src,on:false,ahead:false},have=new Set((nb.ch||[]).filter(Boolean).map(c=>c.k));
+      nb.on=!!(nb.on||o.on);nb.ahead=!!(nb.ahead||o.ahead);
+      nb.ch=[...(nb.ch||[]),...(o.ch||[]).filter(c=>c&&!have.has(c.k))];
+      delete t.nb;});
+  });
+  nbPaint(s,true);
+}
 /* which file the notes were taken from: another file given later is another book of notes */
 function nbSrc(s){const b=books.find(x=>x.id===s.id),x=nbHolder(s);if(!b||!x)return "";
   const d=(x.driveFile&&x.driveFile.id)||(!rdFileOf(b)&&b.driveFile&&b.driveFile.id)||"",f=rdFileOf(b);
@@ -34187,7 +34216,7 @@ async function nbAsk(part,text,ctx,model){
     +`people: everyone who appears or is spoken of and matters to the story. name: as the text names them, in the fullest form it uses. about: who they are and what they do in this part, in English, under twenty words.\n`
     +`places: the places named, six at most.\n`
     +`ties: up to eight pairs of the people above whom this part shows to be tied. a and b: their names exactly as in people. kind: family (related or married), ally (friends, lovers, on the same side) or against (enemies, rivals, in conflict). Only what this part shows.\n`
-    +`lines: up to three sentences from this part, copied exactly, word for word, that a reader might want to keep as a quote: striking, funny or wise. None if nothing stands out.`
+    +`lines: the sentences from this part a reader would copy out to keep, word for word, three at most and often only one. A line earns it by working alone, away from its scene: a fresh turn of phrase, a real joke, or something true about people. Never a line that only moves the plot, describes the scenery or needs the scene explained. No lines at all is a fine answer for a part with nothing like that.`
     +(ctx.likes&&ctx.likes.length?` Lines this reader has kept before, to go by:\n${ctx.likes.map(l=>"- "+l).join("\n")}`:"")
     +(ctx.names.length?`\nPeople already in the notebook: ${ctx.names.slice(0,80).join(", ")}. Use the same name for the same person.`:"")
     +`\n\n"""\n${text}\n"""`;
@@ -34203,20 +34232,21 @@ async function nbRead(s,part,model){
   const full=String(await part.text()||"").trim();
   if(full.length<NB_MIN_CHARS)return {k:part.k,t:part.t,skip:true};
   const x=nbHolder(s),b=books.find(y=>y.id===s.id);
-  const ctx={title:s.en&&x?(x.title||(b&&b.title)):(b&&b.title),author:s.en&&x?entAuthorOf(b,x):(b&&b.author),
+  const ctx={title:nbTitle(s),author:s.en&&x?entAuthorOf(b,x):(b&&b.author),
     names:[...new Set([...nbNotes(s).values()].flatMap(c=>(c.who||[]).map(p=>p.n)))],likes:nbLikes(s)};
   const got=[];
   for(let i=0;i<full.length;i+=NB_CHUNK)got.push(await nbAsk(part,full.slice(i,i+NB_CHUNK),ctx,model));
   const who=[];got.forEach(g=>g.who.forEach(p=>{if(!who.some(y=>softFold(y.n)===softFold(p.n)))who.push(p);}));
-  return {k:part.k,t:part.t,sum:got.map(g=>g.sum).filter(Boolean).join(" "),who:who.slice(0,30),where:[...new Set(got.flatMap(g=>g.where))].slice(0,8),ties:got.flatMap(g=>g.ties||[]).slice(0,12),keep:got.flatMap(g=>g.keep||[]).filter(l=>{try{return !!s.pdf||rdFindText(s,l.slice(0,80)).hits.length>0;}catch(e){return false;}}).slice(0,3),m:model===CLAUDE_OPUS?"o":"h",at:todayStr()};
+  return {k:part.k,t:part.t,sum:got.map(g=>g.sum).filter(Boolean).join(" "),who:who.slice(0,30),where:[...new Set(got.flatMap(g=>g.where))].slice(0,8),ties:got.flatMap(g=>g.ties||[]).slice(0,12),keep:got.flatMap(g=>g.keep||[]).filter(l=>{try{return !!s.pdf||rdFindText(s,l.slice(0,80)).hits.length>0;}catch(e){return false;}}).slice(0,3),m:model===CLAUDE_OPUS?"o":model===CLAUDE_SONNET?"s":"h",at:todayStr()};
 }
 /* the parts due and not yet noted: behind the bookmark, or all of them when reading ahead */
 function nbWant(s){
   const nb=nbOf(nbHolder(s));if(!nb||!nb.on||(nb.src&&nb.src!==nbSrc(s)))return [];
-  const notes=nbNotes(s),pos=nbPos(s);
-  return nbParts(s).filter(p=>!notes.has(p.k)&&(nb.ahead||nbBehind(p,pos))&&(((s.nbFail||{})[p.k])||0)<NB_FAILS);
+  const notes=nbNotes(s),pos=nbPos(s),held=(s.nbCmp&&s.nbCmp.keys)||[];
+  return nbParts(s).filter(p=>!notes.has(p.k)&&!held.includes(p.k)&&(nb.ahead||nbBehind(p,pos))&&(((s.nbFail||{})[p.k])||0)<NB_FAILS);
 }
 async function nbTick(s){
+  if(s&&!s.loose&&!s.nbGot){s.nbGot=true;try{await nbGather(s);}catch(e){}}
   if(!s||s.nbBusy||s.nbPause||rdState!==s||s.loose||!claudeReady()||navigator.onLine===false||document.hidden)return;
   const due=nbWant(s);if(!due.length)return;
   const p=due[0];s.nbBusy=p.t;nbPaint(s);
@@ -34232,7 +34262,7 @@ function nbMerge(x,add){
   const m=new Map((nb.ch||[]).filter(c=>c&&c.k).map(c=>[c.k,c]));list.forEach(c=>m.set(c.k,c));nb.ch=[...m.values()];
 }
 async function nbSet(s,fn){
-  const id=s.id,en=s.en,mut=bk=>{const x=en?(bk.entries||[]).find(e=>e.id===en):bk;if(!x)return false;fn(x);return true;};
+  const h=nbHolder(s),id=s.id,en=s.en&&h?h.id:"",mut=bk=>{const x=en?(bk.entries||[]).find(e=>e.id===en):bk;if(!x)return false;fn(x,bk);return true;};
   try{if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);}catch(e){}
 }
 function nbCost(parts,model){
@@ -34248,11 +34278,14 @@ function nbHtml(s){
   if(!claudeReady())return `<div class="hint" style="margin:6px">The notebook is kept by Claude, which isn't set up on this device. ⚙ Settings → How it works → 📷 says how.</div>`;
   const x=nbHolder(s),nb=nbOf(x),parts=nbParts(s),live=parts.filter(p=>p.len>=NB_MIN_CHARS);
   if(!live.length)return `<div class="hint" style="margin:6px">There are no words in this file for a notebook to read. A comic or a scanned PDF is pictures of pages.</div>`;
-  const pos=nbPos(s),notes=nbNotes(s),behind=parts.filter(p=>nbBehind(p,pos)),model=nbModel(),mName=model===CLAUDE_OPUS?"Opus":"Haiku";
+  const pos=nbPos(s),notes=nbNotes(s),behind=parts.filter(p=>nbBehind(p,pos)),model=nbModel(),mKey=nbModelKey(),mName=NB_MODELS[mKey][1];
+  /* one notebook for a whole volume: see A SPLIT VOLUME HAS ONE NOTEBOOK */
+  const owner=books.find(y=>y.id===s.id),tales=s.en&&owner?volTales(owner,x):[],onTale=tales.length>1?(tales.find(t=>t.id===s.tale)||volState(owner,x).on):null;
+  const talesSay=tales.length>1?`<div class="hint" style="margin:0">One notebook for this whole file: ${esc(andList(tales.map(t=>t.title||"Untitled")))}.${onTale?` You're on ${esc(onTale.title||"Untitled")}.`:""}</div>`:"";
   const say=`<div class="hint" style="margin:0">Each part's words go to Claude through your own key, as a photo does. Nothing is kept there by the app.</div>`;
   if(!nb||!nb.on){
     const had=nb&&(nb.ch||[]).length;
-    return `<div class="rdl"><div>Claude reads this file a part at a time, as you finish each, and keeps short notes: what happens, who is in it, and where. It reads the file itself, so it works on any book, and it never knows more than you've read unless you tell it to read ahead.</div>
+    return `<div class="rdl">${talesSay}<div>Claude reads this file a part at a time, as you finish each, and keeps short notes: what happens, who is in it, and where. It reads the file itself, so it works on any book, and it never knows more than you've read unless you tell it to read ahead.</div>
       <div class="hint" style="margin:0">This file has ${parts.length} part${parts.length===1?"":"s"}. ${behind.length?`The ${behind.length} behind you ${behind.length===1?"costs":"cost"} ${nbMoney(nbCost(behind,model))} to read now; the`:"The"} whole book comes to ${nbMoney(nbCost(parts,model))} on ${mName}.</div>
       <div class="rdlc"><button class="btn pri" data-nb="on">📓 Keep a notebook for this book</button></div>${had?`<div class="hint" style="margin:0">Its ${had} note${had===1?"":"s"} from before ${had===1?"is":"are"} still here.</div>`:""}${say}</div>`;
   }
@@ -34260,23 +34293,25 @@ function nbHtml(s){
     <div class="rdlc"><button class="btn pri" data-nb="fresh">Start a notebook for this file</button><button class="btn" data-nb="off">Leave it off</button></div></div>`;
   const done=parts.filter(p=>notes.has(p.k)).length,due=nbWant(s).length,cmp=s.nbCmp;
   const row=p=>{const c=notes.get(p.k),open=(s.nbOpen||new Set()).has(p.k);
-    if(!c)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">${nbBehind(p,pos)||nb.ahead?"not read yet":"when you get there"}</span></div>`;
+    if(!c)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">${cmp&&cmp.keys.includes(p.k)?"waiting on ⚖ Compare":nbBehind(p,pos)||nb.ahead?"not read yet":"when you get there"}</span></div>`;
     if(c.skip)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">too short to need notes</span></div>`;
     if(c.gone)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">struck out <button class="btn smallbtn" data-nbre="${esc(p.k)}">↻ Read it again</button></span></div>`;
     return `<details class="nbch" data-nbk="${esc(p.k)}"${open?" open":""}><summary>${esc(p.t)}</summary>${nbNoteHtml(c)}${nbKeepHtml(c)}
       <div class="rdlc" style="margin-top:6px"><button class="btn smallbtn" data-nbx="${esc(p.k)}">✕ Strike these out</button><button class="btn smallbtn" data-nbre="${esc(p.k)}">↻ Read it again</button></div></details>`;};
   const back=parts.filter(p=>nbBehind(p,pos)),fwd=parts.filter(p=>!nbBehind(p,pos));
   const cmpParts=parts.filter(p=>p.len>=NB_MIN_CHARS&&(nb.ahead||nbBehind(p,pos))).slice(0,3);
+  const cmpName=cmp?NB_MODELS[cmp.key][1]:"";
   return `<div class="rdl">
-    <div><b>${done} of ${parts.length}</b> part${parts.length===1?"":"s"} in the notebook${s.nbBusy?` · reading “${esc(String(s.nbBusy).slice(0,40))}”…`:due&&!s.nbErr?" · reading on…":""}</div>
+    ${talesSay}
+    <div><b>${done} of ${parts.length}</b> part${parts.length===1?"":"s"} in the notebook${s.nbPause?" · comparing, then it reads on":s.nbBusy?` · reading “${esc(String(s.nbBusy).slice(0,40))}”…`:due&&!s.nbErr?" · reading on…":""}</div>
     ${s.nbErr?`<div class="hint" style="margin:0">Claude couldn't read a part: ${esc(s.nbErr)}. <button class="btn smallbtn" data-nb="retry">↻ Try again</button></div>`:""}
     ${nbAskHtml(s)}
     <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="nbAhead"${nb.ahead?" checked":""} style="width:18px;height:18px;margin:2px 0 0;flex:none"><span>Read ahead: the whole book now, spoilers and all <span class="hint" style="margin:0">(${nbMoney(nbCost(parts.filter(p=>!notes.has(p.k)),model))} for what's left)</span></span></label>
-    <label class="rdlf">Who reads<select class="field" id="nbModel"><option value="haiku"${model===CLAUDE_HAIKU?" selected":""}>Haiku: ${nbMoney(nbCost(parts,CLAUDE_HAIKU))} for this book</option><option value="opus"${model===CLAUDE_OPUS?" selected":""}>Opus: ${nbMoney(nbCost(parts,CLAUDE_OPUS))} for this book</option></select></label>
-    ${cmp?`<div class="nbcmp"><b>⚖ Haiku and Opus on the same parts</b>${cmp.rows.map(r=>`<div class="nbch nbwait" style="display:block"><b>${esc(r.t)}</b><div class="nbside"><div class="lbl" style="margin:6px 0 2px">Haiku</div>${nbNoteHtml(r.h)}</div>${r.o?`<div class="nbside"><div class="lbl" style="margin:8px 0 2px">Opus</div>${nbNoteHtml(r.o)}</div>`:""}</div>`).join("")}
+    <label class="rdlf">Who reads<select class="field" id="nbModel">${Object.keys(NB_MODELS).map(k=>`<option value="${k}"${k===mKey?" selected":""}>${NB_MODELS[k][1]}: ${nbMoney(nbCost(parts,NB_MODELS[k][0]))} for this book</option>`).join("")}</select></label>
+    ${cmp?`<div class="nbcmp"><b>⚖ Haiku and ${cmpName} on the same parts</b>${cmp.rows.map(r=>`<div class="nbch nbwait" style="display:block"><b>${esc(r.t)}</b><div class="nbside"><div class="lbl" style="margin:6px 0 2px">Haiku</div>${nbNoteHtml(r.h)}</div>${r.o?`<div class="nbside"><div class="lbl" style="margin:8px 0 2px">${cmpName}</div>${nbNoteHtml(r.o)}</div>`:""}</div>`).join("")}
         ${cmp.busy?`<div class="hint" style="margin:0">Reading “${esc(String(cmp.busy).slice(0,40))}”…</div>`:cmp.err?`<div class="hint" style="margin:0">It stopped: ${esc(cmp.err)}.</div>`:""}
-        ${!cmp.busy?`<div class="rdlc">${cmp.rows.length?`<button class="btn smallbtn pri" data-nb="use-h">Use Haiku</button><button class="btn smallbtn" data-nb="use-o"${cmp.rows.every(r=>r.o)?"":" disabled"}>Use Opus</button>`:""}<button class="btn smallbtn" data-nb="cmp-x">✕ Close</button></div>`:""}</div>`
-      :cmpParts.length?`<div class="rdlc"><button class="btn smallbtn" data-nb="cmp">⚖ Compare Haiku and Opus on ${cmpParts.length===1?"one part":cmpParts.length+" parts"} · ${nbMoney(nbCost(cmpParts,CLAUDE_HAIKU)+nbCost(cmpParts,CLAUDE_OPUS))}</button></div>`:""}
+        ${!cmp.busy?`<div class="rdlc">${cmp.rows.length?`<button class="btn smallbtn pri" data-nb="use-h">Use Haiku</button><button class="btn smallbtn" data-nb="use-o"${cmp.rows.every(r=>r.o)?"":" disabled"}>Use ${cmpName}</button>`:""}<button class="btn smallbtn" data-nb="cmp-x">✕ Close</button></div><div class="hint" style="margin:0">The rest of the book reads on. These parts wait for you: Use keeps one set of notes, and Close reads them again with whoever reads now.</div>`:""}</div>`
+      :cmpParts.length?`<div class="rdlc">${["sonnet","opus"].map(k=>`<button class="btn smallbtn" data-nb="cmp-${k}">⚖ Haiku and ${NB_MODELS[k][1]} on ${cmpParts.length===1?"one part":cmpParts.length+" parts"} · ${nbMoney(nbCost(cmpParts,CLAUDE_HAIKU)+nbCost(cmpParts,NB_MODELS[k][0]))}</button>`).join("")}</div>`:""}
     ${nbEndHtml(s)}
     <div>${back.map(row).join("")}</div>
     ${fwd.length?`<details class="nbfwd"${(s.nbOpen||new Set()).has("fwd")?" open":""} data-nbk="fwd"><summary>Ahead of you · ${fwd.length}</summary>${fwd.map(row).join("")}</details>`:""}
@@ -34288,17 +34323,17 @@ function nbPaint(s,force){
   {const act=document.activeElement;if(!force&&act&&act.id==="nbQ")return;}
   const body=q(".rdtocbody",box),y=body?body.scrollTop:0;s.panelDraw("nb");const b2=q(".rdtocbody",box);if(b2)b2.scrollTop=y;
 }
-async function nbCompare(s){
+async function nbCompare(s,key){
   const nb=nbOf(nbHolder(s)),pos=nbPos(s);if(!nb||s.nbCmp)return;
   const parts=nbParts(s).filter(p=>p.len>=NB_MIN_CHARS&&(nb.ahead||nbBehind(p,pos))).slice(0,3);if(!parts.length)return;
-  const cmp=s.nbCmp={rows:[],busy:parts[0].t,err:""};s.nbPause=true;nbPaint(s);
+  const other=NB_MODELS[key]?key:"opus",cmp=s.nbCmp={rows:[],busy:parts[0].t,err:"",key:other,keys:parts.map(p=>p.k)};s.nbPause=true;nbPaint(s);
   try{for(const p of parts){
       cmp.busy=p.t;nbPaint(s);
       const h=await nbRead(s,p,CLAUDE_HAIKU);if(rdState!==s||s.nbCmp!==cmp)return;
       const r={k:p.k,t:p.t,h,o:null};cmp.rows.push(r);nbPaint(s);
-      r.o=await nbRead(s,p,CLAUDE_OPUS);if(rdState!==s||s.nbCmp!==cmp)return;nbPaint(s);}}
+      r.o=await nbRead(s,p,NB_MODELS[other][0]);if(rdState!==s||s.nbCmp!==cmp)return;nbPaint(s);}}
   catch(e){if(rdState!==s||s.nbCmp!==cmp)return;cmp.err=String((e&&e.message)||"no answer").replace(/\.$/,"");}
-  cmp.busy="";nbPaint(s);
+  cmp.busy="";s.nbPause=false;nbPaint(s);nbTick(s);
 }
 function nbWire(s,box,goFrom){
   const body=q(".rdtocbody",box);if(!body)return;
@@ -34307,7 +34342,7 @@ function nbWire(s,box,goFrom){
   qa("details[data-nbk]",body).forEach(d=>d.addEventListener("toggle",()=>{if(d.open)s.nbOpen.add(d.dataset.nbk);else s.nbOpen.delete(d.dataset.nbk);}));
   const again=()=>{s.nbFail={};s.nbErr="";nbPaint(s);nbTick(s);};
   const ah=q("#nbAhead",body);if(ah)ah.onchange=async()=>{const on=ah.checked;settings.nbAhead=on;saveSettings();await nbSet(s,x=>{if(x.nb)x.nb.ahead=on;});again();};
-  const mo=q("#nbModel",body);if(mo)mo.onchange=()=>{settings.nbModel=mo.value==="opus"?"opus":"haiku";saveSettings();nbPaint(s);};
+  const mo=q("#nbModel",body);if(mo)mo.onchange=()=>{settings.nbModel=NB_MODELS[mo.value]?mo.value:"haiku";saveSettings();nbPaint(s);};
   body.onclick=async e=>{
     const t=e.target.closest("[data-nb],[data-nbx],[data-nbre],[data-nbkeep],[data-nbqz]");if(!t)return;
     if(t.dataset.nbkeep){const j=t.dataset.nbkeep.lastIndexOf("|");nbKeepLine(s,t.dataset.nbkeep.slice(0,j),+t.dataset.nbkeep.slice(j+1));return;}
@@ -34326,10 +34361,10 @@ function nbWire(s,box,goFrom){
     else if(a==="off"){await nbSet(s,x=>{if(x.nb)x.nb.on=false;});s.nbCmp=null;s.nbPause=false;nbPaint(s);}
     else if(a==="del"){if(!confirm("Delete this book's notes? Reading them again costs the same as the first time."))return;s.nbAdd={};s.nbCmp=null;s.nbPause=false;await nbSet(s,x=>{delete x.nb;});nbPaint(s);}
     else if(a==="retry")again();
-    else if(a==="cmp")nbCompare(s);
+    else if(a==="cmp-sonnet"||a==="cmp-opus")nbCompare(s,a.slice(4));
     else if(a==="cmp-x"){s.nbCmp=null;s.nbPause=false;again();}
     else if(a==="use-h"||a==="use-o"){const o=a==="use-o",cmp=s.nbCmp;if(!cmp)return;
-      settings.nbModel=o?"opus":"haiku";saveSettings();
+      settings.nbModel=o?cmp.key:"haiku";saveSettings();
       cmp.rows.forEach(r=>{const c=o?r.o:r.h;if(c)(s.nbAdd=s.nbAdd||{})[r.k]=c;});
       s.nbCmp=null;s.nbPause=false;again();}
   };
@@ -34501,9 +34536,13 @@ function nbWebData(s,n){
   });
   return {top,total:all.length,ties:[...ties.values()]};
 }
-function nbWebLay(top,ties,W,H){
+/* was: where everyone already drawn stands. They stay put and only a newcomer
+   finds a place: the whole web redrawn from a ring after each part read jumped into
+   a new shape every few seconds. */
+function nbWebLay(top,ties,W,H,was){
   const n=top.length,cx=W/2,cy=H/2,R=Math.min(W,H)*0.38,mx=W<500?46:96,my=W<500?30:26;
-  const P=top.map((_,i)=>({x:cx+R*Math.cos(2*Math.PI*i/n-Math.PI/2)*(W>H?1.25:1),y:cy+R*Math.sin(2*Math.PI*i/n-Math.PI/2)}));
+  const P=top.map((t,i)=>{const o=was&&was.get(t.f);return o?{x:o.x,y:o.y,pin:true}:{x:cx+R*Math.cos(2*Math.PI*i/n-Math.PI/2)*(W>H?1.25:1),y:cy+R*Math.sin(2*Math.PI*i/n-Math.PI/2)};});
+  if(P.every(p=>p.pin))return P;
   const idx=new Map(top.map((p,i)=>[p.f,i])),L=ties.map(t=>[idx.get(t.a),idx.get(t.b),t.k]),ideal=Math.sqrt(W*H/Math.max(1,n))*0.62;
   for(let it=0;it<NB_WEB_STEPS;it++){
     const F=P.map(()=>({x:0,y:0})),cool=1-it/NB_WEB_STEPS;
@@ -34513,7 +34552,7 @@ function nbWebLay(top,ties,W,H){
     for(const [a,b,k] of L){
       let dx=P[b].x-P[a].x,dy=P[b].y-P[a].y;const d=Math.hypot(dx,dy)||0.1,want=ideal*(k==="fam"?0.75:k==="foe"?1.5:k==="met"?1.2:1),f=(d-want)*(k==="met"?0.02:0.045);dx/=d;dy/=d;
       F[a].x+=dx*f;F[a].y+=dy*f;F[b].x-=dx*f;F[b].y-=dy*f;}
-    P.forEach((p,i)=>{
+    P.forEach((p,i)=>{if(p.pin)return;
       p.x+=Math.max(-9,Math.min(9,F[i].x))*cool+(cx-p.x)*0.006;p.y+=Math.max(-9,Math.min(9,F[i].y))*cool+(cy-p.y)*0.012;
       p.x=Math.max(mx,Math.min(W-mx,p.x));p.y=Math.max(my,Math.min(H-my-(W<500?18:0),p.y));});
   }
@@ -34529,7 +34568,12 @@ function nbWebDraw(s){
   const kinds=new Set(D.ties.map(t=>t.k));
   q("#nbWebLeg",box).innerHTML=[["fam","family"],["ally","friends and allies"],["foe","against each other"],["met","in the same part"]].filter(k=>kinds.has(k[0])).map(k=>`<span><i class="${k[0]}"></i>${k[1]}</span>`).join("")||"No ties noted yet.";
   const H=Math.max(240,stage.clientHeight);
-  const P=nbWebLay(D.top,D.ties,W,H),at=new Map(D.top.map((p,i)=>[p.f,P[i]]));
+  const old=s.nbWebAt,placed=old?old.at:new Map();
+  /* a new window size moves everyone by the same share, and the shape stays */
+  if(old&&(old.W!==W||old.H!==H))placed.forEach(o=>{o.x*=W/old.W;o.y*=H/old.H;});
+  const P=nbWebLay(D.top,D.ties,W,H,placed),at=new Map(D.top.map((p,i)=>[p.f,P[i]]));
+  D.top.forEach((p,i)=>placed.set(p.f,{x:P[i].x,y:P[i].y}));
+  s.nbWebAt={W,H,at:placed};
   const col={fam:"var(--teal)",foe:"var(--rose)",ally:"var(--mut)",met:"var(--mut)"};
   const lines=D.ties.map(t=>{const a=at.get(t.a),b=at.get(t.b);
     return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke="${col[t.k]}" stroke-width="${t.k==="met"?1:2}"${t.k==="foe"?' stroke-dasharray="6 5"':""} opacity="${t.k==="met"?.45:.85}"/>`;}).join("");
@@ -34591,7 +34635,7 @@ async function nbKeepLine(s,k,i){
   const c=nbNotes(s).get(k),line=c&&(c.keep||[])[i];if(!line)return;
   let where="";
   try{const r=s.pdf?null:rdFindText(s,line.slice(0,80));if(r&&r.hits.length)where=r.hits[0].say;}catch(e){}
-  const id=s.id,en=s.en,both=l=>[...new Set([...(l||[]),i])];
+  const h=nbHolder(s),id=s.id,en=s.en&&h?h.id:"",both=l=>[...new Set([...(l||[]),i])];
   const mut=bk=>{
     const n=pushQuote(bk,esc(line));if(where&&bk.quotesFrom)bk.quotesFrom[n]=TYPED+where;
     const x=en?(bk.entries||[]).find(z=>z.id===en):bk,sv=x&&x.nb&&(x.nb.ch||[]).find(z=>z&&z.k===k);if(sv)sv.kept=both(sv.kept);
@@ -34612,7 +34656,7 @@ function nbCastFill(x){
 }
 function nbAtEnd(s){
   const b=books.find(y=>y.id===s.id),x=nbHolder(s);if(!b||!x)return false;
-  return nbPos(s)>=0.995||(s.en?entStatusOf(b,x)==="finished":statusOf(b)==="finished");
+  return nbPos(s)>=0.995||(s.en?(isSplitTale(b,x)?volState(b,x).status:entStatusOf(b,x))==="finished":statusOf(b)==="finished");
 }
 function nbEndHtml(s){
   if(!nbAtEnd(s)||!nbKnown(s).length)return "";
@@ -34704,7 +34748,9 @@ function rdWhoGo(){
   const w=q("#rdWho",s.el);if(w)w.hidden=true;
 }
 const nbNotesText=known=>known.map(({p,c})=>`## ${p.t}\n${c.sum||""}\n${(c.who||[]).map(w=>`- ${w.n}: ${w.d}`).join("\n")}`).join("\n\n");
-function nbTitle(s){const x=nbHolder(s),b=books.find(y=>y.id===s.id);return (s.en&&x?(x.title||(b&&b.title)):(b&&b.title))||"a book";}
+function nbTitle(s){const x=nbHolder(s),b=books.find(y=>y.id===s.id),ts=s.en&&x&&b?volTales(b,x):[];
+  if(ts.length>1)return `a volume of separate tales: ${ts.map(t=>t.title||"Untitled").join(", ")}`;
+  return (s.en&&x?(x.title||(b&&b.title)):(b&&b.title))||"a book";}
 async function nbRecap(s){
   const known=nbKnown(s,true);if(!known.length)throw new Error("there are no notes behind your bookmark yet");
   const sig=known.length+"|"+known[known.length-1].p.k+"|"+nbModel();
@@ -35693,7 +35739,7 @@ async function openReader(id,enId,loose,goMark){
   const or=x?openRead(x):null,posOld=!!(x&&x.readPos&&or&&or.start&&shelfDayOf(x.readPos.at||0)<String(or.start).slice(0,10));
   const f0=loose?Math.max(0,Math.min(1,+(((settings.drvPos||{})[loose.id]||{}).f||0))):Math.max(0,Math.min(1,x.readPos&&!posOld?+(x.readPos.f||0):bmk));
   const c0=isPdf?null:loose?((settings.drvPos||{})[loose.id]||{}).c:(x.readPos&&!posOld?x.readPos.c:null);
-  const s=rdState={id,en:hold?hold.id:"",loose:loose||null,rk,mode,el,f:f0,c:typeof c0==="number"&&c0>=0&&c0<=1?c0:null,saved:f0,page:0,pages:1,W:1,f0,secs:0,sitAt:Date.now(),lastAct:Date.now(),lastTick:Date.now(),sel:null};
+  const s=rdState={id,en:hold?hold.id:"",tale:asked?asked.id:"",loose:loose||null,rk,mode,el,f:f0,c:typeof c0==="number"&&c0>=0&&c0<=1?c0:null,saved:f0,page:0,pages:1,W:1,f0,secs:0,sitAt:Date.now(),lastAct:Date.now(),lastTick:Date.now(),sel:null};
   /* see YOUR PAGE, YOUR WAY */
   if(!isPdf){rdLookApply(s);const lg=b&&RD_LANG[langOf(b).toLowerCase()],tx=q("#rdText",el);if(lg&&tx)tx.lang=lg;}
   /* the phone's Back closes the reader, as it closes every sheet — it went
