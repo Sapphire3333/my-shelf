@@ -14165,6 +14165,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.30",lines:["<b>⏱ Minutes left from the first page, on any device.</b> The reader said nothing until you'd read a file for 3 minutes on that same device, so a computer could say nothing at page 88 while your phone said 45 minutes. It now starts from your usual pace, which follows you between devices, and moves to the book's own pace once it has one.","<b>🔥 The fire is about four times as loud.</b> Its crackles stopped it being raised any further, so they're now held down a little and the fire under them brought up. It's still a little below rain and forest on average, with the crackles standing out. It was measured, not listened to, so tell me how it sounds."]},
   {v:"2026-11-06.29",lines:["<b>Aa, more of it.</b> In the reader under ☰ → Aa: <b>Atkinson Hyperlegible</b> and <b>Lexend</b> join the typefaces, each shown in its own letters, and there are new sliders for <b>text size</b> and <b>text thickness</b>. The text now starts at 17 px, as you chose. It's kept on this device.","<b>🌙 Eye-saving light.</b> What the lamp did from 21:00 now has <b>Warm</b> and <b>Dim</b> sliders under Aa, and Dim goes darker than your screen's lowest. 🌙 at the foot of the page turns it on or off at any hour.","<b>Dark paper.</b> A soft Dark joins Black under Paper. Aa now opens on a PDF or scan too, and Dark or Black turn its pages dark, so a photograph in one looks like a negative. A comic keeps its colours."]},
   {v:"2026-11-06.28",go:["tab:library"],lines:["<b>🏛 The time left is honest.</b> Free to borrow said “about a minute” for its last 26 books, which took several. It now goes by how fast this device has really been asking. A title Open Library keeps refusing no longer holds up the books behind it."]},
   {v:"2026-11-06.27",lines:["<b>❝ Lines to keep come best first.</b> For each part the notebook now offers up to three lines it's sure of, the best at the top, then up to three under <b>A few less sure</b>. Parts already read keep the lines they have; ↻ Read it again asks anew."]},
@@ -26818,10 +26819,13 @@ function ambBtnHtml(){
   return `<button class="btn smallbtn tmbtn" id="vAmb" aria-label="${esc(AMB_SAY[k])} — press for the next" title="${esc(AMB_SAY[k])} — press for the next: quiet, rain, fire, both">${AMB_ICON[k]}</button>`;
 }
 const AMB_SEAM=2;
-/* gain: from each file's measured level (RMS rain 0.025, fire 0.003, forest 0.010), as
+/* gain: from each file's measured level (RMS rain 0.023, fire 0.003, forest 0.010), as
    far as its loudest moment allows without clipping. The fire is crackles over near
-   silence, so it stays the quietest however far it is raised */
-const AMB_FILES={rain:{file:"art/sounds/rain.ogg?v=1",gain:1.3},fire:{file:"art/sounds/fire.ogg?v=1",gain:1.95},forest:{file:"art/sounds/forest.ogg?v=1",gain:3}};
+   silence: gain alone left it at RMS 0.005 beside the others' 0.03, because its peaks
+   stop it at 1.95. So it goes through a compressor (press), which holds the crackles
+   down and brings the fire under them up, then after. Rendered offline: RMS 0.020 and
+   peak 0.9, with the crackles still standing out. More pressing flattens it to a hiss. */
+const AMB_FILES={rain:{file:"art/sounds/rain.ogg?v=1",gain:1.3},fire:{file:"art/sounds/fire.ogg?v=1",gain:2,press:{threshold:-24,knee:6,ratio:6,attack:0,release:.1},after:1.52},forest:{file:"art/sounds/forest.ogg?v=1",gain:3}};
 const AMB_SOURCES={rain:["rain"],fire:["fire"],both:["rain","fire"],forest:["forest"]};
 const ambLoaded=new Map();
 /* the tail folded over the head, by equal power, so a loop has no join */
@@ -26842,7 +26846,10 @@ function ambLoad(c,k){
 async function ambPlay(c,out,kind,nodes,live){
   const list=AMB_SOURCES[kind]||[],bufs=await Promise.all(list.map(k=>ambLoad(c,k)));
   if(!live())return false;
-  bufs.forEach((b,i)=>{const s=c.createBufferSource(),g=c.createGain();s.buffer=b;s.loop=true;g.gain.value=AMB_FILES[list[i]].gain;s.connect(g);g.connect(out);s.start();nodes.push(s);});
+  bufs.forEach((b,i)=>{const F=AMB_FILES[list[i]],s=c.createBufferSource(),g=c.createGain();s.buffer=b;s.loop=true;g.gain.value=F.gain;s.connect(g);
+    if(F.press){const d=c.createDynamicsCompressor(),z=c.createGain();Object.keys(F.press).forEach(k=>{d[k].value=F.press[k];});z.gain.value=F.after;g.connect(d);d.connect(z);z.connect(out);}
+    else g.connect(out);
+    s.start();nodes.push(s);});
   return true;
 }
 function ambStart(kind,vol){
@@ -34029,9 +34036,33 @@ function rdFindWire(s,box,goFrom){
    │ during a jump, and a step back or a leap (rdFar) adds neither time nor    │
    │ distance. It lives on this device (localStorage shelfRdPace, by the        │
    │ reader's key, the newest RD_PACE_KEEP files), since it describes reading   │
-   │ on this screen. Nothing is said before RD_PACE_MIN_S seconds of it.        │
+   │ on this screen, and it takes over once there are RD_PACE_MIN_S seconds of  │
+   │ it. Until then rdWholeSecs goes by settings.rdUsual, your reading across   │
+   │ every file and every device, in seconds a page for PDFs and a character for │
+   │ text, and before there is any of that by RD_USUAL_PAGE and RD_USUAL_CHAR.  │
+   │ So a device new to a file says something from its first page. A comic has   │
+   │ no usual pace: its pages go by too differently.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const RD_PACE_KEY="shelfRdPace",RD_PACE_MIN_S=180,RD_PACE_KEEP=80;
+const RD_PACE_KEY="shelfRdPace",RD_PACE_MIN_S=180,RD_PACE_KEEP=80,RD_USUAL_PAGE=45,RD_USUAL_CHAR=.043,RD_USUAL_CAP=21600,RD_USUAL_SAVE=300000;
+let rdUsualSaved=0;
+const rdChars=s=>s.charsN||(s.charsN=(q("#rdText",s.el)||{textContent:""}).textContent.length);
+/* what went by in this stretch joins the usual pace; old reading fades as new comes */
+function rdUsualAdd(s,secs,share){
+  if(!(secs>0)||!(share>0)||(s.pdf&&s.pdf.comic))return;
+  const u=Object.assign({ps:0,pn:0,ts:0,tc:0},settings.rdUsual);
+  if(s.pdf){u.ps+=secs;u.pn+=share*s.pdf.n;if(u.ps>RD_USUAL_CAP){u.ps/=2;u.pn/=2;}}
+  else{u.ts+=secs;u.tc+=share*rdChars(s);if(u.ts>RD_USUAL_CAP){u.ts/=2;u.tc/=2;}}
+  settings.rdUsual=u;
+  if(Date.now()-rdUsualSaved>=RD_USUAL_SAVE){rdUsualSaved=Date.now();saveSettings();}
+}
+/* how long the whole file takes: its own pace, or the usual one until it has its own */
+function rdWholeSecs(s){
+  const p=rdPaceOf(s);
+  if(p.s>=RD_PACE_MIN_S&&p.f>=0.002)return p.s/p.f;
+  const u=settings.rdUsual||{};
+  if(s.pdf){if(s.pdf.comic)return 0;const pg=u.pn>=5?u.ps/u.pn:RD_USUAL_PAGE;return (pg>=5&&pg<=600?pg:RD_USUAL_PAGE)*s.pdf.n;}
+  const ch=u.tc>=3000?u.ts/u.tc:RD_USUAL_CHAR;return (ch>=.005&&ch<=.5?ch:RD_USUAL_CHAR)*rdChars(s);
+}
 function rdPaceAll(){try{const o=JSON.parse(localStorage.getItem(RD_PACE_KEY)||"{}");return o&&typeof o==="object"?o:{};}catch(e){return {};}}
 function rdPaceOf(s){
   if(!s.paceBase){const p=rdPaceAll()[s.rk]||{};s.paceBase={f:+p.f||0,s:+p.s||0};}
@@ -34043,6 +34074,7 @@ function rdPaceTick(s,dt){
   const d=f-was;if(d<0||rdFar(s,was,f))return;
   s.paceS=(s.paceS||0)+dt;s.paceF=(s.paceF||0)+d;
   if(s.paceS<30)return;
+  rdUsualAdd(s,s.paceS,s.paceF);
   const now=rdPaceOf(s),all=rdPaceAll();
   all[s.rk]={f:+now.f.toFixed(5),s:Math.round(now.s),at:Date.now()};
   s.paceBase={f:now.f,s:now.s};s.paceS=0;s.paceF=0;
@@ -34052,9 +34084,8 @@ function rdPaceTick(s,dt){
 }
 const rdMinsRound=m=>minsSay(m>90?Math.round(m/10)*10:m);
 function rdLeftLine(s,f){
-  const left=rdLeftSay(s,f),p=rdPaceOf(s);
-  if(p.s<RD_PACE_MIN_S||p.f<0.002)return left;
-  const per=p.s/p.f;if(per<120||per>300*3600)return left;
+  const left=rdLeftSay(s,f),per=rdWholeSecs(s);
+  if(per<120||per>300*3600)return left;
   const map=s.map||[],c=rdChapAt(s,f),next=map[(c?map.indexOf(c):-1)+1];
   const ch=map.length?((next?next.f:1)-f)*per/60:0,bk=(1-f)*per/60;
   return [left?left+(ch>=1?", about "+rdMinsRound(ch):""):"",bk>=1?rdMinsRound(bk)+" left in the book":""].filter(Boolean).join(" · ");
@@ -69814,7 +69845,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
+const SHARED_PREFS=["rdUsual","freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
