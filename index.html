@@ -3184,6 +3184,7 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .plwrite{all:unset;display:inline-block;cursor:pointer;margin-top:8px;font-size:13px;color:var(--mut);border-bottom:1px dotted var(--mut)}
   .plline:focus-visible,.plwrite:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
   html[data-phone="1"] .plwrite,html[data-phone="1"] .plline{padding:6px 0}
+  html[data-phone="1"] .owlbub .linkbtn{display:inline-block;padding:6px 0}
   .daydot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--amber);margin-left:5px;vertical-align:1px}
   html[data-phone="1"] .door{gap:12px}
   html[data-phone="1"] .door .thumb{width:116px}
@@ -13674,6 +13675,7 @@ function owlOnToday(){
         " has broken. 🏅 Medals can buy it back, if it was worth it.","run");
       return;
     }
+    if(owlRecallTry())return;
     if(lvl>=2&&streaks&&streaks.read&&streaks.read.last!==todayStr()&&(streaks.read.cur||0)>0
       &&!owlSaidToday("unread")){
       owlSay("Nothing read today yet — your <b>"+streaks.read.cur+"-day</b> run is still waiting on a page.","unread");
@@ -14024,6 +14026,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.1",lines:["<b>🦉 The owl remembers.</b> At most once a week, on your way into Today, the owl brings back something you told the app when it matters: a year since you finished a book, the one before this in a series, or an author you wrote about or gave up on, while you're reading another of theirs. Claude writes the line from your own words, for under a cent. Without Claude it just quotes you. Press the owl for <b>📓 What the owl remembers</b>: everything it could bring up, with ✕ to strike one. Never and Quiet days stop it."]},
   {v:"2026-11-05.29",go:["el:insights:#secPlates"],lines:["<b>📜 A bookplate for every finish.</b> An ex libris card with the date, the season, how long it took and a line from you. It sits on the book's page under the owl's card, and the drawer on Insights under Your year already holds one for every finish with a date, re-reads and stories included. Your word for the owl fills the line in, and you can type over it. Press a plate in the drawer for its book. Put your name on them in Settings, under How it works."]},
   {v:"2026-11-05.28",go:["el:insights:#secChapters"],lines:["<b>📖 The chapters of your reading life.</b> On Insights under Time, below Your reading, drawn: Claude names the stretches of your years, about six a year, with a few words on each. You keep, rename or drop each one before it goes on the timeline, and pressing a chapter takes the timeline to those months. Your own named stretches stay yours, and Claude may offer a new name that changes nothing until you say. The button shows its price before you press, and only readings with dates can go in a chapter."]},
   {v:"2026-11-05.27",go:["el:settings:#secSeasons"],lines:["<b>🍂 Seasons and hours.</b> The app's look now follows the real world, faintly: the page warms towards evening and more at night, and frost, petals or leaves sit at the corners of the screen, with only warmth in summer. A background of your own keeps only the warmth, and the reader keeps its own lamp. One switch turns it off, in Settings under How it works."]},
@@ -30026,6 +30029,145 @@ function owlHtml(b){
     <label class="owlq"><span class="hint" style="margin:0">✉ A letter to the you who reads this again — sealed for ${LETTER_MONTHS} months, or until you read it again. Empty means no letter.</span><textarea class="field" id="owlLetter" rows="3">${esc((dr&&dr.letter)||"")}</textarea></label>
     <div class="hrow2" style="gap:6px;margin-top:8px"><button class="btn smallbtn pri" data-owl="keep">Keep</button><button class="btn smallbtn" data-owl="later">Later</button></div></div></div></div>`;
 }
+/* ┌─ THE OWL REMEMBERS ──────────────────────────────────────────────────────┐
+   │ Everything you have told the app about a book or story is its notebook,    │
+   │ worked out and never copied: the owl's answers, Liked, Not so much, notes, │
+   │ a book you gave up, and a mark high or low enough to mean something. On the │
+   │ way into Today, at most once every OWL_RECALL_DAYS, owlRecallTry looks for  │
+   │ a reason to bring one up: a year since you finished it, the one before this │
+   │ in a series, or an author you gave up on or wrote about, while you read    │
+   │ another of theirs. Claude writes the one line for the owl's bubble from    │
+   │ only what you recorded, told not to guess a plot. This is the one Claude   │
+   │ call that happens without a press, so the limit is what keeps it cheap,    │
+   │ each reason is spent once (settings.owlRecall.said), and an answer waits   │
+   │ in .pending until it has been shown, so nothing is paid for twice. No      │
+   │ Claude, no connection or a failure, and it quotes you plainly instead.     │
+   │ Never and Quiet days stop it before it spends. owlBookOpen lists the       │
+   │ notebook, and ✕ puts a book or story out of its reach (.gone) without      │
+   │ touching what you wrote.                                                   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const OWL_RECALL_DAYS=7,OWL_BOOK_PAGE=40;
+let owlBookShown=OWL_BOOK_PAGE;
+const owlRecallState=()=>settings.owlRecall||(settings.owlRecall={at:"",checked:"",said:{},gone:[],pending:null});
+function owlLinesOf(b,en){
+  const x=en||b,plain=t=>stripHtml(String(t||"")).replace(/\s+/g," ").trim(),out=[];
+  if(!en&&b.owl)[["word","Your one word"],["hand","You'd hand it to"],["remember","You'd still remember"]].forEach(([k,l])=>{if(b.owl[k])out.push([l,String(b.owl[k])]);});
+  (Array.isArray(x.pros)?x.pros:[]).forEach(t=>{if(plain(t))out.push(["Liked",plain(t).slice(0,200)]);});
+  (Array.isArray(x.cons)?x.cons:[]).forEach(t=>{if(plain(t))out.push(["Not so much",plain(t).slice(0,200)]);});
+  const n=plain(x.canvasText||x.notes);if(n)out.push(["Your notes",n.slice(0,300)]);
+  const v=x.rating==null||x.rating===""?NaN:Number(x.rating);if(isFinite(v))out.push(["Your mark",v+"/10"]);
+  return out;
+}
+/* every book and story with something to bring up: the newest finish first */
+function owlSources(){
+  const out=[];
+  const add=(b,en)=>{
+    const x=en||b,gaveUp=en?entDnfOf(b,en):!!b.dnf,done=en?entStatusOf(b,en)==="finished":statusOf(b)==="finished";
+    if(!gaveUp&&!done)return;
+    const lines=owlLinesOf(b,en),words=lines.filter(l=>l[0]!=="Your mark");
+    const v=x.rating==null||x.rating===""?NaN:Number(x.rating);
+    if(!words.length&&!gaveUp&&!(isFinite(v)&&(v>=8||v<=4)))return;
+    const end=doneReads(x).reduce((m,r)=>String(r&&r.end||"")>m?String(r.end):m,"");
+    out.push({key:b.id+"|"+(en?en.id:""),b,en:en||null,title:(en&&en.title)||b.title||"Untitled",inTitle:en?(b.title||""):"",
+      author:String(en?entAuthorOf(b,en):b.author||"").trim(),lines,gaveUp,end,page:parseInt(x.progress)||0,fic:isFic(b)});
+  };
+  for(const b of books){if(!b||b._story)continue;const ws=collWholes(b);if(ws.length)ws.forEach(en=>add(b,en));else add(b,null);}
+  return out.sort((a,c)=>c.end.localeCompare(a.end));
+}
+const owlAuthorKey=s=>String(authorParts(String(s||""))[0]||s||"").trim().toLowerCase();
+/* the reason to speak today, or nothing: a year since, the one before in a series, an author */
+function owlRecallPick(){
+  const r=owlRecallState(),today=todayStr(),gone=new Set(r.gone||[]),said=r.said||{},found=[];
+  const srcs=owlSources().filter(s=>!gone.has(s.key));
+  srcs.forEach(s=>{if(s.end.length<10||s.end.slice(0,4)>=today.slice(0,4))return;
+    const was=today.slice(0,4)+s.end.slice(4);if(was>today||daysApart(was,today)>=OWL_RECALL_DAYS)return;
+    const key="year|"+s.key+"|"+today.slice(0,4);if(!said[key])found.push({rank:0,key,kind:"year",s,years:+today.slice(0,4)-+s.end.slice(0,4)});});
+  stageUnits().filter(u=>!u.dnf&&!u.hold&&u.status==="reading").forEach(u=>{
+    const t=u.on||u.en,own=u.book.id+"|"+(u.en?u.en.id:""),title=(t&&t.title)||u.book.title||"Untitled",fic=isFic(u.book);
+    const by=owlAuthorKey(t?entAuthorOf(u.book,t):u.book.author),ser=!t?seriesShown(u.book):"";
+    const wholes=t?collWholes(u.book):[],at=u.en?wholes.indexOf(u.en):-1;
+    srcs.forEach(s=>{if(s.key===own||s.fic!==fic)return;
+      const before=s.b===u.book&&s.en&&at>0&&wholes.indexOf(s.en)===at-1,sameSer=ser&&!s.en&&seriesShown(s.b)===ser&&(parseFloat(s.b.seriesNum)||0)<(parseFloat(u.book.seriesNum)||0);
+      const sameBy=by&&owlAuthorKey(s.author)===by;
+      const kind=before||sameSer?"series":sameBy&&s.gaveUp?"gaveup":sameBy?"author":"";
+      if(!kind)return;
+      const key=kind+"|"+s.key+"|"+own;if(!said[key])found.push({rank:kind==="series"?1:kind==="gaveup"?2:3,key,kind,s,target:title});});
+  });
+  return found.sort((a,c)=>a.rank-c.rank||c.s.end.localeCompare(a.s.end))[0]||null;
+}
+const owlWhyNow=p=>p.kind==="year"?`It is ${p.years===1?"a year":p.years+" years"} since they finished “${p.s.title}”.`
+  :p.kind==="series"?`They are now reading “${p.target}”, which comes after “${p.s.title}”.`
+  :p.kind==="gaveup"?`They are now reading “${p.target}” by ${p.s.author}, and they gave up on “${p.s.title}” by the same author${p.s.page?` at page ${p.s.page}`:""}.`
+  :`They are now reading “${p.target}” by ${p.s.author}, who also wrote “${p.s.title}”.`;
+/* the plain line, in their own words, when Claude can't write one */
+function owlRecallQuote(p){
+  const l=p.s.lines.find(x=>x[0]!=="Your mark")||p.s.lines[0],said=l?(l[0]==="Your mark"?`you marked it ${l[1]}`:`“${l[1].slice(0,120)}”`):"";
+  if(p.kind==="year")return `${p.years===1?"A year":p.years+" years"} since you finished “${p.s.title}”${said?`: ${said}`:""}.`;
+  if(p.kind==="series")return `Before “${p.target}” came “${p.s.title}”${said?`: ${said}`:""}.`;
+  if(p.kind==="gaveup")return `You gave up on “${p.s.title}”${p.s.page?` at page ${p.s.page}`:""}${said?`: ${said}`:""}. ${p.s.author} again.`;
+  return `“${p.s.title}”${said?`: ${said}`:""}. ${p.s.author} again.`;
+}
+async function owlRecallAsk(p){
+  const text=`You are the quiet owl in a reader's book app. ${owlWhyNow(p)}\nWhat they recorded about “${p.s.title}”${p.s.gaveUp?" (they gave up on it)":""}:\n${p.s.lines.map(l=>`${l[0]}: ${l[1]}`).join("\n")||"nothing written, only that they read it"}\n\n`
+    +`Write one line to them, at most 28 words, as "you". Bring back what they said, and quote a few of their own words if it fits. Use only what is above. Say nothing about what happens in any book, and do not guess. No greeting, no advice to read or not read, no quotation marks around the whole line.`;
+  const j=await claudeAsk({what:"🦉 The owl remembers",kind:"ask",text,effort:"low",max_tokens:200,model:claudeSmallModel(),
+    schema:{type:"object",properties:{line:{type:"string"}},required:["line"],additionalProperties:false}});
+  return String((j&&j.json&&j.json.line)||"").replace(/\s+/g," ").trim().slice(0,240);
+}
+function owlRecallShow(){
+  const r=owlRecallState(),p=r.pending;if(!p||!p.line)return false;
+  if(owlSaidToday("recall"))return true;
+  const go=p.id?`<button class="linkbtn" data-owlgo="${esc(p.id)}|${esc(p.en||"")}">Open “${esc(String(p.title).slice(0,40))}”</button> · `:"";
+  owlSay(`${esc(p.line)}<div class="hint" style="margin:6px 0 0;color:inherit">${go}<button class="linkbtn" data-owlbook>What the owl remembers</button></div>`,"recall");
+  r.pending=null;saveSettings();
+  return true;
+}
+/* true when the owl has this visit's say. The call to Claude runs on behind it. */
+function owlRecallTry(force){
+  if((TEST_RUN&&!force)||owlLevel()===0||quietOn())return false;
+  const r=owlRecallState(),today=todayStr();
+  if(r.pending&&r.pending.line)return owlRecallShow();
+  if(r.at&&daysApart(r.at,today)<OWL_RECALL_DAYS)return false;
+  if(r.checked===today&&!force)return false;
+  r.checked=today;
+  const p=owlRecallPick();
+  if(!p){saveSettings();return false;}
+  /* written down before the call: leaving, reloading or failing can't ask twice */
+  r.at=today;r.said={...(r.said||{}),[p.key]:today};
+  const ks=Object.keys(r.said);if(ks.length>400)ks.sort((a,c)=>String(r.said[a]).localeCompare(String(r.said[c]))).slice(0,ks.length-400).forEach(k=>delete r.said[k]);
+  saveSettings();
+  (async()=>{let line="";
+    if(claudeReady()&&navigator.onLine!==false)try{line=await owlRecallAsk(p);}catch(e){}
+    r.pending={line:line||owlRecallQuote(p),id:p.s.b.id,en:p.s.en?p.s.en.id:"",title:p.s.title};saveSettings();
+    if(view==="overview")owlRecallShow();})();
+  return true;
+}
+function owlBookOpen(){
+  const old=q("#owlBookPanel");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="owlBookPanel";d.className="ratepanel tagticks";d.setAttribute("role","dialog");d.setAttribute("aria-label","What the owl remembers");
+  const draw=()=>{
+    const r=owlRecallState(),gone=new Set(r.gone||[]),all=owlSources().filter(s=>!gone.has(s.key)),keep=q(".tagticklist",d)?q(".tagticklist",d).scrollTop:0;
+    d.innerHTML=`<div class="hrow2" style="flex:none"><b style="font-size:15px">🦉 What the owl remembers · ${all.length.toLocaleString()}</b><button class="btn" data-owlbx style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+      <div class="hint" style="margin:0;flex:none">Your own words and marks. At most once every ${OWL_RECALL_DAYS} days, Claude writes a line from one of these, when you're reading the same author or the next in a series, or a year on. ✕ means never this one, and what you wrote stays on the book.</div>
+      <div class="tagticklist">${all.length?all.slice(0,owlBookShown).map(s=>`<div class="snap" style="margin-top:4px;padding:6px 10px;gap:8px;flex-wrap:nowrap;align-items:flex-start;display:flex"><span style="flex:1;min-width:0;overflow-wrap:anywhere"><b>${esc(s.title)}</b>${s.inTitle?` <span class="meta" style="display:inline">in ${esc(s.inTitle)}</span>`:""}${s.gaveUp?` <span class="meta" style="display:inline">· given up${s.page?` at page ${s.page}`:""}</span>`:""}
+          ${s.lines.map(l=>`<div class="meta" style="margin-top:2px">${esc(l[0])}: <span style="color:var(--ink)">${esc(l[1])}</span></div>`).join("")}</span><button class="kwwhy tdbtn" data-owlstrike="${esc(s.key)}" title="Never bring this one up" aria-label="Never bring this one up">✕</button></div>`).join(""):`<div class="none">Nothing yet. What you write about a book lands here by itself.</div>`}
+        ${all.length>owlBookShown?`<button class="btn smallbtn" data-owlbm style="margin-top:8px">Show the next ${Math.min(OWL_BOOK_PAGE,all.length-owlBookShown)}</button>`:""}</div>
+      ${gone.size?`<div class="hint" style="margin:0;flex:none">${gone.size.toLocaleString()} struck. <button class="linkbtn" data-owlback>Put them all back</button></div>`:""}`;
+    const box=q(".tagticklist",d);if(box)box.scrollTop=keep;
+  };
+  d.onclick=e=>{const t=e.target.closest("[data-owlbx],[data-owlbm],[data-owlstrike],[data-owlback]");if(!t)return;
+    const r=owlRecallState();
+    if(t.dataset.owlbx!==undefined){d.__close();return;}
+    if(t.dataset.owlbm!==undefined)owlBookShown+=OWL_BOOK_PAGE;
+    else if(t.dataset.owlstrike!==undefined){r.gone=[...new Set([...(r.gone||[]),t.dataset.owlstrike])];saveSettings();}
+    else{r.gone=[];saveSettings();}
+    draw();};
+  document.body.appendChild(d);d.__close=dismissable(d);draw();
+}
+document.addEventListener("click",e=>{const t=e.target.closest&&e.target.closest("[data-owlbook],[data-owlgo]");if(!t)return;
+  e.stopPropagation();const box=q("#owlBox");if(box)box.remove();
+  if(t.dataset.owlbook!==undefined){const pp=q("#petPop");if(pp)pp.remove();owlBookOpen();return;}
+  const [id,en]=t.dataset.owlgo.split("|");openBook(id,false,false,en||"");},true);
 function owlKeep(b,ans,letter){
   const a={};OWL_QS.forEach(([k])=>{const v=String((ans&&ans[k])||"").trim();if(v)a[k]=v.slice(0,200);});
   const t=String(letter||"").trim();
@@ -47972,7 +48114,7 @@ function petPop(anchor){
     <div class="petgrow"><span class="petbar"><i style="width:${pct}%"></i></span>
       <span class="hint">${next?`${p.toLocaleString()} of ${next[0].toLocaleString()} pages until it is ${esc(next[1])}`:`${p.toLocaleString()} pages read together — as grand as it gets`}</span></div>
     ${petDayHtml()}
-    <div class="petfoot"><button id="petHelp" title="Every screen and what it does — the help"><b>?</b>Help</button><button id="petWrong" title="⚙ Settings → If something is wrong: what this device is running, to copy into a message"><b>🩺</b>Something wrong?</button><button id="petMore" aria-expanded="false" title="Its size, where it sits, and its pictures"><b>⚙</b>Size & pictures</button></div>
+    <button class="btn smallbtn" data-owlbook style="width:100%;margin:0 0 8px">📓 What the owl remembers</button><div class="petfoot"><button id="petHelp" title="Every screen and what it does — the help"><b>?</b>Help</button><button id="petWrong" title="⚙ Settings → If something is wrong: what this device is running, to copy into a message"><b>🩺</b>Something wrong?</button><button id="petMore" aria-expanded="false" title="Its size, where it sits, and its pictures"><b>⚙</b>Size & pictures</button></div>
     <div id="petMoreBox" hidden>
       <div class="hrow2" style="margin-top:9px;justify-content:center;flex-wrap:wrap"><button class="btn smallbtn" id="petSet">🖼 Its pictures and where it lives…</button>${PET_WEAR.some(([k])=>shopOwned("wear:"+k))?`<button class="btn smallbtn" id="petWearGo">⤧ What it wears…</button>`:""}${settings.petPos?`<button class="btn smallbtn" id="petHome">↙ Back to the corner</button>`:""}</div>
       ${petWhere()==="corner"?`<div style="display:flex;justify-content:center">${petSizeHtml()}</div><div class="hint" style="margin:6px 0 0">Drag it anywhere on the screen — it stays where you leave it.</div>`:""}
@@ -50425,7 +50567,7 @@ function renderSettings(){
               k==="0"?"Never — the ? sheet still opens, it just opens on its own"
               :k==="1"?"The help, and a run that has broken"
               :k==="2"?"That, and a day with nothing read on it"
-              :"That, and a remark on the way in"}">${esc(l)}</button>`).join("")}</div>
+              :"That, and a remark on the way in"}">${esc(l)}</button>`).join("")}<button class="btn smallbtn" data-owlbook>📓 What the owl remembers</button></div>
         </div>
       </div>
     </div>
@@ -67627,7 +67769,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["quietUntil","seasonsOff","plateName","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
+const SHARED_PREFS=["quietUntil","seasonsOff","plateName","owlRecall","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
