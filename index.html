@@ -11225,13 +11225,17 @@ const imgPath=key=>`${SYNC.user.id}/images/${String(key).replace("|","__")}.jpg`
    │ to /storage/v1/object/shelf/<path> with the session's token, x-upsert   │
    │ and the type. Downloads and removes keep the library, which never had  │
    │ the trouble. The road test's small file upload takes this road too.     │
+   │ EVERY FILE GOES UP HERE, whichever bucket. A shared page and a scan's     │
+   │ words used the library's upload and met the same refusal: the setup's     │
+   │ Check said "Not yet" after the query had run perfectly. The one .upload   │
+   │ left in this file is the road test's side-by-side comparison.             │
    └──────────────────────────────────────────────────────────────────────────┘ */
-async function storagePut(path,bl){
+async function storagePut(path,bl,bucket="shelf",upsert=true,age=3600){
   let tok="";try{const {data}=await SYNC.supa.auth.getSession();tok=(data&&data.session&&data.session.access_token)||"";}catch(e){}
   if(!tok)throw new Error("not signed in on this device");
   const base=String(CFG.url||"").replace(/\/+$/,"");
-  const r=await fetch(base+"/storage/v1/object/shelf/"+path,{method:"POST",
-    headers:{apikey:CFG.anonKey,Authorization:"Bearer "+tok,"Content-Type":bl.type||"image/jpeg","x-upsert":"true","cache-control":"max-age=3600"},body:bl});
+  const r=await fetch(base+"/storage/v1/object/"+bucket+"/"+path,{method:"POST",
+    headers:{apikey:CFG.anonKey,Authorization:"Bearer "+tok,"Content-Type":bl.type||"image/jpeg","x-upsert":String(!!upsert),"cache-control":"max-age="+age},body:bl});
   if(!r.ok){let m="";try{const j=await r.json();m=(j&&(j.message||j.error))||"";}catch(e){}
     throw new Error("the file road answered "+r.status+(m?": "+String(m).slice(0,120):""));}
 }
@@ -14107,6 +14111,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.20",go:["el:settings:#secShare"],lines:["<b>🔗 The share page's Check works now.</b> It could say “Not yet: NetworkError” after your query had run perfectly. The app was sending that file in a form Firefox refuses, the same trouble your covers had in October, so it now goes up the way covers do. A scan's words were sent the same way, so they failed too, and they're fixed as well. The 🔔 nudge's steps also use the switch's new name in Supabase: Verify JWT with legacy secret."]},
   {v:"2026-11-06.19",go:["tab:library"],lines:["<b>📅 Coming out.</b> Every book with a confirmed release date, on one page in date order, month by month, soonest first: what Claude found on the web, and what's on your shelf with a date. Open it from <b>📅 Coming out</b> under the Library's tabs, on Today's Series tab, or on the 🔎 card in Shelf care. A book's own page now says what comes next too, and a story shows its date in Contents. A date is only here if there's a day or a month: \"some time next year\" stays on the card."]},
   {v:"2026-11-06.18",go:["tab:library"],lines:["<b>🏛 Free to borrow.</b> While the app is open it slowly asks Open Library about every book and story on your shelf: can anyone borrow it for 14 days with a free account, or read it free? A book that does gets a 🏛, on its row, in Contents, and a line on its page saying whether a copy is in right now. <b>🏛 Free to borrow</b> under the Library's tabs lists them all. A book with a file you can already read here is left alone, and so are fics. On an author's panel and on 🔍 Search you can also ask what else can be borrowed that isn't on your shelf. It costs nothing, and the reading happens on their site."]},
   {v:"2026-11-06.17",go:["el:care:#nxSec"],lines:["<b>🔎 Is the next one out?</b> Once a month, by itself, Claude searches the web for anything new in the series you've read all of and by the authors you star. It looks at up to ten a month, never more than 25¢, and a line on Today says what it found. The finds wait in 🧰 Shelf care and on their series' panel, and one press puts one on your shelf as ⌛ Don't have it yet, with its date. To star an author, press ☆ beside their name on their panel. To stop it, untick the box on the card."]},
@@ -31378,9 +31383,9 @@ const shareKey=()=>{const a=crypto.getRandomValues(new Uint8Array(18));return [.
 const shareLink=k=>new URL("share.html",location.href.split("#")[0].split("?")[0]).href+"#"+k;
 const shareBlob=d=>new Blob([JSON.stringify(d)],{type:"application/json"});
 async function shareCheck(){
-  const k="check"+shareKey(),st=SYNC.supa.storage.from("shares");
-  const {error}=await st.upload(k+".json",shareBlob({v:0}),{contentType:"application/json",cacheControl:"60"});if(error)throw error;
-  const rm=await st.remove([k+".json"]);if(rm.error)throw rm.error;
+  const k="check"+shareKey();
+  await storagePut(k+".json",shareBlob({v:0}),"shares",false,60);
+  const rm=await SYNC.supa.storage.from("shares").remove([k+".json"]);if(rm.error)throw rm.error;
 }
 function shareOpen(){
   const old=q("#sharePanel");if(old&&old.__close)old.__close();
@@ -31404,14 +31409,14 @@ function shareOpen(){
       </div>`;
   };
   const prog=(a,b)=>{const s=q("#shSay",d);if(s)s.textContent=`Making the page… ${a.toLocaleString()} of ${b.toLocaleString()}`;};
-  const up=async(key,snap,isNew)=>{const st=SYNC.supa.storage.from("shares"),opt={contentType:"application/json",cacheControl:"60",upsert:!isNew};
-    const r=await st.upload(key+".json",shareBlob(snap),opt);if(r.error)throw r.error;};
+  const up=(key,snap,isNew)=>storagePut(key+".json",shareBlob(snap),"shares",!isNew,60);
   d.onchange=e=>{if(e.target.id==="shPick"){pick=e.target.value;preview=null;said="";draw();}else if(e.target.id==="shFic"){ficIn=e.target.checked;preview=null;said="";draw();}};
   d.onclick=async e=>{const t=e.target.closest("[data-shx],[data-shcopysql],[data-shcheck],[data-shgo],[data-shsee],[data-shcopy],[data-shup],[data-shdown]");if(!t)return;const a=t.dataset;
     if(a.shx!==undefined){d.__close();return;}
     if(a.shcopysql!==undefined){try{await navigator.clipboard.writeText(SHARE_SQL);t.textContent="Copied";}catch(x){t.textContent="Select it above";}return;}
     if(a.shcheck!==undefined){t.disabled=true;t.textContent="Checking…";
-      try{await shareCheck();settings.shareReady=true;saveSettings();said="It's ready. Nothing is shared until you press Share.";}catch(x){said="Not yet: "+esc((x&&x.message)||"it couldn't reach the bucket")+". Run the query, then check again.";}
+      try{await shareCheck();settings.shareReady=true;saveSettings();said="It's ready. Nothing is shared until you press Share.";}catch(x){const m=String((x&&x.message)||"it couldn't reach the bucket").replace(/\.+$/,"");
+        said="Not yet: "+esc(m)+(/answered 4\d\d/.test(m)?". Run the query, then check again.":". The query isn't what's missing. Try again in a minute, or on another device.");}
       draw();return;}
     if(a.shsee!==undefined){busy=true;draw();try{preview=await shareSnapshot(pick,ficIn,prog);said="";}catch(x){said="That couldn't be made: "+esc((x&&x.message)||"")+".";}busy=false;draw();return;}
     if(a.shgo!==undefined){const n=sharePicked(pick,ficIn).length;
@@ -31586,7 +31591,7 @@ async function nudgeCheck(){
   const lines=[];
   const p=await nudgeApi("ping");
   if(p.status===404)throw new Error("the nudge function isn't in Supabase yet: step 2");
-  if(p.status===401)throw new Error('the function is there, but step 3\'s switch is still on: turn off "Enforce JWT verification" and save');
+  if(p.status===401)throw new Error('the function is there, but step 3\'s switch is still on: turn off "Verify JWT with legacy secret" (or "Enforce JWT verification") and save');
   if(!p.j||!p.j.ok)throw new Error("the function answered "+p.status+": "+((p.j&&p.j.error)||"nothing readable"));
   if(!(p.j.version>=NUDGE_FN_NEED))throw new Error(`the function in Supabase is an older copy (version ${p.j.version||"?"}; the app wants ${NUDGE_FN_NEED}): paste it again and Deploy`);
   const c=await nudgeApi("check",null,true);
@@ -31630,7 +31635,7 @@ function nudgeInner(){
     <pre class="sgtext" style="max-height:110px;margin:0 0 6px">${esc(nudgeSql())}</pre><button class="btn smallbtn" data-ndcopy="sql">📋 Copy the SQL</button>
     <div class="hint" style="margin:10px 0 4px"><b>2.</b> Open <b>Edge Functions</b>, press Deploy a new function, then Via Editor. Name it exactly <b>nudge</b>. Delete the sample code, paste this in and press Deploy.</div>
     <button class="btn smallbtn" data-ndcopy="fn">📋 Copy the function</button>
-    <div class="hint" style="margin:10px 0 4px"><b>3.</b> Open the function, then its <b>Details</b>. Turn off <b>Enforce JWT verification</b> and save, because the schedule has no sign-in to show. Then come back and press Check it.</div></div>`:"";
+    <div class="hint" style="margin:10px 0 4px"><b>3.</b> Open the function, then its <b>Details</b>. Turn off <b>Verify JWT with legacy secret</b> and press Save changes, because the schedule has no sign-in to show. Some screens call it Enforce JWT verification. Then come back and press Check it.</div></div>`:"";
   return `${no?`<div class="hint" style="margin:0 0 10px">${no}</div>`:""}${steps}
     <div class="hrow2" style="gap:8px;flex-wrap:wrap;margin-bottom:8px"><label for="ndTime">Every evening at</label> <input class="field" style="width:auto" type="time" id="ndTime" step="900" value="${nudgeHm(nudgeAt())}"></div>
     <div class="hrow2" style="gap:6px;flex-wrap:wrap">${sub?`<button class="btn" data-ndgo="off"${nudgeBusy?" disabled":""}>Turn off for this device</button>`:`<button class="btn pri" data-ndgo="on"${nudgeBusy||no||!ready?" disabled":""}>🔔 Turn on for this device</button>`}<button class="btn" data-ndgo="send"${nudgeBusy||!sub?" disabled":""}>Send me one now</button><button class="btn" data-ndgo="check"${nudgeBusy||!can?" disabled":""}>Check it</button></div>
@@ -34342,7 +34347,7 @@ async function ocrCloudGet(key){
 }
 async function ocrCloudPut(key,data){
   if(!ocrCloudOk())return false;
-  try{const {error}=await SYNC.supa.storage.from("shelf").upload(ocrPath(key),new Blob([JSON.stringify(data)],{type:"application/json"}),{contentType:"application/json",upsert:true});return !error;}catch(e){return false;}
+  try{await storagePut(ocrPath(key),new Blob([JSON.stringify(data)],{type:"application/json"}));return true;}catch(e){return false;}
 }
 function ocrRefresh(s,list){
   const P=s.pdf;if(!P||!list.length)return;

@@ -15,8 +15,8 @@
 //      exactly:  nudge
 //      Delete the sample code, paste this entire file in, press Deploy.
 //
-//   3. Open the function → Details, turn off "Enforce JWT verification" and
-//      save. The schedule has no sign-in to show at the door, and every ask
+//   3. Open the function → Details, turn off "Verify JWT with legacy secret"
+//      (older screens: "Enforce JWT verification") and save. The schedule has no sign-in to show at the door, and every ask
 //      that touches an account checks the sign-in here instead.
 //
 // Then in My Shelf press Check it. When this file changes, do step 2 again.
