@@ -485,6 +485,7 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   [data-theme="dark"] .bst.hitsin{background:color-mix(in srgb,var(--ac-900) 80%,#000);color:var(--ac-300);border-color:var(--ac-700)}
   /* a collection holding stories that have wandered off its own genres */
   .bst.rowread{background:var(--card);color:var(--teal);border:1px solid var(--teal);cursor:pointer}
+  .bst.free{background:var(--card);color:var(--ink);border:1px solid var(--line);font-weight:600}
   .bst.stray{background:#fffbeb;color:#b45309;border:1px solid #fcd34d;font-weight:800;cursor:pointer}
   .bst.stray:hover{background:#fef3c7;border-color:#f59e0b}
   [data-theme="dark"] .bst.stray{background:#44341a;color:#fcd34d;border-color:#a16207}
@@ -11842,6 +11843,8 @@ async function pullAll(){
           else if(row.key==="ownIcons"){if(mergeOwnIcons(row.value))gameChanged=true;}
           /* the Claude money badge's balance and each device's spending — see CLAUDE MONEY LEFT */
           else if(row.key==="claudeMoney"){mergeMoney(row.value);}
+          /* what Open Library said, book by book, the newer answer winning */
+          else if(row.key==="freeLook"){mergeFree(row.value);}
           /* each device's own count of how the app is used — see WHAT CLAUDE IS TOLD ABOUT YOU */
           else if(row.key==="useDigest"){mergeDigest(row.value);}
           else if(row.key==="pzPics"){if(mergePzPics(row.value))gameChanged=true;}
@@ -12374,6 +12377,8 @@ async function initSync(){
   await pzPicsLoad();
   await ownIconsLoad();
   await moneyLoad();
+  await freeLoad();
+  if(!TEST_RUN)setTimeout(()=>{freeStep();},FREE_START);   /* see 🏛 FREE TO BORROW */
   setTimeout(()=>{medalCheckerSweep().catch(()=>{});},4000);   /* see THE MEDALS' PICTURES, SWEPT */
   {const fresh=!Object.keys(achSeen).some(k=>k!=="__v");
    setTimeout(()=>{try{questCheck();achCheck(fresh);}catch(e){}},1500);
@@ -14102,6 +14107,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.18",go:["tab:library"],lines:["<b>🏛 Free to borrow.</b> While the app is open it slowly asks Open Library about every book and story on your shelf: can anyone borrow it for 14 days with a free account, or read it free? A book that does gets a 🏛, on its row, in Contents, and a line on its page saying whether a copy is in right now. <b>🏛 Free to borrow</b> under the Library's tabs lists them all. A book with a file you can already read here is left alone, and so are fics. On an author's panel and on 🔍 Search you can also ask what else can be borrowed that isn't on your shelf. It costs nothing, and the reading happens on their site."]},
   {v:"2026-11-06.17",go:["el:care:#nxSec"],lines:["<b>🔎 Is the next one out?</b> Once a month, by itself, Claude searches the web for anything new in the series you've read all of and by the authors you star. It looks at up to ten a month, never more than 25¢, and a line on Today says what it found. The finds wait in 🧰 Shelf care and on their series' panel, and one press puts one on your shelf as ⌛ Don't have it yet, with its date. To star an author, press ☆ beside their name on their panel. To stop it, untick the box on the card."]},
   {v:"2026-11-06.15",go:["tab:challenges"],lines:["<b>📅 A week has seven days again.</b> ↑ Harder on the goal to clear the three took five days to eight, and the month's to thirty and forty-five. It now stops at seven days and twenty-eight, and offers only what the days left can still make. Every goal on 🎲 Challenges also says its real number at every level, in its name and in what it asks, where a harder one used to keep the first number's words."]},
   {v:"2026-11-06.14",go:["tab:library"],lines:["<b>⏳ The waiting list, sorted through.</b> A new button in the Library, under its tabs, deals your Want to read books one at a time, twenty a sitting, with the cover and the blurb: <b>⏫ Soon</b>, <b>Still want</b> or <b>Let it go</b>. Nothing is deleted and no stage changes; the Soon and Let go tabs hold what you chose, with ↶ to take a mark off.","<b>✨ More like this, on your shelf.</b> On a book's page, under its series recap: Claude picks the six books you already have that are most like it, the waiting ones first, with a line on why. About 2¢ a press."]},
@@ -19752,6 +19758,7 @@ function rowHtml(b,withDel,note){
      shelf, which is a few thousand rows paying for a line nothing is on. */
   const marks=[
     readSignRow(b),
+    freeSignRow(b),
     isColl(b)?`<span class="bst coll">COLLECTION · ${entWholes(b).length}</span>`:"",
     /* whether its stories stand in an order somebody chose — an answer
        worth having at a glance, so it rides on the row rather than making
@@ -21349,6 +21356,7 @@ function renderAuthorPanel(name){
       <button class="btn" id="apClose" style="margin-left:auto;padding:4px 10px">Done</button></div>
     ${authorHeadHtml(name)}
     ${authorBioHtml(name)}
+    ${freeAuthorHtml(name)}
     <div class="grouphead" style="margin:16px 0 8px"><h2 class="serif" style="margin:0;font-size:15px">Group them</h2><span class="ghline"></span></div>
     <div class="lbl" style="display:block;margin-bottom:5px">${mine.length} filed under exactly this name — tick two or more to group them</div>
     ${mine.map(row).join("")||'<span class="none">Nothing by this author yet.</span>'}
@@ -50369,6 +50377,7 @@ const PICK_MEDAL={
 };
 function pickDef(key){
   const i=key.indexOf(":"),k=key.slice(0,i),v=key.slice(i+1);
+  if(k==="free")return {label:v==="p"?"🏛 Free to read":"🏛 Free to borrow",note:v==="p"?"Out of copyright on Open Library: anyone can read these, with no borrowing.":"On your shelf, and Open Library lets anyone borrow them for 14 days with a free account.",rows:()=>freePickRows(v)};
   if(k==="bingo"){const sq=bgSquare(v),d=pickBingo(v);return {label:"Bingo — "+((sq&&sq.label)||v),note:d.note,rows:d.rows};}
   if(k==="rainbow"){const c=RAINBOW.find(r=>r[0]===v)||["",v],every=!!S.rbAll;
     return {label:"The rainbow — "+c[1].toLowerCase()+" covers",
@@ -57497,7 +57506,8 @@ function shelfRowPaint(){
 }
 function shelfLibRowHtml(){
   const c=shelfChipsHtml("lib"),w=waitUnits().length;   /* see THE WAITING LIST, SORTED THROUGH */
-  return c||w?`<div class="pills" style="margin:0 0 8px">${c?`<span class="lbl">Your shelves:</span>${c}`:""}${w?`<button class="btn smallbtn" data-waitopen title="One waiting book at a time: Soon, Still want or Let it go">⏳ Sort the waiting list · ${w.toLocaleString()}</button>`:""}</div>`:"";
+  const fr=Object.keys(freeLook.at).length?freeRows().length:-1;   /* see 🏛 FREE TO BORROW */
+  return c||w||fr>=0?`<div class="pills" style="margin:0 0 8px">${c?`<span class="lbl">Your shelves:</span>${c}`:""}${w?`<button class="btn smallbtn" data-waitopen title="One waiting book at a time: Soon, Still want or Let it go">⏳ Sort the waiting list · ${w.toLocaleString()}</button>`:""}${fr>=0?`<button class="btn smallbtn" data-freeopen title="The books on your shelf that Open Library lets anyone borrow or read">🏛 Free to borrow · ${fr.toLocaleString()}</button>`:""}</div>`:"";
 }
 function shelfOpen(id){
   const x=shelvesOf().find(y=>y.id===id);if(!x)return;
@@ -58002,7 +58012,8 @@ function renderSearchBody(){
       ${huePickShowing()?hueHeadHtml():""}
       ${show.length?rowsHtml:'<div class="none" style="text-align:center;padding:30px 0">Nothing here yet.</div>'}
       ${results.length>show.length?`<div class="hrow2" style="margin-top:10px;justify-content:center">
-        <button class="btn" id="srchMore">Show ${Math.min(SRCH_PAGE,results.length-show.length)} more — ${results.length-show.length} further matches</button></div>`:""}</div>`;
+        <button class="btn" id="srchMore">Show ${Math.min(SRCH_PAGE,results.length-show.length)} more — ${results.length-show.length} further matches</button></div>`:""}
+      ${freeSearchHtml()}</div>`;
   }
   if(!results||S.multi.length||S.kmulti.length){
     /* the two Combine sections are built once and slotted in twice: browsing
@@ -61820,6 +61831,7 @@ function renderBookView(){
     ${hasSummary?`<div class="cap2" id="secSummary">Blurb</div><div class="vtext sum">${b.summary}</div>${trLine(b,b.summary,'data-trsum="1"')}`:""}
     ${(()=>{const cw=cwCollHtml(b);return cw?(hasSummary?"":`<div class="cap2" id="secSummary">Blurb</div>`)+cw:"";})()}
     ${readBookHtml(b)}
+    ${freeLineHtml(b)}
     ${(()=>{/* the series' blurb under the book's own, at the page's width — in
          the series panel beside the cover it stood 163 px wide on a phone */
       const cw=cwSeriesHtml(b);return cw?`<div class="cap2" id="secSerBlurb">${esc(seriesShown(b))}, as a whole</div>${cw}`:"";})()}
@@ -61885,6 +61897,7 @@ function renderBookView(){
             :genCoverHtml({title:en.title||"Untitled",genres:b.genres},false)}</span>
           <span class="tocn${entIsPart(b,en)?" part":""}">${NUM[en.id]||(i+1)}</span>
           <span class="toct">${esc(en.title)||"Untitled"}</span>
+          ${freeEntSign(b,en)}
           ${tocTagsHtml(b,en,skip)}
           ${mk?`<span class="tocmk ${mk[0]}" title="${esc(mk[2])}">${mk[1]} ${esc(mk[2])}</span>`:""}
           ${en.rating!=null?`<span class="rate ${rateBand(Number(en.rating))} tocr">★ ${Number(en.rating).toFixed(1)}</span>`:""}
@@ -61899,6 +61912,7 @@ function renderBookView(){
           <div class="hrow2"><b class="enth">${esc(en.title)||"Untitled"}</b>
             ${lookupChip(b,en)}
             ${entFileBtnsHtml(b,en)}
+            ${freeEntLink(b,en)}
             ${(()=>{const dnf=entDnfOf(b,en),stk=entStatusOf(b,en),una=entUnownedOf(b,en);
               /* the mark counts as the story having said something of its own,
                  or a story you had marked went on claiming to be "· same" as a
@@ -69619,7 +69633,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
+const SHARED_PREFS=["freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
@@ -72658,6 +72672,279 @@ document.addEventListener("click",e=>{
   if(t.dataset.nxunstar!==undefined){nxStar(t.dataset.nxunstar);nxDraw();return;}
   r.told=true;saveSettings();nxDraw();
   if(t.dataset.nxsee!==undefined)goTo("el:care:#nxSec");
+});
+/* ┌─ 🏛 FREE TO BORROW ──────────────────────────────────────────────────────┐
+   │ Open Library's search.json says for each work whether anyone can have it: │
+   │ ebook_access public (free to read) or borrowable (14 days, a free account, │
+   │ ten at a time), against printdisabled, which needs a qualifying account    │
+   │ and is never shown. No key and no Claude. The answers live in one record,  │
+   │ meta "freeLook" {at:{key:day},hit:{key:{k,ia,ed,l}}}, day = days since     │
+   │ 1970, never on the books: a whole shelf answered would otherwise rewrite   │
+   │ and re-send every book, and nothing about a book has changed. key is the   │
+   │ book's id, or id|story for a whole story in a collection (collWholes), so  │
+   │ a split volume is asked about once.                                        │
+   │ freeUnits: every book and whole story that is not a fic and has no file    │
+   │ already (no point borrowing what can be read here). freeStep walks them    │
+   │ while the app is open and showing, one every FREE_GAP, oldest answer first,│
+   │ waiting books before finished, again after FREE_AGAIN days; a refusal      │
+   │ rests it FREE_BACKOFF. A book's page asks at once if it has no answer yet. │
+   │ The site allows one ask a second from a page, which cannot name itself.    │
+   │ THE TRAP: the work's own lending_identifier_s can be a translation, and    │
+   │ availability/v2 by work picks an edition of its own. So freeAsk asks with  │
+   │ language: and takes the edition the search itself returns, checking its   │
+   │ language and access. Titles and authors are compared here too: the search │
+   │ matches loosely, and a hit has to BE the book.                             │
+   │ The symbol is freeSignRow on rows and freeEntSign on Contents; the line,   │
+   │ with whether a copy is in right now (availability/v2 by identifier, kept   │
+   │ FREE_LIVE ms), is freeLineHtml on the page and freeOpen's list. freeOpen   │
+   │ stands under the Library's tabs; pickDef's "free:" is the same as a Search │
+   │ list. The author panel and Search ask only on a press, for what is not on  │
+   │ the shelf. The reading stays on their site: a borrowed book is locked to   │
+   │ their reader.                                                              │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+const FREE_GAP=2000,FREE_AGAIN=30,FREE_BACKOFF=300000,FREE_CLOUD=300000,FREE_START=20000,FREE_LIVE=600000,FREE_PAGE=40;
+const FREE_LANGS={english:"eng",french:"fre",german:"ger",spanish:"spa",italian:"ita",portuguese:"por",russian:"rus",polish:"pol",dutch:"dut",swedish:"swe",japanese:"jpn",korean:"kor",chinese:"chi",ukrainian:"ukr",turkish:"tur",finnish:"fin",danish:"dan",norwegian:"nor",czech:"cze",hungarian:"hun",romanian:"rum",greek:"gre",hebrew:"heb",arabic:"ara",indonesian:"ind",vietnamese:"vie",thai:"tha",latvian:"lav",lithuanian:"lit",estonian:"est"};
+let freeLook={at:{},hit:{}},freeSaveT=0,freeCloudAt=0,freeQ=null,freeT=0,freeErr="";
+const freeLive=new Map(),freeAsking=new Set();
+const freeDay=()=>Math.floor(Date.now()/864e5);
+const freeKey=(b,en)=>en?b.id+"|"+en.id:b.id;
+const freeHasFile=(b,en)=>!!(rdFileOf(b)||b.driveFile||(en&&entFileHolder(b,en)));
+async function freeLoad(){try{const r=await dbGet("meta","freeLook");if(r&&r.v&&typeof r.v==="object")freeLook={at:r.v.at||{},hit:r.v.hit||{}};}catch(e){}}
+function freeSave(up){
+  clearTimeout(freeSaveT);
+  freeSaveT=setTimeout(()=>{dbPut("meta",{k:"freeLook",v:freeLook}).then(()=>{
+    if(up||Date.now()-freeCloudAt>=FREE_CLOUD){freeCloudAt=Date.now();enqueue({kind:"meta",key:"freeLook"});}}).catch(()=>{});},up?200:15000);
+}
+function mergeFree(rv){
+  if(!rv||typeof rv!=="object")return false;
+  const ra=rv.at||{},rh=rv.hit||{};let ch=false;
+  for(const k in ra)if((+ra[k]||0)>(+freeLook.at[k]||0)){freeLook.at[k]=+ra[k];if(rh[k])freeLook.hit[k]=rh[k];else delete freeLook.hit[k];ch=true;}
+  if(ch)dbPut("meta",{k:"freeLook",v:freeLook}).catch(()=>{});
+  return ch;
+}
+function freeUnits(){
+  const out=[];
+  books.forEach(b=>{
+    if(!b||isFic(b)||rdFileOf(b)||b.driveFile)return;
+    const ws=collWholes(b);
+    if(ws.length){ws.forEach(en=>{if(en&&!entFileHolder(b,en)&&String(en.title||"").trim())out.push({b,en,key:freeKey(b,en)});});return;}
+    if(String(b.title||"").trim())out.push({b,en:null,key:b.id});
+  });
+  return out;
+}
+const freeStage=u=>u.en?entStatusOf(u.b,u.en):statusOf(u.b);
+const freeRank=s=>s==="want"?0:s==="reading"?1:2;
+function freeDue(){
+  const at=freeLook.at,lim=freeDay()-FREE_AGAIN;
+  return freeUnits().filter(u=>!(at[u.key]>lim)).sort((a,c)=>(at[a.key]||0)-(at[c.key]||0)||freeRank(freeStage(a))-freeRank(freeStage(c)));
+}
+const freeLangOf=(x,b)=>FREE_LANGS[String(langOf(x)||langOf(b)||"").trim().toLowerCase()]||"eng";
+const freeUrl=(ask,n)=>"https://openlibrary.org/search.json?limit="+n+"&fields=key,title,author_name,first_publish_year,ebook_access,editions,editions.key,editions.title,editions.language,editions.ebook_access,editions.ia&q="+encodeURIComponent(ask);
+/* the edition the search returned, if it is one anybody can have in that language */
+const freeEd=(d,L)=>((d&&d.editions&&d.editions.docs)||[]).find(e=>e&&(e.ebook_access==="public"||(e.ebook_access==="borrowable"&&Array.isArray(e.ia)&&e.ia.length))&&(!Array.isArray(e.language)||e.language.includes(L)));
+const freeHitOf=(e,L)=>({k:e.ebook_access==="public"?"p":"b",ia:String((e.ia||[])[0]||""),ed:String(e.key||""),l:L});
+async function freeAsk(u){
+  const x=u.en||u.b,raw=String(x.title||""),author=String((u.en?entAuthorOf(u.b,u.en):u.b.author)||"").trim(),first=authorParts(author)[0]||author,L=freeLangOf(x,u.b);
+  const t=raw.split(/[:—–([]/)[0].replace(/["\\]/g," ").replace(/\s+/g," ").trim(),sur=surnameOf(first).replace(/["\\]/g," ").trim();
+  if(!t)return null;
+  const j=await fetchJson(freeUrl(`title:"${t}"${sur?` author:"${sur}"`:""} language:${L} ebook_access:[borrowable TO *]`,5),1,12000);
+  const called=v=>titleSame(v,raw)||titleKey(v)===titleKey(raw)||titleKey(v)===titleKey(t);
+  for(const d of (j&&j.docs)||[]){const e=freeEd(d,L);
+    if(e&&(called(d.title)||called(e.title))&&(!first||authorNear(first,(d.author_name||[]).join(" "))))return freeHitOf(e,L);}
+  return null;
+}
+function freeNote(key,h){
+  freeLook.at[key]=freeDay();
+  if(h)freeLook.hit[key]=h;else delete freeLook.hit[key];
+  freeSave();
+}
+function freeWalk(ms){clearTimeout(freeT);freeT=setTimeout(freeStep,ms==null?FREE_GAP:ms);}
+async function freeStep(){
+  if(settings.freeOff)return;
+  if(document.hidden||navigator.onLine===false){freeWalk(60000);return;}
+  if(!freeQ||!freeQ.length){
+    freeQ=freeDue();
+    if(!freeQ.length){freeQ=null;freeSave(true);freeWalk(36e5);return;}
+  }
+  const u=freeQ.shift();
+  try{const h=await freeAsk(u);freeErr="";freeNote(u.key,h);freePanelTick();freeWalk();}
+  catch(e){freeQ.unshift(u);freeErr=String((e&&e.message)||e).slice(0,80);freePanelTick();freeWalk(FREE_BACKOFF);}
+}
+/* whether a copy is in right now, asked for what is on screen */
+async function freeLiveGet(ids){
+  const want=[...new Set(ids)].filter(i=>{if(!i)return false;const v=freeLive.get(i);return !v||Date.now()-v.t>FREE_LIVE;});
+  for(let i=0;i<want.length;i+=40){
+    const j=await fetchJson("https://openlibrary.org/availability/v2?type=identifier&ids="+want.slice(i,i+40).map(encodeURIComponent).join(","),1,12000);
+    Object.keys(j||{}).forEach(k=>{const v=j[k]||{};freeLive.set(k,{s:String(v.status||""),n:+v.num_waitlist||0,t:Date.now()});});
+  }
+  return want.length>0;
+}
+/* the site's word on a copy; "" until it has been asked */
+function freeSay(h){
+  const v=freeLive.get(h.ia),s=v&&v.s;
+  if(s==="open")return "free to read, no borrowing";
+  if(s==="borrow_available")return "a copy is in now";
+  if(s==="borrow_unavailable")return "all out just now"+(v.n?`, ${v.n} waiting`:"");
+  return h.k==="p"?"free to read, no borrowing":"";
+}
+const freeGone=h=>{const v=freeLive.get(h.ia);return !!v&&(v.s==="private"||v.s==="error");};
+const freeLink=h=>/^\/books\//.test(h.ed||"")||!h.ia?"https://openlibrary.org"+(h.ed||""):"https://archive.org/details/"+encodeURIComponent(h.ia);
+const freeLangSay=h=>{const n=Object.keys(FREE_LANGS).find(k=>FREE_LANGS[k]===h.l);return n&&n!=="english"?` In ${n.charAt(0).toUpperCase()+n.slice(1)}.`:"";};
+const freeMark=h=>{const say=h.k==="p"?"Free to read on Open Library":"Anyone can borrow this free from Open Library";return `<span class="bst free" title="${say}" aria-label="${say}">🏛</span>`;};
+const freeCollCount=b=>rdFileOf(b)||b.driveFile?0:collWholes(b).filter(en=>freeLook.hit[freeKey(b,en)]&&!entFileHolder(b,en)).length;
+function freeSignRow(b){
+  if(!b||isFic(b))return "";
+  if(b._story){const h=freeLook.hit[b.id+"|"+b._story];if(!h)return "";
+    const c=books.find(x=>x.id===b.id),en=c&&(c.entries||[]).find(e=>e.id===b._story);
+    return c&&en&&!freeHasFile(c,en)?freeMark(h):"";}
+  if(isColl(b)&&collWholes(b).length){const n=freeCollCount(b);
+    return n?`<span class="bst free" title="${n} of the books inside can be borrowed or read free from Open Library">🏛 ${n}</span>`:"";}
+  const h=freeLook.hit[b.id];
+  return h&&!freeHasFile(b)?freeMark(h):"";
+}
+/* a tale of a split volume answers for its volume */
+const freeEntHit=(b,en)=>{if(!b||!en||isFic(b)||freeHasFile(b,en))return null;const w=entWholeOf(b,en)||en;return freeLook.hit[freeKey(b,w)]||null;};
+const freeEntSign=(b,en)=>{const h=freeEntHit(b,en);return h?freeMark(h):"";};
+const freeEntLink=(b,en)=>{const h=freeEntHit(b,en);
+  return h?`<a class="bst free" href="${esc(freeLink(h))}" target="_blank" rel="noopener" title="${h.k==="p"?"Read it free on Open Library":"Borrow it free from Open Library, 14 days"}">🏛 ${h.k==="p"?"Read free":"Borrow"}</a>`:"";};
+function freeLineInner(h){
+  const live=freeSay(h);
+  return `<div class="vline2">🏛 ${h.k==="p"?"Free to read on Open Library, out of copyright.":"You can borrow this free from Open Library for 14 days, with a free account."}${live&&h.k!=="p"?` ${live.charAt(0).toUpperCase()+live.slice(1)}.`:""}${freeLangSay(h)} <a class="btn smallbtn" href="${esc(freeLink(h))}" target="_blank" rel="noopener">Open it there</a></div>`;
+}
+function freeLinePaint(key,h){
+  const s=q("#freeLine");if(!s||s.dataset.freekey!==key)return;
+  s.innerHTML=h&&!freeGone(h)?freeLineInner(h):"";
+}
+async function freeAskFor(b){
+  const key=b.id;if(freeAsking.has(key))return;
+  freeAsking.add(key);
+  try{
+    if(!(key in freeLook.at))freeNote(key,await freeAsk({b,en:null,key}));
+    const h=freeLook.hit[key];freeLinePaint(key,h);
+    if(h&&await freeLiveGet([h.ia])){
+      if(freeGone(h)){delete freeLook.hit[key];freeSave();}
+      freeLinePaint(key,freeLook.hit[key]);}
+  }catch(e){}finally{freeAsking.delete(key);}
+}
+function freeLineHtml(b){
+  if(!b||b._story||isFic(b))return "";
+  if(isColl(b)&&collWholes(b).length){const n=freeCollCount(b);
+    return n?`<div class="vline2">🏛 ${n} of the ${collWholes(b).length} inside can be borrowed or read free from Open Library. They wear 🏛 below.</div>`:"";}
+  if(freeHasFile(b))return "";
+  const h=freeLook.hit[b.id];
+  if(!TEST_RUN&&navigator.onLine!==false&&(!(b.id in freeLook.at)||h))setTimeout(()=>{freeAskFor(b);},0);
+  return `<div id="freeLine" data-freekey="${esc(b.id)}">${h&&!freeGone(h)?freeLineInner(h):""}</div>`;
+}
+/* everything with an answer worth showing, waiting books first */
+function freeRows(kind){
+  const l=freeUnits().filter(u=>{const h=freeLook.hit[u.key];return h&&!freeGone(h)&&(!kind||h.k===kind);});
+  return l.sort((a,c)=>freeRank(freeStage(a))-freeRank(freeStage(c))||String((a.en||a.b).title).localeCompare(String((c.en||c.b).title)));
+}
+/* for Search: a collection once, with the ones inside that answered — as pickRows folds them */
+function freePickRows(kind){
+  const out=[],at=new Map();
+  freeRows(kind).forEach(u=>{
+    if(!u.en){out.push(u.b);return;}
+    const i=at.get(u.b.id);
+    if(i==null){at.set(u.b.id,out.length);out.push(Object.assign({},u.b,{_hits:[u.en.id]}));return;}
+    out[i]._hits.push(u.en.id);});
+  return out;
+}
+const freeTimeLeft=n=>{const m=Math.ceil(n*(FREE_GAP+300)/60000);return m<2?"about a minute":m<90?`about ${m} minutes`:`about ${Math.round(m/60)} hours`;};
+function freePanelTick(){const d=q("#freePanel");if(d&&d.__tick)d.__tick();}
+function freeOpen(){
+  const old=q("#freePanel");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="freePanel";d.className="ratepanel tagticks";d.setAttribute("role","dialog");d.setAttribute("aria-label","Free to borrow");
+  let tab="b",shown=FREE_PAGE,liveBusy=false;
+  const whenLive=l=>{
+    if(liveBusy)return;
+    const ids=l.map(u=>freeLook.hit[u.key].ia);liveBusy=true;
+    freeLiveGet(ids).then(ch=>{liveBusy=false;
+      if(!ch)return;
+      let gone=false;l.forEach(u=>{const h=freeLook.hit[u.key];if(h&&freeGone(h)){delete freeLook.hit[u.key];gone=true;}});
+      if(gone)freeSave();
+      if(d.isConnected)draw();}).catch(()=>{liveBusy=false;});};
+  const draw=()=>{
+    const units=freeUnits(),asked=units.filter(u=>u.key in freeLook.at).length,left=units.length-asked;
+    const bs=freeRows("b"),ps=freeRows("p"),l=tab==="b"?bs:ps,page=l.slice(0,shown),keep=q(".tagticklist",d)?q(".tagticklist",d).scrollTop:0;
+    const state=settings.freeOff?"It isn't asking at the moment.":left>0?`Asked about ${asked.toLocaleString()} of your ${units.length.toLocaleString()}. It carries on by itself while the app is open: ${freeTimeLeft(left)} to go.`:`Asked about all ${units.length.toLocaleString()}. It asks again after ${FREE_AGAIN} days.`;
+    d.innerHTML=`<div class="hrow2" style="flex:none"><b class="serif" style="font-size:17px">🏛 Free to borrow</b><button class="btn" data-fr="x" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+      <div class="pills" style="flex:none;margin:8px 0 4px"><button class="pill${tab==="b"?" on":""}" data-frtab="b">Can borrow · ${bs.length.toLocaleString()}</button><button class="pill${tab==="p"?" on":""}" data-frtab="p">Free to read · ${ps.length.toLocaleString()}</button></div>
+      <div class="hint" style="margin:0;flex:none">${tab==="b"?"14 days, ten at a time, with a free Open Library account and no card.":"Out of copyright: no borrowing and no account."} ${state}${freeErr?` Open Library said: ${esc(freeErr)}. It tries again in a few minutes.`:""}</div>
+      <div class="hrow2" style="flex:none;gap:10px;flex-wrap:wrap;align-items:center;margin:4px 0"><label class="hrow2" style="gap:6px;margin:0;cursor:pointer;font-size:13px"><input type="checkbox" id="freeOn"${settings.freeOff?"":" checked"}> Keep asking by itself</label>${l.length?`<button class="btn smallbtn" data-fr="search">🔍 See them on Search</button>`:""}</div>
+      <div class="tagticklist">${page.length?page.map(u=>{const x=u.en||u.b,h=freeLook.hit[u.key],live=freeSay(h),au=String((u.en?entAuthorOf(u.b,u.en):u.b.author)||"").trim();
+        return `<div class="snap" style="display:block;margin-top:4px;padding:6px 10px;overflow-wrap:anywhere"><span style="cursor:pointer" data-open="${esc(u.b.id)}"${u.en?` data-openen="${esc(u.en.id)}"`:""}><b class="serif">${esc(x.title||"Untitled")}</b>${au?` <span class="meta" style="display:inline">${esc(authorParts(au)[0]||au)}</span>`:""}${u.en?` <span class="meta" style="display:inline">· in ${esc(u.b.title||"Untitled")}</span>`:""}</span>
+          <div class="meta" style="margin-top:2px">${esc(stageWord(u))}${live?` · ${esc(live)}`:""}${esc(freeLangSay(h))} · <a href="${esc(freeLink(h))}" target="_blank" rel="noopener">Open it there</a></div></div>`;}).join("")
+        :`<div class="hint" style="margin:10px 0">${asked?"None so far.":"Nothing asked yet."}</div>`}
+        ${l.length>page.length?`<button class="btn smallbtn" data-fr="more" style="margin-top:8px">Show the next ${Math.min(FREE_PAGE,l.length-page.length)}</button>`:""}</div>`;
+    const box=q(".tagticklist",d);if(box)box.scrollTop=keep;
+    const on=q("#freeOn",d);if(on)on.onchange=()=>{settings.freeOff=!on.checked;saveSettings();if(on.checked)freeWalk(500);draw();};
+    if(page.length)whenLive(page);
+  };
+  const stageWord=u=>{const st=freeStage(u);return st==="finished"?"finished":st==="reading"?"reading now":(u.en?entUnownedOf(u.b,u.en):unownedOf(u.b))?"⌛ don't have it yet":"waiting";};
+  d.onclick=e=>{
+    if(e.target.closest("[data-open]")){setTimeout(()=>{if(d.__close)d.__close();},0);return;}
+    const t=e.target.closest("[data-fr],[data-frtab]");if(!t)return;
+    if(t.dataset.frtab){tab=t.dataset.frtab;shown=FREE_PAGE;draw();return;}
+    const a=t.dataset.fr;
+    if(a==="x"){d.__close();return;}
+    if(a==="more"){shown+=FREE_PAGE;draw();return;}
+    if(a==="search"){d.__close();showPick("free:"+tab);}};
+  let tickN=0;d.__tick=()=>{if(++tickN%10===0||freeErr)draw();};
+  draw();
+  document.body.appendChild(d);d.__close=dismissable(d);
+}
+document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest("[data-freeopen]")){e.preventDefault();e.stopPropagation();freeOpen();}},true);
+/* ---- what is NOT on the shelf: only on a press ---- */
+let freeAu={name:"",busy:false,list:null,err:""},freeSr={q:"",busy:false,list:null,err:""};
+const freeDocs=(j,L,author)=>((j&&j.docs)||[]).map(d=>{const e=freeEd(d,L);return e?{title:String(d.title||""),author:String((d.author_name||[])[0]||author||""),year:String(d.first_publish_year||""),h:freeHitOf(e,L)}:null;}).filter(x=>x&&x.title&&!nxTitleHeld(x.title,x.author));
+const freeFoundRow=(x,i,where)=>`<div class="snap" style="display:flex;gap:8px;align-items:center;margin-top:4px;padding:6px 10px;flex-wrap:wrap"><span style="flex:1 1 140px;min-width:0;overflow-wrap:anywhere"><b class="serif">${esc(x.title)}</b> <span class="meta" style="display:inline">${esc(x.author)}${x.year?` · ${esc(x.year)}`:""} · ${x.h.k==="p"?"free to read":"can borrow"}</span> <a class="meta" style="display:inline" href="${esc(freeLink(x.h))}" target="_blank" rel="noopener">Open it there</a></span><button class="btn smallbtn" data-free${where}="${i}" title="Put it on your shelf as Want to read">＋ Want to read</button></div>`;
+function freeAuthorHtml(name){
+  if(navigator.onLine===false&&freeAu.name!==name)return "";
+  const st=freeAu.name===name?freeAu:null;
+  return `<div style="margin:10px 0 0"><div class="hrow2" style="gap:6px;flex-wrap:wrap;align-items:center"><button class="btn smallbtn" data-freeaugo="${esc(name)}"${st&&st.busy?" disabled":""}>${st&&st.busy?"🏛 Asking Open Library…":st&&st.list?"🏛 Ask again":"🏛 What else of theirs can I borrow?"}</button>${st&&st.err?`<span class="hint" style="margin:0">Open Library couldn't: ${esc(st.err)}.</span>`:""}</div>
+    ${st&&st.list?(st.list.length?st.list.map((x,i)=>freeFoundRow(x,i,"au")).join(""):`<div class="hint" style="margin:6px 0 0">Nothing more of theirs to borrow.</div>`):""}</div>`;
+}
+function freeSearchHtml(){
+  const t=S.q.trim();if(t.length<3||S.filter)return "";
+  const st=freeSr.q===t?freeSr:null;
+  return `<div style="margin:12px 0 0"><div class="hrow2" style="gap:6px;flex-wrap:wrap;align-items:center"><button class="btn smallbtn" data-freesrgo${st&&st.busy?" disabled":""}>${st&&st.busy?"🏛 Asking Open Library…":"🏛 Ask Open Library what can be borrowed"}</button>${st&&st.err?`<span class="hint" style="margin:0">Open Library couldn't: ${esc(st.err)}.</span>`:""}</div>
+    ${st&&st.list?(st.list.length?st.list.map((x,i)=>freeFoundRow(x,i,"sr")).join(""):`<div class="hint" style="margin:6px 0 0">Nothing not already on your shelf.</div>`):""}</div>`;
+}
+const freeTerms=t=>String(t||"").replace(/["\\:()[\]{}^~*?!+|&]/g," ").replace(/\s+/g," ").trim();
+async function freeAddFound(x){
+  const nb=blankBook(uid());
+  nb.title=x.title;nb.author=x.author;nb.status="want";if(/^\d{4}$/.test(x.year))nb.pubYear=x.year;nb.modified=Date.now();
+  try{await dbPut("books",nb);}catch(e){alert("Couldn't save — storage may be full.");return false;}
+  books.unshift(nb);
+  pushOp({t:"bulk",items:[{id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))}]});
+  if(SYNC.on){enqueue({kind:"book",id:nb.id});flushQueue();}
+  freeNote(nb.id,x.h);refreshShelfSub();
+  return true;
+}
+document.addEventListener("click",async e=>{
+  const t=e.target.closest&&e.target.closest("[data-freeaugo],[data-freesrgo],[data-freeau],[data-freesr]");if(!t)return;
+  e.stopPropagation();
+  if(t.dataset.freeaugo!==undefined){
+    const name=t.dataset.freeaugo,st=freeAu={name,busy:true,list:null,err:""};renderAuthorPanel(name);
+    try{
+      const us=authorPageUnits(name),u=us.find(v=>langOf(v.en||v.b)||langOf(v.b)),L=u?freeLangOf(u.en||u.b,u.b):"eng";
+      const who=freeTerms(name.includes(",")?name.split(",").reverse().join(" "):name);
+      const j=await fetchJson(freeUrl(`author:"${who}" language:${L} ebook_access:[borrowable TO *]`,40),1,12000);
+      st.list=freeDocs(j,L,name);
+    }catch(er){st.err=String((er&&er.message)||"no answer").slice(0,80);}
+    st.busy=false;if(freeAu===st&&q("#authPanel")&&q("#authPanel").dataset.author===name)renderAuthorPanel(name);
+    return;}
+  if(t.dataset.freesrgo!==undefined){
+    const tq=S.q.trim(),st=freeSr={q:tq,busy:true,list:null,err:""};renderSearchBody();
+    try{const j=await fetchJson(freeUrl(`${freeTerms(tq)} language:eng ebook_access:[borrowable TO *]`,12),1,12000);st.list=freeDocs(j,"eng","");}
+    catch(er){st.err=String((er&&er.message)||"no answer").slice(0,80);}
+    st.busy=false;if(freeSr===st&&view==="search")renderSearchBody();
+    return;}
+  const au=t.dataset.freeau!==undefined,st=au?freeAu:freeSr,i=+(au?t.dataset.freeau:t.dataset.freesr),x=st.list&&st.list[i];if(!x)return;
+  t.disabled=true;
+  if(await freeAddFound(x)){st.list=st.list.filter(y=>y!==x);
+    if(au){if(q("#authPanel")&&q("#authPanel").dataset.author===st.name)renderAuthorPanel(st.name);}else if(view==="search")renderSearchBody();}
 });
 /* `probe`, when given, is filled in with what was actually asked — but only on
    the way out of a failure, so it costs nothing when a book is found.
