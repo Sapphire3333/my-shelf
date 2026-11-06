@@ -14102,6 +14102,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.14",go:["tab:library"],lines:["<b>⏳ The waiting list, sorted through.</b> A new button in the Library, under its tabs, deals your Want to read books one at a time, twenty a sitting, with the cover and the blurb: <b>⏫ Soon</b>, <b>Still want</b> or <b>Let it go</b>. Nothing is deleted and no stage changes; the Soon and Let go tabs hold what you chose, with ↶ to take a mark off.","<b>✨ More like this, on your shelf.</b> On a book's page, under its series recap: Claude picks the six books you already have that are most like it, the waiting ones first, with a line on why. About 2¢ a press."]},
   {v:"2026-11-06.13",go:["tab:search"],lines:["<b>🗂 Shelves that fill themselves.</b> Set up any search on 🔍 Search, with words, a filter, genres, tags or stages, and press <b>📌 Save this as a shelf</b>. It gets a name and a chip, on Search and under the Library's tabs. A press on the chip shows everything that fits right now, so a book joins or leaves a shelf by itself as you change it. ✎ on Search takes a shelf off; no book is touched. Your shelves follow you to your other devices."]},
   {v:"2026-11-06.12",lines:["<b>🔍 A scanned PDF can be read like any other.</b> A scan is pictures of pages, so nothing in it could be selected, highlighted, searched or given a 📓 notebook. Open one now and the app reads its words on your device, the pages near you first and then the rest while the reader is open. A page takes a few seconds on a computer; ☰ → Contents shows how far it is, with Pause. It costs nothing and uses no Claude. The words are kept on this device and in your own Supabase storage, so your other devices fetch them and read nothing again."]},
   {v:"2026-11-06.11",lines:["<b>🕸 The people, as a web.</b> In a book with a 📓 notebook, the tab has a new button that draws its people over the whole reader: a dot each, bigger the more of the book they're in, with lines for family, for friends and allies, and for those against each other. Press someone for their Who is this? card; Fewer and More change how many are shown. The notebook notes ties from now on, so a part read before today shows a thin line between people it noted together until you press ↻ Read it again."]},
@@ -57317,6 +57318,118 @@ const DEEP_GAPS=[
   ["ships","No relationships",()=>deepPool().filter(b=>
     (isFic(b)||((b.characters||[]).length))&&!((b.ships||[]).length))]
 ];
+/* ┌─ MORE LIKE THIS, ON MY OWN SHELF ────────────────────────────────────────┐
+   │ On a book's page, under the series recap (#secLike): six books already on  │
+   │ the shelf that are most like this one. likePool scores every book and      │
+   │ whole story that is there to be read (not one marked Don't have it yet)    │
+   │ against it here, 3 a shared genre, 2 a shared tag, 4 the same             │
+   │ author, and keeps the nearest LIKE_POOL; likeAsk sends only those to       │
+   │ Claude with the taste profile (recTaste, cached) and asks for LIKE_N with  │
+   │ a line each, waiting ones first where they are as close. So a press costs  │
+   │ about the same on a shelf of fifty as of five thousand. Nothing is kept:   │
+   │ likeState holds the answer until another book is asked about.              │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const LIKE_POOL=60,LIKE_N=6;
+let likeState={id:"",busy:false,list:null,err:""};
+const likeOf=u=>{const b=u.book,t=u.en;
+  return {id:b.id,en:t?t.id:"",title:(t?t.title:b.title)||"Untitled",author:String(t?entAuthorOf(b,t):(b.author||"")),
+    genres:(t?entGenresOf(b,t):(b.genres||[])).map(String),tags:[...(b.keywords||[]),...((t&&t.keywords)||[])].map(String),status:u.status,
+    blurb:stripHtml(String((t?t.summary:b.summary)||"")).replace(/\s+/g," ").trim().slice(0,140)};};
+function likePool(b){
+  const g=new Set((b.genres||[]).map(x=>softFold(x))),k=new Set((b.keywords||[]).map(x=>softFold(x))),a=softFold(b.author||"");
+  return stageUnits().filter(u=>!u.dnf&&(u.en?!entUnownedOf(u.book,u.en):(!isColl(u.book)&&!unownedOf(u.book)))&&!(u.book.id===b.id&&!u.en)).map(likeOf).map(c=>{
+    let n=c.status==="want"?0.5:0;
+    c.genres.forEach(x=>{if(g.has(softFold(x)))n+=3;});c.tags.forEach(x=>{if(k.has(softFold(x)))n+=2;});if(a&&softFold(c.author)===a)n+=4;
+    return Object.assign(c,{n});}).filter(c=>c.n>=2).sort((x,y)=>y.n-x.n).slice(0,LIKE_POOL);
+}
+async function likeAsk(b){
+  const pool=likePool(b);
+  if(!pool.length)throw new Error("nothing on your shelf shares a genre, a tag or an author with it yet");
+  const schema={type:"object",properties:{picks:{type:"array",items:{type:"object",properties:{n:{type:"integer"},why:{type:"string"}},required:["n","why"],additionalProperties:false}}},required:["picks"],additionalProperties:false};
+  const say={want:"waiting",reading:"being read",finished:"read"};
+  const line=(c,i)=>`${i+1}. “${c.title}”${c.author?` by ${c.author}`:""} [${say[c.status]||"read"}]${c.genres.length?` · ${c.genres.slice(0,4).join(", ")}`:""}${c.tags.length?` · ${c.tags.slice(0,8).join(", ")}`:""}${c.blurb?` — ${c.blurb}`:""}`;
+  const blurb=stripHtml(String(b.summary||"")).replace(/\s+/g," ").trim().slice(0,500);
+  const text=`A reader is looking at “${b.title||"a book"}”${b.author?` by ${b.author}`:""}${(b.genres||[]).length?` (${b.genres.slice(0,5).join(", ")})`:""}${(b.keywords||[]).length?`, tagged ${b.keywords.slice(0,12).join(", ")}`:""}.${blurb?` Its blurb: ${blurb}`:""}\n\n`
+    +`These are books already on their own shelf:\n${pool.map(line).join("\n")}\n\n`
+    +`Pick the ${LIKE_N} most like it in feel, subject and kind of story. Where two are as close, the one still waiting to be read comes first. For each, n: its number in the list; why: one short plain line on what it shares, under twenty words, with no spoilers.`;
+  const sys=recTaste();
+  const j=await claudeAsk(Object.assign({what:"✨ More like this, on my shelf",kind:"ask",text,schema,effort:"low",max_tokens:900},sys?{system:sys,cache:true}:{}));
+  const seen=new Set();
+  return (Array.isArray((j.json||{}).picks)?j.json.picks:[]).map(p=>({c:pool[(+p.n||0)-1],why:String(p.why||"").trim().slice(0,160)}))
+    .filter(p=>p.c&&!seen.has(p.c.id+"|"+p.c.en)&&seen.add(p.c.id+"|"+p.c.en)).slice(0,LIKE_N);
+}
+function likeHtml(b){
+  if(!b||isColl(b)||!claudeReady())return "";
+  const st=likeState.id===b.id?likeState:null,stage={want:"waiting",reading:"reading now",finished:"read"};
+  return `<div class="cap2" id="secLike">More like this, on your shelf</div>
+    ${st&&st.list?(st.list.length?st.list.map(p=>`<div class="snap" style="display:block;cursor:pointer;margin-top:4px" data-open="${esc(p.c.id)}"${p.c.en?` data-openen="${esc(p.c.en)}"`:""} tabindex="0" role="button"><b class="serif">${esc(p.c.title)}</b>${p.c.author?` <span class="meta">${esc(authorParts(p.c.author)[0]||p.c.author)}</span>`:""} <span class="bst">${stage[p.c.status]||"read"}</span><div class="hint" style="margin:2px 0 0">${esc(p.why)}</div></div>`).join(""):`<div class="hint" style="margin:0">Claude found nothing close enough.</div>`):""}
+    <div class="cwrow"><button class="btn smallbtn" data-likego${st&&st.busy?" disabled":""}>${st&&st.busy?"✨ Looking along your shelf…":st&&st.list?"✨ Look again":"✨ More like this, on my shelf"}</button></div>
+    <div class="hint" style="margin:4px 0 0">${st&&st.err?`Claude couldn't: ${esc(st.err)}.`:`The app picks the nearest ${LIKE_POOL} by genre, tag and author, and Claude chooses ${LIKE_N} of them. About 2¢.`}</div>`;
+}
+document.addEventListener("click",async e=>{
+  const t=e.target.closest&&e.target.closest("[data-likego]");if(!t||view!=="book"||!cur)return;
+  e.stopPropagation();
+  const b=cur,st=likeState={id:b.id,busy:true,list:null,err:""};renderBookView();
+  try{st.list=await likeAsk(b);}catch(er){st.err=String((er&&er.message)||"no answer").replace(/\.$/,"");}
+  st.busy=false;if(view==="book"&&cur&&cur.id===b.id&&likeState===st)renderBookView();
+});
+/* ┌─ THE WAITING LIST, SORTED THROUGH ───────────────────────────────────────┐
+   │ ⏳ in the Library's row of shelves opens #waitPanel: WAIT_SIT waiting      │
+   │ books and stories a sitting (waitUnits: Want to read, yours to pick up,    │
+   │ not set down), one at a time with its cover and blurb, the ones untouched  │
+   │ longest first. Soon, Still want and Let it go write x.wait {v, d} on the   │
+   │ book or the story and nothing else: no stage changes and nothing is        │
+   │ deleted. The Soon and Let go tabs list what is in each, with ↶ to take the │
+   │ mark off. A book marked is not dealt again until its mark is taken off.    │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const WAIT_SIT=20;
+const waitMarkOf=x=>(x&&x.wait&&x.wait.v)||"";
+const waitX=u=>u.en||u.book;
+function waitUnits(){return stageUnits().filter(u=>u.status==="want"&&!u.dnf&&!u.hold&&(u.en?!entUnownedOf(u.book,u.en):(!unownedOf(u.book)&&!isColl(u.book))));}
+function waitOpen(){
+  const old=q("#waitPanel");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="waitPanel";d.className="ratepanel tagticks";d.setAttribute("role","dialog");d.setAttribute("aria-label","The waiting list, sorted through");
+  const deal=()=>waitUnits().filter(u=>!waitMarkOf(waitX(u))).sort((a,b)=>(+a.book.modified||0)-(+b.book.modified||0)).slice(0,WAIT_SIT).map(u=>({id:u.book.id,en:u.en?u.en.id:""}));
+  let tab="sit",queue=deal(),at=0,busy=false;
+  const find=k=>{const b=books.find(x=>x.id===k.id);if(!b)return null;const en=k.en?(b.entries||[]).find(e=>e.id===k.en):null;return k.en&&!en?null:{b,en};};
+  const mark=(k,v)=>shelfMut(k.id,bk=>{const x=k.en?(bk.entries||[]).find(e=>e.id===k.en):bk;if(!x)return false;if(v)x.wait={v,d:todayStr()};else delete x.wait;return true;});
+  const head=u=>{const b=u.b,en=u.en,px=en?storyProxy(b,en):b;
+    return `<div class="thumb" style="flex:none" data-cover="${esc(b.id)}"${px._cover?` data-covkey="${esc(px._cover)}"`:""}>${coverInner(px,false)}</div>`;};
+  const draw=()=>{
+    const all=waitUnits(),pile=v=>all.filter(u=>waitMarkOf(waitX(u))===v),soon=pile("soon"),gone=pile("go"),left=all.filter(u=>!waitMarkOf(waitX(u))).length;
+    let body="";
+    if(tab==="sit"){
+      const k=queue[at],u=k&&find(k);
+      if(!queue.length)body=`<div class="hint" style="margin:10px 0">Every waiting book has been through your hands. The Soon and Let go tabs hold what you chose.</div>`;
+      else if(!u||at>=queue.length)body=`<div style="margin:10px 0"><b>That's this sitting.</b> ${left?`${left.toLocaleString()} still to look at.`:"Nothing is left to look at."}</div><div class="hrow2" style="gap:6px;flex-wrap:wrap">${left?`<button class="btn pri" data-wt="more">Another ${Math.min(WAIT_SIT,left)}</button>`:""}<button class="btn" data-wt="x">Close</button></div>`;
+      else{const x=u.en||u.b,author=u.en?entAuthorOf(u.b,u.en):u.b.author,blurb=stripHtml(String(x.summary||"")).replace(/\s+/g," ").trim();
+        body=`<div class="hint" style="margin:0 0 8px">${at+1} of ${queue.length} this sitting · ${left.toLocaleString()} still to look at</div>
+          <div style="display:flex;gap:12px;align-items:flex-start;min-width:0">${head(u)}<div style="min-width:0;flex:1"><div class="rtitle serif" style="overflow-wrap:anywhere">${esc(x.title||"Untitled")}${u.en?` <span class="bst instory">in ${esc(u.b.title||"Untitled")}</span>`:""}</div>
+            ${author?`<div class="rauth">${esc(authorParts(author)[0]||author)}</div>`:""}${parseInt(x.pages)?`<div class="hint" style="margin:2px 0 0">${parseInt(x.pages).toLocaleString()} pages</div>`:""}</div></div>
+          ${blurb?`<div class="hint" style="margin:8px 0 0;overflow-wrap:anywhere">${esc(blurb.length>420?blurb.slice(0,420)+"…":blurb)}</div>`:""}
+          <div class="hrow2" style="gap:6px;flex-wrap:wrap;margin-top:12px"><button class="btn pri" data-wt="soon"${busy?" disabled":""}>⏫ Soon</button><button class="btn" data-wt="keep"${busy?" disabled":""}>Still want</button><button class="btn" data-wt="go"${busy?" disabled":""}>Let it go</button><button class="btn smallbtn" data-wt="skip"${busy?" disabled":""} style="margin-left:auto">Skip</button></div>`;}
+    }else{const l=tab==="soon"?soon:gone;
+      body=l.length?l.map(u=>{const x=waitX(u);return `<div class="snap" style="margin-top:4px;gap:8px"><span style="flex:1 1 150px;min-width:0;overflow-wrap:anywhere;cursor:pointer" data-open="${esc(u.book.id)}"${u.en?` data-openen="${esc(u.en.id)}"`:""}><b class="serif">${esc(x.title||"Untitled")}</b>${u.en?` <span class="meta">in ${esc(u.book.title||"Untitled")}</span>`:""}</span><button class="btn smallbtn" data-wtundo="${esc(u.book.id)}|${esc(u.en?u.en.id:"")}">↶ Take the mark off</button></div>`;}).join("")
+        :`<div class="hint" style="margin:10px 0">${tab==="soon"?"Nothing marked Soon yet.":"Nothing let go yet."}</div>`;}
+    d.innerHTML=`<div class="hrow2" style="flex:none"><b class="serif" style="font-size:17px">⏳ The waiting list</b><button class="btn" data-wt="x" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+      <div class="pills" style="flex:none;margin:8px 0 4px"><button class="pill${tab==="sit"?" on":""}" data-wttab="sit">One at a time</button><button class="pill${tab==="soon"?" on":""}" data-wttab="soon">⏫ Soon · ${soon.length}</button><button class="pill${tab==="go"?" on":""}" data-wttab="go">Let go · ${gone.length}</button></div>
+      <div class="tagticklist">${body}</div>`;
+    try{hydrateCovers(d);}catch(e){}
+  };
+  d.onclick=async e=>{
+    const t=e.target.closest("[data-wt],[data-wttab],[data-wtundo]");if(!t)return;
+    if(t.dataset.wttab){tab=t.dataset.wttab;draw();return;}
+    if(t.dataset.wtundo){e.stopPropagation();const [id,en]=t.dataset.wtundo.split("|");await mark({id,en},"");draw();return;}
+    const a=t.dataset.wt;
+    if(a==="x"){d.__close();return;}
+    if(a==="more"){queue=deal();at=0;draw();return;}
+    if(busy)return;
+    if(a!=="skip"){busy=true;try{await mark(queue[at],a);}catch(er){}busy=false;}
+    at++;draw();};
+  draw();
+  document.body.appendChild(d);const close=dismissable(d);d.__close=close;
+}
+document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest("[data-waitopen]")){e.preventDefault();e.stopPropagation();waitOpen();}},true);
 /* ┌─ SHELVES THAT FILL THEMSELVES ───────────────────────────────────────────┐
    │ A Search kept under a name: what was typed, the filter, the genres and     │
    │ tags ticked and the stages (shelfSnap), in settings.savedShelves, one of   │
@@ -57346,7 +57459,10 @@ function shelfRowPaint(){
     +(l.length?`<button class="btn smallbtn" id="shelfEdit" title="Take shelves off" aria-label="Take shelves off">${S.shelfEdit?"Done":"✎"}</button>`:"");
   row.hidden=!row.innerHTML;
 }
-function shelfLibRowHtml(){const c=shelfChipsHtml("lib");return c?`<div class="pills" style="margin:0 0 8px"><span class="lbl">Your shelves:</span>${c}</div>`:"";}
+function shelfLibRowHtml(){
+  const c=shelfChipsHtml("lib"),w=waitUnits().length;   /* see THE WAITING LIST, SORTED THROUGH */
+  return c||w?`<div class="pills" style="margin:0 0 8px">${c?`<span class="lbl">Your shelves:</span>${c}`:""}${w?`<button class="btn smallbtn" data-waitopen title="One waiting book at a time: Soon, Still want or Let it go">⏳ Sort the waiting list · ${w.toLocaleString()}</button>`:""}</div>`:"";
+}
 function shelfOpen(id){
   const x=shelvesOf().find(y=>y.id===id);if(!x)return;
   S.q=x.q||"";S.filter=x.fl?JSON.parse(JSON.stringify(x.fl)):null;S.multi=(x.m||[]).slice();S.kmulti=(x.k||[]).slice();S.stages=(x.st||[]).slice();
@@ -61672,6 +61788,7 @@ function renderBookView(){
       const cw=cwSeriesHtml(b);return cw?`<div class="cap2" id="secSerBlurb">${esc(seriesShown(b))}, as a whole</div>${cw}`:"";})()}
     ${(()=>{/* the books of the series already read, recapped — see PREVIOUSLY ON… */
       const pv=prevOnHtml(b);return pv?`<div class="cap2" id="secPrevOn">Previously on ${esc(seriesShown(b))}</div>${pv}`:"";})()}
+      ${likeHtml(b)}
     ${(()=>{
       /* ---- the contents ----
          A collection of a dozen stories is a book with chapters, and its page
