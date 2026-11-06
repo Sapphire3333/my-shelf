@@ -797,6 +797,13 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .quietstrip span{min-width:0;flex:1 1 200px}
   /* the room — see THE READER'S ROOM */
   ::highlight(rdsay){background-color:rgba(245,158,11,.32)}
+  /* see FIND IN THE BOOK */
+  ::highlight(rdfind){background-color:rgba(250,204,21,.6);color:#1c1917}
+  .rdfind{display:flex;gap:6px;padding:8px 4px 0;zoom:min(var(--uiz,1),1.6)}
+  .rdfind .field{flex:1 1 auto;min-width:0}
+  .rdtocrow.rdfindrow{display:block;text-align:left}
+  .rdfindrow>span{display:block;overflow-wrap:anywhere}
+  .rdfindrow b{background:rgba(250,204,21,.45);color:inherit;border-radius:2px}
   .rdlamp{position:absolute;inset:0;z-index:9;pointer-events:none;mix-blend-mode:multiply}
   .rdlamp[hidden]{display:none}
   .rdl{display:flex;flex-direction:column;gap:8px;padding:2px 6px 12px;font-size:14px}
@@ -14039,6 +14046,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.5",lines:["<b>🔎 Find in the book.</b> In the reader, ☰ has a new <b>🔎 Find</b> tab, and Ctrl+F opens it on a computer. Type a word, a name or a few words and every place is listed with its chapter and page. Press one to go there: ↩ brings you back, and your bookmark stays where it was. An accent doesn't matter, and PDFs are searched too.","<b>⏱ Time left, at your pace.</b> After a few minutes in a file, the reader's foot says about how long is left in the chapter and in the book, from how fast you've been reading it on this device.","<b>▸ The next one opens.</b> At the end of a file, a button offers the next book of the series, or the next story in the collection, when it has a file. One press finishes this one and opens the next."]},
   {v:"2026-11-06.4",go:["el:settings:#secNudge"],lines:["<b>🔔 An evening nudge.</b> In Settings under How it works: choose a time, and your phone gets a notification naming the book you read last and your page, with 📖 Read and ✎ Log my page on it. Stories and fics too. It stays quiet on a day you've read and during 🤫 Quiet days, and after 7 evenings with no reading it stops asking until you read something. It needs one setup in Supabase, shown step by step on the card, and then <b>Send me one now</b> tries it."]},
   {v:"2026-11-06.3",go:["el:settings:#secShare"],lines:["<b>🔗 A page of your shelf to share.</b> In Settings under How it works: pick one list and press Share, and a friend can open it on any device with no account. Only covers, titles, authors and your marks go, and fics stay out unless you tick them in. It's a copy, so it stays as it was until you press ↻ Update, and ✕ Take down ends it. It needs one step from you in Supabase the first time, with the steps on screen."]},
   {v:"2026-11-06.2",go:["el:insights:#secCast"],lines:["<b>🎭 Your cast.</b> On Insights under You as a reader: a gallery of the people in what you've finished, with a star for the ones you love. Press ✨ once and Claude names who's in each finished book and story from what it knows of the title, with the price on the button first. You can stop whenever you like, and it carries on where it stopped. Fics have their own tab, free, from what AO3 lists. Press someone to talk to them, correct them or take them off. You can now ask characters 8 questions a day, and stories can talk too."]},
@@ -33488,7 +33496,8 @@ function rdLeftSay(s,f){
 function rdBarsPaint(s,f){
   const l=q("#rdLineI",s.el);if(l)l.style.width=(f*100).toFixed(1)+"%";
   const d=q("#rdDrag",s.el);if(d&&!s.dragging)d.value=Math.round(f*1000);
-  const n=q("#rdLeft",s.el);if(n)n.textContent=rdLeftSay(s,f);
+  const n=q("#rdLeft",s.el);if(n)n.textContent=rdLeftLine(s,f);
+  rdNextPaint(s,f);
   const b=q("#rdJumpBack",s.el);if(b){b.hidden=!s.backTo;if(s.backTo)b.textContent="↩ Back to "+s.backTo.say;}
 }
 function rdJumpTo(s,f){
@@ -33647,6 +33656,187 @@ function rdSelNow(){
   const z=ends.length?Math.min(...ends)+1:all.length;
   const ctx=all.slice(a,z).replace(/\s+/g," ").trim().slice(0,300);
   return {text:text.slice(0,2000),frac:Math.max(0,Math.min(1,frac)),ctx,...hlAround(t,rg)};
+}
+/* ┌─ FIND IN THE BOOK ───────────────────────────────────────────────────────┐
+   │ 🔎 Find is a tab of the side panel (Ctrl+F on a computer). A text file is  │
+   │ searched block by block (rdBlocks), a PDF page by page through its text   │
+   │ layer, read once and kept on s.pdf.findT. rdFoldMap is what makes "maja"   │
+   │ find "māja" and a phrase find itself across a line break in the file: it   │
+   │ lowers the case, takes the accent off a letter and makes any run of white │
+   │ space one space, keeping for every character where it stood, so a hit can │
+   │ be given back as a range in the real text. A press goes there through      │
+   │ goFrom, as a jump: ↩ brings you back and the bookmark stays where it was.  │
+   │ The words found are painted with ::highlight(rdfind) until the next       │
+   │ search. A PDF lands on the page; a comic has no tab, having no words.      │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const RD_FIND_MAX=300;
+function rdFoldMap(t){
+  const out=[],map=[];let sp=false;
+  for(let i=0;i<t.length;i++){let c=t[i];
+    if(c<=" "||c==="\u00a0"){if(sp)continue;sp=true;c=" ";}
+    else{sp=false;c=c<"\u0080"?c.toLowerCase():((c.normalize("NFD")[0]||c).toLowerCase()[0]||c);}
+    out.push(c);map.push(i);}
+  return {f:out.join(""),map};
+}
+const rdFindNeed=qy=>rdFoldMap(String(qy||"").trim()).f;
+function rdFindCut(t,m,at,len){
+  const a=m.map[at],z=m.map[at+len-1]+1,from=Math.max(0,a-34),to=Math.min(t.length,z+46);
+  return {a,z,pre:(from?"…":"")+t.slice(from,a),hit:t.slice(a,z),post:t.slice(z,to)+(to<t.length?"…":"")};
+}
+function rdFindText(s,qy){
+  const need=rdFindNeed(qy),B=rdBlocks(s),hits=[],heads=new Set(rdHeads());
+  if(!s.findT)s.findT=new Map();
+  let chap="";
+  for(let i=0;i<B.list.length&&hits.length<=RD_FIND_MAX;i++){
+    const el=B.list[i].el;let e=s.findT.get(el);
+    if(!e){const bt=rdBlockText(B.list[i]);e={bt,m:rdFoldMap(bt.t)};s.findT.set(el,e);}
+    if(heads.has(el))chap=e.bt.t.trim().slice(0,28);
+    let at=-1;
+    while((at=e.m.f.indexOf(need,at+1))>=0&&hits.length<=RD_FIND_MAX){
+      const f=B.total?Math.min(1,(B.list[i].at+B.list[i].len*(at/Math.max(1,e.m.f.length)))/B.total):0;
+      hits.push(Object.assign(rdFindCut(e.bt.t,e.m,at,need.length),{i,say:(chap?chap+" · ":"")+rdWhereAt(s,f)}));}
+  }
+  const more=hits.length>RD_FIND_MAX;if(more)hits.length=RD_FIND_MAX;
+  return {hits,more,blocks:B};
+}
+async function rdFindPdf(s,qy,onProg){
+  const P=s.pdf,need=rdFindNeed(qy),hits=[],run=s.findRun=(s.findRun||0)+1;
+  if(!P.findT)P.findT=[];
+  let words=0;
+  for(let i=0;i<P.n&&hits.length<=RD_FIND_MAX;i++){
+    if(P.findT[i]===undefined){
+      try{const tc=await (await P.doc.getPage(i+1)).getTextContent(),t=tc.items.map(x=>x.str).join(" ");P.findT[i]={t,m:rdFoldMap(t)};}
+      catch(e){P.findT[i]={t:"",m:{f:"",map:[]}};}
+      if(rdState!==s||s.findRun!==run)return null;
+      if(onProg&&i%10===0)onProg(i,P.n);}
+    const e=P.findT[i];words+=e.m.f.length;
+    let chap="";(P.outline||[]).forEach(o=>{if(o.d===0&&o.p<=i)chap=o.t.slice(0,28);});
+    let at=-1;
+    while((at=e.m.f.indexOf(need,at+1))>=0&&hits.length<=RD_FIND_MAX)
+      hits.push(Object.assign(rdFindCut(e.t,e.m,at,need.length),{pg:i,say:(chap?chap+" · ":"")+"p. "+pdfLabel(P,i)}));
+  }
+  const more=hits.length>RD_FIND_MAX;if(more)hits.length=RD_FIND_MAX;
+  return {hits,more,blank:!words&&!more};
+}
+function rdFindClear(){try{if(window.CSS&&CSS.highlights)CSS.highlights.delete("rdfind");}catch(e){}}
+function rdFindGo(s,h){
+  const v=rdView();if(!v)return;
+  if(s.pdf){pdfGoPage(s,h.pg);return;}
+  const b=rdBlocks(s).list[h.i],e=b&&s.findT&&s.findT.get(b.el),range=e?rdTextRange(e.bt,h.a,h.z):null;
+  const r=range?range.getBoundingClientRect():b?b.el.getBoundingClientRect():null;if(!r)return;
+  const box=v.getBoundingClientRect();
+  if(s.mode==="pages")rdGo(Math.floor((r.left-box.left+v.scrollLeft)/s.W));
+  else{v.scrollTop=Math.max(0,r.top-box.top+v.scrollTop-Math.round(v.clientHeight*.3));rdShow();}
+  rdFindClear();
+  try{if(range&&window.Highlight&&CSS.highlights)CSS.highlights.set("rdfind",new Highlight(range));}catch(er){}
+}
+function rdFindHtml(s){
+  return `<div class="rdfind"><input class="field" id="rdFindQ" type="search" placeholder="A word, a name, a few words" value="${esc(s.findQ||"")}" autocomplete="off" enterkeyhint="search" aria-label="Find in this book"><button class="btn smallbtn pri" id="rdFindBtn">Find</button></div>
+    <div class="hint" id="rdFindSay" style="margin:6px"></div><div id="rdFindList"></div>`;
+}
+function rdFindWire(s,box,goFrom){
+  const inp=q("#rdFindQ",box),say=q("#rdFindSay",box),list=q("#rdFindList",box);
+  const show=res=>{const n=res.hits.length;
+    say.textContent=res.blank?"This file is pictures of pages, so there are no words to search."
+      :n?`${n.toLocaleString()} place${n===1?"":"s"}${res.more?", the first "+RD_FIND_MAX+" of more":""}. Your bookmark stays where it is.`:`Nothing found for “${s.findQ}”.`;
+    list.innerHTML=res.hits.map((h,k)=>`<button class="rdtocrow rdtocch rdfindrow" data-rdfhit="${k}"><span>${esc(h.pre)}<b>${esc(h.hit)}</b>${esc(h.post)}</span><span class="hint" style="margin:2px 0 0">${esc(h.say)}</span></button>`).join("");
+    qa("[data-rdfhit]",list).forEach(bt=>bt.onclick=()=>{const h=res.hits[+bt.dataset.rdfhit];if(h)goFrom(()=>rdFindGo(s,h));});};
+  const run=async()=>{
+    const qy=inp.value.trim();s.findQ=qy;s.findRes=null;
+    if(rdFindNeed(qy).length<2){s.findRun=(s.findRun||0)+1;say.textContent=qy?"Two letters or more.":"";list.innerHTML="";return;}
+    let res;
+    if(s.pdf){say.textContent="Looking…";res=await rdFindPdf(s,qy,(i,n)=>{if(say.isConnected)say.textContent=`Looking… page ${i+1} of ${n.toLocaleString()}`;});if(!res)return;}
+    else res=rdFindText(s,qy);
+    s.findRes=res;if(say.isConnected)show(res);};
+  let t=0;
+  inp.oninput=()=>{clearTimeout(t);t=setTimeout(run,s.pdf?600:300);};
+  inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();clearTimeout(t);run();}};
+  q("#rdFindBtn",box).onclick=()=>{clearTimeout(t);run();};
+  if(s.findRes&&s.findQ&&(s.pdf||s.findRes.blocks===s.blocks))show(s.findRes);
+  else{if(s.findQ)run();try{inp.focus();}catch(e){}}
+}
+/* ┌─ TIME LEFT, AT YOUR PACE ────────────────────────────────────────────────┐
+   │ "3 pages left in this chapter, about 14 min · 5 h left in the book".       │
+   │ The pace is how much of THIS file went by per second of reading, kept as   │
+   │ a share of the whole so a new text size changes nothing. rdPaceTick adds   │
+   │ to it from the reader's clock: only while the clock itself counts, never   │
+   │ during a jump, and a step back or a leap (rdFar) adds neither time nor    │
+   │ distance. It lives on this device (localStorage shelfRdPace, by the        │
+   │ reader's key, the newest RD_PACE_KEEP files), since it describes reading   │
+   │ on this screen. Nothing is said before RD_PACE_MIN_S seconds of it.        │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const RD_PACE_KEY="shelfRdPace",RD_PACE_MIN_S=180,RD_PACE_KEEP=80;
+function rdPaceAll(){try{const o=JSON.parse(localStorage.getItem(RD_PACE_KEY)||"{}");return o&&typeof o==="object"?o:{};}catch(e){return {};}}
+function rdPaceOf(s){
+  if(!s.paceBase){const p=rdPaceAll()[s.rk]||{};s.paceBase={f:+p.f||0,s:+p.s||0};}
+  return {f:s.paceBase.f+(s.paceF||0),s:s.paceBase.s+(s.paceS||0)};
+}
+function rdPaceTick(s,dt){
+  const f=rdPosNow(),was=s.paceAt;s.paceAt=f;
+  if(was==null||s.jump||!(dt>0)||dt>60)return;
+  const d=f-was;if(d<0||rdFar(s,was,f))return;
+  s.paceS=(s.paceS||0)+dt;s.paceF=(s.paceF||0)+d;
+  if(s.paceS<30)return;
+  const now=rdPaceOf(s),all=rdPaceAll();
+  all[s.rk]={f:+now.f.toFixed(5),s:Math.round(now.s),at:Date.now()};
+  s.paceBase={f:now.f,s:now.s};s.paceS=0;s.paceF=0;
+  const ks=Object.keys(all);
+  if(ks.length>RD_PACE_KEEP)ks.sort((a,b)=>(all[a].at||0)-(all[b].at||0)).slice(0,ks.length-RD_PACE_KEEP).forEach(k=>delete all[k]);
+  try{localStorage.setItem(RD_PACE_KEY,JSON.stringify(all));}catch(e){}
+}
+const rdMinsRound=m=>minsSay(m>90?Math.round(m/10)*10:m);
+function rdLeftLine(s,f){
+  const left=rdLeftSay(s,f),p=rdPaceOf(s);
+  if(p.s<RD_PACE_MIN_S||p.f<0.002)return left;
+  const per=p.s/p.f;if(per<120||per>300*3600)return left;
+  const map=s.map||[],c=rdChapAt(s,f),next=map[(c?map.indexOf(c):-1)+1];
+  const ch=map.length?((next?next.f:1)-f)*per/60:0,bk=(1-f)*per/60;
+  return [left?left+(ch>=1?", about "+rdMinsRound(ch):""):"",bk>=1?rdMinsRound(bk)+" left in the book":""].filter(Boolean).join(" · ");
+}
+/* ┌─ THE NEXT ONE OPENS ─────────────────────────────────────────────────────┐
+   │ At the end of a file, #rdNext in the foot offers the next thing to read    │
+   │ that has a file: the next book of the series not finished (seriesMates),   │
+   │ or, in a collection, the next story with a file of its own. One press     │
+   │ files the sitting, marks this one finished if it was being read, and       │
+   │ opens the next. A tale of a split volume is never marked from here: its   │
+   │ volume's one file goes on to the next tale by itself, and what finishing   │
+   │ a tale means there is decided on the collection's page.                    │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function rdNextOf(s){
+  if(s.loose)return null;
+  const b=books.find(x=>x.id===s.id);if(!b)return null;
+  if(s.en){
+    const es=b.entries||[],me=es.find(e=>e.id===s.en);if(!me||!driveReady())return null;
+    const mine=entFileHolder(b,me);
+    for(let k=es.indexOf(me)+1;k<es.length;k++){const e=es[k],h=entFileHolder(b,e);
+      if(!h||h===mine||entStatusOf(b,e)==="finished"||entDnfOf(b,e))continue;
+      return {id:b.id,en:e.id,title:e.title||"Untitled"};}
+    return null;}
+  const mates=seriesMates(b),i=mates.indexOf(b);if(i<0)return null;
+  const nx=mates.slice(i+1).find(x=>statusOf(x)!=="finished"&&!x.dnf);
+  return nx&&!isColl(nx)&&bookReadable(nx)?{id:nx.id,en:"",title:nx.title||"Untitled"}:null;
+}
+function rdNextPaint(s,f){
+  const bt=q("#rdNext",s.el);if(!bt)return;
+  if(!(f>=0.995)||s.jump){if(!bt.hidden)bt.hidden=true;return;}
+  if(s.nextUp===undefined)s.nextUp=rdNextOf(s);
+  const n=s.nextUp;if(!n){bt.hidden=true;return;}
+  const b=books.find(x=>x.id===s.id),me=b&&s.en?(b.entries||[]).find(e=>e.id===s.en):null;
+  s.nextFin=!!b&&(s.en?!!(me&&!isSplitTale(b,me)&&entFileReading(b,me)):(statusOf(b)==="reading"&&!b.dnf&&!isColl(b)));
+  bt.textContent=(s.nextFin?"✓ Finish, then ":"Next: ")+String(n.title).slice(0,40)+" ▸";
+  bt.hidden=false;
+  /* the foot it stands in is put away by a page turned, and this is the last page */
+  if(s.el.classList.contains("rdbarsoff"))rdBars(s,true);
+}
+async function rdNextGo(s){
+  const n=s.nextUp;if(!n||rdState!==s)return;
+  const id=s.id,en=s.en,fin=s.nextFin;
+  rdClockTick();const saved=rdSave(true,true);rdHlClosed(s,saved);closeReader(true);
+  try{await saved;}catch(e){}
+  if(fin){
+    const mut=bk=>{if(en){const e=(bk.entries||[]).find(y=>y.id===en);if(!e)return false;markEntStatus(bk,e,"finished");}else markStatus(bk,"finished");return true;};
+    try{if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);}catch(e){}}
+  await openReader(n.id,n.en||"");
 }
 /* ┌─ WORDS YOU LOOKED UP ───────────────────────────────────────────────────┐
    │ In the reader, a selection of one to three words offers 📖 What does  │
@@ -33938,7 +34128,9 @@ function rdHlClosed(s,saved){
 const RD_IDLE_S=300;
 function rdClockTick(){
   const s=rdState;if(!s)return;const now=Date.now();
-  if(!document.hidden&&now-s.lastAct<RD_IDLE_S*1000)s.secs+=(now-s.lastTick)/1000;
+  const live=!document.hidden&&now-s.lastAct<RD_IDLE_S*1000;
+  if(live)s.secs+=(now-s.lastTick)/1000;
+  rdPaceTick(s,live?(now-s.lastTick)/1000:0);   /* see TIME LEFT, AT YOUR PACE */
   s.lastTick=now;
   const c=q("#rdClock",s.el);if(c){const m=Math.floor(s.secs/60),b=books.find(x=>x.id===s.id);
     /* a sprint running on this book shows here instead — see THE READING SPRINT */
@@ -33957,6 +34149,7 @@ function closeReader(quiet,fromBack){
   if(s.snd){s.snd=false;setTimeout(ambCheck,0);}
   clearInterval(s.timer);clearInterval(s.clock);document.removeEventListener("keydown",s.onKey,true);window.removeEventListener("resize",s.onResize);document.removeEventListener("visibilitychange",s.onHide);document.removeEventListener("selectionchange",s.onSel);
   if(s.pdf)try{s.pdf.doc.destroy();}catch(e){}
+  rdFindClear();
   s.el.remove();document.documentElement.classList.remove("rdopen");rdState=null;
 }
 /* ┌─ ONE FILE OPENING AT A TIME ────────────────────────────────────────────┐
@@ -34539,7 +34732,7 @@ async function openReader(id,enId,loose,goMark){
     <div class="rdbottom">
       <div class="rdask"><button class="btn smallbtn pri" id="rdKeep" hidden title="Mark the words you selected; you decide later whether they become a quote">🖍 Highlight</button><button class="btn smallbtn" id="rdCopy" hidden title="Copy the words you selected">📋 Copy</button><button class="btn smallbtn" id="rdTtsPrev" hidden aria-label="The sentence before">⏮</button><button class="btn smallbtn pri" id="rdTtsPlay" hidden></button><button class="btn smallbtn" id="rdTtsNext" hidden aria-label="The next sentence">⏭</button><button class="btn smallbtn" id="rdTtsStop" hidden aria-label="Stop reading aloud">■</button><span id="rdTtsSay" class="hint" style="margin:0" hidden></span><span id="rdHlBar" class="rdhlbar" hidden></span>${claudeReady()?`<button class="btn smallbtn" id="rdWord" hidden title="What the word means in this sentence — kept with the book">📖 What does it mean?</button>`:""}<span id="rdSaid" class="hint" style="margin:0"></span></div>
       <div class="rdfoot"><div class="rdscrub"><div class="rdticks" id="rdTicks"></div><div class="rdbub" id="rdBub" hidden></div><input type="range" id="rdDrag" min="0" max="1000" value="0" aria-label="Where you are in the book"></div>
-        <span id="rdPos"></span><span id="rdLeft" class="hint" style="margin:0"></span><button class="btn smallbtn" id="rdJumpBack" hidden></button><button class="btn smallbtn" id="rdListen" title="Read aloud, a sound for this book, the lamp">🎧 Listen and lamp</button>${driveF?`<button class="btn smallbtn" id="rdPin"></button>`:""}${isPdf&&pdfGot.comic?`<button class="btn smallbtn" id="rdRtl"></button>`:""}<span id="rdClock" class="hint" style="margin:0"></span><span class="hint rdmark" style="margin:0">${loose?"not on your shelf — your place in this file is kept":reading?"the bookmark follows you":"not Reading now — your place is kept, the bookmark isn't moved"}</span></div>
+        <span id="rdPos"></span><span id="rdLeft" class="hint" style="margin:0"></span><button class="btn smallbtn" id="rdJumpBack" hidden></button><button class="btn smallbtn pri" id="rdNext" hidden></button><button class="btn smallbtn" id="rdListen" title="Read aloud, a sound for this book, the lamp">🎧 Listen and lamp</button>${driveF?`<button class="btn smallbtn" id="rdPin"></button>`:""}${isPdf&&pdfGot.comic?`<button class="btn smallbtn" id="rdRtl"></button>`:""}<span id="rdClock" class="hint" style="margin:0"></span><span class="hint rdmark" style="margin:0">${loose?"not on your shelf — your place in this file is kept":reading?"the bookmark follows you":"not Reading now — your place is kept, the bookmark isn't moved"}</span></div>
       <div class="rdline"><i id="rdLineI"></i></div></div>
     <div class="rdscrim" id="rdScrim" hidden></div><div class="rdtocbox" id="rdTocBox" hidden></div><div class="rdlamp" id="rdLamp" hidden></div>`;
   document.body.appendChild(el);document.documentElement.classList.add("rdopen");
@@ -34611,6 +34804,7 @@ async function openReader(id,enId,loose,goMark){
     const at=m=>m.pg!=null&&s.pdf?(s.pdf.n>1?m.pg/(s.pdf.n-1):0):(+m.f||0);
     let body="";
     if(tab==="listen")body=rdListenHtml(s);
+    else if(tab==="find")body=rdFindHtml(s);
     else if(tab==="hl"){
       body=marks.slice().sort((x,y)=>at(x)-at(y)).map(m=>`<button class="rdtocrow rdtocch" data-rdmk="${esc(m.id)}"><span>${m.kept?"❝":"🖍"} ${esc(String(m.t||"").slice(0,90))}</span><span class="hint" style="margin:0;flex:none">${esc(rdWhereAt(s,at(m)))}</span></button>`).join("")
         ||`<div class="hint" style="margin:6px">Nothing highlighted in this one yet. Select some words to begin.</div>`;
@@ -34632,10 +34826,11 @@ async function openReader(id,enId,loose,goMark){
         ||`<div class="hint" style="margin:6px">No chapter heads in this file.</div>`)+join+rdCopyRow;
     }
     tocBox.innerHTML=`<div class="rdtochead"><b class="serif">${esc(title)}</b><button class="btn smallbtn" id="rdTocX" aria-label="Close">✕</button></div>
-      <div class="rdtoctabs"><button class="btn smallbtn${tab==="hl"||tab==="listen"?"":" pri"}" data-rdtab="toc">Contents</button><button class="btn smallbtn${tab==="hl"?" pri":""}" data-rdtab="hl">Highlights · ${marks.length}</button><button class="btn smallbtn${tab==="listen"?" pri":""}" data-rdtab="listen" aria-label="Listen and lamp">🎧</button></div>
+      <div class="rdtoctabs"><button class="btn smallbtn${tab==="hl"||tab==="listen"||tab==="find"?"":" pri"}" data-rdtab="toc">Contents</button><button class="btn smallbtn${tab==="hl"?" pri":""}" data-rdtab="hl">Highlights · ${marks.length}</button>${s.pdf&&s.pdf.comic?"":`<button class="btn smallbtn${tab==="find"?" pri":""}" data-rdtab="find">🔎 Find</button>`}<button class="btn smallbtn${tab==="listen"?" pri":""}" data-rdtab="listen" aria-label="Listen and lamp">🎧</button></div>
       <div class="rdtocbody">${body}</div>`;
     q("#rdTocX",tocBox).onclick=()=>panelShut();
     if(tab==="listen")rdListenWire(s,tocBox);
+    if(tab==="find")rdFindWire(s,tocBox,goFrom);
     qa("[data-rdtab]",tocBox).forEach(b=>b.onclick=()=>panelDraw(b.dataset.rdtab));
     {const cp=q("#rdSelCopy",tocBox);if(cp)cp.onclick=async()=>{const t=rdSelReport(s);panelShut();const n=q("#rdSaid",el);
       try{await navigator.clipboard.writeText(t);if(n)n.textContent="📋 Copied";}catch(er){prompt("Copy this:",t);}};}
@@ -34667,6 +34862,7 @@ async function openReader(id,enId,loose,goMark){
   if(!s.voicesWired&&rdSynth()&&rdSynth().addEventListener){s.voicesWired=true;rdSynth().addEventListener("voiceschanged",()=>{if(rdState===s&&!tocBox.hidden&&q("#rdlGo",tocBox))panelDraw("listen");});}
   rdLampPaint(s);rdWakeGo(s);rdSoundGo(s);
   scrim.onclick=()=>panelShut();
+  q("#rdNext",el).onclick=e=>{e.stopPropagation();rdNextGo(s);};
   /* the bar you drag: a PDF moves on letting go, since each page has to be drawn */
   {const dr=q("#rdDrag",el),bub=q("#rdBub",el);
    dr.oninput=()=>{act();clearTimeout(s.barT);const f=+dr.value/1000;
@@ -34724,6 +34920,7 @@ async function openReader(id,enId,loose,goMark){
     else rdBars(s,el.classList.contains("rdbarsoff"));});
   s.onKey=e=>{if(!rdState)return;act();
     if(e.key==="Escape"){e.preventDefault();e.stopPropagation();if(!tocBox.hidden)panelShut();else closeReader();return;}
+    if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&String(e.key).toLowerCase()==="f"&&!(s.pdf&&s.pdf.comic)){e.preventDefault();e.stopPropagation();if(tocBox.hidden)panelGo("find");else panelDraw("find");return;}
     if(s.mode!=="pages"||(e.target&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName)))return;
     /* the arrows follow the page; Page Down and space always mean onward */
     const rtl=s.pdf&&s.pdf.rtl;
