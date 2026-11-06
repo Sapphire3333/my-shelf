@@ -315,4 +315,6 @@ open it in a browser, done.
 
 ## Sounds
 
+The reader's typeface in `art/fonts/` is Literata, by The Literata Project Authors, under the SIL Open Font Licence in `art/fonts/OFL-Literata.txt`: the Latin, Latin Extended and Cyrillic subsets, upright and italic, as served by Google Fonts.
+
 The recordings in `art/sounds/` are by Joseph Sardin of [BigSoundBank](https://bigsoundbank.com), CC0: Summer Rain on Terrace (its first 70 seconds), Fireplace #2 and Forest.
