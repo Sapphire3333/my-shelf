@@ -72,7 +72,9 @@ self.addEventListener("install", e => {
 
 self.addEventListener("activate", e => {
   e.waitUntil((async () => {
-    const keep = [CACHE, SHARE, ART_CACHE, LIB_CACHE, NUDGE_CACHE];
+    /* "my-shelf-ocr" holds the words read off scanned PDFs: see A SCAN'S WORDS,
+       READ ON THE DEVICE in index.html. Minutes of work a new build must not undo. */
+    const keep = [CACHE, SHARE, ART_CACHE, LIB_CACHE, NUDGE_CACHE, "my-shelf-ocr"];
     const old = (await caches.keys()).filter(k => keep.indexOf(k) < 0);
     /* a library an older build's cache already holds moves across before that
        cache goes, so the build that brings LIB_CACHE has no gap of its own */

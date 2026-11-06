@@ -14102,6 +14102,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.12",lines:["<b>🔍 A scanned PDF can be read like any other.</b> A scan is pictures of pages, so nothing in it could be selected, highlighted, searched or given a 📓 notebook. Open one now and the app reads its words on your device, the pages near you first and then the rest while the reader is open. A page takes a few seconds on a computer; ☰ → Contents shows how far it is, with Pause. It costs nothing and uses no Claude. The words are kept on this device and in your own Supabase storage, so your other devices fetch them and read nothing again."]},
   {v:"2026-11-06.11",lines:["<b>🕸 The people, as a web.</b> In a book with a 📓 notebook, the tab has a new button that draws its people over the whole reader: a dot each, bigger the more of the book they're in, with lines for family, for friends and allies, and for those against each other. Press someone for their Who is this? card; Fewer and More change how many are shown. The notebook notes ties from now on, so a part read before today shows a thin line between people it noted together until you press ↻ Read it again."]},
   {v:"2026-11-06.10",lines:["<b>❝ Lines worth keeping.</b> In a book with a 📓 notebook, each part's notes now end with up to three lines from it that you might want as quotes. Press <b>❝ Keep</b> and it joins your quotes.","<b>At the end of the book</b>, the 📓 tab fills three things from the notes: its people join 🎭 Your cast by themselves, <b>🧠 Five questions for later</b> writes questions for Do you still remember?, and <b>📜 Previously on…</b> writes the recap the next book in the series will show. A book Claude has never heard of gets all three."]},
   {v:"2026-11-06.9",lines:["<b>👤 Who is this?</b> In a book with a 📓 notebook, select a name and press <b>👤 Who is this?</b>: who they are and where you last saw them, from the notes. It's instant and needs no connection.","<b>📜 The story so far.</b> At the top of the 📓 tab, and offered by itself when you open a book after a week away: a recap of what you've read, written from the notes.","<b>Ask the book.</b> Also at the top of 📓: type a question and the answer comes from what you've read, with the lines it rests on. Press a line to go there; your bookmark stays. With Read ahead on, all three may use the whole book."]},
@@ -34269,6 +34270,141 @@ function nbWire(s,box,goFrom){
       s.nbCmp=null;s.nbPause=false;again();}
   };
 }
+/* ┌─ A SCAN'S WORDS, READ ON THE DEVICE ─────────────────────────────────────┐
+   │ A scanned PDF is pictures of pages: nothing to select, highlight, find or  │
+   │ give a notebook. pdfDraw meeting a page with no words calls ocrWant, which │
+   │ starts reading: the text reader that photos already use (loadOcr,          │
+   │ Tesseract) is run on each page with no words of its own, drawn OCR_PX wide │
+   │ for it, the pages nearest the one on screen first (ocrNext) and then the   │
+   │ rest, by three workers on a wide screen with six cores or more and by one  │
+   │ otherwise. Measured: 5.2 s a page on one worker for a clean A4 page of 630 │
+   │ words. No Claude and no cost.                                              │
+   │ What it reads is kept as lines with their boxes, in points from the page's │
+   │ top left: P.ocr.pages[i] = [[text, x0, y0, x1, y1]]. ocrArm stands a proxy │
+   │ in front of the document, so getTextContent on a page with no words        │
+   │ answers with those lines in PDF.js's own shape (ocrTc). The text layer,    │
+   │ selecting, highlights, Find (rdFindPdf), the notebook (nbPdfText) and read │
+   │ aloud all ask that one question, so none of them knows the difference.     │
+   │ ocrRefresh draws a page again once its words are in.                       │
+   │ The text is kept in the Cache Storage "my-shelf-ocr" on the device (sw.js  │
+   │ keeps it across builds) and in the reader's own Supabase storage at        │
+   │ <uid>/ocr/<key>.json, the key a hash of which file it is, so another       │
+   │ device fetches it and reads nothing again. It is saved every               │
+   │ OCR_SAVE_EVERY pages here, sent every OCR_UP_EVERY, and both when reading  │
+   │ stops or the reader closes. ☰ → Contents says how far it is, with Pause.   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const OCR_STORE="my-shelf-ocr",OCR_PX=1300,OCR_SAVE_EVERY=10,OCR_UP_EVERY=50,OCR_FAILS=3;
+const ocrKey=s=>"f"+String(strHash(s.loose?String(s.loose.id||s.loose.name||""):nbSrc(s))).replace(/[^A-Za-z0-9]/g,"");
+const ocrPath=key=>SYNC.user.id+"/ocr/"+key+".json";
+const ocrData=P=>({v:1,n:P.n,lang:P.ocr.lang,pages:P.ocr.pages});
+function ocrTc(lines,H){
+  return {items:lines.map(l=>{const fh=Math.max(4,(l[4]-l[2])/1.15);
+      return {str:l[0],dir:"ltr",width:Math.max(1,l[3]-l[1]),height:fh,transform:[fh,0,0,fh,l[1],H-l[4]+0.2*fh],fontName:"ocr",hasEOL:true};}),
+    styles:{ocr:{fontFamily:"serif",ascent:0.8,descent:-0.2,vertical:false}}};
+}
+function ocrArm(s){
+  const P=s.pdf;if(!P||P.comic||P.ocrArmed)return;P.ocrArmed=true;
+  const real=P.doc;
+  const getPage=async n=>{const pg=await real.getPage(n);
+    return new Proxy(pg,{get(t,k){
+      if(k==="__real")return t;
+      if(k==="getTextContent")return async o=>{const tc=await t.getTextContent(o);
+        if(tc.items.some(x=>x.str&&x.str.trim()))return tc;
+        const got=P.ocr&&P.ocr.pages[n-1];
+        return got&&got.length?ocrTc(got,t.getViewport({scale:1}).height):tc;};
+      const v=t[k];return typeof v==="function"?v.bind(t):v;}});};
+  P.doc=new Proxy(real,{get(t,k){if(k==="getPage")return getPage;const v=t[k];return typeof v==="function"?v.bind(t):v;}});
+}
+async function ocrLocalGet(key){try{const c=await caches.open(OCR_STORE),r=await c.match("/ocr/"+key+".json");return r?await r.json():null;}catch(e){return null;}}
+async function ocrLocalPut(key,data){try{const c=await caches.open(OCR_STORE);await c.put("/ocr/"+key+".json",new Response(JSON.stringify(data),{headers:{"content-type":"application/json"}}));}catch(e){}}
+const ocrCloudOk=()=>!!(SYNC.on&&SYNC.supa&&SYNC.user&&navigator.onLine!==false);
+async function ocrCloudGet(key){
+  if(!ocrCloudOk())return null;
+  try{const {data,error}=await SYNC.supa.storage.from("shelf").download(ocrPath(key));if(error||!data)return null;return JSON.parse(await data.text());}catch(e){return null;}
+}
+async function ocrCloudPut(key,data){
+  if(!ocrCloudOk())return false;
+  try{const {error}=await SYNC.supa.storage.from("shelf").upload(ocrPath(key),new Blob([JSON.stringify(data)],{type:"application/json"}),{contentType:"application/json",upsert:true});return !error;}catch(e){return false;}
+}
+function ocrRefresh(s,list){
+  const P=s.pdf;if(!P||!list.length)return;
+  list.forEach(i=>{P.done.delete(i);if(P.findT)P.findT[i]=undefined;});
+  try{pdfPump(s);}catch(e){}
+}
+function ocrFlush(s){
+  const P=s.pdf,O=P&&P.ocr;if(!O||!O.ran||O.saved===O.ran)return;
+  O.saved=O.ran;const d=ocrData(P);ocrLocalPut(O.key,d);ocrCloudPut(O.key,d);
+}
+function ocrNext(s){
+  const P=s.pdf,O=P.ocr;let best=-1,bd=1e9;
+  for(let i=0;i<P.n;i++){if(O.pages[i]!==undefined||O.nat.has(i)||O.busy.has(i))continue;const d=Math.abs(i-s.page);if(d<bd){bd=d;best=i;}}
+  return best;
+}
+const ocrWorkers=()=>(window.innerWidth>=900&&(navigator.hardwareConcurrency||2)>=6)?3:1;
+async function ocrLoop(s){
+  const P=s.pdf,O=P.ocr;let w=null;
+  try{
+    while(rdState===s&&O.on){
+      const i=ocrNext(s);if(i<0)break;
+      O.busy.add(i);
+      try{
+        const pg=await P.doc.getPage(i+1),real=pg.__real||pg,tc=await real.getTextContent();
+        if(tc.items.some(x=>x.str&&x.str.trim())){O.nat.add(i);continue;}
+        if(!w){await loadOcr();w=await Tesseract.createWorker(O.lang,1,ocrWorkerOpts());}
+        const one=real.getViewport({scale:1}),sc=Math.min(3,OCR_PX/Math.max(1,one.width)),vp=real.getViewport({scale:sc});
+        const c=document.createElement("canvas");c.width=Math.max(1,Math.round(vp.width));c.height=Math.max(1,Math.round(vp.height));
+        await real.render({canvasContext:c.getContext("2d",{alpha:false}),viewport:vp}).promise;
+        if(rdState!==s||!O.on)break;
+        const r=await w.recognize(c),d=r.data||{};
+        let lines=(d.lines||[]).map(l=>[String(l.text||"").replace(/\s+/g," ").trim(),+(l.bbox.x0/sc).toFixed(1),+(l.bbox.y0/sc).toFixed(1),+(l.bbox.x1/sc).toFixed(1),+(l.bbox.y1/sc).toFixed(1)]).filter(l=>l[0]);
+        /* a reader that gives the words and not where they stand: the lines are spread down the page */
+        if(!lines.length&&String(d.text||"").trim()){const ts=String(d.text).split(/\n+/).map(x=>x.trim()).filter(Boolean),step=one.height/(ts.length+1);
+          lines=ts.map((t,k)=>[t,+(one.width*0.08).toFixed(1),+(step*(k+0.6)).toFixed(1),+(one.width*0.92).toFixed(1),+(step*(k+0.6)+Math.min(14,step*0.8)).toFixed(1)]);}
+        O.pages[i]=lines;O.ran++;O.fail=0;
+        ocrRefresh(s,[i]);
+        if(O.ran%OCR_SAVE_EVERY===0)ocrLocalPut(O.key,ocrData(P));
+        if(O.ran%OCR_UP_EVERY===0)ocrCloudPut(O.key,ocrData(P));
+      }catch(e){
+        O.err=String((e&&e.message)||e).slice(0,160);O.fail=(O.fail||0)+1;
+        /* a page that can't be read is left for another sitting; three in a row and it stops */
+        O.nat.add(i);if(O.fail>=OCR_FAILS)O.on=false;
+      }finally{O.busy.delete(i);ocrPaint(s);}
+    }
+  }finally{
+    if(w)try{await w.terminate();}catch(e){}
+    O.loops=Math.max(0,(O.loops||1)-1);
+    if(!O.loops)ocrFlush(s);
+    if(rdState===s)ocrPaint(s);
+  }
+}
+function ocrGo(s){const O=s.pdf.ocr;O.on=true;O.err="";O.fail=0;const n=ocrWorkers();O.loops=(O.loops||0)+n;for(let k=0;k<n;k++)ocrLoop(s);}
+async function ocrWant(s,i){
+  const P=s.pdf;if(!P||P.comic||P.ocr)return;
+  const b=s.loose?null:books.find(x=>x.id===s.id)||null;
+  const O=P.ocr={key:ocrKey(s),lang:ocrLangs(b),pages:{},nat:new Set(),busy:new Set(),on:false,ran:0,saved:0,err:"",loops:0};
+  const merge=d=>{if(d&&d.pages&&typeof d.pages==="object")Object.keys(d.pages).forEach(k=>{if(O.pages[k]===undefined&&Array.isArray(d.pages[k]))O.pages[k]=d.pages[k];});};
+  merge(await ocrLocalGet(O.key));
+  if(rdState!==s)return;
+  if(Object.keys(O.pages).length<P.n){const c=await ocrCloudGet(O.key);
+    if(c){const had=Object.keys(O.pages).length;merge(c);if(Object.keys(O.pages).length>had){O.fromCloud=true;ocrLocalPut(O.key,ocrData(P));}}}
+  if(rdState!==s)return;
+  ocrRefresh(s,Object.keys(O.pages).map(Number));
+  ocrGo(s);
+}
+function ocrSay(s){
+  const P=s.pdf,O=P&&P.ocr;if(!O)return "";
+  const have=Object.keys(O.pages).length,left=P.n-have-O.nat.size;
+  if(left<=0&&!O.busy.size)return have?`🔍 This scan's words are read: ${have.toLocaleString()} page${have===1?"":"s"}. Selecting, highlights, Find and 📓 work on them.`:"";
+  return `🔍 Reading this scan's words: ${have.toLocaleString()} of ${(have+Math.max(0,left)).toLocaleString()} pages${O.on?"":O.err?` · it stopped: ${O.err}`:" · paused"}.`;
+}
+function ocrRowHtml(s){
+  const t=ocrSay(s);if(!t)return "";
+  const P=s.pdf,O=P.ocr,left=P.n-Object.keys(O.pages).length-O.nat.size;
+  return `<div class="hint" style="margin:6px;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center"><span id="ocrSay" style="min-width:0;flex:1 1 180px">${esc(t)}</span>${left>0?`<button class="btn smallbtn" id="ocrTog">${O.on?"Pause":"Carry on"}</button>`:""}</div>`;
+}
+function ocrPaint(s){const n=q("#ocrSay",s.el);if(n)n.textContent=ocrSay(s);}
+function ocrToggle(s){const O=s.pdf&&s.pdf.ocr;if(!O)return;if(O.on){O.on=false;ocrFlush(s);}else{O.nat.forEach(i=>{});ocrGo(s);}}
+function ocrStop(s){const O=s.pdf&&s.pdf.ocr;if(!O)return;O.on=false;ocrFlush(s);}
 /* ┌─ THE CAST, AS A WEB ─────────────────────────────────────────────────────┐
    │ 🕸 in the 📓 tab opens #nbWebBox over the whole reader: the people of the  │
    │ notes the reader may be told from (nbKnown), a dot each, bigger the more   │
@@ -34890,6 +35026,7 @@ function closeReader(quiet,fromBack){
   if(s.tts)rdTtsEnd(s);rdWakeOff(s);
   if(s.snd){s.snd=false;setTimeout(ambCheck,0);}
   clearInterval(s.timer);clearInterval(s.clock);document.removeEventListener("keydown",s.onKey,true);window.removeEventListener("resize",s.onResize);try{document.fonts.removeEventListener("loadingdone",s.onResize);}catch(e){}document.removeEventListener("visibilitychange",s.onHide);document.removeEventListener("selectionchange",s.onSel);
+  ocrStop(s);
   if(s.pdf)try{s.pdf.doc.destroy();}catch(e){}
   rdFindClear();
   s.el.remove();document.documentElement.classList.remove("rdopen");rdState=null;
@@ -35130,6 +35267,7 @@ async function pdfPump(s){
   }finally{P.pumping=false;}
 }
 async function pdfDraw(s,i){
+  ocrArm(s);   /* see A SCAN'S WORDS, READ ON THE DEVICE */
   const P=s.pdf,gen=P.gen,pg=P.els[i],v=rdView();
   try{
     const page=await P.doc.getPage(i+1);if(rdState!==s)return;
@@ -35156,8 +35294,10 @@ async function pdfDraw(s,i){
     pg.replaceChildren(c,tl);
     P.done.set(i,gen);
     pdfPaintPage(s,i);
-    if(!P.comic&&i===s.page&&!tc.items.some(x=>x.str&&x.str.trim())&&!P.saidPic){P.saidPic=true;
-      const n=q("#rdSaid",s.el);if(n)n.textContent="This page is a picture of print, so its words can't be selected.";}
+    if(!P.comic&&!tc.items.some(x=>x.str&&x.str.trim())){
+      ocrWant(s,i);
+      if(i===s.page&&!P.saidPic){P.saidPic=true;
+        const n=q("#rdSaid",s.el);if(n)n.textContent="This page is a picture of print. Its words are being read: ☰ shows how far.";}}
   }catch(e){
     P.done.set(i,gen);
     if(rdState===s&&!pg.firstChild)pg.innerHTML=`<div class="hint" style="padding:20px">This page couldn't be drawn.</div>`;
@@ -35557,7 +35697,7 @@ async function openReader(id,enId,loose,goMark){
       body=marks.slice().sort((x,y)=>at(x)-at(y)).map(m=>`<button class="rdtocrow rdtocch" data-rdmk="${esc(m.id)}"><span>${m.kept?"❝":"🖍"} ${esc(String(m.t||"").slice(0,90))}</span><span class="hint" style="margin:0;flex:none">${esc(rdWhereAt(s,at(m)))}</span></button>`).join("")
         ||`<div class="hint" style="margin:6px">Nothing highlighted in this one yet. Select some words to begin.</div>`;
     }else if(s.pdf){const P=s.pdf;let onO=null;(P.outline||[]).forEach(o=>{if(o.p<=s.page)onO=o;});
-      body=`<div class="rdpgo">Page <input class="field" id="rdPgN" type="number" min="1" max="${P.n}" value="${s.page+1}" style="width:5.5em"> of ${P.n.toLocaleString()} <button class="btn smallbtn" id="rdPgGo">Go</button></div>`
+      body=ocrRowHtml(s)+`<div class="rdpgo">Page <input class="field" id="rdPgN" type="number" min="1" max="${P.n}" value="${s.page+1}" style="width:5.5em"> of ${P.n.toLocaleString()} <button class="btn smallbtn" id="rdPgGo">Go</button></div>`
         +((P.outline||[]).map((o,i)=>`<button class="rdtocrow rdtocch${o===onO?" on":""}" data-rdo="${i}" style="padding-left:${6+o.d*12}px"><span>${esc(o.t.slice(0,80))}</span><span class="hint" style="margin:0;flex:none">p. ${esc(pdfLabel(P,o.p))}</span></button>`).join("")
           ||`<div class="hint" style="margin:6px">This file has no contents of its own.</div>`)
         +(P.comic?"":rdCopyRow);
@@ -35584,6 +35724,7 @@ async function openReader(id,enId,loose,goMark){
     qa("[data-rdtab]",tocBox).forEach(b=>b.onclick=()=>panelDraw(b.dataset.rdtab));
     {const cp=q("#rdSelCopy",tocBox);if(cp)cp.onclick=async()=>{const t=rdSelReport(s);panelShut();const n=q("#rdSaid",el);
       try{await navigator.clipboard.writeText(t);if(n)n.textContent="📋 Copied";}catch(er){prompt("Copy this:",t);}};}
+    {const ob=q("#ocrTog",tocBox);if(ob)ob.onclick=()=>{ocrToggle(s);panelDraw("toc");};}
     {const pg=q("#rdPgGo",tocBox);if(pg){const go=()=>{const n=parseInt(q("#rdPgN",tocBox).value);if(n>=1)goFrom(()=>pdfGoPage(s,n-1));};
       pg.onclick=go;q("#rdPgN",tocBox).onkeydown=ev=>{if(ev.key==="Enter"){ev.preventDefault();go();}};}}
     qa("[data-rdo]",tocBox).forEach(bt=>bt.onclick=()=>{const o=s.pdf.outline[+bt.dataset.rdo];if(o)goFrom(()=>pdfGoPage(s,o.p));});
