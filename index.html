@@ -14039,6 +14039,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.3",go:["el:settings:#secShare"],lines:["<b>🔗 A page of your shelf to share.</b> In Settings under How it works: pick one list and press Share, and a friend can open it on any device with no account. Only covers, titles, authors and your marks go, and fics stay out unless you tick them in. It's a copy, so it stays as it was until you press ↻ Update, and ✕ Take down ends it. It needs one step from you in Supabase the first time, with the steps on screen."]},
   {v:"2026-11-06.2",go:["el:insights:#secCast"],lines:["<b>🎭 Your cast.</b> On Insights under You as a reader: a gallery of the people in what you've finished, with a star for the ones you love. Press ✨ once and Claude names who's in each finished book and story from what it knows of the title, with the price on the button first. You can stop whenever you like, and it carries on where it stopped. Fics have their own tab, free, from what AO3 lists. Press someone to talk to them, correct them or take them off. You can now ask characters 8 questions a day, and stories can talk too."]},
   {v:"2026-11-06.1",lines:["<b>🦉 The owl remembers.</b> At most once a week, on your way into Today, the owl brings back something you told the app when it matters: a year since you finished a book, the one before this in a series, or an author you wrote about or gave up on, while you're reading another of theirs. Claude writes the line from your own words, for under a cent. Without Claude it just quotes you. Press the owl for <b>📓 What the owl remembers</b>: everything it could bring up, with ✕ to strike one. Never and Quiet days stop it."]},
   {v:"2026-11-05.29",go:["el:insights:#secPlates"],lines:["<b>📜 A bookplate for every finish.</b> An ex libris card with the date, the season, how long it took and a line from you. It sits on the book's page under the owl's card, and the drawer on Insights under Your year already holds one for every finish with a date, re-reads and stories included. Your word for the owl fills the line in, and you can type over it. Press a plate in the drawer for its book. Put your name on them in Settings, under How it works."]},
@@ -31202,6 +31203,146 @@ function platesRefresh(){
   const s=q("#secPlates");if(!s)return;
   const html=booksOnly(()=>ruHold(platesHtml));if(html)s.outerHTML=html;
 }
+/* ┌─ A PAGE OF YOUR SHELF TO SHARE ──────────────────────────────────────────┐
+   │ The one thing in the app that leaves your account on purpose. shareSnapshot │
+   │ builds a new object field by field, title, author, mark, colour and a small │
+   │ cover, so a note or a date can't come along by accident. It goes up as one  │
+   │ file named by a long random key to the public bucket "shares" (schema.sql), │
+   │ and share.html reads the key after the # and draws it: a # never reaches a  │
+   │ server. It is a copy: ↻ Update replaces it, ✕ Take down deletes it, and      │
+   │ settings.shares lists what is out so either device can do both. Fics stay   │
+   │ out unless ticked. A cover not on this device gets a drawn one, and past    │
+   │ SHARE_COVERS books the rest are drawn too, to keep the file small.          │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const SHARE_COVERS=400,SHARE_MAX=2000;
+const SHARE_SQL=`insert into storage.buckets (id, name, public) values ('shares', 'shares', true)
+  on conflict (id) do update set public = true;
+drop policy if exists "shares insert" on storage.objects;
+drop policy if exists "shares select own" on storage.objects;
+drop policy if exists "shares update own" on storage.objects;
+drop policy if exists "shares delete own" on storage.objects;
+create policy "shares insert" on storage.objects for insert to authenticated with check (bucket_id = 'shares');
+create policy "shares select own" on storage.objects for select to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);
+create policy "shares update own" on storage.objects for update to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);
+create policy "shares delete own" on storage.objects for delete to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);`;
+function shareUnitsAll(ficIn){
+  const out=[];
+  for(const b of books){if(!b||b._story||(!ficIn&&isFic(b)))continue;
+    const ws=collWholes(b);
+    if(ws.length)ws.forEach(en=>{const v=volState(b,en);out.push({b,en,status:v.status,dnf:v.dnf,hold:v.hold});});
+    else if(!isColl(b))out.push({b,en:null,status:statusOf(b),dnf:!!b.dnf,hold:!!holdOf(b)});}
+  return out;
+}
+function sharePicks(){
+  const units=shareUnitsAll(true),tags=new Map(),series=new Set();
+  units.forEach(u=>{[...(u.b.keywords||[]),...((u.en&&u.en.keywords)||[])].forEach(k=>{const n=String(k||"").trim();if(n)tags.set(n,(tags.get(n)||0)+1);});
+    const sr=seriesShown(u.b);if(sr)series.add(sr);});
+  return [["Stage",[["st:want","Want to read"],["st:reading","Reading now"],["st:finished","Finished"]]],
+    ["Bookcases",bcCases().map(c=>["case:"+c.id,c.name])],
+    ["Collections",books.filter(b=>b&&isColl(b)&&collWholes(b).length).map(b=>["coll:"+b.id,b.title||"Untitled"]).sort((a,c)=>a[1].localeCompare(c[1]))],
+    ["Series",[...series].sort().map(n=>["ser:"+n,n])],
+    ["Tags",[...tags].sort((a,c)=>c[1]-a[1]).slice(0,300).map(([n])=>["tag:"+n,n])]].filter(g=>g[1].length);
+}
+function shareLabel(pick){for(const [,l] of sharePicks()){const h=l.find(x=>x[0]===pick);if(h)return h[1];}return "A page of my shelf";}
+function sharePicked(pick,ficIn){
+  const i=String(pick).indexOf(":"),k=String(pick).slice(0,i),v=String(pick).slice(i+1);
+  return shareUnitsAll(ficIn).filter(u=>{
+    if(k==="st")return u.status===v&&!u.dnf;
+    if(k==="coll")return u.b.id===v;
+    if(k==="ser")return seriesShown(u.b)===v;
+    if(k==="tag")return [...(u.b.keywords||[]),...((u.en&&u.en.keywords)||[])].some(x=>String(x).trim()===v);
+    if(k==="case")return !u.en&&!!shelfPlaceOf(u.b)&&u.b.place.c===v;
+    return false;}).slice(0,SHARE_MAX);
+}
+function shareThumb(src){return new Promise(res=>{const im=new Image();im.onload=()=>{try{
+    const w=200,h=Math.round(w*(im.naturalHeight/im.naturalWidth||1.5)),cv=document.createElement("canvas");cv.width=w;cv.height=Math.min(h,400);
+    cv.getContext("2d").drawImage(im,0,0,cv.width,cv.height);res(cv.toDataURL("image/jpeg",.7));}catch(e){res("");}};im.onerror=()=>res("");im.src=src;});}
+async function shareCoverOf(u){
+  try{let src=null;
+    const key=u.en?entCovKey(u.b,u.en):"";
+    if(key)src=await loadImgData(key);
+    if(!src&&!u.en){const r=await dbGet("covers",u.b.id);src=r&&r.data;}
+    return src?await shareThumb(src):"";}catch(e){return "";}
+}
+async function shareSnapshot(pick,ficIn,onProg){
+  const list=sharePicked(pick,ficIn),out=[];
+  for(let i=0;i<list.length;i++){const u=list[i],x=u.en||u.b,v=x.rating==null||x.rating===""?NaN:Number(x.rating),au=u.en?entAuthorOf(u.b,u.en):u.b.author;
+    const row={t:String((u.en&&u.en.title)||u.b.title||"Untitled").slice(0,200),a:String(authorParts(String(au||""))[0]||au||"").slice(0,120),g:atlasDot(u.en?{genres:entGenresOf(u.b,u.en)}:u.b)};
+    if(isFinite(v))row.m=v;
+    if(i<SHARE_COVERS){const c=await shareCoverOf(u);if(c)row.c=c;}
+    out.push(row);
+    if(onProg&&(i%10===0))onProg(i+1,list.length);}
+  return {v:1,title:shareLabel(pick),at:todayStr(),books:out};
+}
+const shareKey=()=>{const a=crypto.getRandomValues(new Uint8Array(18));return [...a].map(n=>"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"[n%62]).join("");};
+const shareLink=k=>new URL("share.html",location.href.split("#")[0].split("?")[0]).href+"#"+k;
+const shareBlob=d=>new Blob([JSON.stringify(d)],{type:"application/json"});
+async function shareCheck(){
+  const k="check"+shareKey(),st=SYNC.supa.storage.from("shares");
+  const {error}=await st.upload(k+".json",shareBlob({v:0}),{contentType:"application/json",cacheControl:"60"});if(error)throw error;
+  const rm=await st.remove([k+".json"]);if(rm.error)throw rm.error;
+}
+function shareOpen(){
+  const old=q("#sharePanel");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="sharePanel";d.className="ratepanel tagticks";d.setAttribute("role","dialog");d.setAttribute("aria-label","Share a page of your shelf");
+  let pick="st:want",ficIn=false,said="",busy=false,preview=null;
+  const can=()=>!!(SYNC.supa&&SYNC.user);
+  const draw=()=>{
+    const n=sharePicked(pick,ficIn).length,list=settings.shares||[],ready=settings.shareReady===true;
+    const groups=sharePicks().map(([g,l])=>`<optgroup label="${esc(g)}">${l.map(([v,t])=>`<option value="${esc(v)}"${v===pick?" selected":""}>${esc(t)}</option>`).join("")}</optgroup>`).join("");
+    d.innerHTML=`<div class="hrow2" style="flex:none"><b class="serif" style="font-size:17px">🔗 Share a page of your shelf</b><button class="btn" data-shx style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+      <div class="tagticklist">
+      <label style="display:block"><span class="lbl" style="display:block;margin:0 0 4px">What to share</span><select class="field" id="shPick" style="max-width:100%">${groups}</select></label>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0 0;cursor:pointer"><input type="checkbox" id="shFic"${ficIn?" checked":""} style="width:18px;height:18px;margin:0;flex:none"> Include fics</label>
+      <div class="hint" style="margin:8px 0 0">Each book shows its cover, title, author and your mark. Your notes, quotes, dates, loans and everything else stay here. Anyone with the link can see the page, and could pass it on. It's a copy, so it won't change until you press Update.</div>
+      ${!can()?`<div class="hint" style="margin:8px 0 0"><b>Sign in first.</b> The link needs your Supabase account.</div>`:!ready?`<div class="snap" style="display:block;margin:10px 0 0"><b>One step, once</b><div class="hint" style="margin:4px 0 6px">This makes the public bucket that holds shared pages. Your other files stay in the private one. In Supabase, open <b>SQL Editor</b>, press New query, paste this, press Run, then come back and press Check.</div>
+        <pre class="sgtext" style="max-height:120px;margin:0 0 6px">${esc(SHARE_SQL)}</pre><div class="hrow2" style="gap:6px;flex-wrap:wrap"><button class="btn smallbtn" data-shcopysql>📋 Copy it</button><button class="btn smallbtn pri" data-shcheck>Check it</button></div></div>`:""}
+      <div class="hrow2" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn pri" data-shgo${busy||!n||!ready||!can()?" disabled":""}>Share ${n.toLocaleString()} ${n===1?"book":"books"}</button><button class="btn" data-shsee${busy||!n?" disabled":""}>See what they'd see</button></div>
+      ${said?`<div class="hint" style="margin:8px 0 0;overflow-wrap:anywhere" id="shSay">${said}</div>`:`<div class="hint" style="margin:8px 0 0" id="shSay"></div>`}
+      ${preview?`<div class="fdtiles" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(110px,46%),1fr));gap:10px;margin-top:10px">${preview.books.slice(0,24).map(b=>`<div style="min-width:0"><div style="position:relative;aspect-ratio:2/3;border-radius:6px;overflow:hidden;background:${esc(b.g)}">${b.c?`<img src="${b.c}" alt="" style="display:block;width:100%;height:100%;object-fit:cover">`:`<div style="padding:8px;color:#fff;font:600 13px Georgia,serif;overflow-wrap:anywhere">${esc(b.t)}</div>`}</div><div class="serif" style="font-weight:600;font-size:13px;margin-top:4px;overflow-wrap:anywhere">${esc(b.t)}</div>${b.a?`<div class="meta" style="font-size:12px">${esc(b.a)}</div>`:""}${b.m!=null?`<span class="rate">★ ${esc(b.m)}</span>`:""}</div>`).join("")}</div>${preview.books.length>24?`<div class="hint" style="margin:6px 0 0">…and ${(preview.books.length-24).toLocaleString()} more.</div>`:""}`:""}
+      ${list.length?`<div class="lbl" style="display:block;margin:14px 0 2px">Your shared pages</div>${list.map(x=>`<div class="snap" style="margin-top:4px;gap:6px;flex-wrap:wrap"><span style="flex:1 1 150px;min-width:0;overflow-wrap:anywhere"><b>${esc(x.title)}</b><br><span class="meta">${x.n.toLocaleString()} ${x.n===1?"book":"books"} · ${esc(printDay(x.at))}</span></span><button class="btn smallbtn" data-shcopy="${esc(x.key)}">📋 Copy link</button><button class="btn smallbtn" data-shup="${esc(x.key)}"${busy?" disabled":""}>↻ Update</button><button class="btn smallbtn" data-shdown="${esc(x.key)}"${busy?" disabled":""}>✕ Take down</button></div>`).join("")}`:""}
+      </div>`;
+  };
+  const prog=(a,b)=>{const s=q("#shSay",d);if(s)s.textContent=`Making the page… ${a.toLocaleString()} of ${b.toLocaleString()}`;};
+  const up=async(key,snap,isNew)=>{const st=SYNC.supa.storage.from("shares"),opt={contentType:"application/json",cacheControl:"60",upsert:!isNew};
+    const r=await st.upload(key+".json",shareBlob(snap),opt);if(r.error)throw r.error;};
+  d.onchange=e=>{if(e.target.id==="shPick"){pick=e.target.value;preview=null;said="";draw();}else if(e.target.id==="shFic"){ficIn=e.target.checked;preview=null;said="";draw();}};
+  d.onclick=async e=>{const t=e.target.closest("[data-shx],[data-shcopysql],[data-shcheck],[data-shgo],[data-shsee],[data-shcopy],[data-shup],[data-shdown]");if(!t)return;const a=t.dataset;
+    if(a.shx!==undefined){d.__close();return;}
+    if(a.shcopysql!==undefined){try{await navigator.clipboard.writeText(SHARE_SQL);t.textContent="Copied";}catch(x){t.textContent="Select it above";}return;}
+    if(a.shcheck!==undefined){t.disabled=true;t.textContent="Checking…";
+      try{await shareCheck();settings.shareReady=true;saveSettings();said="It's ready. Nothing is shared until you press Share.";}catch(x){said="Not yet: "+esc((x&&x.message)||"it couldn't reach the bucket")+". Run the query, then check again.";}
+      draw();return;}
+    if(a.shsee!==undefined){busy=true;draw();try{preview=await shareSnapshot(pick,ficIn,prog);said="";}catch(x){said="That couldn't be made: "+esc((x&&x.message)||"")+".";}busy=false;draw();return;}
+    if(a.shgo!==undefined){const n=sharePicked(pick,ficIn).length;
+      if(!confirm(`Put ${n.toLocaleString()} ${n===1?"book":"books"} on a page anyone with the link can see? Only covers, titles, authors and your marks go.`))return;
+      busy=true;draw();
+      try{const snap=await shareSnapshot(pick,ficIn,prog),key=shareKey();await up(key,snap,true);
+        settings.shares=[{key,title:snap.title,at:snap.at,n:snap.books.length,pick,ficIn},...(settings.shares||[])];saveSettings();
+        let copied=false;try{await navigator.clipboard.writeText(shareLink(key));copied=true;}catch(x){}
+        said=`${copied?"Shared, and the link is copied":"Shared"}: <a href="${esc(shareLink(key))}" target="_blank" rel="noopener">${esc(shareLink(key))}</a>`;
+      }catch(x){said="That didn't go up: "+esc((x&&x.message)||"no answer")+". Nothing is shared.";}
+      busy=false;draw();return;}
+    if(a.shcopy!==undefined){try{await navigator.clipboard.writeText(shareLink(a.shcopy));t.textContent="Copied";}catch(x){said=esc(shareLink(a.shcopy));draw();}return;}
+    if(a.shup!==undefined){const x=(settings.shares||[]).find(z=>z.key===a.shup);if(!x)return;busy=true;draw();
+      try{const snap=await shareSnapshot(x.pick,!!x.ficIn,prog);await up(x.key,snap,false);x.at=snap.at;x.n=snap.books.length;saveSettings();said=`Updated. The same link now shows ${x.n.toLocaleString()} ${x.n===1?"book":"books"}, within a minute or so.`;}
+      catch(y){said="That didn't go up: "+esc((y&&y.message)||"no answer")+". The old page stays.";}
+      busy=false;draw();return;}
+    if(a.shdown!==undefined){const x=(settings.shares||[]).find(z=>z.key===a.shdown);if(!x||!confirm(`Take down “${x.title}”? The link stops working, within a minute or so.`))return;busy=true;draw();
+      try{const r=await SYNC.supa.storage.from("shares").remove([x.key+".json"]);if(r.error)throw r.error;
+        settings.shares=(settings.shares||[]).filter(z=>z.key!==x.key);saveSettings();said="Taken down.";}
+      catch(y){said="It's still up: "+esc((y&&y.message)||"no answer")+". Try again.";}
+      busy=false;draw();}
+  };
+  document.body.appendChild(d);d.__close=dismissable(d);draw();
+}
+function shareCardHtml(){
+  const n=(settings.shares||[]).length;
+  return `<div class="sec" data-stab="how" id="secShare"><div class="heading"><h2 class="serif">🔗 Share a page of your shelf</h2></div><div class="hcard">
+    <div class="hint" style="margin:0 0 8px">A read-only page of one list for a friend: covers, titles, authors and your marks. Nothing else goes, and they need no account.${n?` ${n} shared at the moment.`:""}</div>
+    <button class="btn" data-shareopen>🔗 Share or manage a page</button></div></div>`;
+}
+document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest("[data-shareopen]"))shareOpen();});
 function plateCardHtml(){
   return `<div class="sec" data-stab="how" id="secPlateName"><div class="heading"><h2 class="serif">📜 Your bookplates</h2></div><div class="hcard">
     <label style="display:block"><span class="lbl" style="display:block;margin:0 0 4px">The name after Ex libris</span><input class="field" id="plateNameIn" maxlength="40" autocomplete="off" value="${esc(settings.plateName||"")}" style="max-width:320px"></label>
@@ -50571,6 +50712,7 @@ function renderSettings(){
     ${quietCardHtml()}
     ${seasonCardHtml()}
     ${plateCardHtml()}
+    ${shareCardHtml()}
     <div class="sec" data-stab="how">
       <div class="heading"><h2 class="serif">When a day begins</h2></div>
       <div class="hcard">
@@ -67930,7 +68072,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
+const SHARED_PREFS=["shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the

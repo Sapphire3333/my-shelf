@@ -76,3 +76,17 @@ create policy "shelf update own" on storage.objects for update
   using (bucket_id = 'shelf' and (storage.foldername(name))[1] = auth.uid()::text);
 create policy "shelf delete own" on storage.objects for delete
   using (bucket_id = 'shelf' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- A page of the shelf to share (share.html): a public bucket, written only by a
+-- signed-in account and changed only by whoever wrote the file. Each file holds
+-- covers, titles, authors and marks, under a long random name.
+insert into storage.buckets (id, name, public) values ('shares', 'shares', true)
+  on conflict (id) do update set public = true;
+drop policy if exists "shares insert" on storage.objects;
+drop policy if exists "shares select own" on storage.objects;
+drop policy if exists "shares update own" on storage.objects;
+drop policy if exists "shares delete own" on storage.objects;
+create policy "shares insert" on storage.objects for insert to authenticated with check (bucket_id = 'shares');
+create policy "shares select own" on storage.objects for select to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);
+create policy "shares update own" on storage.objects for update to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);
+create policy "shares delete own" on storage.objects for delete to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);
