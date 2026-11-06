@@ -90,3 +90,31 @@ create policy "shares insert" on storage.objects for insert to authenticated wit
 create policy "shares select own" on storage.objects for select to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);
 create policy "shares update own" on storage.objects for update to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);
 create policy "shares delete own" on storage.objects for delete to authenticated using (bucket_id = 'shares' and owner_id = auth.uid()::text);
+
+-- The evening nudge (nudge-function.ts): what to say and when, the devices that
+-- said yes, and the function's own keys, which no policy lets anyone read. The
+-- schedule that calls the function holds this project's address, so it is shown
+-- filled in by Settings -> How it works -> An evening nudge, and is not here.
+create table if not exists public.nudge (
+  user_id uuid primary key default auth.uid() references auth.users (id) on delete cascade,
+  at_min int not null default 1260, tz text not null default 'UTC', day_line int not null default 0,
+  quiet_until bigint not null default 0, read_day text not null default '', said jsonb,
+  last_day text not null default '', last_at bigint not null default 0, last_title text not null default '',
+  unread int not null default 0, unread_from text not null default ''
+);
+create table if not exists public.nudge_devices (
+  endpoint text primary key,
+  user_id uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  p256dh text not null, auth text not null, label text not null default '', added bigint not null default 0,
+  last_at bigint not null default 0, last_code int not null default 0, last_text text not null default ''
+);
+create table if not exists public.nudge_state (
+  id int primary key default 1, public_key text, private_jwk jsonb, last_tick bigint not null default 0
+);
+alter table public.nudge enable row level security;
+alter table public.nudge_devices enable row level security;
+alter table public.nudge_state enable row level security;
+drop policy if exists "nudge own" on public.nudge;
+drop policy if exists "nudge devices own" on public.nudge_devices;
+create policy "nudge own" on public.nudge for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "nudge devices own" on public.nudge_devices for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

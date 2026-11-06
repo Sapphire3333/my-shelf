@@ -72,7 +72,7 @@ self.addEventListener("install", e => {
 
 self.addEventListener("activate", e => {
   e.waitUntil((async () => {
-    const keep = [CACHE, SHARE, ART_CACHE, LIB_CACHE];
+    const keep = [CACHE, SHARE, ART_CACHE, LIB_CACHE, NUDGE_CACHE];
     const old = (await caches.keys()).filter(k => keep.indexOf(k) < 0);
     /* a library an older build's cache already holds moves across before that
        cache goes, so the build that brings LIB_CACHE has no gap of its own */
@@ -92,6 +92,90 @@ self.addEventListener("activate", e => {
     } catch (_) {}
     await Promise.all(old.map(k => caches.delete(k)));
     await self.clients.claim();
+  })());
+});
+
+/* ---- THE EVENING NUDGE, ARRIVING ----
+   nudge-function.ts decides whether to send and index.html (nudgeSaid) wrote the
+   words; this only shows them. A browser refuses a push that shows nothing, so
+   there is no staying quiet here: whatever arrives is shown. The cover comes off
+   this device's own copy in IndexedDB, shrunk, and anything that goes wrong
+   with it leaves the app's icon, because a nudge with no cover is still a nudge.
+   The database is opened for a moment and shut, so it can't hold up an upgrade.
+   nudgeSeen is the readout behind Send me one now: it tells "the push service
+   took it" apart from "it reached this device" and "it could not be shown". */
+const NUDGE_CACHE = "my-shelf-nudge";
+const NUDGE_SEEN = "nudge-seen";
+function nudgeCoverOf(cov) {
+  return new Promise((res, rej) => {
+    if (!cov || !cov.s || !cov.k) return res("");
+    const r = indexedDB.open("myShelf");
+    r.onupgradeneeded = () => { try { r.transaction.abort(); } catch (_) {} };
+    r.onerror = () => rej(r.error);
+    r.onsuccess = () => {
+      const db = r.result;
+      try {
+        const g = db.transaction(cov.s, "readonly").objectStore(cov.s).get(cov.k);
+        g.onerror = () => { db.close(); rej(g.error); };
+        g.onsuccess = () => { db.close(); res((g.result && g.result.data) || ""); };
+      } catch (er) { db.close(); rej(er); }
+    };
+  }).then(async src => {
+    if (!src) return "";
+    const bm = await createImageBitmap(await (await fetch(src)).blob());
+    const w = 192, h = Math.max(1, Math.min(288, Math.round(w * bm.height / (bm.width || 1))));
+    const cv = new OffscreenCanvas(w, h);
+    cv.getContext("2d").drawImage(bm, 0, 0, w, h);
+    const bytes = new Uint8Array(await (await cv.convertToBlob({ type: "image/jpeg", quality: .75 })).arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return "data:image/jpeg;base64," + btoa(bin);
+  });
+}
+async function nudgeSeen(note) {
+  try {
+    const c = await caches.open(NUDGE_CACHE);
+    await c.put(NUDGE_SEEN, new Response(JSON.stringify(Object.assign({ at: Date.now() }, note)), { headers: { "content-type": "application/json" } }));
+  } catch (_) {}
+}
+async function nudgeShow(data) {
+  let said = {};
+  try { said = data ? data.json() : {}; } catch (_) {}
+  const title = String(said.title || "My Shelf");
+  const icon = await Promise.race([
+    nudgeCoverOf(said.cov).catch(() => ""),
+    new Promise(res => setTimeout(() => res(""), 2500)),
+  ]);
+  const go = said.go || "read";
+  const opts = { body: String(said.body || ""), tag: "nudge", icon: icon || new URL("icon-512.png", self.registration.scope).href, data: { go, on: said.on || "" } };
+  if (said.acts) opts.actions = [{ action: "read", title: "📖 Read" }, { action: "log", title: "✎ Log my page" }];
+  try {
+    await self.registration.showNotification(title, opts);
+    await nudgeSeen({ title, cover: !!icon });
+  } catch (er) {
+    /* the cover is the only part a browser might refuse */
+    opts.icon = new URL("icon-512.png", self.registration.scope).href;
+    await self.registration.showNotification(title, opts);
+    await nudgeSeen({ title, cover: false, err: String((er && er.message) || er).slice(0, 160) });
+  }
+}
+self.addEventListener("push", e => { e.waitUntil(nudgeShow(e.data)); });
+/* a tap goes where the icon's shortcuts go (iconGo in index.html): into the open
+   app if there is one, so a 5 MB page isn't loaded again, or a new one otherwise */
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  const d = e.notification.data || {};
+  const go = e.action === "read" || e.action === "log" ? e.action : (d.go || "read");
+  e.waitUntil((async () => {
+    const scope = self.registration.scope;
+    const open = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const w = open.find(c => c.url.indexOf(scope) === 0);
+    if (w) {
+      try { await w.focus(); } catch (_) {}
+      w.postMessage({ nudgeGo: go, on: d.on || "" });
+      return;
+    }
+    await self.clients.openWindow(new URL("./?go=" + go + (d.on ? "&on=" + encodeURIComponent(d.on) : ""), scope).href);
   })());
 });
 

@@ -302,6 +302,7 @@ open it in a browser, done.
 | `dev-check.html` | Developer tool, not part of the app — opens every screen at a row of widths and fails loudly if anything scrolls sideways. |
 | `CLAUDE.md` | Standing instructions for Claude sessions working on the repo — how to ask, and how a change made in a cloud session is pushed, merged and checked. Not part of the app. |
 | `goodreads-function.ts`, `hardcover-function.ts`, `claude-function.ts` | Three small Supabase edge functions, pasted in once: one reads a Goodreads shelf's feed, one asks Hardcover for a book, one asks Claude to read a photo. Each file says how to set it up. Optional. |
+| `nudge-function.ts` | The Supabase edge function behind the evening nudge: a schedule calls it every 15 minutes, and it decides whether to send the day's notification. Settings → How it works → 🔔 An evening nudge shows the setup step by step. Optional. |
 | `.github/` | The `checks` workflow: after every push to `main` it runs the smoke test and the layout sweep from `dev-check.html` in a browser and keeps the report. |
 | `.claude/` | Hooks and skills for Claude sessions working on the repo. Not part of the app. |
 | `.githooks/pre-commit` | Stamps `version.js`. Run `git config core.hooksPath .githooks` once per clone or it never fires. |
