@@ -14174,6 +14174,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.33",go:["tab:library"],lines:["<b>🧭 Finding your way.</b> A saved shelf now has ✕ Leave this shelf, and pressing its lit chip again leaves it too: you go back to where you opened it. 🔎 Is the next one out? and 📅 Coming out are always there, under the Library's tabs and on Today's Series tab, and say what they've done so far. The waiting list deals one book from any collection or series in a sitting, so two from one collection don't come in a row: the next waits for the next sitting."]},
   {v:"2026-11-06.32",lines:["<b>🔄 Turn the page on a phone.</b> On a phone, 🔄 at the foot of the reader shows four A's: press the one that stands the way you want the words, and the page goes full screen and turns, even with your phone's rotation locked. Leave full screen, or your phone's Back, puts it back. If your browser says no, the line under the A's says so in its own words. It isn't offered on a computer or an iPhone, where it can't work."]},
   {v:"2026-11-06.31",lines:["<b>🔖 Your own bookmarks.</b> Press 🔖 at the top of the reader to mark the page you're on, as many as you like, apart from the bookmark that follows you. ☰ has a 🔖 tab listing them: press one to go there, ✎ to name it, ✕ to remove it. They're kept with the book, so they stay if the file is forgotten, they reach your other devices, and they show on the book's page. They work again when the same file comes back."]},
   {v:"2026-11-06.30",lines:["<b>⏱ Minutes left from the first page, on any device.</b> The reader said nothing until you'd read a file for 3 minutes on that same device, so a computer could say nothing at page 88 while your phone said 45 minutes. It now starts from your usual pace, which follows you between devices, and moves to the book's own pace once it has one.","<b>🔥 The fire is about four times as loud.</b> Its crackles stopped it being raised any further, so they're now held down a little and the fire under them brought up. It's still a little below rain and forest on average, with the crackles standing out. It was measured, not listened to, so tell me how it sounds."]},
@@ -53388,7 +53389,7 @@ async function renderHub(part){
   const seriesHtml=(continueHtml||nextLineHtml||waitCollHtml||nextUpHtml)?`<div class="sec" id="secSeries">
     <div class="heading"><h2 class="serif">Series you're part-way through</h2>${serN>1?`<span class="n">(${serN})</span>`:""}</div>
     ${continueHtml}${nextLineHtml}${waitCollHtml}${nextUpHtml}
-    ${nxDatesBtn()}
+    <div class="hrow2" style="gap:6px;flex-wrap:wrap;margin-top:8px">${nxDatesBtn()}${nxLookBtn()}</div>
   </div>`:"";
   /* ---- TODAY, IN THREE TABS ----
      Reading (what you are reading, up next, loans, letters), Series (every
@@ -57830,7 +57831,9 @@ document.addEventListener("click",async e=>{
    │ ⏳ in the Library's row of shelves opens #waitPanel: WAIT_SIT waiting      │
    │ books and stories a sitting (waitUnits: Want to read, yours to pick up,    │
    │ not set down), one at a time with its cover and blurb, the ones untouched  │
-   │ longest first. Soon, Still want and Let it go write x.wait {v, d} on the   │
+   │ longest first. waitDeal takes only one from a collection or a series, its  │
+   │ earliest still waiting: the next comes up in the next sitting, once that   │
+   │ one is marked. Soon, Still want and Let it go write x.wait {v, d} on the   │
    │ book or the story and nothing else: no stage changes and nothing is        │
    │ deleted. The Soon and Let go tabs list what is in each, with ↶ to take the │
    │ mark off. A book marked is not dealt again until its mark is taken off.    │
@@ -57839,10 +57842,19 @@ const WAIT_SIT=20;
 const waitMarkOf=x=>(x&&x.wait&&x.wait.v)||"";
 const waitX=u=>u.en||u.book;
 function waitUnits(){return stageUnits().filter(u=>u.status==="want"&&!u.dnf&&!u.hold&&(u.en?!entUnownedOf(u.book,u.en):(!unownedOf(u.book)&&!isColl(u.book))));}
+function waitDeal(){
+  const kin=new Map(),num=u=>{const n=parseFloat(u.book.seriesNum);return isFinite(n)?n:Infinity;};
+  waitUnits().filter(u=>!waitMarkOf(waitX(u))).forEach(u=>{
+    const s=seriesShown(u.book),k=s?"s:"+softFold(s):"b:"+u.book.id,at=+u.book.modified||0,g=kin.get(k);
+    if(!g){kin.set(k,{u,at});return;}
+    if(at<g.at)g.at=at;
+    if(num(u)<num(g.u))g.u=u;});
+  return [...kin.values()].sort((a,c)=>a.at-c.at).slice(0,WAIT_SIT).map(g=>({id:g.u.book.id,en:g.u.en?g.u.en.id:""}));
+}
 function waitOpen(){
   const old=q("#waitPanel");if(old&&old.__close)old.__close();
   const d=document.createElement("div");d.id="waitPanel";d.className="ratepanel tagticks";d.setAttribute("role","dialog");d.setAttribute("aria-label","The waiting list, sorted through");
-  const deal=()=>waitUnits().filter(u=>!waitMarkOf(waitX(u))).sort((a,b)=>(+a.book.modified||0)-(+b.book.modified||0)).slice(0,WAIT_SIT).map(u=>({id:u.book.id,en:u.en?u.en.id:""}));
+  const deal=waitDeal;
   let tab="sit",queue=deal(),at=0,busy=false;
   const find=k=>{const b=books.find(x=>x.id===k.id);if(!b)return null;const en=k.en?(b.entries||[]).find(e=>e.id===k.en):null;return k.en&&!en?null:{b,en};};
   const mark=(k,v)=>shelfMut(k.id,bk=>{const x=k.en?(bk.entries||[]).find(e=>e.id===k.en):bk;if(!x)return false;if(v)x.wait={v,d:todayStr()};else delete x.wait;return true;});
@@ -57854,7 +57866,7 @@ function waitOpen(){
     if(tab==="sit"){
       const k=queue[at],u=k&&find(k);
       if(!queue.length)body=`<div class="hint" style="margin:10px 0">Every waiting book has been through your hands. The Soon and Let go tabs hold what you chose.</div>`;
-      else if(!u||at>=queue.length)body=`<div style="margin:10px 0"><b>That's this sitting.</b> ${left?`${left.toLocaleString()} still to look at.`:"Nothing is left to look at."}</div><div class="hrow2" style="gap:6px;flex-wrap:wrap">${left?`<button class="btn pri" data-wt="more">Another ${Math.min(WAIT_SIT,left)}</button>`:""}<button class="btn" data-wt="x">Close</button></div>`;
+      else if(!u||at>=queue.length)body=`<div style="margin:10px 0"><b>That's this sitting.</b> ${left?`${left.toLocaleString()} still to look at.`:"Nothing is left to look at."}</div><div class="hrow2" style="gap:6px;flex-wrap:wrap">${left?`<button class="btn pri" data-wt="more">Another ${deal().length.toLocaleString()}</button>`:""}<button class="btn" data-wt="x">Close</button></div>`;
       else{const x=u.en||u.b,author=u.en?entAuthorOf(u.b,u.en):u.b.author,blurb=stripHtml(String(x.summary||"")).replace(/\s+/g," ").trim();
         body=`<div class="hint" style="margin:0 0 8px">${at+1} of ${queue.length} this sitting · ${left.toLocaleString()} still to look at</div>
           <div style="display:flex;gap:12px;align-items:flex-start;min-width:0">${head(u)}<div style="min-width:0;flex:1"><div class="rtitle serif" style="overflow-wrap:anywhere">${esc(x.title||"Untitled")}${u.en?` <span class="bst instory">in ${esc(u.b.title||"Untitled")}</span>`:""}</div>
@@ -57893,23 +57905,27 @@ document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest("[da
    │ afresh, so a book joins or leaves a shelf by being changed. 📌 Save this   │
    │ as a shelf stands in #shelfRow on Search while a search is live and not    │
    │ already saved; the shelves are chips there and under the Library's tabs    │
-   │ (shelfLibRowHtml), and ✎ on Search shows a ✕ on each.                      │
+   │ (shelfLibRowHtml), and ✎ on Search shows a ✕ on each. A shelf is left by    │
+   │ #shelfLeave or by pressing its lit chip again (shelfLeave), which empties  │
+   │ the search and goes back to the screen it was opened from (S.shelfFrom).   │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const SHELF_MAX=24;
 const shelvesOf=()=>Array.isArray(settings.savedShelves)?settings.savedShelves.filter(x=>x&&x.id&&x.name):[];
 const shelfLive=()=>!!(S.q.trim()||S.filter||S.multi.length||S.kmulti.length||S.stages.length);
 const shelfSnap=()=>({q:S.q.trim(),fl:S.filter?JSON.parse(JSON.stringify(S.filter)):null,m:S.multi.slice(),k:S.kmulti.slice(),st:S.stages.slice()});
 const shelfSig=x=>JSON.stringify([x.q||"",x.fl||null,x.m||[],x.k||[],x.st||[]]);
+const shelfIsOn=x=>view==="search"&&shelfLive()&&shelfSig(x)===shelfSig(shelfSnap());
 function shelfChipsHtml(where){
   const l=shelvesOf();if(!l.length)return "";
   const now=view==="search"&&shelfLive()?shelfSig(shelfSnap()):"";
-  return l.map(x=>`<button class="pill${now&&shelfSig(x)===now?" on":""}" data-shelfgo="${esc(x.id)}" title="Everything that fits “${esc(x.name)}” right now">🗂 ${esc(x.name)}</button>${
+  return l.map(x=>`<button class="pill${now&&shelfSig(x)===now?" on":""}" data-shelfgo="${esc(x.id)}" title="${now&&shelfSig(x)===now?"Press to leave this shelf":`Everything that fits “${esc(x.name)}” right now`}">🗂 ${esc(x.name)}</button>${
     S.shelfEdit&&where==="search"?`<button class="lx" data-shelfdel="${esc(x.id)}" style="opacity:1" title="Take this shelf off. No book is touched" aria-label="Take off the shelf ${esc(x.name)}">✕</button>`:""}`).join("");
 }
 function shelfRowPaint(){
   const row=q("#shelfRow");if(!row)return;
   const l=shelvesOf(),live=shelfLive(),sig=live?shelfSig(shelfSnap()):"",saved=live&&l.some(x=>shelfSig(x)===sig);
-  row.innerHTML=(l.length?`<span class="lbl">Your shelves:</span>`:"")+shelfChipsHtml("search")
+  row.innerHTML=(saved?`<button class="btn smallbtn" id="shelfLeave" title="Back to where you were. The shelf stays saved">✕ Leave this shelf</button>`:"")
+    +(l.length?`<span class="lbl">Your shelves:</span>`:"")+shelfChipsHtml("search")
     +(live&&!saved?`<button class="btn smallbtn" id="shelfSave" title="Keep this search as a shelf that fills itself">📌 Save this as a shelf</button>`:"")
     +(l.length?`<button class="btn smallbtn" id="shelfEdit" title="Take shelves off" aria-label="Take shelves off">${S.shelfEdit?"Done":"✎"}</button>`:"");
   row.hidden=!row.innerHTML;
@@ -57917,19 +57933,29 @@ function shelfRowPaint(){
 function shelfLibRowHtml(){
   const c=shelfChipsHtml("lib"),w=waitUnits().length;   /* see THE WAITING LIST, SORTED THROUGH */
   const fr=Object.keys(freeLook.at).length?freeRows().length:-1;   /* see 🏛 FREE TO BORROW */
-  const dt=nxDatesBtn();   /* see THE DAYS THEY COME OUT */
+  const dt=nxDatesBtn()+nxLookBtn();   /* see THE DAYS THEY COME OUT */
   return c||w||fr>=0||dt?`<div class="pills" style="margin:0 0 8px">${c?`<span class="lbl">Your shelves:</span>${c}`:""}${w?`<button class="btn smallbtn" data-waitopen title="One waiting book at a time: Soon, Still want or Let it go">⏳ Sort the waiting list · ${w.toLocaleString()}</button>`:""}${fr>=0?`<button class="btn smallbtn" data-freeopen title="The books on your shelf that Open Library lets anyone borrow or read">🏛 Free to borrow · ${fr.toLocaleString()}</button>`:""}${dt}</div>`:"";
+}
+function shelfLeave(){
+  const from=S.shelfFrom||"";S.shelfFrom="";
+  S.q="";S.filter=null;S.multi=[];S.kmulti=[];S.stages=[];
+  if(from&&from!=="search"){goTab(from);return;}
+  const sq=q("#sq");if(sq)sq.value="";
+  renderSearchBody();window.scrollTo(0,0);
 }
 function shelfOpen(id){
   const x=shelvesOf().find(y=>y.id===id);if(!x)return;
+  /* one shelf to another keeps where the first was opened from */
+  S.shelfFrom=view!=="search"?view:shelvesOf().some(shelfIsOn)?S.shelfFrom:"";
   S.q=x.q||"";S.filter=x.fl?JSON.parse(JSON.stringify(x.fl)):null;S.multi=(x.m||[]).slice();S.kmulti=(x.k||[]).slice();S.stages=(x.st||[]).slice();
   keepMyPlace();view="search";render();
   const sq=q("#sq");if(sq)sq.value=S.q;window.scrollTo(0,0);
 }
 document.addEventListener("click",e=>{
-  const t=e.target.closest&&e.target.closest("[data-shelfgo],[data-shelfdel],#shelfSave,#shelfEdit");if(!t)return;
+  const t=e.target.closest&&e.target.closest("[data-shelfgo],[data-shelfdel],#shelfSave,#shelfEdit,#shelfLeave");if(!t)return;
   e.preventDefault();e.stopPropagation();
-  if(t.dataset.shelfgo){shelfOpen(t.dataset.shelfgo);return;}
+  if(t.id==="shelfLeave"){shelfLeave();return;}
+  if(t.dataset.shelfgo){const x=shelvesOf().find(y=>y.id===t.dataset.shelfgo);if(x&&shelfIsOn(x))shelfLeave();else shelfOpen(t.dataset.shelfgo);return;}
   if(t.dataset.shelfdel){settings.savedShelves=shelvesOf().filter(x=>x.id!==t.dataset.shelfdel);saveSettings();if(!shelvesOf().length)S.shelfEdit=false;shelfRowPaint();return;}
   if(t.id==="shelfEdit"){S.shelfEdit=!S.shelfEdit;shelfRowPaint();return;}
   if(!shelfLive())return;
@@ -72884,6 +72910,10 @@ async function nextOutAuto(list){
    │ Nothing joins the shelf without a press: nxAdd files a find as ⌛ Don't   │
    │ have it yet with the date in nextOut (by:"Claude", read by nextOutLine),  │
    │ a separate book in a series, a story inside a collection; ✕ is for good.  │
+   │ nxLookBtn stands under the Library's tabs and on Today's Series tab, its   │
+   │ words saying how far this month has got, and opens the same card in a      │
+   │ panel (nxOpen). nxDraw draws into the panel first when one is open, since  │
+   │ Shelf care holds a #nxBox of its own, and into the card again when it shuts. │
    └───────────────────────────────────────────────────────────────────────────┘ */
 const NX_N=10,NX_CAP=.25,NX_GUESS=.04,NX_WAIT=15000,NX_BUSY=15*60000,NX_KEEP=80,NX_MODEL="claude-sonnet-5-5";
 const nxS=()=>{let r=settings.nextLook;if(!r||typeof r!=="object")r=settings.nextLook={};
@@ -73045,14 +73075,34 @@ function nxTodayInner(){
   const n=r.found||0,say=n?`Claude looked for what's new in your series and found <b>${n}</b> ${n===1?"book":"books"}.`:`Claude looked for what's new in ${r.asked} of your series and authors. Nothing this month.`;
   return `<div class="snap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;padding:6px 10px"><span style="flex:1 1 140px;min-width:0">🔎 ${say}</span>${n?`<button class="btn smallbtn" data-nxsee>See them</button>`:""}<button class="kwwhy tdbtn" data-nxtold title="Put this away" aria-label="Put this away">✕</button></div>`;
 }
+/* what has been done so far, in words; `next` is nxQueue(), which reads the whole shelf */
+function nxStateSay(next){
+  const r=nxS(),now=r.ym===curYM();
+  if(nxBusy)return `Asking now… ${r.asked||0} so far this month.`;
+  if(now&&r.asked)return `This month: ${r.asked} looked at, ${r.found||0} found, ${r.spent>0?claudeUsd(r.spent):"nothing"}.`;
+  if(!next.length)return "Nobody to ask about yet. It needs a series you've read all of, or an author you've starred.";
+  if(r.off)return "It isn't looking by itself. Press Look now to ask.";
+  if(now&&r.done)return "It had nobody to ask about when it looked this month. Press Look now for the ones added since.";
+  return `Not looked yet this month. It starts by itself about ${Math.round(NX_WAIT/1000)} seconds after Today opens, or press Look now.`;
+}
+const nxLookBtn=()=>{
+  if(!claudeReady()||!books.length)return "";
+  const r=nxS(),now=r.ym===curYM(),say=nxBusy?"asking now":now&&r.asked?`${r.found||0} found`:r.off?"not by itself":"not yet";
+  return `<button class="btn smallbtn" data-nxopen title="Claude looks for what's new in your series and your starred authors. See what it has done so far">🔎 Is the next one out? · ${say}</button>`;};
+function nxOpen(){
+  const old=q("#nxPanel");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="nxPanel";d.className="ratepanel tagticks";d.setAttribute("role","dialog");d.setAttribute("aria-label","Is the next one out?");
+  d.innerHTML=`<div class="hrow2" style="flex:none"><b class="serif" style="font-size:17px">🔎 Is the next one out?</b><button class="btn" data-np style="margin-left:auto;padding:4px 10px">✕ Close</button></div><div class="tagticklist"></div>`;
+  d.onclick=e=>{if(e.target.closest("[data-np]"))d.__close();};
+  document.body.appendChild(d);d.__close=dismissable(d,()=>nxDraw());
+  nxDraw();
+}
+document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest("[data-nxopen]")){e.preventDefault();e.stopPropagation();nxOpen();}},true);
 function nxDraw(){
   const t=q("#nxToday");if(t)t.innerHTML=nxTodayInner();
-  const box=q("#nxBox");if(!box)return;
-  const r=nxS(),now=r.ym===curYM(),next=nxQueue(),stars=Object.keys(settings.authorStars||{}).sort((a,c)=>a.localeCompare(c));
-  const money=x=>x>0?claudeUsd(x):"nothing",fold=q("details",box),wasOpen=!!(fold&&fold.open);
-  const state=nxBusy?`Asking now… ${r.asked||0} so far this month.`
-    :now&&r.asked?`This month: ${r.asked} looked at, ${r.found||0} found, ${money(r.spent||0)}.`
-    :now&&r.done?"Nothing to ask about this month.":r.off?"It isn't looking by itself.":"Not looked yet this month.";
+  const box=q("#nxPanel .tagticklist")||q("#nxBox");if(!box)return;
+  const r=nxS(),next=nxQueue(),stars=Object.keys(settings.authorStars||{}).sort((a,c)=>a.localeCompare(c));
+  const fold=q("details",box),wasOpen=!!(fold&&fold.open),state=nxStateSay(next);
   box.innerHTML=`<div class="hint" style="margin:0 0 6px">Once a month, by itself, Claude searches the web for anything new in the series you've read all of and by the authors you've starred (⭐ on an author's panel). Up to ${NX_N} a month, and never more than ${Math.round(NX_CAP*100)}¢, on the money meter as 🔎. Nothing joins your shelf without a press.</div>
     <div class="hint" style="margin:0"><b>${state}</b>${r.err?` ${esc(r.err)}`:""}</div>
     ${nxLive().map(nxRowHtml).join("")}
@@ -73086,7 +73136,7 @@ async function nxAdd(k){
   const r2=nxS();r2.finds=r2.finds.filter(x=>x.k!==k);saveSettings();
   nxAfter();
 }
-const nxAfter=()=>{nxIdx=null;if(view==="book"&&cur&&!settings.bookEdit)renderBookView();else nxDraw();
+const nxAfter=()=>{nxIdx=null;if(view==="book"&&cur&&!settings.bookEdit)renderBookView();nxDraw();
   const dp=q("#nxDatesPanel");if(dp&&dp.__draw)dp.__draw();};
 /* ┌─ THE DAYS THEY COME OUT ─────────────────────────────────────────────────┐
    │ One page of every book with a CONFIRMED date, soonest first: a day, or a  │
@@ -73096,7 +73146,8 @@ const nxAfter=()=>{nxIdx=null;if(view==="book"&&cur&&!settings.bookEdit)renderBo
    │ one row a title. A title on the shelf already read or being read has      │
    │ nothing left to wait for and drops out; one waiting there opens at that   │
    │ book. nxDatesOpen is the page, from Today's Series tab, under the         │
-   │ Library's tabs and on the 🔎 card. Already out keeps twelve months.       │
+   │ Library's tabs and on the 🔎 card, there even with nothing dated, when it │
+   │ says what 🔎 has done so far. Already out keeps twelve months.            │
    │ And by book: nxBookLineHtml on its page, for this book's series, this     │
    │ collection, and a starred author's own finds; the series panel is folded, │
    │ so it keeps only what has no date, and nxEntDate is the date in Contents. │
@@ -73126,7 +73177,7 @@ function nxDatesSplit(){
   past.sort((a,c)=>at(c.date).localeCompare(at(a.date)));
   return {soon,past:past.filter(x=>daysApart(x.date.length===7?x.date+"-01":x.date,t)<=365)};
 }
-const nxDatesBtn=()=>{const n=nxDatesSplit().soon.length;return n?`<button class="btn smallbtn" data-nxdates title="Every book with a confirmed date, soonest first">📅 Coming out · ${n.toLocaleString()}</button>`:"";};
+const nxDatesBtn=()=>{if(!books.length)return "";const n=nxDatesSplit().soon.length;return `<button class="btn smallbtn" data-nxdates title="Every book with a confirmed date, soonest first">📅 Coming out · ${n?n.toLocaleString():"none yet"}</button>`;};
 const nxSoonWord=d=>{const t=todayStr();if(d.length!==10)return "some day that month";const n=daysApart(t,d);return n===0?"today":n===1?"tomorrow":n>0?`in ${n.toLocaleString()} days`:`${(-n).toLocaleString()} days ago`;};
 function nxDatesOpen(){
   const old=q("#nxDatesPanel");if(old&&old.__close)old.__close();
@@ -73141,12 +73192,13 @@ function nxDatesOpen(){
         ${x.find?`<div class="hrow2" style="margin-top:5px;gap:6px;flex-wrap:wrap"><button class="btn smallbtn" data-nxadd="${esc(x.find.k)}" title="Put it on your shelf marked ⌛ Don't have it yet, with this date">＋ ⌛ Don't have it yet</button><button class="btn smallbtn" data-nxx="${esc(x.find.k)}" title="Not this one, and don't offer it again">✕ Not this</button></div>`:""}</span></div>`;};
   const draw=()=>{
     const {soon,past}=nxDatesSplit(),l=tab==="soon"?soon:past,keep=q(".tagticklist",d)?q(".tagticklist",d).scrollTop:0;
+    const can=claudeReady(),und=can?nxLive().filter(f=>!nxDateOk(f.date)).length:0;
     let last="",body="";
     l.forEach(x=>{const m=x.date.slice(0,7);if(m!==last){last=m;body+=`<div class="cap2" style="margin:12px 0 2px">${esc(new Date(m+"-15T12:00").toLocaleDateString(undefined,{month:"long",year:"numeric"}))}</div>`;}body+=row(x);});
     d.innerHTML=`<div class="hrow2" style="flex:none"><b class="serif" style="font-size:17px">📅 Coming out</b><button class="btn" data-nd="x" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
       <div class="pills" style="flex:none;margin:8px 0 4px"><button class="pill${tab==="soon"?" on":""}" data-ndtab="soon">Coming · ${soon.length.toLocaleString()}</button><button class="pill${tab==="past"?" on":""}" data-ndtab="past">Already out · ${past.length.toLocaleString()}</button></div>
-      <div class="hint" style="margin:0;flex:none">Only books with a confirmed day or month. Anything without one stays on the 🔎 card in Shelf care.</div>
-      <div class="tagticklist">${body||`<div class="hint" style="margin:10px 0">${tab==="soon"?"Nothing with a confirmed date yet.":"Nothing out in the last twelve months."}</div>`}</div>`;
+      <div class="hint" style="margin:0;flex:none">Only books with a confirmed day or month.${und?` ${und.toLocaleString()} more found with no date yet.`:""}${can?` <button class="linkbtn" data-nxopen>🔎 Is the next one out?</button>`:""}</div>
+      <div class="tagticklist">${body||`<div class="hint" style="margin:10px 0">${tab==="soon"?"Nothing with a confirmed date yet.":"Nothing out in the last twelve months."}${can?`<br>🔎 ${nxStateSay(nxQueue())}`:""}</div>`}</div>`;
     const box=q(".tagticklist",d);if(box)box.scrollTop=keep;
   };
   d.onclick=e=>{
@@ -73188,7 +73240,7 @@ document.addEventListener("click",e=>{
     nxAfter();return;}
   if(t.dataset.nxunstar!==undefined){nxStar(t.dataset.nxunstar);nxDraw();return;}
   r.told=true;saveSettings();nxDraw();
-  if(t.dataset.nxsee!==undefined)goTo("el:care:#nxSec");
+  if(t.dataset.nxsee!==undefined)nxOpen();
 });
 /* ┌─ 🏛 FREE TO BORROW ──────────────────────────────────────────────────────┐
    │ Open Library's search.json says for each work whether anyone can have it: │
