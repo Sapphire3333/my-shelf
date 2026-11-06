@@ -14087,6 +14087,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.10",lines:["<b>❝ Lines worth keeping.</b> In a book with a 📓 notebook, each part's notes now end with up to three lines from it that you might want as quotes. Press <b>❝ Keep</b> and it joins your quotes.","<b>At the end of the book</b>, the 📓 tab fills three things from the notes: its people join 🎭 Your cast by themselves, <b>🧠 Five questions for later</b> writes questions for Do you still remember?, and <b>📜 Previously on…</b> writes the recap the next book in the series will show. A book Claude has never heard of gets all three."]},
   {v:"2026-11-06.9",lines:["<b>👤 Who is this?</b> In a book with a 📓 notebook, select a name and press <b>👤 Who is this?</b>: who they are and where you last saw them, from the notes. It's instant and needs no connection.","<b>📜 The story so far.</b> At the top of the 📓 tab, and offered by itself when you open a book after a week away: a recap of what you've read, written from the notes.","<b>Ask the book.</b> Also at the top of 📓: type a question and the answer comes from what you've read, with the lines it rests on. Press a line to go there; your bookmark stays. With Read ahead on, all three may use the whole book."]},
   {v:"2026-11-06.8",lines:["<b>📓 A notebook for the book you're in.</b> In the reader, ☰ has a new <b>📓</b> tab. Turn it on for a book and Claude reads the file itself, a part at a time as you finish each, and keeps short notes: what happens, who is in it, and where. It works on any file with words in it, and it never holds more than you've read. The tab shows the price before you start.","<b>Read ahead</b> has it read the whole book at once, spoilers and all, and <b>⚖ Compare</b> shows Haiku's notes and Opus's on the same parts so you can pick who reads. Each part's words go to Claude through your own key."]},
   {v:"2026-11-06.7",lines:["<b>💬 What does this mean?</b> In the reader, select a sentence or a paragraph and press <b>💬 What does this mean?</b> where 📖 stands for a single word. Claude says what the passage means there. From the answer, one press puts it <b>in plainer words</b>, and another puts it <b>in English</b> when it isn't already. Each press is well under 1¢, and going back to an answer you've had costs nothing. Nothing is kept: 🖍 and ❝ are still how you keep words."]},
@@ -33664,7 +33665,7 @@ async function rdSave(final,sitting){
   /* the notebook's parts read this sitting: see THE BOOK'S OWN NOTEBOOK */
   const nbAdd=s.nbAdd||{};s.nbAdd={};
   const mut=bk=>{const x=holder(bk);if(!x)return false;x.readPos={f,at:Date.now(),...(c!=null?{c}:{})};
-    nbMerge(x,nbAdd);
+    nbMerge(x,nbAdd);if(f>=0.995)nbCastFill(x);
     {const l=[...hlListOf(x).filter(m=>!hlDel.has(m.id)&&!hlAdd[m.id]),...Object.values(hlAdd)];if(l.length)x.marks=l;else delete x.marks;}
     const m=enId?markTarget(bk,x):bk,t=parseInt(m.pages)||0;
     /* a collection's place is its stories', never one number of its own */
@@ -34097,30 +34098,33 @@ const nbBehind=(p,pos)=>pos>=p.f1-0.0005;
 async function nbAsk(part,text,ctx,model){
   const schema={type:"object",properties:{summary:{type:"string"},
     people:{type:"array",items:{type:"object",properties:{name:{type:"string"},about:{type:"string"}},required:["name","about"],additionalProperties:false}},
-    places:{type:"array",items:{type:"string"}}},required:["summary","people","places"],additionalProperties:false};
+    places:{type:"array",items:{type:"string"}},lines:{type:"array",items:{type:"string"}}},required:["summary","people","places","lines"],additionalProperties:false};
   const ask=`You are keeping a reader's notebook for “${ctx.title||"a book"}”${ctx.author?` by ${ctx.author}`:""}. Below is one part of it, “${part.t}”, in full.\n`
     +`Write notes from this text alone: nothing you know of the book from elsewhere, and nothing about what comes later.\n`
     +`summary: what happens in this part, in two to four plain sentences of English.\n`
     +`people: everyone who appears or is spoken of and matters to the story. name: as the text names them, in the fullest form it uses. about: who they are and what they do in this part, in English, under twenty words.\n`
-    +`places: the places named, six at most.`
+    +`places: the places named, six at most.\n`
+    +`lines: up to three sentences from this part, copied exactly, word for word, that a reader might want to keep as a quote: striking, funny or wise. None if nothing stands out.`
+    +(ctx.likes&&ctx.likes.length?` Lines this reader has kept before, to go by:\n${ctx.likes.map(l=>"- "+l).join("\n")}`:"")
     +(ctx.names.length?`\nPeople already in the notebook: ${ctx.names.slice(0,80).join(", ")}. Use the same name for the same person.`:"")
     +`\n\n"""\n${text}\n"""`;
   const j=await claudeAsk({what:"📓 A book's notebook",kind:"ask",text:ask,schema,effort:"low",max_tokens:1200,model,waitMs:120000});
   const o=j.json||{};
   return {sum:String(o.summary||"").trim().slice(0,900),
     who:(Array.isArray(o.people)?o.people:[]).filter(p=>p&&p.name).slice(0,24).map(p=>({n:String(p.name).trim().slice(0,60),d:String(p.about||"").trim().slice(0,200)})),
-    where:(Array.isArray(o.places)?o.places:[]).map(x=>String(x).trim().slice(0,60)).filter(Boolean).slice(0,6)};
+    where:(Array.isArray(o.places)?o.places:[]).map(x=>String(x).trim().slice(0,60)).filter(Boolean).slice(0,6),
+    keep:(Array.isArray(o.lines)?o.lines:[]).map(x=>String(x).replace(/^[“"']+|[”"']+$/g,"").trim().slice(0,300)).filter(x=>x.length>=12).slice(0,3)};
 }
 async function nbRead(s,part,model){
   const full=String(await part.text()||"").trim();
   if(full.length<NB_MIN_CHARS)return {k:part.k,t:part.t,skip:true};
   const x=nbHolder(s),b=books.find(y=>y.id===s.id);
   const ctx={title:s.en&&x?(x.title||(b&&b.title)):(b&&b.title),author:s.en&&x?entAuthorOf(b,x):(b&&b.author),
-    names:[...new Set([...nbNotes(s).values()].flatMap(c=>(c.who||[]).map(p=>p.n)))]};
+    names:[...new Set([...nbNotes(s).values()].flatMap(c=>(c.who||[]).map(p=>p.n)))],likes:nbLikes(s)};
   const got=[];
   for(let i=0;i<full.length;i+=NB_CHUNK)got.push(await nbAsk(part,full.slice(i,i+NB_CHUNK),ctx,model));
   const who=[];got.forEach(g=>g.who.forEach(p=>{if(!who.some(y=>softFold(y.n)===softFold(p.n)))who.push(p);}));
-  return {k:part.k,t:part.t,sum:got.map(g=>g.sum).filter(Boolean).join(" "),who:who.slice(0,30),where:[...new Set(got.flatMap(g=>g.where))].slice(0,8),m:model===CLAUDE_OPUS?"o":"h",at:todayStr()};
+  return {k:part.k,t:part.t,sum:got.map(g=>g.sum).filter(Boolean).join(" "),who:who.slice(0,30),where:[...new Set(got.flatMap(g=>g.where))].slice(0,8),keep:got.flatMap(g=>g.keep||[]).filter(l=>{try{return !!s.pdf||rdFindText(s,l.slice(0,80)).hits.length>0;}catch(e){return false;}}).slice(0,3),m:model===CLAUDE_OPUS?"o":"h",at:todayStr()};
 }
 /* the parts due and not yet noted: behind the bookmark, or all of them when reading ahead */
 function nbWant(s){
@@ -34175,7 +34179,7 @@ function nbHtml(s){
     if(!c)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">${nbBehind(p,pos)||nb.ahead?"not read yet":"when you get there"}</span></div>`;
     if(c.skip)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">too short to need notes</span></div>`;
     if(c.gone)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">struck out <button class="btn smallbtn" data-nbre="${esc(p.k)}">↻ Read it again</button></span></div>`;
-    return `<details class="nbch" data-nbk="${esc(p.k)}"${open?" open":""}><summary>${esc(p.t)}</summary>${nbNoteHtml(c)}
+    return `<details class="nbch" data-nbk="${esc(p.k)}"${open?" open":""}><summary>${esc(p.t)}</summary>${nbNoteHtml(c)}${nbKeepHtml(c)}
       <div class="rdlc" style="margin-top:6px"><button class="btn smallbtn" data-nbx="${esc(p.k)}">✕ Strike these out</button><button class="btn smallbtn" data-nbre="${esc(p.k)}">↻ Read it again</button></div></details>`;};
   const back=parts.filter(p=>nbBehind(p,pos)),fwd=parts.filter(p=>!nbBehind(p,pos));
   const cmpParts=parts.filter(p=>p.len>=NB_MIN_CHARS&&(nb.ahead||nbBehind(p,pos))).slice(0,3);
@@ -34189,6 +34193,7 @@ function nbHtml(s){
         ${cmp.busy?`<div class="hint" style="margin:0">Reading “${esc(String(cmp.busy).slice(0,40))}”…</div>`:cmp.err?`<div class="hint" style="margin:0">It stopped: ${esc(cmp.err)}.</div>`:""}
         ${!cmp.busy?`<div class="rdlc">${cmp.rows.length?`<button class="btn smallbtn pri" data-nb="use-h">Use Haiku</button><button class="btn smallbtn" data-nb="use-o"${cmp.rows.every(r=>r.o)?"":" disabled"}>Use Opus</button>`:""}<button class="btn smallbtn" data-nb="cmp-x">✕ Close</button></div>`:""}</div>`
       :cmpParts.length?`<div class="rdlc"><button class="btn smallbtn" data-nb="cmp">⚖ Compare Haiku and Opus on ${cmpParts.length===1?"one part":cmpParts.length+" parts"} · ${nbMoney(nbCost(cmpParts,CLAUDE_HAIKU)+nbCost(cmpParts,CLAUDE_OPUS))}</button></div>`:""}
+    ${nbEndHtml(s)}
     <div>${back.map(row).join("")}</div>
     ${fwd.length?`<details class="nbfwd"${(s.nbOpen||new Set()).has("fwd")?" open":""} data-nbk="fwd"><summary>Ahead of you · ${fwd.length}</summary>${fwd.map(row).join("")}</details>`:""}
     <div class="rdlc"><button class="btn smallbtn" data-nb="off">Stop keeping it</button><button class="btn smallbtn" data-nb="del">✕ Delete the notes</button></div>${say}</div>`;
@@ -34220,12 +34225,17 @@ function nbWire(s,box,goFrom){
   const ah=q("#nbAhead",body);if(ah)ah.onchange=async()=>{const on=ah.checked;settings.nbAhead=on;saveSettings();await nbSet(s,x=>{if(x.nb)x.nb.ahead=on;});again();};
   const mo=q("#nbModel",body);if(mo)mo.onchange=()=>{settings.nbModel=mo.value==="opus"?"opus":"haiku";saveSettings();nbPaint(s);};
   body.onclick=async e=>{
-    const t=e.target.closest("[data-nb],[data-nbx],[data-nbre]");if(!t)return;
+    const t=e.target.closest("[data-nb],[data-nbx],[data-nbre],[data-nbkeep],[data-nbqz]");if(!t)return;
+    if(t.dataset.nbkeep){const j=t.dataset.nbkeep.lastIndexOf("|");nbKeepLine(s,t.dataset.nbkeep.slice(0,j),+t.dataset.nbkeep.slice(j+1));return;}
+    if(t.dataset.nbqz){nbQuizKeep(s,+t.dataset.nbqz);return;}
     if(t.dataset.nbx){const k=t.dataset.nbx,c=nbNotes(s).get(k);if(!c)return;(s.nbAdd=s.nbAdd||{})[k]={k,t:c.t,gone:true};s.nbDirty=true;nbPaint(s);return;}
     if(t.dataset.nbre){const k=t.dataset.nbre;if(s.nbAdd)delete s.nbAdd[k];await nbSet(s,x=>{if(x.nb)x.nb.ch=(x.nb.ch||[]).filter(c=>c&&c.k!==k);});again();return;}
     const a=t.dataset.nb;
     if(a==="recap"){nbRecapTab(s);return;}
     if(a==="q-x"){s.nbQ=null;nbPaint(s,true);return;}
+    if(a==="end-quiz"){nbEndGo(s,"quiz");return;}
+    if(a==="end-prev"){nbEndGo(s,"prev");return;}
+    if(a==="end-cast"){await nbSet(s,x=>{nbCastFill(x);});nbPaint(s,true);return;}
     if(a==="on"||a==="fresh"){if(a==="fresh")s.nbAdd={};   /* before the save, not after: a part read while it was being written was thrown away */
       await nbSet(s,x=>{x.nb=Object.assign({v:1,ch:[]},a==="fresh"?null:x.nb,{on:true,src:nbSrc(s),ahead:a==="fresh"?!!settings.nbAhead:(x.nb&&x.nb.ahead!=null?!!x.nb.ahead:!!settings.nbAhead)});});again();}
     else if(a==="off"){await nbSet(s,x=>{if(x.nb)x.nb.on=false;});s.nbCmp=null;s.nbPause=false;nbPaint(s);}
@@ -34238,6 +34248,101 @@ function nbWire(s,box,goFrom){
       cmp.rows.forEach(r=>{const c=o?r.o:r.h;if(c)(s.nbAdd=s.nbAdd||{})[r.k]=c;});
       s.nbCmp=null;s.nbPause=false;again();}
   };
+}
+/* ┌─ WHAT THE NOTEBOOK LEAVES BEHIND ────────────────────────────────────────┐
+   │ Lines worth keeping: nbAsk also asks each part for up to three lines       │
+   │ copied exactly (c.keep; one not found in a text file is dropped), shown    │
+   │ under the part's notes in 📓 with ❝ Keep.                                  │
+   │ nbLikes sends a few of the reader's own latest quotes along, as what a     │
+   │ line they keep sounds like. nbKeepLine files one through pushQuote, with   │
+   │ where it stands, and marks it kept (c.kept).                               │
+   │ At the end of the book (nbAtEnd: the last page, or marked finished) three  │
+   │ things that otherwise need Claude to know the title are filled from the    │
+   │ notes. nbCastFill puts its people in x.cast for YOUR CAST: by itself, in   │
+   │ rdSave's write when the sitting ends on the last page, and only where no   │
+   │ cast is there already. nbEndGo("quiz") has Claude write five questions     │
+   │ from the notes, each kept into b.quiz by a press, QZ_N at most.            │
+   │ nbEndGo("prev") writes this one book's recap into settings.serPrev for     │
+   │ PREVIOUSLY ON…, after what was there for the books before it.              │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function nbLikes(s){
+  if(s.nbLikes)return s.nbLikes;
+  const out=[];
+  for(const b of books.slice().sort((a,c)=>(+c.modified||0)-(+a.modified||0))){
+    if(out.length>=5)break;
+    const qs=(b&&Array.isArray(b.quotes))?b.quotes:[];
+    if(qs.length)out.push(stripHtml(String(qs[qs.length-1])).replace(/\s+/g," ").trim().slice(0,160));}
+  return s.nbLikes=out.filter(Boolean);
+}
+const nbKeepHtml=c=>(c.keep||[]).map((l,i)=>`<div class="nbwho">❝ ${esc(l)} ${(c.kept||[]).includes(i)?`<span class="hint" style="margin:0">· kept</span>`:`<button class="btn smallbtn" data-nbkeep="${esc(c.k)}|${i}">❝ Keep</button>`}</div>`).join("");
+async function nbKeepLine(s,k,i){
+  const c=nbNotes(s).get(k),line=c&&(c.keep||[])[i];if(!line)return;
+  let where="";
+  try{const r=s.pdf?null:rdFindText(s,line.slice(0,80));if(r&&r.hits.length)where=r.hits[0].say;}catch(e){}
+  const id=s.id,en=s.en,both=l=>[...new Set([...(l||[]),i])];
+  const mut=bk=>{
+    const n=pushQuote(bk,esc(line));if(where&&bk.quotesFrom)bk.quotesFrom[n]=TYPED+where;
+    const x=en?(bk.entries||[]).find(z=>z.id===en):bk,sv=x&&x.nb&&(x.nb.ch||[]).find(z=>z&&z.k===k);if(sv)sv.kept=both(sv.kept);
+    return true;};
+  try{if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);}catch(e){return;}
+  if(s.nbAdd&&s.nbAdd[k])s.nbAdd[k].kept=both(s.nbAdd[k].kept);
+  nbPaint(s,true);
+}
+function nbCastFill(x){
+  const nb=nbOf(x);if(!nb||(x.cast&&x.cast.length))return 0;
+  const by=new Map();
+  (nb.ch||[]).forEach((c,i)=>(c&&c.who||[]).forEach(w=>{const f=nbFold(w.n);if(!f)return;
+    if(!by.has(f))by.set(f,{n:w.n,w:String(w.d||"").slice(0,120),c:0,i});by.get(f).c++;}));
+  const top=[...by.values()].sort((a,b)=>b.c-a.c||a.i-b.i).slice(0,8);
+  if(!top.length)return 0;
+  x.cast=top.map(p=>({n:p.n,w:p.w}));x.castAt=todayStr();
+  return top.length;
+}
+function nbAtEnd(s){
+  const b=books.find(y=>y.id===s.id),x=nbHolder(s);if(!b||!x)return false;
+  return nbPos(s)>=0.995||(s.en?entStatusOf(b,x)==="finished":statusOf(b)==="finished");
+}
+function nbEndHtml(s){
+  if(!nbAtEnd(s)||!nbKnown(s).length)return "";
+  const b=books.find(y=>y.id===s.id),x=nbHolder(s),e=s.nbEnd||{},nq=quizOf(b).length,ser=!s.en&&!isColl(b)&&seriesShown(b),cast=(x.cast||[]).length;
+  return `<div class="nbcmp"><b>At the end of the book</b>
+    <div class="hint" style="margin:0">${cast?`🎭 ${cast} of its people ${cast===1?"is":"are"} in Your cast.`:"Its people aren't in Your cast yet."}</div>
+    <div class="rdlc">${cast?"":`<button class="btn smallbtn" data-nb="end-cast">🎭 Put its people in Your cast</button>`}<button class="btn smallbtn" data-nb="end-quiz"${e.busy?" disabled":""}>🧠 Five questions for later</button>${ser?`<button class="btn smallbtn" data-nb="end-prev"${e.busy?" disabled":""}>📜 Previously on…, for the next book</button>`:""}</div>
+    ${e.busy?`<div class="hint" style="margin:0">Asking Claude…</div>`:e.err?`<div class="hint" style="margin:0">Claude couldn't: ${esc(e.err)}.</div>`:""}
+    ${(e.quiz||[]).map((z,i)=>`<div class="nbch nbwait" style="display:block"><b>${esc(z.q)}</b><div class="nbwho">${esc(z.a)}</div><div class="rdlc" style="margin-top:4px">${z.kept?`<span class="hint" style="margin:0">kept for 🧠 Do you still remember?</span>`:`<button class="btn smallbtn" data-nbqz="${i}"${nq>=QZ_N?" disabled":""}>Keep</button>`}</div></div>`).join("")}
+    ${(e.quiz||[]).length&&nq>=QZ_N?`<div class="hint" style="margin:0">A book keeps ${QZ_N} questions at most.</div>`:""}
+    ${e.prev?`<div class="nbsum">${esc(e.prev).replace(/\n/g,"<br>")}</div><div class="hint" style="margin:0">Kept for the next book's page, under ✨ Previously on….</div>`:""}</div>`;
+}
+async function nbEndGo(s,what){
+  const e=s.nbEnd=s.nbEnd||{};if(e.busy)return;
+  const known=nbKnown(s),b=books.find(y=>y.id===s.id);if(!known.length||!b)return;
+  e.busy=what;e.err="";nbPaint(s,true);
+  const head=`These are a reader's notes on “${nbTitle(s)}”, part by part. They have just finished it.\n\n${nbNotesText(known)}\n\n`;
+  try{
+    if(what==="quiz"){
+      const schema={type:"object",properties:{questions:{type:"array",items:{type:"object",properties:{q:{type:"string"},a:{type:"string"}},required:["q","a"],additionalProperties:false}}},required:["questions"],additionalProperties:false};
+      const j=await claudeAsk({what:"🧠 Questions from a book's notebook",kind:"ask",schema,effort:"low",max_tokens:900,model:nbModel(),
+        text:head+`Write five questions they could answer months from now only if they remember the book: what happened, who did what, how it ended. Give each a short answer. Use only these notes.`});
+      const l=(Array.isArray((j.json||{}).questions)?j.json.questions:[]).filter(z=>z&&z.q&&z.a).slice(0,5).map(z=>({q:String(z.q).trim().slice(0,200),a:String(z.a).trim().slice(0,300)}));
+      if(!l.length)throw new Error("no questions came back");e.quiz=l;
+    }else{
+      const schema={type:"object",properties:{recap:{type:"string"}},required:["recap"],additionalProperties:false};
+      const j=await claudeAsk({what:"📜 Previously on, from a book's notebook",kind:"ask",schema,effort:"low",max_tokens:900,model:nbModel(),
+        text:head+`Write a “Previously on…” recap of this one book for a reader about to start the next in the series: the main events, who is who, how it ended and where things stand. About 200 words, written to the reader as "you". Use only these notes.`});
+      const text=String((j.json||{}).recap||"").trim();if(!text)throw new Error("no recap came back");
+      const k=softFold(seriesShown(b)),kept=(settings.serPrev||{})[k],title=String(b.title||"Untitled");
+      const whole=kept&&kept.text&&kept.upto!==b.id?String(kept.text).trim()+"\n\n“"+title+"”: "+text:text;
+      settings.serPrev=Object.assign({},settings.serPrev||{},{[k]:{text:whole,upto:b.id,uptoTitle:title,at:todayStr()}});saveSettings();
+      e.prev=text;}
+  }catch(er){e.err=String((er&&er.message)||"no answer").replace(/\.$/,"");}
+  e.busy="";if(rdState===s)nbPaint(s,true);
+}
+async function nbQuizKeep(s,i){
+  const z=s.nbEnd&&(s.nbEnd.quiz||[])[i];if(!z||z.kept)return;
+  let ok=false;
+  const mut=bk=>{const l=quizOf(bk);if(l.length>=QZ_N)return false;bk.quiz=l.concat([{id:uid(),q:z.q,a:z.a,at:todayStr()}]);ok=true;return true;};
+  try{if(view==="book"&&cur&&cur.id===s.id)await quickEdit(mut);else await shelfMut(s.id,mut);}catch(e){}
+  if(ok)z.kept=true;nbPaint(s,true);
 }
 /* ┌─ WHAT THE NOTEBOOK ANSWERS ──────────────────────────────────────────────┐
    │ Three things read THE BOOK'S OWN NOTEBOOK. nbKnown is what any of them may │
