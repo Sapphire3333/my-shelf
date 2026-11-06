@@ -804,6 +804,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   #rdPin,#rdRtl{padding:4px 8px;min-height:0;font-size:12px;line-height:1.3}
   #rdPin[aria-pressed="true"],#rdRtl[aria-pressed="true"]{border-color:var(--teal);color:var(--teal)}
   .rdhlbar{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}
+  /* see WHAT A PASSAGE MEANS */
+  .rdmean{position:absolute;left:0;right:0;bottom:0;z-index:7;max-height:60%;overflow:auto;background:var(--card);color:var(--ink);border-top:1px solid var(--line);box-shadow:0 -8px 20px -12px #0008;padding:12px max(14px,env(safe-area-inset-left,0px)) calc(12px + env(safe-area-inset-bottom,0px));font-size:calc(15px * min(var(--uiz,1),1.6));line-height:1.5}
+  .rdmeanin{max-width:44em;margin:0 auto}
+  .rdmeanq{color:var(--mut);font-size:.87em;margin:0 0 6px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+  .rdmeana{overflow-wrap:anywhere}
+  .rdmeanbtns{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
   .rdhlbar[hidden]{display:none}
   /* the app's own selection on a touch screen — see SELECTING IN THE READER */
   .rdview.rdtouch,.rdview.rdtouch *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
@@ -14070,6 +14076,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.7",lines:["<b>💬 What does this mean?</b> In the reader, select a sentence or a paragraph and press <b>💬 What does this mean?</b> where 📖 stands for a single word. Claude says what the passage means there. From the answer, one press puts it <b>in plainer words</b>, and another puts it <b>in English</b> when it isn't already. Each press is well under 1¢, and going back to an answer you've had costs nothing. Nothing is kept: 🖍 and ❝ are still how you keep words."]},
   {v:"2026-11-06.6",lines:["<b>Aa Your page, your way.</b> In the reader, ☰ has a new <b>Aa</b> tab: the typeface, line spacing, how long a line may run, the margins, a ragged or straight right edge, a space or an indent between paragraphs, and the paper, white, cream, grey or black. A few lines in the tab show each change as you make it. The reader now opens in Literata, a face drawn for reading on screens; Plain puts back the one it had. It's kept on each device by itself, and PDFs and comics keep their own pages."]},
   {v:"2026-11-06.5",lines:["<b>🔎 Find in the book.</b> In the reader, ☰ has a new <b>🔎 Find</b> tab, and Ctrl+F opens it on a computer. Type a word, a name or a few words and every place is listed with its chapter and page. Press one to go there: ↩ brings you back, and your bookmark stays where it was. An accent doesn't matter, and PDFs are searched too.","<b>⏱ Time left, at your pace.</b> After a few minutes in a file, the reader's foot says about how long is left in the chapter and in the book, from how fast you've been reading it on this device.","<b>▸ The next one opens.</b> At the end of a file, a button offers the next book of the series, or the next story in the collection, when it has a file. One press finishes this one and opens the next."]},
   {v:"2026-11-06.4",go:["el:settings:#secNudge"],lines:["<b>🔔 An evening nudge.</b> In Settings under How it works: choose a time, and your phone gets a notification naming the book you read last and your page, with 📖 Read and ✎ Log my page on it. Stories and fics too. It stays quiet on a day you've read and during 🤫 Quiet days, and after 7 evenings with no reading it stops asking until you read something. It needs one setup in Supabase, shown step by step on the card, and then <b>Send me one now</b> tries it."]},
@@ -33998,6 +34005,67 @@ document.addEventListener("click",async e=>{
   wordBusy=false;redraw();
 });
 document.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target&&(e.target.id==="wordIn"||e.target.id==="wordCtx")){e.preventDefault();const g=q("#wordGo");if(g&&!g.disabled)g.click();}});
+/* ┌─ WHAT A PASSAGE MEANS ───────────────────────────────────────────────────┐
+   │ A selection longer than a word or three offers 💬 What does this mean?     │
+   │ (#rdMean, where 📖 stands for a word). meanAsk sends the passage, the 700  │
+   │ letters before it for context and the title to Claude on Haiku, and the    │
+   │ answer opens in #rdMeanBox over the foot: what it says here, then, on a    │
+   │ press, the passage in plainer words in its own language, or in English     │
+   │ when it isn't English already. Each kind is asked once for a passage       │
+   │ (m.got), so going back to one costs nothing. Nothing is kept: 🖍 and ❝ are │
+   │ for keeping. rdSelNow holds a selection to RD_MEAN_MAX letters, and the    │
+   │ box says when one reached it. A file not on the shelf can ask too.         │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const RD_MEAN_MIN=12,RD_MEAN_MAX=2000;
+const RD_MEAN_KINDS={mean:"💬 What it means",plain:"✎ In plainer words",en:"🌐 In English"};
+const rdMeanCan=t=>{t=String(t||"").trim();return t.length>=RD_MEAN_MIN&&!wordish(t);};
+async function meanAsk(kind,passage,before,title,author){
+  const schema={type:"object",properties:{answer:{type:"string"}},required:["answer"],additionalProperties:false};
+  const task={
+    mean:"Say what the passage means here, in plain English, in two to four sentences: what is being said, any word, idiom or reference a reader might not know, and anything it implies. Stay with this passage: nothing about what happens later in the book.",
+    plain:"Rewrite the passage in plain, everyday words, in the same language it is written in. Keep everything it says and add nothing. Give only the rewriting.",
+    en:"Translate the passage into natural English. Give only the translation."}[kind];
+  const text=`A reader of “${title||"a book"}”${author?` by ${author}`:""} selected this passage:\n\n"""\n${passage}\n"""\n\n`
+    +(before?`What came just before it, for context only:\n"""\n${before}\n"""\n\n`:"")+task;
+  const j=await claudeAsk({what:"💬 What a passage means",kind:"ask",text,schema,effort:"low",max_tokens:kind==="mean"?600:Math.min(2400,300+Math.ceil(passage.length/2)),model:CLAUDE_HAIKU});
+  return String((j.json||{}).answer||"").trim()||"No answer came back.";
+}
+function rdMeanDraw(s){
+  const box=q("#rdMeanBox",s.el),m=s.mean;if(!box)return;
+  if(!m){box.hidden=true;box.innerHTML="";return;}
+  box.hidden=false;
+  box.innerHTML=`<div class="rdmeanin"><div class="rdmeanq">“${esc(m.text.length>160?m.text.slice(0,160)+"…":m.text)}”</div>
+    <div class="rdmeana">${m.busy?`${RD_MEAN_KINDS[m.kind]}: asking Claude…`:m.err?`Claude couldn't: ${esc(m.err)}.`:esc(m.got[m.kind]||"").replace(/\n/g,"<br>")}</div>
+    <div class="rdmeanbtns">${Object.keys(RD_MEAN_KINDS).filter(k=>k!==m.kind&&(k!=="en"||m.en)).map(k=>`<button class="btn smallbtn" data-rdmean="${k}"${m.busy?" disabled":""}>${RD_MEAN_KINDS[k]}</button>`).join("")}${
+      m.err&&!m.busy?`<button class="btn smallbtn pri" data-rdmean="${m.kind}">↻ Try again</button>`:""}${
+      m.got[m.kind]&&!m.busy?`<button class="btn smallbtn" data-rdmean="copy">📋 Copy</button>`:""}<button class="btn smallbtn" data-rdmean="x">✕ Close</button></div>
+    ${m.cut?`<div class="hint" style="margin:6px 0 0">Only the first ${RD_MEAN_MAX.toLocaleString()} letters of what you selected were sent.</div>`:""}</div>`;
+}
+function rdMeanShut(s){s.mean=null;rdMeanDraw(s);}
+async function rdMeanGo(kind){
+  const s=rdState;if(!s)return;
+  let m=s.mean;
+  if(kind==="new"){
+    if(!s.sel||!rdMeanCan(s.sel.text))return;
+    const b=s.loose?null:books.find(x=>x.id===s.id),en=b&&s.en?(b.entries||[]).find(e=>e.id===s.en):null;
+    const t=q("#rdText",s.el),all=!s.pdf&&t?t.textContent:"",at=Math.round((+s.sel.frac||0)*all.length),full=s.sel.text;
+    const lg=b?langOf(b).toLowerCase():"";
+    m=s.mean={text:full.slice(0,RD_MEAN_MAX),cut:full.length>=RD_MEAN_MAX,before:all?all.slice(Math.max(0,at-700),at).trim():"",
+      title:s.loose?String(s.loose.name||"").replace(/\.[a-z0-9]+$/i,""):en?(en.title||b.title||""):((b&&b.title)||""),
+      author:en?entAuthorOf(b,en):(b?b.author:""),
+      /* English already is the one case it has nothing to offer */
+      en:notEnglish(full)||(lg?lg!=="english":/[^\x00-\x7f]/.test(full.replace(/[“”‘’—–…]/g,""))),got:{},kind:"mean"};
+    kind="mean";
+    const mn=q("#rdMean",s.el);if(mn)mn.hidden=true;
+  }
+  if(!m||!RD_MEAN_KINDS[kind])return;
+  m.kind=kind;m.err="";
+  if(m.got[kind]){m.busy=false;rdMeanDraw(s);return;}
+  m.busy=true;const run=m.run=(m.run||0)+1;rdMeanDraw(s);
+  try{const a=await meanAsk(kind,m.text,m.before,m.title,m.author);if(rdState!==s||s.mean!==m||m.run!==run)return;m.got[kind]=a;}
+  catch(e){if(rdState!==s||s.mean!==m||m.run!==run)return;m.err=String((e&&e.message)||"no answer").replace(/\.$/,"");}
+  m.busy=false;rdMeanDraw(s);
+}
 /* ┌─ HIGHLIGHTS, DECIDED LATER ─────────────────────────────────────────────┐
    │ ❝ Keep as a quote made every selection a quote on the spot, so a choice │
    │ was made mid-sentence and a selection that came out short was filed as   │
@@ -34110,6 +34178,7 @@ async function rdKeep(){
   rdHlPaint(s,[m]);
   const k=q("#rdKeep",s.el);if(k)k.hidden=true;
   const w=q("#rdWord",s.el);if(w)w.hidden=true;
+  {const mn=q("#rdMean",s.el);if(mn)mn.hidden=true;}
   const n=q("#rdSaid",s.el);if(n){n.textContent="🖍 Highlighted";clearTimeout(s.saidT);s.saidT=setTimeout(()=>{if(n.isConnected)n.textContent="";},2000);}
 }
 /* a mark tapped in the text */
@@ -34819,11 +34888,11 @@ async function openReader(id,enId,loose,goMark){
     ${loose?`<div class="rdloose" id="rdLoose"></div>`:""}</div>
     <div class="rdview" id="rdView">${isPdf?`<article class="rdtext rdpdf" id="rdText"></article>`:`<article class="rdtext serif" id="rdText">${html}</article>`}</div>
     <div class="rdbottom">
-      <div class="rdask"><button class="btn smallbtn pri" id="rdKeep" hidden title="Mark the words you selected; you decide later whether they become a quote">🖍 Highlight</button><button class="btn smallbtn" id="rdCopy" hidden title="Copy the words you selected">📋 Copy</button><button class="btn smallbtn" id="rdTtsPrev" hidden aria-label="The sentence before">⏮</button><button class="btn smallbtn pri" id="rdTtsPlay" hidden></button><button class="btn smallbtn" id="rdTtsNext" hidden aria-label="The next sentence">⏭</button><button class="btn smallbtn" id="rdTtsStop" hidden aria-label="Stop reading aloud">■</button><span id="rdTtsSay" class="hint" style="margin:0" hidden></span><span id="rdHlBar" class="rdhlbar" hidden></span>${claudeReady()?`<button class="btn smallbtn" id="rdWord" hidden title="What the word means in this sentence — kept with the book">📖 What does it mean?</button>`:""}<span id="rdSaid" class="hint" style="margin:0"></span></div>
+      <div class="rdask"><button class="btn smallbtn pri" id="rdKeep" hidden title="Mark the words you selected; you decide later whether they become a quote">🖍 Highlight</button><button class="btn smallbtn" id="rdCopy" hidden title="Copy the words you selected">📋 Copy</button><button class="btn smallbtn" id="rdTtsPrev" hidden aria-label="The sentence before">⏮</button><button class="btn smallbtn pri" id="rdTtsPlay" hidden></button><button class="btn smallbtn" id="rdTtsNext" hidden aria-label="The next sentence">⏭</button><button class="btn smallbtn" id="rdTtsStop" hidden aria-label="Stop reading aloud">■</button><span id="rdTtsSay" class="hint" style="margin:0" hidden></span><span id="rdHlBar" class="rdhlbar" hidden></span>${claudeReady()?`<button class="btn smallbtn" id="rdWord" hidden title="What the word means in this sentence — kept with the book">📖 What does it mean?</button><button class="btn smallbtn" id="rdMean" hidden title="What the words you selected mean here, in plainer words, or in English">💬 What does this mean?</button>`:""}<span id="rdSaid" class="hint" style="margin:0"></span></div>
       <div class="rdfoot"><div class="rdscrub"><div class="rdticks" id="rdTicks"></div><div class="rdbub" id="rdBub" hidden></div><input type="range" id="rdDrag" min="0" max="1000" value="0" aria-label="Where you are in the book"></div>
         <span id="rdPos"></span><span id="rdLeft" class="hint" style="margin:0"></span><button class="btn smallbtn" id="rdJumpBack" hidden></button><button class="btn smallbtn pri" id="rdNext" hidden></button><button class="btn smallbtn" id="rdListen" title="Read aloud, a sound for this book, the lamp">🎧 Listen and lamp</button>${driveF?`<button class="btn smallbtn" id="rdPin"></button>`:""}${isPdf&&pdfGot.comic?`<button class="btn smallbtn" id="rdRtl"></button>`:""}<span id="rdClock" class="hint" style="margin:0"></span><span class="hint rdmark" style="margin:0">${loose?"not on your shelf — your place in this file is kept":reading?"the bookmark follows you":"not Reading now — your place is kept, the bookmark isn't moved"}</span></div>
       <div class="rdline"><i id="rdLineI"></i></div></div>
-    <div class="rdscrim" id="rdScrim" hidden></div><div class="rdtocbox" id="rdTocBox" hidden></div><div class="rdlamp" id="rdLamp" hidden></div>`;
+    <div class="rdmean" id="rdMeanBox" hidden></div><div class="rdscrim" id="rdScrim" hidden></div><div class="rdtocbox" id="rdTocBox" hidden></div><div class="rdlamp" id="rdLamp" hidden></div>`;
   document.body.appendChild(el);document.documentElement.classList.add("rdopen");
   /* where you left off: your place in the file, or — the first time it is
      opened — the book's own bookmark, so a book begun in print and carried
@@ -35012,7 +35081,7 @@ async function openReader(id,enId,loose,goMark){
     if(s.mode==="pages"&&fx<0.33)turn(s.page-fwd);else if(s.mode==="pages"&&fx>0.67)turn(s.page+fwd);
     else rdBars(s,el.classList.contains("rdbarsoff"));});
   s.onKey=e=>{if(!rdState)return;act();
-    if(e.key==="Escape"){e.preventDefault();e.stopPropagation();if(!tocBox.hidden)panelShut();else closeReader();return;}
+    if(e.key==="Escape"){e.preventDefault();e.stopPropagation();if(s.mean)rdMeanShut(s);else if(!tocBox.hidden)panelShut();else closeReader();return;}
     if((e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&String(e.key).toLowerCase()==="f"&&!(s.pdf&&s.pdf.comic)){e.preventDefault();e.stopPropagation();if(tocBox.hidden)panelGo("find");else panelDraw("find");return;}
     if(s.mode!=="pages"||(e.target&&/^(INPUT|TEXTAREA)$/.test(e.target.tagName)))return;
     /* the arrows follow the page; Page Down and space always mean onward */
@@ -35033,11 +35102,18 @@ async function openReader(id,enId,loose,goMark){
     if(!!got!==!!s.selWas){s.selWas=!!got;rdSelLog(s,got?`words selected, ${got.text.length} letters`:"selection gone");}
     if(k)k.hidden=(!got&&!s.sel)||!!(s.sel&&s.sel.text.length<3);
     if(wd)wd.hidden=!(s.sel&&wordish(s.sel.text));
+    const mn=q("#rdMean",el);if(mn)mn.hidden=!(s.sel&&rdMeanCan(s.sel.text));
     {const cp=q("#rdCopy",el);if(cp)cp.hidden=!(s.tsel&&s.sel);}
-    if(!got&&k&&!k.matches(":hover")&&!(wd&&wd.matches(":hover")))setTimeout(()=>{if(rdState&&!rdSelNow()){s.sel=null;k.hidden=true;if(wd)wd.hidden=true;}},600);};
+    if(!got&&k&&!k.matches(":hover")&&!(wd&&wd.matches(":hover"))&&!(mn&&mn.matches(":hover")))setTimeout(()=>{if(rdState&&!rdSelNow()){s.sel=null;k.hidden=true;if(wd)wd.hidden=true;if(mn)mn.hidden=true;}},600);};
   document.addEventListener("selectionchange",s.onSel);
   {const k=q("#rdKeep",el);k.addEventListener("pointerdown",e=>{e.preventDefault();});k.onclick=e=>{e.stopPropagation();rdSelLog(s,`🖍 pressed, ${s.sel?s.sel.text.length+" letters held":"nothing held"}`);rdKeep();};}
   {const w=q("#rdWord",el);if(w){w.addEventListener("pointerdown",e=>{e.preventDefault();});w.onclick=e=>{e.stopPropagation();rdWordGo();};}}
+  /* see WHAT A PASSAGE MEANS */
+  {const w=q("#rdMean",el);if(w){w.addEventListener("pointerdown",e=>{e.preventDefault();});w.onclick=e=>{e.stopPropagation();rdMeanGo("new");};}}
+  q("#rdMeanBox",el).onclick=e=>{const t=e.target.closest("[data-rdmean]");e.stopPropagation();if(!t)return;const k=t.dataset.rdmean;
+    if(k==="x")rdMeanShut(s);
+    else if(k==="copy"){const a=s.mean&&s.mean.got[s.mean.kind];if(a)navigator.clipboard.writeText(a).then(()=>{t.textContent="Copied";},()=>{t.textContent="Couldn't copy";});}
+    else rdMeanGo(k);};
   {const cp=q("#rdCopy",el);cp.addEventListener("pointerdown",e=>{e.preventDefault();});cp.onclick=async e=>{e.stopPropagation();const t=s.sel&&s.sel.text;if(!t)return;const n=q("#rdSaid",el);
     try{await navigator.clipboard.writeText(t);if(n){n.textContent="📋 Copied";clearTimeout(s.saidT);s.saidT=setTimeout(()=>{if(n.isConnected)n.textContent="";},2000);}}catch(er){prompt("Copy this:",t);}};}
   /* a Google Doc's own highlights, off the export just read */
