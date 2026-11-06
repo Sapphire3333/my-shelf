@@ -14087,6 +14087,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-06.9",lines:["<b>👤 Who is this?</b> In a book with a 📓 notebook, select a name and press <b>👤 Who is this?</b>: who they are and where you last saw them, from the notes. It's instant and needs no connection.","<b>📜 The story so far.</b> At the top of the 📓 tab, and offered by itself when you open a book after a week away: a recap of what you've read, written from the notes.","<b>Ask the book.</b> Also at the top of 📓: type a question and the answer comes from what you've read, with the lines it rests on. Press a line to go there; your bookmark stays. With Read ahead on, all three may use the whole book."]},
   {v:"2026-11-06.8",lines:["<b>📓 A notebook for the book you're in.</b> In the reader, ☰ has a new <b>📓</b> tab. Turn it on for a book and Claude reads the file itself, a part at a time as you finish each, and keeps short notes: what happens, who is in it, and where. It works on any file with words in it, and it never holds more than you've read. The tab shows the price before you start.","<b>Read ahead</b> has it read the whole book at once, spoilers and all, and <b>⚖ Compare</b> shows Haiku's notes and Opus's on the same parts so you can pick who reads. Each part's words go to Claude through your own key."]},
   {v:"2026-11-06.7",lines:["<b>💬 What does this mean?</b> In the reader, select a sentence or a paragraph and press <b>💬 What does this mean?</b> where 📖 stands for a single word. Claude says what the passage means there. From the answer, one press puts it <b>in plainer words</b>, and another puts it <b>in English</b> when it isn't already. Each press is well under 1¢, and going back to an answer you've had costs nothing. Nothing is kept: 🖍 and ❝ are still how you keep words."]},
   {v:"2026-11-06.6",lines:["<b>Aa Your page, your way.</b> In the reader, ☰ has a new <b>Aa</b> tab: the typeface, line spacing, how long a line may run, the margins, a ragged or straight right edge, a space or an indent between paragraphs, and the paper, white, cream, grey or black. A few lines in the tab show each change as you make it. The reader now opens in Literata, a face drawn for reading on screens; Plain puts back the one it had. It's kept on each device by itself, and PDFs and comics keep their own pages."]},
@@ -34181,6 +34182,7 @@ function nbHtml(s){
   return `<div class="rdl">
     <div><b>${done} of ${parts.length}</b> part${parts.length===1?"":"s"} in the notebook${s.nbBusy?` · reading “${esc(String(s.nbBusy).slice(0,40))}”…`:due&&!s.nbErr?" · reading on…":""}</div>
     ${s.nbErr?`<div class="hint" style="margin:0">Claude couldn't read a part: ${esc(s.nbErr)}. <button class="btn smallbtn" data-nb="retry">↻ Try again</button></div>`:""}
+    ${nbAskHtml(s)}
     <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="nbAhead"${nb.ahead?" checked":""} style="width:18px;height:18px;margin:2px 0 0;flex:none"><span>Read ahead: the whole book now, spoilers and all <span class="hint" style="margin:0">(${nbMoney(nbCost(parts.filter(p=>!notes.has(p.k)),model))} for what's left)</span></span></label>
     <label class="rdlf">Who reads<select class="field" id="nbModel"><option value="haiku"${model===CLAUDE_HAIKU?" selected":""}>Haiku: ${nbMoney(nbCost(parts,CLAUDE_HAIKU))} for this book</option><option value="opus"${model===CLAUDE_OPUS?" selected":""}>Opus: ${nbMoney(nbCost(parts,CLAUDE_OPUS))} for this book</option></select></label>
     ${cmp?`<div class="nbcmp"><b>⚖ Haiku and Opus on the same parts</b>${cmp.rows.map(r=>`<div class="nbch nbwait" style="display:block"><b>${esc(r.t)}</b><div class="nbside"><div class="lbl" style="margin:6px 0 2px">Haiku</div>${nbNoteHtml(r.h)}</div>${r.o?`<div class="nbside"><div class="lbl" style="margin:8px 0 2px">Opus</div>${nbNoteHtml(r.o)}</div>`:""}</div>`).join("")}
@@ -34191,8 +34193,10 @@ function nbHtml(s){
     ${fwd.length?`<details class="nbfwd"${(s.nbOpen||new Set()).has("fwd")?" open":""} data-nbk="fwd"><summary>Ahead of you · ${fwd.length}</summary>${fwd.map(row).join("")}</details>`:""}
     <div class="rdlc"><button class="btn smallbtn" data-nb="off">Stop keeping it</button><button class="btn smallbtn" data-nb="del">✕ Delete the notes</button></div>${say}</div>`;
 }
-function nbPaint(s){
+function nbPaint(s,force){
   const box=q("#rdTocBox",s.el);if(!box||box.hidden||s.panelTab!=="nb"||!s.panelDraw)return;
+  /* a part read while a question is being typed must not take the box away */
+  {const act=document.activeElement;if(!force&&act&&act.id==="nbQ")return;}
   const body=q(".rdtocbody",box),y=body?body.scrollTop:0;s.panelDraw("nb");const b2=q(".rdtocbody",box);if(b2)b2.scrollTop=y;
 }
 async function nbCompare(s){
@@ -34207,9 +34211,10 @@ async function nbCompare(s){
   catch(e){if(rdState!==s||s.nbCmp!==cmp)return;cmp.err=String((e&&e.message)||"no answer").replace(/\.$/,"");}
   cmp.busy="";nbPaint(s);
 }
-function nbWire(s,box){
+function nbWire(s,box,goFrom){
   const body=q(".rdtocbody",box);if(!body)return;
   s.nbOpen=s.nbOpen||new Set();
+  nbAskWire(s,body,goFrom);
   qa("details[data-nbk]",body).forEach(d=>d.addEventListener("toggle",()=>{if(d.open)s.nbOpen.add(d.dataset.nbk);else s.nbOpen.delete(d.dataset.nbk);}));
   const again=()=>{s.nbFail={};s.nbErr="";nbPaint(s);nbTick(s);};
   const ah=q("#nbAhead",body);if(ah)ah.onchange=async()=>{const on=ah.checked;settings.nbAhead=on;saveSettings();await nbSet(s,x=>{if(x.nb)x.nb.ahead=on;});again();};
@@ -34219,6 +34224,8 @@ function nbWire(s,box){
     if(t.dataset.nbx){const k=t.dataset.nbx,c=nbNotes(s).get(k);if(!c)return;(s.nbAdd=s.nbAdd||{})[k]={k,t:c.t,gone:true};s.nbDirty=true;nbPaint(s);return;}
     if(t.dataset.nbre){const k=t.dataset.nbre;if(s.nbAdd)delete s.nbAdd[k];await nbSet(s,x=>{if(x.nb)x.nb.ch=(x.nb.ch||[]).filter(c=>c&&c.k!==k);});again();return;}
     const a=t.dataset.nb;
+    if(a==="recap"){nbRecapTab(s);return;}
+    if(a==="q-x"){s.nbQ=null;nbPaint(s,true);return;}
     if(a==="on"||a==="fresh"){if(a==="fresh")s.nbAdd={};   /* before the save, not after: a part read while it was being written was thrown away */
       await nbSet(s,x=>{x.nb=Object.assign({v:1,ch:[]},a==="fresh"?null:x.nb,{on:true,src:nbSrc(s),ahead:a==="fresh"?!!settings.nbAhead:(x.nb&&x.nb.ahead!=null?!!x.nb.ahead:!!settings.nbAhead)});});again();}
     else if(a==="off"){await nbSet(s,x=>{if(x.nb)x.nb.on=false;});s.nbCmp=null;s.nbPause=false;nbPaint(s);}
@@ -34231,6 +34238,137 @@ function nbWire(s,box){
       cmp.rows.forEach(r=>{const c=o?r.o:r.h;if(c)(s.nbAdd=s.nbAdd||{})[r.k]=c;});
       s.nbCmp=null;s.nbPause=false;again();}
   };
+}
+/* ┌─ WHAT THE NOTEBOOK ANSWERS ──────────────────────────────────────────────┐
+   │ Three things read THE BOOK'S OWN NOTEBOOK. nbKnown is what any of them may │
+   │ be told from: the notes behind the bookmark, or every note when the book   │
+   │ is being read ahead; `strict` keeps to what is behind even then, for the   │
+   │ two that mean "so far".                                                    │
+   │ 👤 Who is this? (#rdWho, beside 📖 on a selected name): nbWhoFind matches   │
+   │ the words selected against the names noted and the sheet lists what each   │
+   │ part said of them. No Claude, so it is instant and works offline.          │
+   │ 📜 The story so far: nbRecap has Claude write the notes behind the         │
+   │ bookmark into one recap, kept for the sitting. nbWelcome offers it, with   │
+   │ the last part's own summary shown at once, when a book is opened after     │
+   │ NB_AWAY_DAYS days away.                                                    │
+   │ Ask the book (the box at the top of 📓): nbAskBook sends the notes, the    │
+   │ question and the whole text of up to three parts, chosen here by how often │
+   │ the question's words stand in them, NB_ASK_CHARS letters at most. The      │
+   │ lines it quotes are found again in the file (rdFindText, rdFindPdf) and a  │
+   │ press goes there as a jump, so the bookmark stays.                         │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const NB_AWAY_DAYS=7,NB_ASK_CHARS=60000;
+function nbKnown(s,strict){
+  const nb=nbOf(nbHolder(s));if(!nb||(nb.src&&nb.src!==nbSrc(s)))return [];
+  const notes=nbNotes(s),pos=nbPos(s);
+  return nbParts(s).filter(p=>(nb.ahead&&!strict)||nbBehind(p,pos)).map(p=>({p,c:notes.get(p.k)}))
+    .filter(x=>x.c&&!x.c.skip&&!x.c.gone&&(x.c.sum||(x.c.who||[]).length));
+}
+const nbFold=t=>rdFoldMap(String(t||"")).f.replace(/[^\p{L}\p{N} ]+/gu," ").replace(/ +/g," ").trim();
+function nbWhoFind(s,text){
+  const t=nbFold(String(text||"").replace(/['’]s\b/g,""));if(t.length<2)return [];
+  const words=t.split(" ").filter(w=>w.length>1),by=new Map();if(!words.length)return [];
+  nbKnown(s).forEach(({p,c})=>(c.who||[]).forEach(w=>{
+    const f=nbFold(w.n),fw=f.split(" ");
+    if(f!==t&&!words.every(x=>fw.includes(x)))return;
+    if(!by.has(f))by.set(f,{n:w.n,at:[]});
+    by.get(f).at.push({t:p.t,d:w.d});}));
+  return [...by.values()];
+}
+function nbWhoHtml(list){
+  return list.slice(0,3).map(w=>{const at=w.at,show=at.slice(-5);
+    return `<div class="nbsum"><b>👤 ${esc(w.n)}</b> <span class="hint" style="margin:0">· ${at.length>1?`in ${at.length} parts, last in “${esc(at[at.length-1].t)}”`:`in “${esc(at[0].t)}”`}</span></div>
+      ${at.length>show.length?`<div class="hint" style="margin:0">…and ${at.length-show.length} earlier.</div>`:""}${show.map(a=>`<div class="nbwho"><span class="hint" style="margin:0">${esc(a.t)}:</span> ${esc(a.d)}</div>`).join("")}`;}).join("");
+}
+function rdWhoGo(){
+  const s=rdState;if(!s||!s.sel)return;
+  const l=nbWhoFind(s,s.sel.text);if(!l.length)return;
+  s.mean={custom:nbWhoHtml(l)};rdMeanDraw(s);
+  const w=q("#rdWho",s.el);if(w)w.hidden=true;
+}
+const nbNotesText=known=>known.map(({p,c})=>`## ${p.t}\n${c.sum||""}\n${(c.who||[]).map(w=>`- ${w.n}: ${w.d}`).join("\n")}`).join("\n\n");
+function nbTitle(s){const x=nbHolder(s),b=books.find(y=>y.id===s.id);return (s.en&&x?(x.title||(b&&b.title)):(b&&b.title))||"a book";}
+async function nbRecap(s){
+  const known=nbKnown(s,true);if(!known.length)throw new Error("there are no notes behind your bookmark yet");
+  const sig=known.length+"|"+known[known.length-1].p.k+"|"+nbModel();
+  if(s.nbRecap&&s.nbRecap.sig===sig)return s.nbRecap.text;
+  const schema={type:"object",properties:{recap:{type:"string"}},required:["recap"],additionalProperties:false};
+  const text=`A reader is coming back to “${nbTitle(s)}” and wants the story so far. These are their notebook's notes on each part they have read, in order.\n\n${nbNotesText(known)}\n\n`
+    +`Write the story so far in 150 to 250 words of plain English: what has happened, who matters, and where things stand now. Use only these notes: nothing from later in the book, and nothing you know of it from elsewhere.`;
+  const j=await claudeAsk({what:"📜 The story so far",kind:"ask",text,schema,effort:"low",max_tokens:900,model:nbModel()});
+  const out=String((j.json||{}).recap||"").trim()||"No recap came back.";
+  s.nbRecap={sig,text:out};return out;
+}
+async function nbRecapSheet(s){
+  const m=s.mean={custom:`<div class="rdmeana">📜 The story so far: asking Claude…</div>`};rdMeanDraw(s);
+  let h;
+  try{h=`<div class="rdmeanq">📜 The story so far</div><div class="rdmeana">${esc(await nbRecap(s)).replace(/\n/g,"<br>")}</div>`;}
+  catch(e){h=`<div class="rdmeana">Claude couldn't: ${esc(String((e&&e.message)||"no answer").replace(/\.$/,""))}.</div>`;}
+  if(rdState===s&&s.mean===m){s.mean={custom:h};rdMeanDraw(s);}
+}
+function nbWelcome(s,at){
+  if(rdState!==s||s.mean||!at||Date.now()-at<NB_AWAY_DAYS*864e5)return;
+  const nb=nbOf(nbHolder(s));if(!nb||!nb.on)return;
+  const known=nbKnown(s,true);if(!known.length)return;
+  const last=known[known.length-1],days=Math.round((Date.now()-at)/864e5);
+  s.mean={custom:`<div class="rdmeanq">You were last here ${days} days ago.</div><div class="rdmeana"><b>Last time, in “${esc(last.p.t)}”:</b> ${esc(last.c.sum||"")}</div>`,
+    btns:claudeReady()?`<button class="btn smallbtn pri" data-rdmean="recap">📜 The story so far</button>`:""};
+  rdMeanDraw(s);
+}
+async function nbAskBook(s,question){
+  const known=nbKnown(s);if(!known.length)throw new Error("there are no notes to answer from yet");
+  const need=[...new Set(nbFold(question).split(" ").filter(w=>w.length>3))];
+  const rows=[];
+  for(let i=0;i<known.length;i++){const k=known[i],t=String(await k.p.text()||"");
+    const hay=nbFold(t)+" "+nbFold((k.c.sum||"")+" "+(k.c.who||[]).map(w=>w.n+" "+w.d).join(" "));
+    rows.push({k,t,i,n:need.reduce((n,w)=>n+(hay.split(w).length-1),0)});}
+  if(rdState!==s)throw new Error("the book was closed");
+  const ranked=rows.slice().sort((a,b)=>b.n-a.n||b.i-a.i);
+  const pick=(ranked[0].n>0?ranked.filter(r=>r.n>0).slice(0,3):ranked.slice(0,2)).sort((a,b)=>a.i-b.i);
+  const share=Math.floor(NB_ASK_CHARS/pick.length);
+  const schema={type:"object",properties:{answer:{type:"string"},quotes:{type:"array",items:{type:"string"}}},required:["answer","quotes"],additionalProperties:false};
+  const text=`A reader of “${nbTitle(s)}” asks a question about what they have read. Answer only from the notes and the passages below: nothing from further on in the book, and nothing you know of it from elsewhere. If they don't hold the answer, say so.\n\n`
+    +`Their notebook's notes, part by part:\n\n${nbNotesText(known)}\n\nThe full text of the parts most likely to hold the answer:\n\n`
+    +pick.map(r=>`### ${r.k.p.t}\n"""\n${r.t.slice(0,share)}\n"""`).join("\n\n")
+    +`\n\nThe question: ${question}\n\nanswer: two to five plain sentences of English. quotes: up to three short lines copied exactly, word for word, from the full text above, that the answer rests on. None if nothing fits.`;
+  const j=await claudeAsk({what:"📓 A question for the book",kind:"ask",text,schema,effort:"low",max_tokens:900,model:nbModel(),waitMs:120000});
+  const o=j.json||{},quotes=[];
+  for(const qt of (Array.isArray(o.quotes)?o.quotes:[]).map(x=>String(x).replace(/^[“"']+|[”"']+$/g,"").trim()).filter(x=>x.length>=8).slice(0,3)){
+    let h=null;
+    try{for(const cut of [qt.slice(0,120),qt.slice(0,50)]){
+        const r=s.pdf?await rdFindPdf(s,cut):rdFindText(s,cut);
+        if(r&&r.hits.length){h=r.hits[0];break;}}}catch(e){}
+    quotes.push({t:qt,h});}
+  return {ans:String(o.answer||"").trim()||"No answer came back.",quotes,from:pick.map(r=>r.k.p.t)};
+}
+function nbAskHtml(s){
+  if(!nbKnown(s).length)return "";
+  const a=s.nbQ;
+  return `<div class="rdfind" style="padding:0"><input class="field" id="nbQ" placeholder="Ask about what you've read" value="${esc(s.nbQDraft||"")}" autocomplete="off" enterkeyhint="send" aria-label="Ask about what you've read"><button class="btn smallbtn pri" id="nbAskGo"${a&&a.busy?" disabled":""}>Ask</button></div>
+    <div class="rdlc"><button class="btn smallbtn" data-nb="recap"${a&&a.busy?" disabled":""}>📜 The story so far</button></div>
+    ${a?`<div class="nbcmp"><div class="hint" style="margin:0">${esc(a.q)}</div>
+      <div class="nbsum" style="margin:0">${a.busy?"Asking Claude…":a.err?`Claude couldn't: ${esc(a.err)}.`:esc(a.ans||"").replace(/\n/g,"<br>")}</div>
+      ${(a.quotes||[]).map((x,i)=>x.h?`<button class="rdtocrow rdtocch rdfindrow" data-nbquote="${i}"><span>“${esc(x.t)}”</span><span class="hint" style="margin:2px 0 0">${esc(x.h.say)} · press to go there</span></button>`:`<div class="nbwho hint" style="margin:0">“${esc(x.t)}”</div>`).join("")}
+      ${a.from&&!a.busy&&!a.err?`<div class="hint" style="margin:0">Read for this: ${esc(a.from.join(", "))}.</div>`:""}
+      ${a.busy?"":`<div class="rdlc"><button class="btn smallbtn" data-nb="q-x">✕ Close</button></div>`}</div>`:""}`;
+}
+function nbAskWire(s,body,goFrom){
+  const inp=q("#nbQ",body);if(!inp)return;
+  inp.oninput=()=>{s.nbQDraft=inp.value;};
+  const ask=async()=>{
+    const qy=inp.value.trim();if(qy.length<3||(s.nbQ&&s.nbQ.busy))return;
+    const a=s.nbQ={q:qy,busy:true};inp.blur();nbPaint(s,true);
+    try{Object.assign(a,await nbAskBook(s,qy));}catch(e){a.err=String((e&&e.message)||"no answer").replace(/\.$/,"");}
+    a.busy=false;if(rdState===s&&s.nbQ===a)nbPaint(s,true);};
+  inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();ask();}};
+  q("#nbAskGo",body).onclick=ask;
+  qa("[data-nbquote]",body).forEach(bt=>bt.onclick=e=>{e.stopPropagation();const x=s.nbQ&&s.nbQ.quotes[+bt.dataset.nbquote];if(x&&x.h)goFrom(()=>rdFindGo(s,x.h));});
+}
+async function nbRecapTab(s){
+  if(s.nbQ&&s.nbQ.busy)return;
+  const a=s.nbQ={q:"📜 The story so far",busy:true};nbPaint(s,true);
+  try{a.ans=await nbRecap(s);}catch(e){a.err=String((e&&e.message)||"no answer").replace(/\.$/,"");}
+  a.busy=false;if(rdState===s&&s.nbQ===a)nbPaint(s,true);
 }
 /* ┌─ WHAT A PASSAGE MEANS ───────────────────────────────────────────────────┐
    │ A selection longer than a word or three offers 💬 What does this mean?     │
@@ -34260,6 +34398,8 @@ async function meanAsk(kind,passage,before,title,author){
 function rdMeanDraw(s){
   const box=q("#rdMeanBox",s.el),m=s.mean;if(!box)return;
   if(!m){box.hidden=true;box.innerHTML="";return;}
+  /* see WHAT THE NOTEBOOK ANSWERS */
+  if(m.custom){box.hidden=false;box.innerHTML=`<div class="rdmeanin">${m.custom}<div class="rdmeanbtns">${m.btns||""}<button class="btn smallbtn" data-rdmean="x">✕ Close</button></div></div>`;return;}
   box.hidden=false;
   box.innerHTML=`<div class="rdmeanin"><div class="rdmeanq">“${esc(m.text.length>160?m.text.slice(0,160)+"…":m.text)}”</div>
     <div class="rdmeana">${m.busy?`${RD_MEAN_KINDS[m.kind]}: asking Claude…`:m.err?`Claude couldn't: ${esc(m.err)}.`:esc(m.got[m.kind]||"").replace(/\n/g,"<br>")}</div>
@@ -34285,7 +34425,7 @@ async function rdMeanGo(kind){
     kind="mean";
     const mn=q("#rdMean",s.el);if(mn)mn.hidden=true;
   }
-  if(!m||!RD_MEAN_KINDS[kind])return;
+  if(!m||m.custom||!RD_MEAN_KINDS[kind])return;
   m.kind=kind;m.err="";
   if(m.got[kind]){m.busy=false;rdMeanDraw(s);return;}
   m.busy=true;const run=m.run=(m.run||0)+1;rdMeanDraw(s);
@@ -35115,7 +35255,7 @@ async function openReader(id,enId,loose,goMark){
     ${loose?`<div class="rdloose" id="rdLoose"></div>`:""}</div>
     <div class="rdview" id="rdView">${isPdf?`<article class="rdtext rdpdf" id="rdText"></article>`:`<article class="rdtext serif" id="rdText">${html}</article>`}</div>
     <div class="rdbottom">
-      <div class="rdask"><button class="btn smallbtn pri" id="rdKeep" hidden title="Mark the words you selected; you decide later whether they become a quote">🖍 Highlight</button><button class="btn smallbtn" id="rdCopy" hidden title="Copy the words you selected">📋 Copy</button><button class="btn smallbtn" id="rdTtsPrev" hidden aria-label="The sentence before">⏮</button><button class="btn smallbtn pri" id="rdTtsPlay" hidden></button><button class="btn smallbtn" id="rdTtsNext" hidden aria-label="The next sentence">⏭</button><button class="btn smallbtn" id="rdTtsStop" hidden aria-label="Stop reading aloud">■</button><span id="rdTtsSay" class="hint" style="margin:0" hidden></span><span id="rdHlBar" class="rdhlbar" hidden></span>${claudeReady()?`<button class="btn smallbtn" id="rdWord" hidden title="What the word means in this sentence — kept with the book">📖 What does it mean?</button><button class="btn smallbtn" id="rdMean" hidden title="What the words you selected mean here, in plainer words, or in English">💬 What does this mean?</button>`:""}<span id="rdSaid" class="hint" style="margin:0"></span></div>
+      <div class="rdask"><button class="btn smallbtn pri" id="rdKeep" hidden title="Mark the words you selected; you decide later whether they become a quote">🖍 Highlight</button><button class="btn smallbtn" id="rdCopy" hidden title="Copy the words you selected">📋 Copy</button><button class="btn smallbtn" id="rdTtsPrev" hidden aria-label="The sentence before">⏮</button><button class="btn smallbtn pri" id="rdTtsPlay" hidden></button><button class="btn smallbtn" id="rdTtsNext" hidden aria-label="The next sentence">⏭</button><button class="btn smallbtn" id="rdTtsStop" hidden aria-label="Stop reading aloud">■</button><span id="rdTtsSay" class="hint" style="margin:0" hidden></span><span id="rdHlBar" class="rdhlbar" hidden></span>${claudeReady()?`<button class="btn smallbtn" id="rdWord" hidden title="What the word means in this sentence — kept with the book">📖 What does it mean?</button><button class="btn smallbtn" id="rdMean" hidden title="What the words you selected mean here, in plainer words, or in English">💬 What does this mean?</button>`:""}<button class="btn smallbtn" id="rdWho" hidden title="Who this is, from this book's notebook">👤 Who is this?</button><span id="rdSaid" class="hint" style="margin:0"></span></div>
       <div class="rdfoot"><div class="rdscrub"><div class="rdticks" id="rdTicks"></div><div class="rdbub" id="rdBub" hidden></div><input type="range" id="rdDrag" min="0" max="1000" value="0" aria-label="Where you are in the book"></div>
         <span id="rdPos"></span><span id="rdLeft" class="hint" style="margin:0"></span><button class="btn smallbtn" id="rdJumpBack" hidden></button><button class="btn smallbtn pri" id="rdNext" hidden></button><button class="btn smallbtn" id="rdListen" title="Read aloud, a sound for this book, the lamp">🎧 Listen and lamp</button>${driveF?`<button class="btn smallbtn" id="rdPin"></button>`:""}${isPdf&&pdfGot.comic?`<button class="btn smallbtn" id="rdRtl"></button>`:""}<span id="rdClock" class="hint" style="margin:0"></span><span class="hint rdmark" style="margin:0">${loose?"not on your shelf — your place in this file is kept":reading?"the bookmark follows you":"not Reading now — your place is kept, the bookmark isn't moved"}</span></div>
       <div class="rdline"><i id="rdLineI"></i></div></div>
@@ -35223,7 +35363,7 @@ async function openReader(id,enId,loose,goMark){
     if(tab==="listen")rdListenWire(s,tocBox);
     if(tab==="find")rdFindWire(s,tocBox,goFrom);
     if(tab==="look")rdLookWire(s,tocBox,()=>panelDraw("look"));
-    if(tab==="nb")nbWire(s,tocBox);
+    if(tab==="nb")nbWire(s,tocBox,goFrom);
     qa("[data-rdtab]",tocBox).forEach(b=>b.onclick=()=>panelDraw(b.dataset.rdtab));
     {const cp=q("#rdSelCopy",tocBox);if(cp)cp.onclick=async()=>{const t=rdSelReport(s);panelShut();const n=q("#rdSaid",el);
       try{await navigator.clipboard.writeText(t);if(n)n.textContent="📋 Copied";}catch(er){prompt("Copy this:",t);}};}
@@ -35328,22 +35468,27 @@ async function openReader(id,enId,loose,goMark){
   document.addEventListener("visibilitychange",s.onHide);
   s.timer=setInterval(()=>rdSave(false),RD_SAVE_S*1000);
   s.clock=setInterval(()=>{rdClockTick();rdRoomTick(s);nbTick(s);},5000);
+  /* back after a while: see WHAT THE NOTEBOOK ANSWERS */
+  {const was=+(x&&x.readPos&&x.readPos.at)||0;setTimeout(()=>{try{nbWelcome(s,was);}catch(e){}},900);}
   /* a line selected in the text — see A LINE KEPT AS A QUOTE */
   s.onSel=()=>{if(!rdState)return;const k=q("#rdKeep",el),wd=q("#rdWord",el),got=rdSelNow();if(got){s.sel=got;act();}
     if(!!got!==!!s.selWas){s.selWas=!!got;rdSelLog(s,got?`words selected, ${got.text.length} letters`:"selection gone");}
     if(k)k.hidden=(!got&&!s.sel)||!!(s.sel&&s.sel.text.length<3);
     if(wd)wd.hidden=!(s.sel&&wordish(s.sel.text));
     const mn=q("#rdMean",el);if(mn)mn.hidden=!(s.sel&&rdMeanCan(s.sel.text));
+    const wh=q("#rdWho",el);if(wh){let on=false;try{on=!!(s.sel&&wordish(s.sel.text)&&nbOf(nbHolder(s))&&nbWhoFind(s,s.sel.text).length);}catch(er){}wh.hidden=!on;}
     {const cp=q("#rdCopy",el);if(cp)cp.hidden=!(s.tsel&&s.sel);}
-    if(!got&&k&&!k.matches(":hover")&&!(wd&&wd.matches(":hover"))&&!(mn&&mn.matches(":hover")))setTimeout(()=>{if(rdState&&!rdSelNow()){s.sel=null;k.hidden=true;if(wd)wd.hidden=true;if(mn)mn.hidden=true;}},600);};
+    if(!got&&k&&!k.matches(":hover")&&!(wd&&wd.matches(":hover"))&&!(mn&&mn.matches(":hover"))&&!(wh&&wh.matches(":hover")))setTimeout(()=>{if(rdState&&!rdSelNow()){s.sel=null;k.hidden=true;if(wd)wd.hidden=true;if(mn)mn.hidden=true;if(wh)wh.hidden=true;}},600);};
   document.addEventListener("selectionchange",s.onSel);
   {const k=q("#rdKeep",el);k.addEventListener("pointerdown",e=>{e.preventDefault();});k.onclick=e=>{e.stopPropagation();rdSelLog(s,`🖍 pressed, ${s.sel?s.sel.text.length+" letters held":"nothing held"}`);rdKeep();};}
   {const w=q("#rdWord",el);if(w){w.addEventListener("pointerdown",e=>{e.preventDefault();});w.onclick=e=>{e.stopPropagation();rdWordGo();};}}
+  {const w=q("#rdWho",el);w.addEventListener("pointerdown",e=>{e.preventDefault();});w.onclick=e=>{e.stopPropagation();rdWhoGo();};}
   /* see WHAT A PASSAGE MEANS */
   {const w=q("#rdMean",el);if(w){w.addEventListener("pointerdown",e=>{e.preventDefault();});w.onclick=e=>{e.stopPropagation();rdMeanGo("new");};}}
   q("#rdMeanBox",el).onclick=e=>{const t=e.target.closest("[data-rdmean]");e.stopPropagation();if(!t)return;const k=t.dataset.rdmean;
     if(k==="x")rdMeanShut(s);
     else if(k==="copy"){const a=s.mean&&s.mean.got[s.mean.kind];if(a)navigator.clipboard.writeText(a).then(()=>{t.textContent="Copied";},()=>{t.textContent="Couldn't copy";});}
+    else if(k==="recap")nbRecapSheet(s);
     else rdMeanGo(k);};
   {const cp=q("#rdCopy",el);cp.addEventListener("pointerdown",e=>{e.preventDefault();});cp.onclick=async e=>{e.stopPropagation();const t=s.sel&&s.sel.text;if(!t)return;const n=q("#rdSaid",el);
     try{await navigator.clipboard.writeText(t);if(n){n.textContent="📋 Copied";clearTimeout(s.saidT);s.saidT=setTimeout(()=>{if(n.isConnected)n.textContent="";},2000);}}catch(er){prompt("Copy this:",t);}};}
