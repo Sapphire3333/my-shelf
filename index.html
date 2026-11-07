@@ -11103,6 +11103,7 @@ function fileUnder(word,family,color){
    that is a cost or a problem. Two is one to restore from and one behind it,
    in case the newest was taken after whatever went wrong. */
 let settings={autoBackup:true,keepAuto:2,bg:{id:"none",opacity:100},theme:"auto"};
+let settingsRead=false;   /* see A DEVICE'S SETTINGS ARE KEPT TWICE */
 let groupArt={};               /* "genre|Fantasy" -> {img:<id>,h:<px>}; picture at "__gart|<id>" */
 const gartCache=new Map();
 /* loose pictures pinned about the library page: [{id,x,y,w,group}]. `group` ties one
@@ -12273,6 +12274,9 @@ async function pullAll(){
      if(lifted.length){touched=true;lifted.forEach(id=>enqueue({kind:"book",id}));}}
     {let now="";try{now=JSON.stringify(SYNC.seen);}catch(e){}if(!now||now!==seenWas)dbPut("meta",{k:"seenMod",v:SYNC.seen});}
     setSync("synced");SYNC.pulledAt=Date.now();   /* read by tasksDiag */
+    /* a new device has now heard whether a copy of its settings exists */
+    if(settings.devCopyWait){delete settings.devCopyWait;saveSettings();}
+    prefsRescue().catch(()=>{});
     /* a pull that changed nothing leaves the screen alone. Coming back to the tab
        pulls, and on a phone that is every few minutes — each one used to rebuild
        the page whether or not a single word had changed anywhere. */
@@ -12536,6 +12540,7 @@ async function initSync(){
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
   const se=await dbGet("meta","settings");if(se&&se.v)settings=Object.assign(settings,se.v);
+  settingsRead=true;
   /* the change log and the usage counter, both this device's own */
   try{const hl=await dbGet("meta","histLog");if(hl&&Array.isArray(hl.v))histLog=hl.v.slice(0,HISTLOG_MAX);}catch(e){}
   try{const sl=await dbGet("meta","shareLog");if(sl&&Array.isArray(sl.v))shareLog=sl.v.slice(0,SHARELOG_MAX);}catch(e){}
@@ -12563,7 +12568,8 @@ async function initSync(){
   /* the settings that follow you, and a first stamp for any not seen yet —
      see SETTINGS THAT FOLLOW YOU */
   try{const pv=await dbGet("meta","prefs");sharedPrefs=(pv&&pv.v&&typeof pv.v==="object")?pv.v:{};}catch(e){sharedPrefs={};}
-  prefsNote();
+  const lookBack=devCopyBack();
+  prefsNote(true);
   await petLoad();
   setTimeout(()=>{petCheckerSweep().catch(()=>{});},2500);   /* see petCheckerSweep */
   await shopPicsLoad();
@@ -12670,6 +12676,9 @@ async function initSync(){
     if(!settings.scrap&&settings.fontScale==null)settings.fontScale=115;
   }
   applyTheme();applyLook();applyBg();
+  saveSettings();   /* so a copy stands from the first opening, see A DEVICE'S SETTINGS ARE KEPT TWICE */
+  if(lookBack)setTimeout(()=>{try{bannerNote(DEV_COPY_SAID,8000);}catch(e){}},1200);
+  setTimeout(()=>{prefsRescue().catch(()=>{});},4000);
   try{
     const live=new Set(books.map(b=>b.id));
     const validImg=new Set();books.forEach(b=>imgKeysOf(b).forEach(k=>validImg.add(k)));
@@ -13199,6 +13208,10 @@ const sizeCtrlHtml=()=>`<button class="btn tinybtn looktog" id="lookTog" title="
       <button class="btn tinybtn" id="fsDown" title="Smaller text">A−</button>
       <span class="lbl" id="fsNow" style="min-width:34px;text-align:center">${settings.fontScale||100}%</span>
       <button class="btn tinybtn" id="fsUp" title="Bigger text">A+</button></span></span>
+    <span class="lsrow lsonly"><span class="lslab">Bottom bar</span>
+      <button class="btn tinybtn" id="tbDown" title="A smaller bottom bar" aria-label="A smaller bottom bar">−</button>
+      <span class="lbl" id="tbNow" style="min-width:34px;text-align:center">${Math.round(tabbarZoom()*100)}%</span>
+      <button class="btn tinybtn" id="tbUp" title="A bigger bottom bar" aria-label="A bigger bottom bar">＋</button></span>
     <span class="lsrow lstheme"><span class="lslab">Light or dark</span>${[["auto","Auto"],["light","Light"],["dark","Dark"]].map(([id,l])=>
       `<button class="pill ${(settings.theme||"auto")===id?"on":""}" data-lth="${id}">${l}</button>`).join("")}</span>
     <!-- A room-left number used to shout here in amber under 300 pixels. It was
@@ -13284,6 +13297,10 @@ function wireViewFold(scope){
 }
 function wireSizeCtrl(){
   const t=q("#lookTog"),sh=q("#lookSheet");
+  /* the phone's bottom bar, beside the text size: the slider under ⚙ Settings is three rooms away */
+  {const tb=d=>{const z=Math.max(.8,Math.min(2.2,Math.round(tabbarZoom()*10+d)/10));settings.tabbarZoom=z;saveSettings();applyLook();paintTabBar();
+      const n=q("#tbNow");if(n)n.textContent=Math.round(z*100)+"%";};
+   const a=q("#tbDown"),b=q("#tbUp");if(a)a.onclick=()=>tb(-2);if(b)b.onclick=()=>tb(2);}
   /* the Aa opens A−, the size and A+ under it — see THE TEXT SIZE, FOLDED;
      a press anywhere else, or Esc, folds them away, and A− or A+ leave them
      open so the size can be stepped more than once */
@@ -14304,6 +14321,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-07.9",lines:["<b>🛟 A device can't lose its settings for good any more.</b> Text size, bottom bar, dragon, background and the rest of what each device keeps for itself now have a copy in your cloud, and come back by themselves if a device ever loses them, a reinstall included. A device that loses them can no longer blank the settings that follow you between devices either, and if that has already happened, they come back from your newest backup from before it. On a phone, ⚙ at the top now has the bottom bar's size, right under the text size."]},
   {v:"2026-11-07.8",go:["tab:library"],lines:["<b>📚 Many series at once finds the right books.</b> A row now only takes a series of exactly that name, by that author, in English. Hardcover, which is free, keeps a row only when it has every book the list says. Everything else goes to Claude, with the price on the button, and what Claude finds is kept on this device for a month, so closing the panel or pasting again doesn't charge you twice. A row says how many of the list it found. A book already on your shelf isn't added again, and a book in two rows goes in the smaller series."]},
   {v:"2026-11-07.7",lines:["<b>📖 Reading a split book again.</b> Press Reading on a part of a book you've read, and the parts after it go back to Want to read, keeping their old dates. The bookmark starts over and it opens at the start. The book counts as part-way until the last part is finished, then as read once more, with one finish note. Its file stays until then. If you only wanted that one part, ✓ on the others brings their old dates back and adds no new finish. A book you're already rereading comes right at your next press. A story read again now opens at its beginning too, and anything finished opens at the start instead of on its last page."]},
   {v:"2026-11-07.6",lines:["<b>📖 A split book and its one file.</b> A split book no longer opens on its last page while parts of it are still to read. If your place had already landed there, it goes back to your bookmark, or else to the last page you reached before the end, and says so. The copy of its Drive file now stays on this device from the first part until the last part is finished, instead of going as soon as one part is marked Finished."]},
@@ -70792,7 +70810,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["ownClashLeave","rdUsual","freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover"];
+const SHARED_PREFS=["ownClashLeave","rdUsual","freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover","devCopyPhone","devCopyComputer"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
@@ -70800,8 +70818,96 @@ const SHARED_PREFS=["ownClashLeave","rdUsual","freeOff","nextLook","authorStars"
 var sharedPrefs;
 const prefClone=v=>v===undefined?null:JSON.parse(JSON.stringify(v));
 const prefSig=v=>JSON.stringify(v===undefined?null:v);
-function prefsNote(){
+/* ┌─ A DEVICE'S SETTINGS ARE KEPT TWICE ─────────────────────────────────────┐
+   │ Most settings belong to one device and lived in one record, in no backup. │
+   │ That record has come up empty around a reinstall of the app: text size,   │
+   │ bottom bar, dragon, background, all gone at once, with the rest of the     │
+   │ storage intact. What emptied it was never found, so this holds whatever   │
+   │ the cause. Four things:                                                    │
+   │ Nothing writes the record before it has been read (settingsRead).         │
+   │ A copy goes to the cloud, one per kind of device: devCopyPhone by a touch  │
+   │ screen, devCopyComputer otherwise, each in SHARED_PREFS, so backups carry  │
+   │ them too. devCopyBack puts it back by itself if the record comes up with   │
+   │ neither scrap nor simple, which every device that has run has; a new       │
+   │ device waits (devCopyWait) for its first pull before it writes a copy, or │
+   │ its defaults would overwrite the one it is about to be given. DEV_COPY_NOW │
+   │ names what goes up at once; the rest goes with it every DEV_COPY_EVERY.   │
+   │ A lost record isn't you deleting things. prefsNote compares each setting  │
+   │ that follows you with the record, and an empty record read as all of them  │
+   │ deleted, stamped now and sent everywhere. At start a blank is filled from  │
+   │ the shared record instead, and PREFS_MASS or more going blank together    │
+   │ is refused at any time, leaving and arriving (prefsBlanks). One at a time  │
+   │ still deletes.                                                             │
+   │ If such blanks did get through, prefsRescue puts back what the newest     │
+   │ backup from before them holds, once for each such event.                  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const PREFS_MASS=5,PREFS_MASS_MS=5000,DEV_COPY_MAX=4000,DEV_COPY_EVERY=6*3600*1000;
+const DEV_COPY_NOW=["fontScale","tabbarZoom","dragon","bg","scrap","simple","theme","fit","jumpPhoneSearch","rdLook","rdLamp","rdModeAll"];
+const DEV_COPY_SKIP=new Set(["devCopyWait","prefsRescueAt"]);
+const DEV_COPY_SAID="⚙ This device's settings had gone missing, so they came back from your saved copy.";
+const devCopyKey=()=>window.matchMedia&&matchMedia("(pointer:coarse)").matches?"devCopyPhone":"devCopyComputer";
+function devCopyNow(){
+  const o={};
+  for(const k of Object.keys(settings)){
+    if(DEV_COPY_SKIP.has(k)||SHARED_PREFS.includes(k))continue;
+    const j=JSON.stringify(settings[k]);if(j!==undefined&&j.length<=DEV_COPY_MAX)o[k]=settings[k];}
+  return o;
+}
+let devCopyAt=0;
+function devCopyKeep(){
+  if(settings.devCopyWait)return;
+  const key=devCopyKey(),old=settings[key];
+  if(old&&Date.now()-devCopyAt<DEV_COPY_EVERY&&DEV_COPY_NOW.every(k=>prefSig(old[k])===prefSig(settings[k])))return;
+  settings[key]=devCopyNow();devCopyAt=Date.now();
+}
+function devCopyBack(){
+  if(settings.scrap!==undefined||settings.simple!==undefined)return false;
+  const c=sharedPrefs&&sharedPrefs[devCopyKey()],v=c&&c.v;
+  if(!v||!Object.keys(v).length){settings.devCopyWait=true;return false;}
+  Object.assign(settings,prefClone(v));
+  return true;
+}
+/* the settings in a record blanked together: stamped within moments of each other */
+function prefsBlanks(rec){
+  const ks=SHARED_PREFS.filter(k=>rec&&rec[k]&&typeof rec[k]==="object"&&rec[k].v==null&&rec[k].at>0).sort((a,b)=>rec[a].at-rec[b].at);
+  let best=[];
+  for(let i=0;i<ks.length;i++){const run=ks.filter(k=>rec[k].at>=rec[ks[i]].at&&rec[k].at-rec[ks[i]].at<=PREFS_MASS_MS);if(run.length>best.length)best=run;}
+  return best.length>=PREFS_MASS?best:[];
+}
+/* a backup's settings, out of a text that may be a hundred megabytes: they stand near its end */
+function snapPrefsOf(json){
+  const at=String(json||"").lastIndexOf('"prefs":');if(at<0)return null;
+  const s=at+8;let d=0,str=false,esc=false;
+  for(let i=s;i<json.length;i++){const c=json.charCodeAt(i);
+    if(str){if(esc)esc=false;else if(c===92)esc=true;else if(c===34)str=false;continue;}
+    if(c===34)str=true;else if(c===123)d++;
+    else if(c===125&&--d===0){try{return JSON.parse(json.slice(s,i+1));}catch(e){return null;}}}
+  return null;
+}
+async function prefsRescue(){
+  if(!sharedPrefs)return;
+  const bad=prefsBlanks(sharedPrefs);if(!bad.length)return;
+  const wipe=Math.min(...bad.map(k=>sharedPrefs[k].at));
+  /* said before reading, so a backup too big for this device can't stop every opening */
+  if(settings.prefsRescueAt===wipe)return;
+  settings.prefsRescueAt=wipe;saveSettings();
+  const snaps=(await snapIndexFresh()).filter(s=>s.at<wipe).sort((a,b)=>b.at-a.at);
+  for(const s of snaps){
+    const x=await dbGet("snapshots",s.id),p=x&&snapPrefsOf(x.data);if(!p)continue;
+    const back=bad.filter(k=>p[k]&&p[k].v!=null&&settings[k]==null);if(!back.length)continue;
+    const now=Date.now();
+    back.forEach(k=>{settings[k]=prefClone(p[k].v);sharedPrefs[k]={v:prefClone(p[k].v),at:now};});
+    await dbPut("meta",{k:"settings",v:settings});
+    await dbPut("meta",{k:"prefs",v:sharedPrefs});enqueue({kind:"meta",key:"prefs"});
+    try{applyAccent();render();bannerNote(`⚙ ${back.length} settings that follow you had been blanked, so they came back from your backup of ${new Date(s.at).toLocaleDateString()}.`,8000);}catch(e){}
+    return;}
+}
+function prefsNote(boot){
   if(!sharedPrefs)return false;   /* not loaded yet — the first save after boot catches up */
+  const lost=SHARED_PREFS.filter(k=>sharedPrefs[k]&&sharedPrefs[k].v!=null&&settings[k]==null);
+  if(lost.length&&(boot||lost.length>=PREFS_MASS)){
+    lost.forEach(k=>{settings[k]=prefClone(sharedPrefs[k].v);});
+    dbPut("meta",{k:"settings",v:settings}).catch(()=>{});}
   let ch=false;
   for(const k of SHARED_PREFS){
     const p=sharedPrefs[k];
@@ -70813,23 +70919,36 @@ function prefsNote(){
 }
 function mergePrefs(rv){
   if(!rv||typeof rv!=="object"||!sharedPrefs)return false;
-  let shown=false,kept=false;
+  let shown=false,kept=false,ours=false;
+  const blanks=prefsBlanks(rv);
   for(const k of SHARED_PREFS){
     const r=rv[k],m=sharedPrefs[k];
     if(!r||typeof r!=="object"||(m&&(r.at||0)<=(m.at||0)))continue;
+    /* another device lost its record: what this one holds stands, and goes back up */
+    if(blanks.includes(k)&&m&&m.v!=null){sharedPrefs[k]={v:m.v,at:Date.now()};kept=ours=true;continue;}
     sharedPrefs[k]={v:prefClone(r.v),at:r.at||0};kept=true;
     if(prefSig(settings[k])!==prefSig(r.v)){
       if(r.v==null)delete settings[k];else settings[k]=prefClone(r.v);
       shown=true;
     }
   }
-  if(kept)dbPut("meta",{k:"prefs",v:sharedPrefs}).catch(()=>{});
+  /* a device with nothing of its own yet is given its kind's copy, on its first pull */
+  const dc=settings.devCopyWait&&rv[devCopyKey()];
+  if(dc&&dc.v&&Object.keys(dc.v).length){
+    Object.assign(settings,prefClone(dc.v));delete settings.devCopyWait;shown=true;
+    try{applyTheme();applyLook();applyBg();bannerNote(DEV_COPY_SAID,8000);}catch(e){}}
+  if(ours)dbPut("meta",{k:"prefs",v:sharedPrefs}).then(()=>enqueue({kind:"meta",key:"prefs"})).catch(()=>{});
+  else if(kept)dbPut("meta",{k:"prefs",v:sharedPrefs}).catch(()=>{});
   if(shown){dbPut("meta",{k:"settings",v:settings}).catch(()=>{});
     /* the colour chosen on the other device is worn at once, not at the next resize */
     try{applyAccent();}catch(e){}}
   return shown;
 }
-function saveSettings(){dbPut("meta",{k:"settings",v:settings});prefsNote();}
+function saveSettings(){
+  if(!settingsRead)return;   /* see A DEVICE'S SETTINGS ARE KEPT TWICE */
+  devCopyKeep();
+  dbPut("meta",{k:"settings",v:settings});prefsNote();
+}
 
 /* one shared shape for export, snapshots and import — keeps the old file compatible */
 /* ---- THE DAILY COPIES LEAVE THE READER'S FILES OUT ----
