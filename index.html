@@ -14304,6 +14304,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-07.8",go:["tab:library"],lines:["<b>📚 Many series at once finds the right books.</b> A row now only takes a series of exactly that name, by that author, in English. Hardcover, which is free, keeps a row only when it has every book the list says. Everything else goes to Claude, with the price on the button, and what Claude finds is kept on this device for a month, so closing the panel or pasting again doesn't charge you twice. A row says how many of the list it found. A book already on your shelf isn't added again, and a book in two rows goes in the smaller series."]},
   {v:"2026-11-07.7",lines:["<b>📖 Reading a split book again.</b> Press Reading on a part of a book you've read, and the parts after it go back to Want to read, keeping their old dates. The bookmark starts over and it opens at the start. The book counts as part-way until the last part is finished, then as read once more, with one finish note. Its file stays until then. If you only wanted that one part, ✓ on the others brings their old dates back and adds no new finish. A book you're already rereading comes right at your next press. A story read again now opens at its beginning too, and anything finished opens at the start instead of on its last page."]},
   {v:"2026-11-07.6",lines:["<b>📖 A split book and its one file.</b> A split book no longer opens on its last page while parts of it are still to read. If your place had already landed there, it goes back to your bookmark, or else to the last page you reached before the end, and says so. The copy of its Drive file now stays on this device from the first part until the last part is finished, instead of going as soon as one part is marked Finished."]},
   {v:"2026-11-07.5",go:["tab:library"],lines:["<b>📚 Many series at once.</b> ＋ Add book → Many series at once: copy a page that lists series, paste it, and untick what you don't want. An author's panel has 📚 Add their series… too. Anything that looks to be on your shelf already starts unticked and says what it found. Ticked anyway, only the books it hasn't got are added. You see the titles first: Hardcover looks first for free, then a press asks Claude for what's left, with the price on the button. Each new series is its own collection, marked Want to read, and one ↶ takes it all off."]},
@@ -73097,8 +73098,13 @@ async function fetchHardcover(title,author,isbn){
    books, else the fullest. The full ask names the fields a book carries;
    if Hardcover's schema turns a field away, the thin ask — title, position
    and slug only — is tried before giving up, so a renamed field costs a
-   cover, not the feature. Both go through hcSlot like every Hardcover ask. */
-async function fetchHardcoverSeries(name,author){
+   cover, not the feature. Both go through hcSlot like every Hardcover ask.
+   opts is for a door filling many at once, with no eye on each: exact takes only a
+   series of the very name and by that author, since "the fullest that holds the name"
+   took a series of 167 for a subseries of 10; lang prefers that language's editions and
+   holds back the rest. */
+async function fetchHardcoverSeries(name,author,opts){
+  const exact=!!(opts&&opts.exact),lang=(opts&&opts.lang)||"";
   const nm=String(name||"").trim();
   if(!nm)return {ok:false,why:"has no series name to ask with"};
   const base=String(CFG.url||"").replace(/\/+$/,"");
@@ -73126,14 +73132,17 @@ async function fetchHardcoverSeries(name,author){
   if(typeof res==="string"){try{res=JSON.parse(res);}catch(e){res=null;}}
   const found=((res&&res.hits)||[]).map(h=>h&&(h.document||h)).filter(h=>h&&h.id!=null);
   if(!found.length)return {ok:false,why:"knows no series called that"};
+  const wordsKey=t=>[...serWords(t)].sort().join(" ");
+  const named=exact?found.filter(h=>wordsKey(h.name)===wordsKey(nm)):found;
+  if(!named.length)return {ok:false,why:"has no series of exactly that name"};
   /* the fullest series whose name holds the name asked for (or the other way
      round) — "Frostmere" alone was a two-book Spanish listing beside the
      three-book "Frostmere Trilogy"; the exact name only breaks ties */
   const want=softFold(nm);
-  const cands=found.map(h=>{const f=softFold(h.name);return {h,near:(f===want||f.includes(want)||want.includes(f))?1:0,same:f===want?1:0,n:parseInt(h.books_count||h.primary_books_count)||0};})
+  const cands=named.map(h=>{const f=softFold(h.name);return {h,near:(f===want||f.includes(want)||want.includes(f))?1:0,same:f===want?1:0,n:parseInt(h.books_count||h.primary_books_count)||0};})
     .sort((a,b)=>(b.near-a.near)||(b.n-a.n)||(b.same-a.same)).map(x=>x.h).filter(h=>isFinite(parseInt(h.id))).slice(0,3);
   if(!cands.length)return {ok:false,why:"offered a series without a number to ask by"};
-  const FULL="query ($id: Int!) { series(where: {id: {_eq: $id}}, limit: 1) { id name books_count primary_books_count book_series(order_by: {position: asc}, limit: 200) { position book { id title slug release_year release_date pages users_read_count image { url } contributions { author { name } } } } } }";
+  const FULL="query ($id: Int!) { series(where: {id: {_eq: $id}}, limit: 1) { id name books_count primary_books_count book_series(order_by: {position: asc}, limit: 200) { position book { id title slug release_year release_date pages users_read_count image { url } contributions { author { name } } default_physical_edition { language { code2 } } } } } }";
   const THIN="query ($id: Int!) { series(where: {id: {_eq: $id}}, limit: 1) { id name books_count book_series(order_by: {position: asc}, limit: 200) { position book { id title slug } } } }";
   const fetchOne=async sid=>{
     try{return {rows:(await askSaid(FULL,{id:sid})).series||[],thin:false};}
@@ -73159,6 +73168,7 @@ async function fetchHardcoverSeries(name,author){
     const names=((s.book_series)||[]).flatMap(bs=>((bs&&bs.book&&bs.book.contributions)||[]).map(c=>c&&c.author&&c.author.name)).filter(Boolean);
     if(names.some(n=>[...authorWords(n)].some(w=>aw.has(w)))){pick=s;thin=r.thin;break;}
   }
+  if(!pick&&exact&&aw.size)return {ok:false,why:"has that name only under another author"};
   if(!pick)pick=first;
   if(!pick)return {ok:false,why:"named a series and then had nothing under it"};
   const raw=((pick.book_series)||[]).map(bs=>{
@@ -73168,6 +73178,7 @@ async function fetchHardcoverSeries(name,author){
     return {pos:(bs&&bs.position!=null)?String(bs.position):"",title:String(b.title||"").replace(/\{\{|\}\}/g,"").replace(/\s+/g," ").trim(),slug:String(b.slug||"").trim(),
       year:b.release_year?String(b.release_year).slice(0,4):"",date:String(b.release_date||"").slice(0,10),pages:parseInt(b.pages)||"",
       readers:parseInt(b.users_read_count)||0,
+      lang:String((b.default_physical_edition&&b.default_physical_edition.language&&b.default_physical_edition.language.code2)||""),
       cover:String((img&&typeof img==="object"?img.url:img)||"").trim(),
       author:((b.contributions)||[]).map(c=>c&&c.author&&c.author.name).filter(Boolean).join(", ")};
   }).filter(x=>x.title);
@@ -73180,7 +73191,7 @@ async function fetchHardcoverSeries(name,author){
      earliest year, since the original comes before its translations; then
      the most-read; then a Latin-script title; then the shorter name. A
      position with nothing else left keeps what it has. */
-  const isSet=t=>/\b(box(ed)? set|book set|boxset|collection|omnibus|volumes? \d+ ?[-–&]|bundle)\b/i.test(t);
+  const isSet=t=>/\b(box(ed)? set|book set|boxset|collection|omnibus|volumes? \d+ ?[-–&]|bundle)\b|#\d+ ?[-–] ?\d+/i.test(t);
   const latin=t=>!/[^\p{Script=Latin}\p{N}\p{P}\p{Z}\p{S}]/u.test(t);
   const peopleOf=x=>String(x.author||"").split(/,|;|&|·|・|\/| and /).map(s=>s.trim()).filter(Boolean);
   const own=x=>{
@@ -73197,12 +73208,16 @@ async function fetchHardcoverSeries(name,author){
      rather than put a Catalan book on an English shelf. */
   const foreign=x=>!!(aw.size&&peopleOf(x).length>1&&!own(x));
   const byPos=new Map();
-  raw.forEach(x=>{const k=x.pos||("~"+softFold(x.title));(byPos.get(k)||byPos.set(k,[]).get(k)).push(x);});
+  /* position 0 is where Hardcover also files books with no number: many different ones,
+     not editions of one, so an exact ask tells them apart by title */
+  raw.forEach(x=>{const k=x.pos&&!(exact&&parseFloat(x.pos)===0)?x.pos:("~"+softFold(x.title));(byPos.get(k)||byPos.set(k,[]).get(k)).push(x);});
   const list=[...byPos.entries()].map(([,xs])=>{
     const pool=xs.filter(x=>!isSet(x.title)).length?xs.filter(x=>!isSet(x.title)):xs;
     const yr=x=>parseInt(x.year)||9999;
-    const best=pool.sort((a,b)=>(own(b)-own(a))||(yr(a)-yr(b))||(b.readers-a.readers)||((latin(b.title)?1:0)-(latin(a.title)?1:0))||(a.title.length-b.title.length))[0];
-    best.foreign=foreign(best);
+    const best=pool.sort((a,b)=>(lang?(b.lang===lang)-(a.lang===lang):0)||(own(b)-own(a))||(yr(a)-yr(b))||(b.readers-a.readers)||((latin(b.title)?1:0)-(latin(a.title)?1:0))||(a.title.length-b.title.length))[0];
+    /* a language said outright beats guessing from the credits, where an illustrator
+       reads like a translator */
+    best.foreign=(exact&&isSet(best.title))||(lang&&best.lang?best.lang!==lang:foreign(best));
     return best;
   }).sort((a,b)=>{const x=parseFloat(a.pos),y=parseFloat(b.pos);
     if(isFinite(x)&&isFinite(y)&&x!==y)return x-y;if(isFinite(x)!==isFinite(y))return isFinite(x)?-1:1;return a.title.localeCompare(b.title);});
@@ -73217,7 +73232,7 @@ async function fetchHardcoverSeries(name,author){
    telling what you have is still the filing's job. No covers: Claude gives
    none. */
 const CLAUDE_SERIES_MAX=16000;
-async function fetchClaudeSeries(name,author,have){
+async function fetchClaudeSeries(name,author,have,hint){
   const S={type:"string"};
   const schema={type:"object",properties:{series:S,total:S,books:{type:"array",items:{type:"object",
     properties:{pos:S,title:S,year:S},required:["pos","title","year"],additionalProperties:false}}},
@@ -73226,6 +73241,8 @@ async function fetchClaudeSeries(name,author,have){
   const text=`List every book of the “${name}” series${author?` by ${author}`:""}, in series order. Search the web first, so that the list is complete and is this author's series, not another one with the same name.\n`
     +`Count the numbered books; add a novella only where the series gives it a number (such as 2.5). Leave out translations, box sets and omnibus editions.\n`
     +(mine.length?`The books of it I have, to match their language and spelling: ${mine.join("; ")}.\n`:"")
+    +(hint&&hint.count?`A list I copied says it has ${hint.count} books. Include the unnumbered ones if that is how it reaches that many.\n`:"")
+    +(hint&&hint.english?`Give the titles of the English editions.\n`:"")
     +`- series: the series name as it is usually written.\n- total: how many books the series has, or is announced to have, digits only.\n`
     +`- books: each one's pos (its number, like 1 or 2.5, or "" if it has none), title, and year (first published, four digits, or "" if it is not out yet).`;
   /* room for a long series: the list has to arrive whole to be read at all, a cap is only
@@ -73252,7 +73269,27 @@ async function fetchClaudeSeries(name,author,have){
    │ until you have seen the titles: Hardcover first, free, then a press for    │
    │ Claude on whatever is left, with the price on the button. New books are a   │
    │ collection each, marked Want to read, and one ↶ takes the whole press off.  │
+   │ With no eye on each row, Hardcover is only trusted when it is right: a     │
+   │ series of the very name and author, in English, and with every book the    │
+   │ list says (fetchHardcoverSeries with exact and lang). Measured on one       │
+   │ author's page: a row of 10 took a series of 167 by its shorter name, and   │
+   │ rows of 4, 7, 8 and 5 had 1, 3, 1 and 1 there. Anything else goes to Claude. │
+   │ A title goes on once. Not if it is anywhere on the shelf by that author    │
+   │ (serBulkShelf), and among the rows it goes in the smallest one, so a       │
+   │ subseries stays whole and its big series takes the rest (serBulkShare).    │
+   │ What Claude found is paid for, so it is kept on this device for a month    │
+   │ (sbPaid): closing the panel or pasting the list again doesn't ask twice.   │
+   │ SB_CLAUDE_AT_ONCE asks go together, since a list can run to dozens.        │
    └──────────────────────────────────────────────────────────────────────────┘ */
+const SB_CLAUDE_AT_ONCE=3,SB_PAID_KEY="shelfSerBulkPaid",SB_PAID_DAYS=30;
+let SB_PAID=null;
+const sbPaidKey=r=>softFold(r.name)+"|"+softFold(r.author);
+function sbPaidAll(){if(!SB_PAID)try{SB_PAID=JSON.parse(localStorage.getItem(SB_PAID_KEY)||"{}")||{};}catch(e){SB_PAID={};}return SB_PAID;}
+function sbPaid(r){const h=sbPaidAll()[sbPaidKey(r)];return h&&Date.now()-h.at<SB_PAID_DAYS*864e5?h:null;}
+function sbPaidPut(r,g){
+  const m=sbPaidAll();m[sbPaidKey(r)]={at:Date.now(),books:g.books.map(x=>({pos:x.pos,title:x.title}))};
+  try{localStorage.setItem(SB_PAID_KEY,JSON.stringify(m));}catch(e){}
+}
 function serBulkParse(text){
   const lines=String(text||"").split(/\r?\n/).map(l=>l.replace(/\s+/g," ").trim());
   const out=[],seen=new Set();
@@ -73285,12 +73322,37 @@ function serBulkHave(name){
     const sn=seriesShown(b);if(sn)look(sn,{b});});
   return same||like;
 }
-/* the books of a found list this row doesn't already hold */
-function serBulkNew(r){
-  const list=(r.got||[]).filter(x=>!x.foreign),h=r.have;if(!h||h.en)return list;
+/* every title on the shelf, a book's or a story's, with who it is by. Built when a list
+   is read and after a press, not per row: a shelf can hold thousands */
+let SB_SHELF=null;
+function serBulkShelf(){
+  if(SB_SHELF)return SB_SHELF;
+  const m=new Map(),put=(t,a)=>{const k=titleKey(t);if(k)(m.get(k)||m.set(k,[]).get(k)).push(String(a||""));};
+  books.forEach(b=>{put(b.title,b.author);(b.entries||[]).forEach(en=>{if(en)put(en.title,en.author||b.author);});});
+  return SB_SHELF=m;
+}
+const serBulkOnShelf=(x,author)=>{const a=serBulkShelf().get(titleKey(x.title));return !!a&&(!author||a.some(w=>!w||authorNear(author,w)));};
+/* the books of a found list this row doesn't already hold, wherever they stand */
+function serBulkOwn(r){
+  const h=r.have,list=(r.got||[]).filter(x=>!x.foreign&&!serBulkOnShelf(x,r.author));if(!h||h.en)return list;
   const inside=isColl(h.b)?(h.b.entries||[]).map(e=>e&&e.title):seriesMates(h.b).map(x=>x.title);
   const k=new Set(inside.map(titleKey)),f=new Set(inside.map(softFold));
   return list.filter(x=>!k.has(titleKey(x.title))&&!f.has(softFold(x.title)));
+}
+/* a title in two ticked rows goes in the smaller */
+function serBulkShare(rows){
+  const seen=new Set();rows.forEach(r=>{r.drop=new Set();});
+  rows.filter(r=>r.on&&r.got).sort((a,c)=>a.got.length-c.got.length).forEach(r=>serBulkOwn(r).forEach(x=>{const k=titleKey(x.title);if(seen.has(k))r.drop.add(k);else seen.add(k);}));
+}
+const serBulkNew=r=>serBulkOwn(r).filter(x=>!(r.drop&&r.drop.has(titleKey(x.title))));
+/* what a found row says beside its count */
+function serBulkSay(r){
+  const n=serBulkNew(r).length,all=(r.got||[]).filter(x=>!x.foreign).length,bits=[];
+  if(r.count&&all<r.count)bits.push(`${all} of the ${r.count} it should have`);
+  else if(r.count&&all>r.count)bits.push(`the list said ${r.count}`);
+  const held=(r.got||[]).filter(x=>!x.foreign&&serBulkOnShelf(x,r.author)).length;if(held)bits.push(`${held} already on your shelf`);
+  if(r.drop&&r.drop.size)bits.push(`${r.drop.size} in a smaller series here`);
+  return `${n} to add, from ${r.from}${bits.length?` · ${bits.join(" · ")}`:""}`;
 }
 async function serBulkAuthor(author){
   const S={type:"string"},schema={type:"object",properties:{series:{type:"array",items:{type:"object",properties:{name:S,books:S},required:["name","books"],additionalProperties:false}}},required:["series"],additionalProperties:false};
@@ -73303,10 +73365,11 @@ function serBulkOpen(opts){
   const author=String((opts&&opts.author)||"").trim(),S={rows:[],say:"",busy:false};
   const d=document.createElement("div");d.id="serBulk";d.className="ratepanel storypanel";
   const paint=()=>{
+    serBulkShare(S.rows);
     const on=S.rows.filter(r=>r.on),left=on.filter(r=>!r.got),found=on.filter(r=>r.got),add=found.reduce((n,r)=>n+serBulkNew(r).length,0);
     const rowsHtml=S.rows.map((r,i)=>`<div class="sbrow"><label><input type="checkbox" data-sbt="${i}"${r.on?" checked":""}${S.busy?" disabled":""}><b>${esc(r.name)}</b>${r.count?` <span class="hint" style="margin:0">${r.count} book${r.count===1?"":"s"}</span>`:""}${r.author?` <span class="hint" style="margin:0">· ${esc(r.author)}</span>`:""}</label>
       ${r.have?`<div class="hint sbsub">📚 ${r.have.same?"On your shelf":"Looks like"}: ${esc(r.have.name)}${r.have.en?` in ${esc(r.have.b.title||"Untitled")}`:""}. ${r.have.en?"Ticked, it becomes a collection of its own.":"Ticked, only the books it hasn't got are added."}</div>`:""}
-      ${r.got?`<details class="sbsub"><summary class="hint">${serBulkNew(r).length} to add, from ${esc(r.from)}</summary><div class="hint">${serBulkNew(r).slice(0,60).map(x=>esc((x.pos?"#"+x.pos+" ":"")+x.title)).join(" · ")}</div></details>`:r.why?`<div class="hint sbsub">${esc(r.why)}</div>`:""}</div>`).join("");
+      ${r.got?`<details class="sbsub"><summary class="hint">${esc(serBulkSay(r))}</summary><div class="hint">${serBulkNew(r).slice(0,60).map(x=>esc((x.pos?"#"+x.pos+" ":"")+x.title)).join(" · ")}</div></details>`:r.why?`<div class="hint sbsub">${esc(r.why)}</div>`:""}</div>`).join("");
     d.innerHTML=`<div class="hrow2" style="margin-bottom:6px;gap:8px"><b class="serif" style="font-size:17px">📚 Many series at once</b><button class="btn" data-sb="x" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
       ${S.rows.length?"":`<div class="hint" style="margin:0 0 6px">On a page that lists series, like an author's series page on Goodreads, press Ctrl+A and Ctrl+C, then paste it here. A plain list works too, one name to a line.</div>
       <textarea class="field" id="sbPaste" rows="6" style="width:100%;box-sizing:border-box" placeholder="The Ferry Keepers (6 books)&#10;by A. N. Author"></textarea>
@@ -73318,17 +73381,23 @@ function serBulkOpen(opts){
         ${found.length?`<button class="btn smallbtn pri" data-sb="add"${S.busy||!add?" disabled":""}>＋ Add ${add} book${add===1?"":"s"}, marked Want to read</button>`:""}
       </div>`:""}
       <div class="hint" id="sbSay" style="margin:6px 0 0">${esc(S.say)}</div>`;};
-  const setRows=list=>{S.rows=list.map(x=>{const have=serBulkHave(x.name);return Object.assign({},x,{have,on:!have,got:null,why:"",from:""});});S.hcDone=false;
+  const setRows=list=>{SB_SHELF=null;S.rows=list.map(x=>{const have=serBulkHave(x.name),paid=sbPaid(x);return Object.assign({},x,{have,on:!have,got:paid?paid.books:null,why:"",from:paid?"Claude, kept from before":""});});S.hcDone=false;
     S.say=S.rows.length?`${S.rows.length} found, ${S.rows.filter(r=>r.have).length} of them already look to be on your shelf.`:"No series found in that. Is it the page's text?";};
-  const step=async(list,who,get)=>{S.busy=true;
-    for(let i=0;i<list.length;i++){const r=list[i];S.say=`${who}: ${i+1} of ${list.length}, ${r.name}…`;paint();
-      try{const g=await get(r);if(g&&g.ok&&g.books.length){r.got=g.books;r.from=who;r.why="";if(!r.count)r.count=g.count||g.books.length;}else r.why=`${who} ${(g&&g.why)||"found nothing"}.`;}
-      catch(e){r.why=`${who} didn't answer: ${String(e&&e.message||e).slice(0,80)}.`;}
-      if(!d.isConnected)return;}
+  const step=async(list,who,get)=>{S.busy=true;let at=0;
+    const one=async r=>{
+      try{const g=await get(r),kept=g&&g.ok?g.books.filter(x=>!x.foreign).length:0,want=r.count||(g&&g.count)||0;
+        /* Hardcover short of the list is no answer while Claude can be asked */
+        if(kept&&(who!=="Hardcover"||kept>=want||!claudeReady())){r.got=g.books;r.from=who;r.why="";if(!r.count)r.count=want;if(who==="Claude")sbPaidPut(r,g);}
+        else r.why=kept?`Hardcover has ${kept} of ${want}, so this one needs Claude.`:`${who} ${(g&&g.why)||"found nothing"}${who==="Hardcover"&&claudeReady()?", so this one needs Claude":""}.`;}
+      catch(e){r.why=`${who} didn't answer: ${String(e&&e.message||e).slice(0,80)}.`;}};
+    const worker=async()=>{while(at<list.length&&d.isConnected){const r=list[at++];S.say=`${who}: ${at} of ${list.length}, ${r.name}…`;paint();await one(r);if(d.isConnected)paint();}};
+    await Promise.all(Array.from({length:who==="Claude"?SB_CLAUDE_AT_ONCE:1},worker));
+    if(!d.isConnected)return;
     S.busy=false;S.say="";paint();};
   const addAll=async()=>{
     S.busy=true;S.say="Adding…";paint();
     const items=[];let nBooks=0,nNew=0;
+    serBulkShare(S.rows);
     const stamp=x=>{x.modified=Date.now();};
     for(const r of S.rows.filter(y=>y.on&&y.got)){
       const list=serBulkNew(r);if(!list.length)continue;nBooks+=list.length;
@@ -73348,7 +73417,8 @@ function serBulkOpen(opts){
     }
     if(items.length){pushOp({t:"bulk",items});if(SYNC.on)flushQueue();}
     refreshShelfSub();
-    S.rows=[];S.busy=false;S.say=`Added ${nBooks} book${nBooks===1?"":"s"}${nNew?`, ${nNew} new collection${nNew===1?"":"s"}`:""}. One ↶ takes it all off.`;paint();
+    /* what wasn't added stays, so a Claude press can still follow */
+    SB_SHELF=null;S.rows=S.rows.filter(y=>!(y.on&&y.got));S.busy=false;S.say=`Added ${nBooks} book${nBooks===1?"":"s"}${nNew?`, ${nNew} new collection${nNew===1?"":"s"}`:""}. One ↶ takes it all off.`;paint();
     try{render();}catch(e){}};
   d.addEventListener("change",e=>{const t=e.target;if(t&&t.dataset&&t.dataset.sbt!=null){S.rows[+t.dataset.sbt].on=t.checked;S.hcDone=S.hcDone&&!S.rows.some(r=>r.on&&!r.got&&!r.why);paint();}});
   d.addEventListener("click",async e=>{const b=e.target.closest&&e.target.closest("[data-sb]");if(!b||S.busy)return;const k=b.dataset.sb;
@@ -73357,8 +73427,8 @@ function serBulkOpen(opts){
     if(k==="author"){S.busy=true;S.say=`Asking Claude for ${author}'s series…`;paint();
       try{const l=await serBulkAuthor(author);S.busy=false;if(d.isConnected){setRows(l);paint();}}
       catch(er){S.busy=false;S.say=`Claude didn't answer: ${String(er&&er.message||er).slice(0,80)}.`;paint();}return;}
-    if(k==="hc"){await step(S.rows.filter(r=>r.on&&!r.got),"Hardcover",r=>fetchHardcoverSeries(r.name,r.author));S.hcDone=true;paint();return;}
-    if(k==="claude"){await step(S.rows.filter(r=>r.on&&!r.got),"Claude",r=>fetchClaudeSeries(r.name,r.author,[]));return;}
+    if(k==="hc"){await step(S.rows.filter(r=>r.on&&!r.got&&!r.why),"Hardcover",r=>fetchHardcoverSeries(r.name,r.author,{exact:true,lang:"en"}));S.hcDone=true;paint();return;}
+    if(k==="claude"){await step(S.rows.filter(r=>r.on&&!r.got),"Claude",r=>fetchClaudeSeries(r.name,r.author,[],{count:r.count,english:true}));return;}
     if(k==="add")await addAll();});
   document.body.appendChild(d);
   d.__close=dismissable(d);
