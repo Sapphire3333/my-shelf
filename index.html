@@ -8789,6 +8789,12 @@ function pinTales(coll,en){
    │ A bookmark standing on the last page of a volume not yet finished was    │
    │ put there by finishing its first tale before this, and says nothing —    │
    │ volMarkLive treats it as no page yet rather than as 100%.               │
+   │ The reader carried one there too: a place on the back cover, closed      │
+   │ there, took the bookmark with it, and a bookmark only moves forward, so  │
+   │ place and bookmark both stood at the end for good. So the last page of a │
+   │ file with parts still to read (fileHasMore, rdEndOf) is no place. rdSave │
+   │ keeps the place before it, openReader sends one already there back       │
+   │ (placeShortOfEnd), and the next sitting frees the bookmark (volMarkFree).│
    │ The tales never take a length of their own: entFoldedPages adds a       │
    │ tale's pages to its volume's, and the same 192 twice would be 384.       │
    └──────────────────────────────────────────────────────────────────────────┘ */
@@ -8802,11 +8808,50 @@ const markTarget=(coll,en)=>isSplitTale(coll,en)?markHolder(coll,en):en;
 const DRV_RECENT=20,DRV_RECENT_MAX=20*1024*1024;   /* see KEEP A DRIVE FILE HERE */
 const entFileTarget=markTarget;
 const entFileReading=(coll,h)=>isSplitTale(coll,h)?volState(coll,markHolder(coll,h)).status==="reading":(entStatusOf(coll,h)==="reading"&&!entDnfOf(coll,h));
+/* a file with parts of it still to read: a volume with a tale left that this file is
+   for, or a collection's own file with stories left. A tale with a really different
+   file of its own has its own end. h is the holder, or nothing for the book's own file */
+const fileHasMore=(b,h)=>{
+  if(!b)return false;
+  if(!h)return isColl(b)&&collWholes(b).length>1&&collStage(b)!=="finished";
+  if(!isSplitTale(b,h))return false;
+  const w=markHolder(b,h);
+  return volState(b,w).status!=="finished"&&volTales(b,w).some(t=>t!==h&&entFileHolder(b,t)===h);};
+/* whether this device goes on holding the file: while it is being read, and for a
+   volume or a collection from the first part finished until the last. Nothing begun
+   or nothing left, it is any other book's. See KEEP A DRIVE FILE HERE */
+const fileWanted=(b,h)=>{
+  if(!b)return false;
+  if(h&&!isSplitTale(b,h))return entFileReading(b,h);
+  if(h){const v=volState(b,markHolder(b,h));return !v.dnf&&(v.status==="reading"||!!v.begun||!!v.hold);}
+  if(!isColl(b))return statusOf(b)==="reading"&&!b.dnf;
+  const vs=collWholes(b).map(en=>volState(b,en)).filter(v=>!v.dnf),fin=vs.filter(v=>v.status==="finished").length;
+  return vs.some(v=>v.status==="reading"&&!v.hold)||(fin>0&&fin<vs.length);};
 function volMarkLive(coll,h){
   if(volState(coll,h).status==="finished")return true;
   const t=parseInt(h.pages)||0;
   if(t)return (parseInt(h.progress)||0)<t;
   return (parseInt(h.pct)||0)<100;
+}
+/* the last page as a fraction of the file: half a sheet from the end of a PDF of n
+   sheets, where .99 can already round onto the last one, and .995 of a text */
+const rdEndOf=n=>n>1?Math.min(.995,1-.5/(n-1)):.995;
+/* where a file opens when what it kept stands on the last page: the bookmark, or else
+   the newest day on the bookmark's trail short of that page, or else the beginning */
+function placeShortOfEnd(mk,bmk,endAt){
+  if(bmk>0&&bmk<endAt)return bmk;
+  const t=parseInt(mk&&mk.pages)||0,log=(mk&&mk.progLog)||[];
+  for(let i=log.length-1;i>=0;i--){const l=log[i],v=!l?0:l.pc?(+l.p||0)/100:t?(+l.p||0)/t:0;if(v>0&&v<endAt)return v;}
+  return 0;
+}
+/* a bookmark carried to the last page of a volume not finished comes back off it, and
+   the days that said so leave the trail, since no pages were read on them */
+function volMarkFree(h){
+  const t=parseInt(h.pages)||0;
+  h.progLog=(h.progLog||[]).filter(l=>!(l&&(l.pc?(+l.p||0)>=100:t&&(+l.p||0)>=t)));
+  const last=h.progLog[h.progLog.length-1];
+  if(t){h.progress=last&&!last.pc?last.p:"";if(h.pct)h.pct="";}
+  else h.pct=last&&last.pc?last.p:"";
 }
 function markView(coll,en){
   if(!coll||!isSplitTale(coll,en))return en;
@@ -14204,6 +14249,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-07.6",lines:["<b>📖 A split book and its one file.</b> A split book no longer opens on its last page while parts of it are still to read. If your place had already landed there, it goes back to your bookmark, or else to the last page you reached before the end, and says so. The copy of its Drive file now stays on this device from the first part until the last part is finished, instead of going as soon as one part is marked Finished."]},
   {v:"2026-11-07.5",go:["tab:library"],lines:["<b>📚 Many series at once.</b> ＋ Add book → Many series at once: copy a page that lists series, paste it, and untick what you don't want. An author's panel has 📚 Add their series… too. Anything that looks to be on your shelf already starts unticked and says what it found. Ticked anyway, only the books it hasn't got are added. You see the titles first: Hardcover looks first for free, then a press asks Claude for what's left, with the price on the button. Each new series is its own collection, marked Want to read, and one ↶ takes it all off."]},
   {v:"2026-11-07.4",lines:["<b>📖 The status menu opens where you pressed.</b> On a story's row in a collection, the status and rating menus now open straight under their buttons. They used to open below the page number, tags and readings, a good way down on a phone. On a book's page on a phone the status menu now opens right under its button too."]},
   {v:"2026-11-07.3",go:["el:overview:#secStory"],lines:["<b>🦉 The owl keeps its word.</b> Press the owl's note that a chapter is open and that chapter opens. A chapter it has told you about now stays open, even if the count of books you've finished falls afterwards, so the padlock can't say otherwise."]},
@@ -32376,7 +32422,7 @@ async function rdLoad(id,opts){
   /* none kept here: one on Drive, fetched — see BOOK FILES ON GOOGLE DRIVE */
   if(!d){const b=books.find(x=>x.id===id);if(!b||!b.driveFile||!driveReady())return null;const df=b.driveFile;
     return drvHtml(id,df,opts,{still:()=>{const n=books.find(x=>x.id===id);return !!(n&&n.driveFile&&n.driveFile.id===df.id);},
-      reading:()=>{const n=books.find(x=>x.id===id);return !!(n&&statusOf(n)==="reading"&&!n.dnf);}});}
+      reading:()=>fileWanted(books.find(x=>x.id===id),null)});}
   /* "%PDF" or a zip's "PK" in base64, whatever type the copy from the cloud says
      it is. Only a PDF or a comic is stored as it came; the rest are clean HTML */
   if(/^(JVBERi|UEsD)/.test(String(d).split(",")[1]||"")){try{rdPdfPut(id,dataURLtoBlob(d));rdCache.set(id,RD_PDF);return RD_PDF;}catch(e){return null;}}
@@ -32466,7 +32512,7 @@ async function refreshBookFiles(again){
     :"Sign in to count the cloud.";
   const keptLine=r=>`<div class="snap bfrow"><div style="min-width:0;flex:1"><div class="when" style="font-size:14px;overflow-wrap:anywhere"><button class="linkbtn" data-bfdopen="${esc(r.key)}">${esc(r.title)}</button></div>
       <div class="meta">☁ ${esc((r.df&&r.df.name)||"")}${r.df&&r.df.name?" · ":""}${fmtBytes(r.size)} here</div>
-      <div class="meta">${r.keep?"📌 kept until you forget it":r.live?"kept while it's Reading now":`opened recently, goes by itself when ${DRV_RECENT} newer ones have come`}</div></div>
+      <div class="meta">${r.keep?"📌 kept until you forget it":r.live?(r.parts?"kept until its last part is read":"kept while it's Reading now"):`opened recently, goes by itself when ${DRV_RECENT} newer ones have come`}</div></div>
       <button class="btn smallbtn" data-bfdx="${esc(r.key)}" title="Take this copy off the device — the file stays on your Drive">Forget</button></div>`;
   const keptHtml=kept.length?`<div class="hrow2" style="gap:8px;align-items:baseline;flex-wrap:wrap;margin-top:12px"><b>${kept.length} from your Drive</b><span class="none">${fmtBytes(kept.reduce((a,r)=>a+r.size,0))} on this device, none in the cloud</span></div>
       <div style="margin-top:6px">${kept.map(keptLine).join("")}</div>
@@ -33956,8 +34002,11 @@ async function rdSave(final,sitting){
   const s=rdState;if(!s)return;
   s.f=+rdPosNow().toFixed(4);
   /* where the page stands, or where you were if you have only jumped there —
-     see THE BARS, THE BAR YOU DRAG AND GOING BACK */
-  const f=s.jump?s.jump.f:s.f,c=s.jump?s.jump.c:rdPlaceNow(s);
+     see THE BARS, THE BAR YOU DRAG AND GOING BACK. The last page of a file with parts
+     still to read is no place, so the one before it stands: see ONE BOOK, ONE BOOKMARK */
+  const fNow=s.jump?s.jump.f:s.f,b0=s.loose?null:books.find(x=>x.id===s.id);
+  const noEnd=!!b0&&fNow>=rdEndOf(s.pdf?s.pdf.n:0)&&fileHasMore(b0,s.en?(b0.entries||[]).find(e=>e.id===s.en)||null:null);
+  const f=noEnd?s.saved:fNow,c=noEnd?null:s.jump?s.jump.c:rdPlaceNow(s);
   if(s.loose){if(!final&&!sitting&&Math.abs(f-s.saved)<0.005)return;s.saved=f;rdLoosePos(s.loose.id,f,c);return;}
   const enId=s.en;
   if(!sitting){
@@ -33975,7 +34024,8 @@ async function rdSave(final,sitting){
   const holder=bk=>enId?(bk.entries||[]).find(e=>e.id===enId)||null:bk;
   const inRead=(bk,x)=>enId?entFileReading(bk,x):(statusOf(bk)==="reading"&&!bk.dnf&&!isColl(bk));
   {const b=books.find(x=>x.id===id);if(!b)return;const x=holder(b);if(!x)return;const m=enId?markTarget(b,x):b,t=parseInt(m.pages)||0;
-   const moves=inRead(b,x)&&(t?Math.round(f*t)>(parseInt(m.progress)||0):Math.round(f*100)>(parseInt(m.pct)||0));
+   const stuck=!!enId&&isSplitTale(b,x)&&!volMarkLive(b,m);
+   const moves=inRead(b,x)&&(stuck||(t?Math.round(f*t)>(parseInt(m.progress)||0):Math.round(f*100)>(parseInt(m.pct)||0)));
    const files=secs>=TIMER_MIN_S&&secs<=TIMER_MAX_H*3600&&!timerOn(b)&&!sprintOn(b);
    if(!moves&&!files&&!s.marksDirty&&!Object.keys(s.nbAdd||{}).length){rdQuietPos(id,f,enId,c);return;}}
   /* highlights this sitting, whatever rdFreshen took meanwhile — see HIGHLIGHTS, DECIDED LATER */
@@ -33983,11 +34033,12 @@ async function rdSave(final,sitting){
   /* the notebook's parts read this sitting: see THE BOOK'S OWN NOTEBOOK */
   const nbAdd=s.nbAdd||{};s.nbAdd={};
   const mut=bk=>{const x=holder(bk);if(!x)return false;x.readPos={f,at:Date.now(),...(c!=null?{c}:{})};
-    {const nx=enId?markTarget(bk,x):x;nbMerge(nx,nbAdd);if(f>=0.995)nbCastFill(nx);}
+    {const nx=enId?markTarget(bk,x):x;nbMerge(nx,nbAdd);if(fNow>=0.995)nbCastFill(nx);}
     {const l=[...hlListOf(x).filter(m=>!hlDel.has(m.id)&&!hlAdd[m.id]),...Object.values(hlAdd)];if(l.length)x.marks=l;else delete x.marks;}
     const m=enId?markTarget(bk,x):bk,t=parseInt(m.pages)||0;
     /* a collection's place is its stories', never one number of its own */
     if(inRead(bk,x)){
+      if(enId&&isSplitTale(bk,x)&&!volMarkLive(bk,m))volMarkFree(m);
       if(t){const p=Math.round(f*t);if(p>(parseInt(m.progress)||0))setProgress(m,p);}
       else{const pc=Math.round(f*100);if(pc>(parseInt(m.pct)||0))setPct(m,pc);}}
     if(secs>=TIMER_MIN_S&&secs<=TIMER_MAX_H*3600&&!timerOn(bk)&&!sprintOn(bk)){
@@ -35670,7 +35721,9 @@ function rdOpenBegin(rk,title,file){
    │ up to DRV_RECENT_MAX each: it opens again with no download, offline too, │
    │ and drvRecentPrune lets the oldest go, by `at`, after a new one lands and │
    │ a little after start-up. A copy whose book has stopped being read joins  │
-   │ those. 📌 Keep here, in the reader's foot, marks one keep:true, of any    │
+   │ those; a split volume's, or a collection's own file, not until the last  │
+   │ part is read, since the next part wants it (fileWanted). 📌 Keep here,   │
+   │ in the reader's foot, marks one keep:true, of any    │
    │ size, on a shelf or not, for as long as its book or story stands. The     │
    │ record says which file it is (df) and is never uploaded or put in a      │
    │ backup. ⚙ Settings → You → Books to read here lists every such copy with │
@@ -35679,7 +35732,7 @@ function rdOpenBegin(rk,title,file){
    │ it is forgotten.                                                          │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const drvCopyHolder=key=>{const [bid,eid]=String(key).slice(6).split("|"),b=books.find(x=>x.id===bid),en=b&&eid?(b.entries||[]).find(x=>x.id===eid):null;return {bid,eid,b,en,loose:bid.startsWith("drv:")};};
-const drvCopyLive=key=>{const {eid,b,en}=drvCopyHolder(key);return !!(eid?(en&&en.driveFile&&entFileReading(b,en)):(b&&b.driveFile&&statusOf(b)==="reading"&&!b.dnf));};
+const drvCopyLive=key=>{const {eid,b,en}=drvCopyHolder(key);return !!(eid?(en&&en.driveFile&&fileWanted(b,en)):(b&&b.driveFile&&fileWanted(b,null)));};
 async function drvRecentPrune(){
   try{
     const spare=[];
@@ -35704,7 +35757,7 @@ async function drvKeptRows(){
   return recs.map(r=>{
     const [bid,eid]=String(r.key).slice(6).split("|"),loose=bid.startsWith("drv:"),b=loose?null:books.find(x=>x.id===bid),en=b&&eid?(b.entries||[]).find(x=>x.id===eid):null;
     const df=r.df||(en||b||{}).driveFile||null;if(r.v)drvKeptIds.add(r.v);
-    return {key:r.key,bid,eid:eid||"",loose,df,keep:!!r.keep,live:drvCopyLive(r.key),size:(r.pdf?r.pdf.size:0)||String(r.data||"").length,
+    return {key:r.key,bid,eid:eid||"",loose,df,keep:!!r.keep,live:drvCopyLive(r.key),parts:!!b&&fileHasMore(b,en),size:(r.pdf?r.pdf.size:0)||String(r.data||"").length,
       title:(en&&en.title)||(b&&b.title)||(df&&df.name)||"A file from your Drive"};
   }).sort((a,c)=>c.size-a.size);
 }
@@ -36243,7 +36296,7 @@ async function pdfDraw(s,i){
     if(!P.comic&&!tc.items.some(x=>x.str&&x.str.trim())){
       ocrWant(s,i);
       if(i===s.page&&!P.saidPic){P.saidPic=true;
-        const n=q("#rdSaid",s.el);if(n)n.textContent="This page is a picture of print. Its words are being read: ☰ shows how far.";}}
+        const n=q("#rdSaid",s.el);if(n&&!s.movedBack)n.textContent="This page is a picture of print. Its words are being read: ☰ shows how far.";}}
   }catch(e){
     P.done.set(i,gen);
     if(rdState===s&&!pg.firstChild)pg.innerHTML=`<div class="hint" style="padding:20px">This page couldn't be drawn.</div>`;
@@ -36543,7 +36596,7 @@ async function openReader(id,enId,loose,goMark){
     :(rdCache.has(rk)&&rdCacheDrv.get(rk)===df.id)?rdCache.get(rk)
     :await drvHtml(rk,df,loadOpts,loose?{still:()=>true,reading:()=>false,onBlob:async bl=>{drvMeta.set(df.id,await drvFileMeta(bl,df));}}
       :{still:()=>{const n=books.find(y=>y.id===id),e=n&&(n.entries||[]).find(y=>y.id===hold.id);return !!(e&&e.driveFile&&e.driveFile.id===df.id);},
-        reading:()=>{const n=books.find(y=>y.id===id),e=n&&(n.entries||[]).find(y=>y.id===hold.id);return !!(e&&entFileReading(n,e));}});}
+        reading:()=>{const n=books.find(y=>y.id===id),e=n&&(n.entries||[]).find(y=>y.id===hold.id);return !!(e&&fileWanted(n,e));}});}
   catch(e){if(op.seq!==rdOpenSeq)return;rdOpenCancel();
     if(!(e&&e.name==="AbortError"))alert(e&&e.plain?e.message:"The file couldn't be opened from Google Drive — "+((e&&e.message)||"no answer")+".");return;}
   if(op.seq!==rdOpenSeq)return;   /* something newer asked, or Cancel */
@@ -36600,12 +36653,17 @@ async function openReader(id,enId,loose,goMark){
      bookmark to the end and filed the whole book as read today */
   const or=x?openRead(x):null,posOld=!!(x&&x.readPos&&or&&or.start&&shelfDayOf(x.readPos.at||0)<String(or.start).slice(0,10));
   const fKept=loose?Math.max(0,Math.min(1,+(((settings.drvPos||{})[loose.id]||{}).f||0))):Math.max(0,Math.min(1,x.readPos&&!posOld?+(x.readPos.f||0):bmk));
-  /* the back cover of a volume with tales still to read, and a bookmark further back:
-     a look at the end, not your place */
-  const atEnd=!loose&&!!hold&&fKept>=.995&&bmk<.995&&isSplitTale(b,hold)&&volState(b,markHolder(b,hold)).status!=="finished";
-  const f0=atEnd?Math.max(0,Math.min(1,bmk)):fKept;
+  /* the back cover of a file with parts still to read, whether the bookmark was carried
+     there too or not: a look at the end, not your place. See ONE BOOK, ONE BOOKMARK */
+  const endAt=rdEndOf(isPdf?pdfGot.doc.numPages:0);
+  const atEnd=!loose&&fKept>=endAt&&fileHasMore(b,hold);
+  const f0=atEnd?placeShortOfEnd(mk,bmk,endAt):fKept;
   const c0=isPdf||atEnd?null:loose?((settings.drvPos||{})[loose.id]||{}).c:(x.readPos&&!posOld?x.readPos.c:null);
   const s=rdState={id,en:hold?hold.id:"",tale:asked?asked.id:"",loose:loose||null,rk,mode,el,f:f0,c:typeof c0==="number"&&c0>=0&&c0<=1?c0:null,saved:f0,page:0,pages:1,W:1,f0,secs:0,sitAt:Date.now(),lastAct:Date.now(),lastTick:Date.now(),sel:null};
+  /* what decided the place, for ☰ 📋 Copy, should a book ever open somewhere wrong */
+  if(!loose)rdSelLog(s,`opened at ${f0.toFixed(3)}: place kept ${x.readPos?(+x.readPos.f||0).toFixed(3):"none"}, bookmark ${bmk.toFixed(3)}, last page from ${endAt.toFixed(3)}${posOld?", kept place older than this reading":""}${hold?`, volume ${isSplitTale(b,hold)?volState(b,markHolder(b,hold)).status:"not split"}`:""}${atEnd?", moved back off the last page":""}`);
+  if(atEnd){s.movedBack=true;const n=q("#rdSaid",el);if(n){n.textContent=f0>0?"📖 Back at your place. It had moved to the last page, and this book still has parts to read.":"📖 At the start. Your place had moved to the last page, and no earlier one was kept.";
+    s.saidT=setTimeout(()=>{if(n.isConnected)n.textContent="";},8000);}}
   /* see YOUR PAGE, YOUR WAY */
   if(!isPdf){rdLookApply(s);const lg=b&&RD_LANG[langOf(b).toLowerCase()],tx=q("#rdText",el);if(lg&&tx)tx.lang=lg;}
   /* the phone's Back closes the reader, as it closes every sheet — it went
@@ -36640,7 +36698,7 @@ async function openReader(id,enId,loose,goMark){
       pdfHlScan(s,hlKey,pdfGot.blob?pdfGot.blob.size:0);},500);
   }
   rdLooseDraw(s);
-  if(driveF)rdPinWire(s,rk,driveF,raw,reading);
+  if(driveF)rdPinWire(s,rk,driveF,raw,!loose&&fileWanted(b,hold));
   rdHlPaint(s);
   q("#rdText",el).addEventListener("click",e=>{const mk=e.target.closest&&e.target.closest("mark.rdhl");if(mk&&!String(window.getSelection&&window.getSelection()||"")&&!s.tsel&&Date.now()-(s.ownGone||0)>500){e.stopPropagation();rdHlTap(s,mk);}});
   const act=()=>{s.lastAct=Date.now();};
