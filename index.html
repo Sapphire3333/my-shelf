@@ -2639,6 +2639,11 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .owlq{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 0;align-items:center}
   .owlq .field{flex:1 1 110px;min-width:0;width:0;font-size:13px;padding:4px 8px}
   .owlbub.owlgo{cursor:pointer}
+  /* see MANY SERIES AT ONCE */
+  .sblist{max-height:min(52vh,560px);overflow:auto;border-top:1px solid var(--line)}
+  .sbrow{padding:6px 2px;border-bottom:1px solid var(--line);min-width:0;overflow-wrap:anywhere}
+  .sbrow label{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline;cursor:pointer}
+  .sbsub{margin:3px 0 0 24px}
   .owlx{position:absolute;top:4px;right:5px;font:inherit;font-size:12px;background:none;border:0;
     color:var(--faint);cursor:pointer;padding:1px 5px;border-radius:6px}
   @media(hover:hover){.owlx:hover{color:var(--ink);background:var(--bg)}}
@@ -14199,6 +14204,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-07.5",go:["tab:library"],lines:["<b>📚 Many series at once.</b> ＋ Add book → Many series at once: copy a page that lists series, paste it, and untick what you don't want. An author's panel has 📚 Add their series… too. Anything that looks to be on your shelf already starts unticked and says what it found. Ticked anyway, only the books it hasn't got are added. You see the titles first: Hardcover looks first for free, then a press asks Claude for what's left, with the price on the button. Each new series is its own collection, marked Want to read, and one ↶ takes it all off."]},
   {v:"2026-11-07.4",lines:["<b>📖 The status menu opens where you pressed.</b> On a story's row in a collection, the status and rating menus now open straight under their buttons. They used to open below the page number, tags and readings, a good way down on a phone. On a book's page on a phone the status menu now opens right under its button too."]},
   {v:"2026-11-07.3",go:["el:overview:#secStory"],lines:["<b>🦉 The owl keeps its word.</b> Press the owl's note that a chapter is open and that chapter opens. A chapter it has told you about now stays open, even if the count of books you've finished falls afterwards, so the padlock can't say otherwise."]},
   {v:"2026-11-07.2",lines:["<b>🌙 A toner for the whole app.</b> Press 🌙 at the top, beside 🔎 ↶ ↷, for Warm and Dim sliders and Auto, Light or Dark. Once the top has scrolled away a small 🌙 stays in the corner. It's one toner everywhere: the 🌙 at the foot of the reader and the sliders under ☰ Aa are the same one, and it comes on only when you turn it on, unless you tick By itself. The page no longer turns yellow after dark, and the leaves, frost and petals stay at the corners."]},
@@ -18889,6 +18895,7 @@ function render(){
             <button role="menuitem" data-add="blank"><b>✎ Fill it in myself</b><span>a blank page to type into</span></button>
             <button role="menuitem" data-add="text"><b>⚡ From text or a photo</b><span>paste a blurb or drop a picture — the details are read off it</span></button>
             <button role="menuitem" data-add="isbn"><b>📕 By ISBN or barcode</b><span>the digits under a barcode, or a photograph of one</span></button>
+            <button role="menuitem" data-add="series"><b>📚 Many series at once</b><span>paste a page that lists them, and untick what you don't want</span></button>
           </div>
         </div>
         </div>
@@ -18931,7 +18938,7 @@ function render(){
     qa("[data-add]",am).forEach(b=>b.onclick=()=>{
       am.hidden=true;ab.setAttribute("aria-expanded","false");
       const w=b.dataset.add;
-      if(w==="text")openQuickAdd();else if(w==="isbn")openIsbnAdd();else openBook(uid(),true);
+      if(w==="text")openQuickAdd();else if(w==="isbn")openIsbnAdd();else if(w==="series")serBulkOpen();else openBook(uid(),true);
     });
   }
   /* leaving a book by tab saves what was typed and lets go of the editor's
@@ -73114,6 +73121,134 @@ async function fetchClaudeSeries(name,author,have){
   if(!books.length)return {ok:false,why:"found no list for that series"};
   return {ok:true,name:String(o.series||name).trim()||name,count:parseInt(o.total)||books.length,books,sources:Array.isArray(j.sources)?j.sources:[]};
 }
+/* ┌─ MANY SERIES AT ONCE ────────────────────────────────────────────────────┐
+   │ One series at a time needed a book of it on the shelf first. #serBulk takes │
+   │ a whole list by two doors, ＋ Add book's menu and an author's panel, and    │
+   │ both lead to one list with ticks. Pasted, serBulkParse reads lines like    │
+   │ Name (7 books) with the "by" line under them, from any page that lists     │
+   │ series so, and otherwise takes a line as a name: a page can't be fetched   │
+   │ from here, only copied. From an author, Claude names them (serBulkAuthor).  │
+   │ serBulkHave looks each name up on the shelf, in collections, the series     │
+   │ written on books, and stories inside collections, by the same words in any │
+   │ order and without "the" or "series", or by one name's words all standing   │
+   │ in the other's. Such a row starts unticked and says what it found. Ticked   │
+   │ anyway, only the books it hasn't got go on what is there. Nothing is added  │
+   │ until you have seen the titles: Hardcover first, free, then a press for    │
+   │ Claude on whatever is left, with the price on the button. New books are a   │
+   │ collection each, marked Want to read, and one ↶ takes the whole press off.  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function serBulkParse(text){
+  const lines=String(text||"").split(/\r?\n/).map(l=>l.replace(/\s+/g," ").trim());
+  const out=[],seen=new Set();
+  const put=(name,n,i)=>{
+    name=String(name).replace(/^\d+[.)]\s+/,"").trim();const k=softFold(name);if(!k||seen.has(k))return;seen.add(k);
+    let author="";
+    for(let j=i+1;j<Math.min(lines.length,i+4);j++){const a=lines[j].match(/^by\s+(.+)/i);if(a){author=a[1].split(/[,(]/)[0].trim();break;}if(lines[j]&&/\(\d+\s+(?:primary\s+)?(?:books?|works?)\)$/i.test(lines[j]))break;}
+    out.push({name,count:n||0,author});};
+  lines.forEach((l,i)=>{
+    const m=l.match(/^(.*\S)\s*\((\d+)\s+(?:primary\s+)?(?:books?|works?)\)$/i);
+    if(m){put(m[1],+m[2],i);return;}
+    const c=l.match(/^\((\d+)\s+(?:primary\s+)?(?:books?|works?)\)$/i);
+    if(c&&i>0&&lines[i-1])put(lines[i-1],+c[1],i);});
+  if(out.length)return out;
+  /* no counts anywhere: a plain list, a name to a line */
+  lines.forEach((l,i)=>{if(l&&l.length<=90&&!/^by\s/i.test(l)&&!/avg rating|ratings?$/i.test(l))put(l,0,i);});
+  return out;
+}
+const SB_SKIP=new Set(["the","a","an","of","series","books","book","collection","set"]);
+const serWords=t=>String(t||"").toLowerCase().normalize("NFKD").replace(/\p{M}+/gu,"").replace(/[^\p{L}\p{N}]+/gu," ").trim().split(" ").filter(w=>w&&!SB_SKIP.has(w));
+function serBulkHave(name){
+  const want=serWords(name),key=[...want].sort().join(" ");if(!want.length)return null;
+  let same=null,like=null;
+  const look=(nm,it)=>{const w=serWords(nm);if(!w.length)return;
+    if([...w].sort().join(" ")===key){if(!same||(it.b&&isColl(it.b)&&!it.en&&!(same.b&&isColl(same.b)&&!same.en)))same=Object.assign({same:true,name:nm},it);return;}
+    const [sh,lg]=w.length<want.length?[w,want]:[want,w];
+    if(sh.length>=2&&sh.every(x=>lg.includes(x))&&!like)like=Object.assign({same:false,name:nm},it);};
+  books.forEach(b=>{
+    if(isColl(b)){look(b.title,{b});(b.entries||[]).forEach(en=>{if(en&&en.title)look(en.title,{b,en});});}
+    const sn=seriesShown(b);if(sn)look(sn,{b});});
+  return same||like;
+}
+/* the books of a found list this row doesn't already hold */
+function serBulkNew(r){
+  const list=(r.got||[]).filter(x=>!x.foreign),h=r.have;if(!h||h.en)return list;
+  const inside=isColl(h.b)?(h.b.entries||[]).map(e=>e&&e.title):seriesMates(h.b).map(x=>x.title);
+  const k=new Set(inside.map(titleKey)),f=new Set(inside.map(softFold));
+  return list.filter(x=>!k.has(titleKey(x.title))&&!f.has(softFold(x.title)));
+}
+async function serBulkAuthor(author){
+  const S={type:"string"},schema={type:"object",properties:{series:{type:"array",items:{type:"object",properties:{name:S,books:S},required:["name","books"],additionalProperties:false}}},required:["series"],additionalProperties:false};
+  const j=await claudeAsk({what:"📚 An author's series",kind:"ask",web:3,effort:"low",max_tokens:CLAUDE_SERIES_MAX,waitMs:CLAUDE_BIG_WAIT,schema,
+    text:`List every book series written by ${author}. Search the web first. Include each smaller series inside a big one under its own name, as a site like Goodreads lists it. Leave out box sets and translations.\n- series: each one's name as usually written, and books, how many it has, digits only.`});
+  return ((j.json&&j.json.series)||[]).map(x=>({name:String(x&&x.name||"").trim(),count:parseInt(x&&x.books)||0,author})).filter(x=>x.name);
+}
+function serBulkOpen(opts){
+  const old=q("#serBulk");if(old&&old.__close)old.__close();
+  const author=String((opts&&opts.author)||"").trim(),S={rows:[],say:"",busy:false};
+  const d=document.createElement("div");d.id="serBulk";d.className="ratepanel storypanel";
+  const paint=()=>{
+    const on=S.rows.filter(r=>r.on),left=on.filter(r=>!r.got),found=on.filter(r=>r.got),add=found.reduce((n,r)=>n+serBulkNew(r).length,0);
+    const rowsHtml=S.rows.map((r,i)=>`<div class="sbrow"><label><input type="checkbox" data-sbt="${i}"${r.on?" checked":""}${S.busy?" disabled":""}><b>${esc(r.name)}</b>${r.count?` <span class="hint" style="margin:0">${r.count} book${r.count===1?"":"s"}</span>`:""}${r.author?` <span class="hint" style="margin:0">· ${esc(r.author)}</span>`:""}</label>
+      ${r.have?`<div class="hint sbsub">📚 ${r.have.same?"On your shelf":"Looks like"}: ${esc(r.have.name)}${r.have.en?` in ${esc(r.have.b.title||"Untitled")}`:""}. ${r.have.en?"Ticked, it becomes a collection of its own.":"Ticked, only the books it hasn't got are added."}</div>`:""}
+      ${r.got?`<details class="sbsub"><summary class="hint">${serBulkNew(r).length} to add, from ${esc(r.from)}</summary><div class="hint">${serBulkNew(r).slice(0,60).map(x=>esc((x.pos?"#"+x.pos+" ":"")+x.title)).join(" · ")}</div></details>`:r.why?`<div class="hint sbsub">${esc(r.why)}</div>`:""}</div>`).join("");
+    d.innerHTML=`<div class="hrow2" style="margin-bottom:6px;gap:8px"><b class="serif" style="font-size:17px">📚 Many series at once</b><button class="btn" data-sb="x" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+      ${S.rows.length?"":`<div class="hint" style="margin:0 0 6px">On a page that lists series, like an author's series page on Goodreads, press Ctrl+A and Ctrl+C, then paste it here. A plain list works too, one name to a line.</div>
+      <textarea class="field" id="sbPaste" rows="6" style="width:100%;box-sizing:border-box" placeholder="The Ferry Keepers (6 books)&#10;by A. N. Author"></textarea>
+      <div class="hrow2" style="gap:6px;margin-top:6px;flex-wrap:wrap"><button class="btn smallbtn pri" data-sb="read">Read this list</button>${author&&claudeReady()?`<button class="btn smallbtn" data-sb="author"${S.busy?" disabled":""}>✨ Ask Claude for ${esc(author)}'s series (about 3¢)</button>`:""}</div>`}
+      ${S.rows.length?`<div class="sblist">${rowsHtml}</div>
+      <div class="hrow2" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        ${left.length?`<button class="btn smallbtn pri" data-sb="hc"${S.busy||S.hcDone?" disabled":""}>🔎 Find the books</button>`:""}
+        ${left.length&&S.hcDone&&claudeReady()?`<button class="btn smallbtn" data-sb="claude"${S.busy?" disabled":""}>✨ Ask Claude for the ${left.length} left (about ${left.length*3}¢)</button>`:""}
+        ${found.length?`<button class="btn smallbtn pri" data-sb="add"${S.busy||!add?" disabled":""}>＋ Add ${add} book${add===1?"":"s"}, marked Want to read</button>`:""}
+      </div>`:""}
+      <div class="hint" id="sbSay" style="margin:6px 0 0">${esc(S.say)}</div>`;};
+  const setRows=list=>{S.rows=list.map(x=>{const have=serBulkHave(x.name);return Object.assign({},x,{have,on:!have,got:null,why:"",from:""});});S.hcDone=false;
+    S.say=S.rows.length?`${S.rows.length} found, ${S.rows.filter(r=>r.have).length} of them already look to be on your shelf.`:"No series found in that. Is it the page's text?";};
+  const step=async(list,who,get)=>{S.busy=true;
+    for(let i=0;i<list.length;i++){const r=list[i];S.say=`${who}: ${i+1} of ${list.length}, ${r.name}…`;paint();
+      try{const g=await get(r);if(g&&g.ok&&g.books.length){r.got=g.books;r.from=who;r.why="";if(!r.count)r.count=g.count||g.books.length;}else r.why=`${who} ${(g&&g.why)||"found nothing"}.`;}
+      catch(e){r.why=`${who} didn't answer: ${String(e&&e.message||e).slice(0,80)}.`;}
+      if(!d.isConnected)return;}
+    S.busy=false;S.say="";paint();};
+  const addAll=async()=>{
+    S.busy=true;S.say="Adding…";paint();
+    const items=[];let nBooks=0,nNew=0;
+    const stamp=x=>{x.modified=Date.now();};
+    for(const r of S.rows.filter(y=>y.on&&y.got)){
+      const list=serBulkNew(r);if(!list.length)continue;nBooks+=list.length;
+      const h=r.have&&!r.have.en?r.have:null;
+      if(h&&isColl(h.b)){
+        const before=JSON.parse(JSON.stringify(h.b));
+        h.b.entries=[...(h.b.entries||[]),...list.map(x=>Object.assign(blankEntry(),{title:x.title,pages:x.pages||"",status:"want"}))];stamp(h.b);
+        await dbPut("books",h.b);items.push({id:h.b.id,before,after:JSON.parse(JSON.stringify(h.b))});if(SYNC.on)enqueue({kind:"book",id:h.b.id});
+        if(cur&&cur.id===h.b.id)try{await rebaseOpenBook(h.b.id);}catch(e){}
+      }else if(h){
+        for(const x of list){const nb=blankBook(uid());Object.assign(nb,{title:x.title,author:x.author||r.author||h.b.author||"",series:h.name,seriesNum:x.pos||"",status:"want",pages:x.pages||""});stamp(nb);
+          await dbPut("books",nb);books.unshift(nb);items.push({id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))});if(SYNC.on)enqueue({kind:"book",id:nb.id});}
+      }else{
+        const nb=blankBook(uid());Object.assign(nb,{type:"collection",title:r.name,author:r.author||"",status:"want",entries:list.map(x=>Object.assign(blankEntry(),{title:x.title,pages:x.pages||""}))});stamp(nb);nNew++;
+        await dbPut("books",nb);books.unshift(nb);items.push({id:nb.id,before:null,after:JSON.parse(JSON.stringify(nb))});if(SYNC.on)enqueue({kind:"book",id:nb.id});
+      }
+    }
+    if(items.length){pushOp({t:"bulk",items});if(SYNC.on)flushQueue();}
+    refreshShelfSub();
+    S.rows=[];S.busy=false;S.say=`Added ${nBooks} book${nBooks===1?"":"s"}${nNew?`, ${nNew} new collection${nNew===1?"":"s"}`:""}. One ↶ takes it all off.`;paint();
+    try{render();}catch(e){}};
+  d.addEventListener("change",e=>{const t=e.target;if(t&&t.dataset&&t.dataset.sbt!=null){S.rows[+t.dataset.sbt].on=t.checked;S.hcDone=S.hcDone&&!S.rows.some(r=>r.on&&!r.got&&!r.why);paint();}});
+  d.addEventListener("click",async e=>{const b=e.target.closest&&e.target.closest("[data-sb]");if(!b||S.busy)return;const k=b.dataset.sb;
+    if(k==="x"){d.__close();return;}
+    if(k==="read"){const ta=q("#sbPaste",d);setRows(serBulkParse(ta?ta.value:""));paint();return;}
+    if(k==="author"){S.busy=true;S.say=`Asking Claude for ${author}'s series…`;paint();
+      try{const l=await serBulkAuthor(author);S.busy=false;if(d.isConnected){setRows(l);paint();}}
+      catch(er){S.busy=false;S.say=`Claude didn't answer: ${String(er&&er.message||er).slice(0,80)}.`;paint();}return;}
+    if(k==="hc"){await step(S.rows.filter(r=>r.on&&!r.got),"Hardcover",r=>fetchHardcoverSeries(r.name,r.author));S.hcDone=true;paint();return;}
+    if(k==="claude"){await step(S.rows.filter(r=>r.on&&!r.got),"Claude",r=>fetchClaudeSeries(r.name,r.author,[]));return;}
+    if(k==="add")await addAll();});
+  document.body.appendChild(d);
+  d.__close=dismissable(d);
+  paint();
+}
+document.addEventListener("click",e=>{const t=e.target.closest&&e.target.closest("[data-serauthor]");if(t){e.stopPropagation();serBulkOpen({author:t.dataset.serauthor});}});
 /* ---- WHICH BOOK OF A LIST IS WHICH OF YOURS ----
    A series list (Hardcover's or Claude's) matched to books or stories on the
    shelf, in the list's order: folded titles equal, then titleKey equal, then
@@ -74247,7 +74382,7 @@ const freeFoundRow=(x,i,where)=>`<div class="snap" style="display:flex;gap:8px;a
 function freeAuthorHtml(name){
   if(navigator.onLine===false&&freeAu.name!==name)return "";
   const st=freeAu.name===name?freeAu:null;
-  return `<div style="margin:10px 0 0"><div class="hrow2" style="gap:6px;flex-wrap:wrap;align-items:center"><button class="btn smallbtn" data-freeaugo="${esc(name)}"${st&&st.busy?" disabled":""}>${st&&st.busy?"🏛 Asking Open Library…":st&&st.list?"🏛 Ask again":"🏛 What else of theirs can I borrow?"}</button>${st&&st.err?`<span class="hint" style="margin:0">Open Library couldn't: ${esc(st.err)}.</span>`:""}</div>
+  return `<div style="margin:10px 0 0"><div class="hrow2" style="gap:6px;flex-wrap:wrap;align-items:center"><button class="btn smallbtn" data-freeaugo="${esc(name)}"${st&&st.busy?" disabled":""}>${st&&st.busy?"🏛 Asking Open Library…":st&&st.list?"🏛 Ask again":"🏛 What else of theirs can I borrow?"}</button><button class="btn smallbtn" data-serauthor="${esc(name)}">📚 Add their series…</button>${st&&st.err?`<span class="hint" style="margin:0">Open Library couldn't: ${esc(st.err)}.</span>`:""}</div>
     ${st&&st.list?(st.list.length?st.list.map((x,i)=>freeFoundRow(x,i,"au")).join(""):`<div class="hint" style="margin:6px 0 0">Nothing more of theirs to borrow.</div>`):""}</div>`;
 }
 function freeSearchHtml(){
