@@ -9053,6 +9053,47 @@ async function collAllGo(d,to,withMarked){
   if(n)bannerNote(to==="off"?"⌛ Taken off. ↶ Undo puts it back.":`${to==="finished"?"✓":"🔖"} ${n.toLocaleString()} set. ↶ Undo puts them back.`,5000);
 }
 document.addEventListener("click",e=>{if(e.target.closest&&e.target.closest("[data-collall]")){e.preventDefault();e.stopPropagation();collAllOpen();}});
+/* ┌─ A VOLUME READ AGAIN ────────────────────────────────────────────────────┐
+   │ Every tale of a volume already read answers ✓, so finishing the first one │
+   │ again completed the volume on the spot. Measured on four tales read in   │
+   │ the spring: a second finish of the volume filed that day, a finish note  │
+   │ for each of the four, the copy of its file let go, and the next tale     │
+   │ opening on the last page.                                                │
+   │ So 📖 on a tale of a finished volume begins a new pass, as it does on a   │
+   │ book (markStatus, `again`). The tales after it go back to Want to read,  │
+   │ keeping their readings, which are records. The tales before it stay read: │
+   │ that is where you chose to begin. The bookmark starts over, and a place  │
+   │ from an earlier day or on the last page goes. From there the volume      │
+   │ counts as it did the first time: part-way until the last tale, then one  │
+   │ note and one more finish on that day.                                    │
+   │ A reread begun before this rule comes right at the next press: finishing │
+   │ a tale read again sends back those after it last finished before this    │
+   │ reading began, and touches no place.                                     │
+   │ A later tale said to be read with no date goes back as well, which is    │
+   │ what a series whose unmarked books count as read needs.                  │
+   │ ✓ on a tale that went back restores its old finish: no note and no new   │
+   │ finish. readUnits holds the count to that. A pass is the first tale's    │
+   │ reading, ended on the day its last tale was, and a first tale read again │
+   │ with later tales last finished before it is no pass of the volume.       │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function volReadAgain(coll,en,what,volWas){
+  const h=markHolder(coll,en),ts=volTales(coll,h),i=ts.indexOf(en);if(i<0)return;
+  const later=ts.slice(i+1).filter(t=>entStatusOf(coll,t)==="finished"&&!entDnfOf(coll,t)&&!entHoldOf(coll,t));
+  if(what==="reading"){
+    if(volWas!=="finished")return;
+    later.forEach(t=>{t.status="want";});
+    /* no reading anywhere: a first time through, so what it holds is this time's.
+       An earlier tale finished after this one: a reread already part-way */
+    if(!ts.some(t=>doneReads(t).length)||ts.slice(0,i).some(t=>lastEnd(t)>lastEnd(en)))return;
+    h.progress="";h.pct="";
+    const today=todayStr();
+    [h,entFileHolder(coll,en)].forEach(x=>{const p=x&&x.readPos;if(p&&(+p.f>=.995||shelfDayOf(p.at||0)<today))delete x.readPos;});
+    return;
+  }
+  const open=openRead(en);if(!open)return;
+  const from=String(open.start||""),again=doneReads(en).length>0;
+  later.forEach(t=>{const d=lastEnd(t);if(!d||(again&&from&&d<from))t.status="want";});
+}
 function markEntStatus(coll,en,what){
   const finWas=en.status==="finished"&&!en.dnf;
   /* the first tale of a split volume is one tale — see A VOLUME IS ITS TALES */
@@ -9086,14 +9127,18 @@ function markEntStatus(coll,en,what){
     /* before this press: a volume whose silent tales already answer ✓ is not
        completed by ✓ on one of them, however it looks afterwards */
     const volWas=isSplitTale(coll,en)?volState(coll,markHolder(coll,en)).status:"";
+    /* see A VOLUME READ AGAIN. A story of its own read again starts its bookmark from
+       the beginning, as a book does: on the last page it opened there */
+    if(volWas){if(!entBulkOn&&(what==="reading"||what==="finished"))volReadAgain(coll,en,what,volWas);}
+    else if(what==="reading"&&!en.dnf&&entStatusOf(coll,en)!=="reading"&&!openRead(en)&&doneReads(en).length){en.progress="";en.pct="";delete en.readPos;}
     en.dnf=false;en.hold=false;en.status=what;
     if(what==="reading"||what==="finished")en.unowned=false;
     /* a tale is a note about the tale, not a book finished — see A PIECE OF A
        VOLUME IS NEVER A THING OF ITS OWN — so a split volume pays its one pack
        (under the volume's own id) when the tale that completes it is marked */
     if(what==="finished"&&!finWas&&!entBulkOn){
-      const split=isSplitTale(coll,en),h=markHolder(coll,en);
-      if(!split||volState(coll,h).status==="finished"){finNoteBegin((split?h:en).title,split?h:en,coll);finFxSoon();
+      const split=isSplitTale(coll,en),h=markHolder(coll,en),restored=split&&!openRead(en)&&doneReads(en).length>0;
+      if(!restored&&(!split||volState(coll,h).status==="finished")){finNoteBegin((split?h:en).title,split?h:en,coll);finFxSoon();
         try{packGrant("fin:"+coll.id+"|"+(split?h.id:en.id),"finish","“"+((split?h:en).title||"Untitled")+"”");}catch(e){}}}
     if(what==="finished"){
       if(!isSplitTale(coll,en))finishProgress(en);
@@ -9198,16 +9243,19 @@ function readUnits(){
         if(ts.length>1){
           const v=volState(b,en);
           const lastAt=rs=>rs.reduce((k,r,j)=>String(r.end||"")>=String((rs[k]||{}).end||"")?j:k,0);
-          const taleEnd=t=>doneReads(t).reduce((m,r)=>{const d=String(r.end||"");return d>m?d:m;},"")||String(t.dateFinished||"").trim();
+          /* each later tale's finishes, and the newest of the first tale's: see A VOLUME READ AGAIN */
+          const others=ts.slice(1).map(t=>{const a=doneReads(t).map(r=>String(r.end||"")).filter(Boolean),d=String(t.dateFinished||"").trim();return a.length?a:d?[d]:[];});
+          const newest=()=>String((reads[lastAt(reads)]||{}).end||"");
           if(v.status==="finished"&&!v.dnf){
-            /* finished on the day the last tale was, not the first */
-            const last=ts.slice(1).reduce((m,t)=>{const d=taleEnd(t);return d>m?d:m;},"");
-            if(reads.length&&last){const k=lastAt(reads);
-              if(String(reads[k].end||"")<last){reads=reads.slice();reads[k]=Object.assign({},reads[k],{end:last});}}
+            /* the first tale read again alone is not the volume read again. A tale with
+               no date says nothing: a volume read twice and split later has those */
+            if(mine.length>1&&newest()&&others.some(a=>a.length&&!a.some(d=>d>=newest()))){
+              times--;const k=lastAt(reads);reads=reads.filter((_,j)=>j!==k);}
           }else if(!v.dnf){
             /* not every tale is read: the pass the first tale closed is still
-               open for the volume, so it is not a finish — earlier ones are */
-            if(entStatusOf(b,en)==="finished"&&!entDnfOf(b,en)&&times>0){
+               open for the volume, so it is not a finish — earlier ones are, and
+               so is one every later tale went on to finish */
+            if(entStatusOf(b,en)==="finished"&&!entDnfOf(b,en)&&times>0&&!(newest()&&others.every(a=>a.some(d=>d>=newest())))){
               times--;
               if(reads.length>times){const k=lastAt(reads);reads=reads.filter((_,j)=>j!==k);}
             }
@@ -9218,6 +9266,13 @@ function readUnits(){
             const bm=volMarkLive(b,en)?pagesReached(en,pg):0;
             part=Math.max(bm,Math.round(done*pg/ts.length));
           }
+          /* each pass finished on the day its last tale did, not the first: of a later
+             tale's finishes, the first one since this pass's reading and before the next */
+          if(!v.dnf&&reads.length){
+            const by=reads.map(r=>String(r.end||"")).filter(Boolean).sort();
+            reads=reads.map(r=>{const e=String(r.end||""),nx=by.find(d=>d>e);
+              const z=others.reduce((m,a)=>{const d=a.filter(x=>x>=e&&(!nx||x<nx)).sort()[0];return d&&d>m?d:m;},e);
+              return z>e?Object.assign({},r,{end:z}):r;});}
         }
         /* a volume is named as the volume — "Vol #1", not its first tale —
            where ✂ Split put the volume's name in front of each tale */
@@ -14249,6 +14304,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-07.7",lines:["<b>📖 Reading a split book again.</b> Press Reading on a part of a book you've read, and the parts after it go back to Want to read, keeping their old dates. The bookmark starts over and it opens at the start. The book counts as part-way until the last part is finished, then as read once more, with one finish note. Its file stays until then. If you only wanted that one part, ✓ on the others brings their old dates back and adds no new finish. A book you're already rereading comes right at your next press. A story read again now opens at its beginning too, and anything finished opens at the start instead of on its last page."]},
   {v:"2026-11-07.6",lines:["<b>📖 A split book and its one file.</b> A split book no longer opens on its last page while parts of it are still to read. If your place had already landed there, it goes back to your bookmark, or else to the last page you reached before the end, and says so. The copy of its Drive file now stays on this device from the first part until the last part is finished, instead of going as soon as one part is marked Finished."]},
   {v:"2026-11-07.5",go:["tab:library"],lines:["<b>📚 Many series at once.</b> ＋ Add book → Many series at once: copy a page that lists series, paste it, and untick what you don't want. An author's panel has 📚 Add their series… too. Anything that looks to be on your shelf already starts unticked and says what it found. Ticked anyway, only the books it hasn't got are added. You see the titles first: Hardcover looks first for free, then a press asks Claude for what's left, with the price on the button. Each new series is its own collection, marked Want to read, and one ↶ takes it all off."]},
   {v:"2026-11-07.4",lines:["<b>📖 The status menu opens where you pressed.</b> On a story's row in a collection, the status and rating menus now open straight under their buttons. They used to open below the page number, tags and readings, a good way down on a phone. On a book's page on a phone the status menu now opens right under its button too."]},
@@ -36657,8 +36713,10 @@ async function openReader(id,enId,loose,goMark){
      there too or not: a look at the end, not your place. See ONE BOOK, ONE BOOKMARK */
   const endAt=rdEndOf(isPdf?pdfGot.doc.numPages:0);
   const atEnd=!loose&&fKept>=endAt&&fileHasMore(b,hold);
-  const f0=atEnd?placeShortOfEnd(mk,bmk,endAt):fKept;
-  const c0=isPdf||atEnd?null:loose?((settings.drvPos||{})[loose.id]||{}).c:(x.readPos&&!posOld?x.readPos.c:null);
+  /* read to the end and finished: nothing is left there to come back to */
+  const doneHere=!loose&&!atEnd&&fKept>=endAt&&(hold?(isSplitTale(b,hold)?volState(b,markHolder(b,hold)).status:entStatusOf(b,hold)):statusOf(b))==="finished";
+  const f0=atEnd?placeShortOfEnd(mk,bmk,endAt):doneHere?0:fKept;
+  const c0=isPdf||atEnd||doneHere?null:loose?((settings.drvPos||{})[loose.id]||{}).c:(x.readPos&&!posOld?x.readPos.c:null);
   const s=rdState={id,en:hold?hold.id:"",tale:asked?asked.id:"",loose:loose||null,rk,mode,el,f:f0,c:typeof c0==="number"&&c0>=0&&c0<=1?c0:null,saved:f0,page:0,pages:1,W:1,f0,secs:0,sitAt:Date.now(),lastAct:Date.now(),lastTick:Date.now(),sel:null};
   /* what decided the place, for ☰ 📋 Copy, should a book ever open somewhere wrong */
   if(!loose)rdSelLog(s,`opened at ${f0.toFixed(3)}: place kept ${x.readPos?(+x.readPos.f||0).toFixed(3):"none"}, bookmark ${bmk.toFixed(3)}, last page from ${endAt.toFixed(3)}${posOld?", kept place older than this reading":""}${hold?`, volume ${isSplitTale(b,hold)?volState(b,markHolder(b,hold)).status:"not split"}`:""}${atEnd?", moved back off the last page":""}`);
