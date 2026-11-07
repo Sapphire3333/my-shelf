@@ -12722,7 +12722,7 @@ async function initSync(){
     /* …and a Drive file's copy on this device lasts while its book is being
        read — see BOOK FILES ON GOOGLE DRIVE */
     /* later, so reading the copies never slows the shelf's first paint */
-    setTimeout(()=>{drvRecentPrune();},8000);
+    setTimeout(async()=>{try{await rdTwinFoldAll();}catch(e){}drvRecentPrune();},8000);
   }catch(e){}
   /* A book named in the address is opened HERE, as soon as the shelf is in
      memory — not wherever the first paint happens to come from, because that is
@@ -14321,6 +14321,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-07.11",lines:["<b>📖 A split book keeps its file once.</b> Two parts of one book could each hold their own copy of the same file, taking up the room twice. They join now, soon after you open the app, and your newest place in the book stays."]},
   {v:"2026-11-07.10",lines:["<b>❄️ The snow globe waits for you.</b> It only listens for a shake while 🌅 Your day is open, so putting your phone down no longer sets it off. <b>🐉 Your own dragon</b> is the one that shows whenever you have a picture for it: it could be left in Settings with no way back to it."]},
   {v:"2026-11-07.9",lines:["<b>🛟 A device can't lose its settings for good any more.</b> Text size, bottom bar, dragon, background and the rest of what each device keeps for itself now have a copy in your cloud, and come back by themselves if a device ever loses them, a reinstall included. A device that loses them can no longer blank the settings that follow you between devices either, and if that has already happened, they come back from your newest backup from before it. On a phone, ⚙ at the top now has the bottom bar's size, right under the text size."]},
   {v:"2026-11-07.8",go:["tab:library"],lines:["<b>📚 Many series at once finds the right books.</b> A row now only takes a series of exactly that name, by that author, in English. Hardcover, which is free, keeps a row only when it has every book the list says. Everything else goes to Claude, with the price on the button, and what Claude finds is kept on this device for a month, so closing the panel or pasting again doesn't charge you twice. A row says how many of the list it found. A book already on your shelf isn't added again, and a book in two rows goes in the smaller series."]},
@@ -36633,6 +36634,8 @@ function docHlFind(text){
    │ (rdLooseDraw): the shelf's closest title, a story included, to link it   │
    │ to, or ＋ Add to my shelf; linking carries the place over.               │
    └──────────────────────────────────────────────────────────────────────────┘ */
+/* one file: by its id, or by its name and size, since Drive can hold the one book twice */
+const fileSame=(a,c)=>!!a&&!!c&&(a.id===c.id||(!!a.name&&a.name===c.name&&!!a.size&&a.size===c.size));
 const entFileHolder=(b,en)=>{if(!b||!en)return null;
   if(!isSplitTale(b,en))return en.driveFile?en:null;
   const all=volTales(b,markHolder(b,en));
@@ -36640,10 +36643,17 @@ const entFileHolder=(b,en)=>{if(!b||!en)return null;
      kept on a tale from before a file went on the volume was a second holder with a
      second place: one tale opened at page 128 and the next, in the one file, on the
      back cover where it had last been looked at */
-  if(en.driveFile)return all.find(t=>t&&t.driveFile&&t.driveFile.id===en.driveFile.id)||en;
+  if(en.driveFile)return all.find(t=>t&&t.driveFile&&fileSame(t.driveFile,en.driveFile))||en;
   return all.find(t=>t&&t.driveFile)||null;};
-/* such a tale's highlights and bookmarks join the one holder the first time it opens,
-   since the reader only shows the holder's, and its copy of the file goes */
+/* such a tale's highlights and bookmarks join the one holder, since the reader only shows
+   the holder's, at start-up or when it opens. The newer of the two places stands, since
+   this tale may be the one read last. Its copy on this device goes to the holder if the
+   holder has none, and otherwise goes: two tales measured 18 MB each for one file */
+async function rdTwinFoldAll(){
+  for(const b of books.slice()){if(!isColl(b))continue;
+    for(const en of (b.entries||[]).slice())
+      if(en&&en.driveFile&&isSplitTale(b,en)&&entFileHolder(b,en)!==en)await rdTwinFold(b.id,en.id);}
+}
 async function rdTwinFold(id,enId){
   const b=books.find(x=>x.id===id),en=b&&(b.entries||[]).find(x=>x.id===enId);
   if(!en||!en.driveFile||!isSplitTale(b,en))return;
@@ -36652,8 +36662,15 @@ async function rdTwinFold(id,enId){
     ["marks","bms"].forEach(f=>{const a=e[f];
       if(Array.isArray(a)&&a.length){const have=new Set((k[f]||[]).map(m=>m.id));k[f]=[...(k[f]||[]),...a.filter(m=>!have.has(m.id))];}
       delete e[f];});
+    if(e.readPos&&(!k.readPos||(+e.readPos.at||0)>(+k.readPos.at||0)))k.readPos=e.readPos;
     delete e.driveFile;delete e.readPos;return true;};
   try{if(view==="book"&&cur&&cur.id===id)await quickEdit(mut);else await shelfMut(id,mut);}catch(e){}
+  try{const from=drvKey(id+"|"+enId),to=drvKey(id+"|"+hid),r=await dbGet("images",from),df=h.driveFile;
+    if(r){const have=await dbGet("images",to);
+      if(!have||have.v!==df.id)await dbPut("images",Object.assign({},r,{key:to,v:df.id,df:drvFileOf(df)}));
+      else if(r.keep&&!have.keep)await dbPut("images",Object.assign({},have,{keep:true}));
+      await dbDel("images",from);rdCache.delete(id+"|"+enId);rdCacheDrv.delete(id+"|"+enId);rdPdf.delete(id+"|"+enId);sizeReport=null;}
+  }catch(e){}
 }
 const rdX=(s,b)=>s.en&&b?((b.entries||[]).find(e=>e.id===s.en)||b):b;
 const drvMeta=new Map();
