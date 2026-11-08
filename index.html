@@ -14607,6 +14607,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-08.7",go:["tab:care"],lines:["<b>📲 ReadEra brings in books that only share a title.</b> A book in ReadEra with the same title as one on your shelf but a different author used to be treated as maybe the same book: it started unticked and ＋ Add wouldn't take it, so another book of that name never came in. Now the authors decide. Nothing in common, and it's a book of its own: it starts ticked, ＋ Add brings it in, and its row says which book here only shares its title. A word of the name in common (Doe, Jane and Jane Doe) is the same book. Only where one side has no author does it wait for you, and then ＋ Add or ✎ Fill in is your choice.","Ticking a row no longer throws the list back to its top: it stays where you are."]},
   {v:"2026-11-08.6",go:["tab:library"],lines:["<b>📱 Choose what follows you down the shelf, on a phone.</b> Open ☰ in the Library and press <b>✎</b> at the end of its row: tick anything to keep with you as you scroll — the find box, ☰, any stage on its own like ⌛ Don't have it yet, Sort, Grid, Readable here, Select books. What you tick rides along at the top in one line that slides sideways, and ✎ at its end changes it. Kept on this device.","<b>🤏 Pinch the reader's words.</b> Pinching a book in the reader used to zoom the whole screen, so the bar under the words grew too and its buttons were cut off. Now pinching changes the text size, from the same place in the book, and the bars stay their size. The new size is kept, as ☰ Aa's would be. In a PDF or a comic a pinch steps its own − ＋ zoom."]},
   {v:"2026-11-08.5",go:["tab:care"],lines:["<b>📌 ReadEra says why.</b> When you open a ReadEra shelf, the books you already have used to say only that they start unticked, with nothing here it does not have on each row. Each now says which it is: To read in ReadEra and ticked, so ✎ Fill in gives it 📌; already carries 📌; finished or given up here, so no 📌; only the same title as a book here by another author, which you can tick if it's the same book; or blanks it could fill in. The line at the top counts each kind."]},
   {v:"2026-11-08.4",go:["tab:challenges"],lines:["<b>📊 Which finishes counted.</b> Under Finish three books in Challenges → This week, and the month's Finish books, <b>Which ones counted</b> opens a list: every reading it counted, with its day, and under them what you marked finished in those days that it didn't count, each with the reason: a finish date in another week, no finish date at all, a tale of a split volume (the volume counts once, when its last tale is done), or a story counted through its collection's date."]},
@@ -55982,18 +55983,30 @@ function reFillable(b,it){
    collection here is often a file of its own in ReadEra, and offering that
    file as new added a second copy of a story already filed. A story is only ever given
    📌 from here; the blanks Fill in writes are a book's. */
+/* ---- ONE TITLE, TWO AUTHORS ----
+   The same title alone was a near match that could only fill in the book
+   already here, so a shelf's own book of that name never came in: a later
+   volume of a long-running series, edited by someone else, stood unticked with
+   no way to add it. Now the authors decide. A word of the name in common
+   ("Doe, Jane" and "Jane Doe") is the same book, written another way. Both
+   named with nothing in common is another book: it starts ticked as new and
+   says which book here only shares its title (`alike`). Only an author missing
+   on one side stays a near match, and ＋ Add can take that one too. */
 function reShelfMatch(it,byBoth,byTitle,find){
   const t=it.title.toLowerCase().replace(/\s+/g," ").trim();
-  const both=byBoth[dupeKey(it.title,it.author)],one=byTitle[t];
-  const have=both||one||null;
-  if(have)return {have,near:!both&&!!one,en:null,fill:reFillable(have,it)};
+  let both=byBoth[dupeKey(it.title,it.author)];const one=byTitle[t];
+  if(!both&&one&&authorsShareWord(it.author,one.author))both=one;
+  const named=x=>!!String(x||"").trim();
+  const alike=!both&&one&&named(it.author)&&named(one.author)?one:null;
+  const have=both||(alike?null:one)||null;
+  if(have)return {have,near:!both&&!!one,en:null,fill:reFillable(have,it),alike:null};
   const st=find(it.title,it.author);
   if(st&&st.en){
     const c=st.b,en=st.en;
     const mark=it.prio&&!entPrioOf(c,en)&&!entDnfOf(c,en)&&entStatusOf(c,en)!=="finished";
-    return {have:c,near:false,en,fill:mark?[["prio","📌 Priority"]]:[]};
+    return {have:c,near:false,en,fill:mark?[["prio","📌 Priority"]]:[],alike:null};
   }
-  return {have:null,near:false,en:null,fill:[]};
+  return {have:null,near:false,en:null,fill:[],alike};
 }
 /* a row starts ticked when it is new, or when it is certainly a book or story
    you have and ReadEra's To read would give it 📌 — never a near match */
@@ -56110,6 +56123,10 @@ function openReColl(i){
 }
 function renderReadEra(){
   const box=q("#reOut");if(!box)return;
+  /* a tick redraws the card, and the list under it is a box that scrolls on
+     its own: it went back to its first row at every tick. The same shelf
+     keeps each list's place, and the page keeps its own. */
+  const reTops=qa(".relist",box).map(x=>x.scrollTop),reY=window.scrollY,reSame=!!reOpen&&box.dataset.reShelf===String(reOpen.i);
   if(!reFound){box.innerHTML="";return;}
   const {rows,shape,total,colls,counts}=reFound;
   const withQ=rows.filter(r=>r.quotes.length);
@@ -56176,7 +56193,8 @@ function renderReadEra(){
       const DRAW_CAP=200;
       const shownRows=foundRows.slice(0,DRAW_CAP);
       const hiddenRows=foundRows.length-shownRows.length;
-      const addable=ticked.filter(r=>!r.have);
+      /* a near match may be another book of that name — see ONE TITLE, TWO AUTHORS */
+      const addable=ticked.filter(r=>!r.have||r.near);
       const fillable=ticked.filter(r=>r.have&&r.fill.length);
       const canFill=rows.filter(r=>r.have&&r.fill.length);
       const known=rows.filter(r=>r.have).length;
@@ -56195,10 +56213,11 @@ function renderReadEra(){
               say("has","already carries 📌","already carry 📌"),
               say("fin","is finished here, so it gets no 📌","are finished here, so they get no 📌"),
               say("dnf","was given up here, so it gets no 📌","were given up here, so they get no 📌"),
-              say("near","only shares its title with a book here, by another author: tick it if it's the same one","only share their titles with books here, by other authors: tick one if it's the same"),
+              say("near","has the same title as a book here and no author to tell them apart: tick it, then ＋ Add brings it in as its own, or ✎ Fill in marks the one here","have the same titles as books here and no author to tell them apart: tick one, then ＋ Add brings it in as its own, or ✎ Fill in marks the one here"),
               say("fill","has blanks it could fill in, unticked","have blanks they could fill in, unticked"),
               say("none","has nothing to add","have nothing to add")].filter(Boolean).join("; ");})()}.
           Adding one again makes a second copy — nothing is merged into the book you already have.</div>`:""}
+        ${(()=>{const n=rows.filter(r=>!r.have&&r.alike).length;return n?`<div class="hint" style="margin:0 0 7px">${n} ${n===1?"shares only its title with a book here by another author, so it comes in as a book of its own and starts ticked":"share only their titles with books here by other authors, so they come in as books of their own and start ticked"}.</div>`:"";})()}
         <label class="chk" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--mut);margin:0 0 8px">
           <input type="checkbox" id="reProg" ${reWantProgress?"checked":""}>
           Bring how far you have read as well — using ReadEra's own page numbers</label>
@@ -56230,9 +56249,10 @@ function renderReadEra(){
               ${(r.it.tags||[]).length?" · "+(r.it.tags||[]).slice(0,3).map(esc).join(", "):""}</span>
             ${r.have?`<span class="meta" style="color:#b45309">already on your shelf${r.en?`, a story inside “${esc(r.have.title||"Untitled")}”`:""}${(()=>{
               const w=reWhy(r),blanks=r.fill.filter(x=>x[0]!=="prio").map(x=>x[1]);
-              const said=w==="near"?`the same title only, by ${esc(r.have.author||"no author")} here: tick it if it's the same book${r.fill.some(x=>x[0]==="prio")?", and ✎ Fill in gives it 📌":""}`
+              const said=w==="near"?`the same title as the one here${String(r.have.author||"").trim()?` by ${esc(r.have.author)}`:""}, with no author to tell them apart: tick it, then ＋ Add brings it in as a book of its own, or ✎ Fill in marks the one here${r.fill.some(x=>x[0]==="prio")?" with 📌":""} if it's the same book`
                 :w==="fill"?"":RE_WHY_ROW[w]||"";
-              return (said?" · "+said:"")+(blanks.length?" · could fill in "+blanks.join(", "):"");})()}</span>`:""}
+              return (said?" · "+said:"")+(blanks.length?" · could fill in "+blanks.join(", "):"");})()}</span>`
+              :r.alike?`<span class="meta" style="color:#b45309">a book of its own: the “${esc(r.alike.title||"Untitled")}” here is by ${esc(r.alike.author)}, and only shares its title</span>`:""}
           </span></label>`).join("")}</div>
         ${hiddenRows>0?`<div class="hint" style="margin:7px 0 0">Showing the first ${shownRows.length}${shelfQ?" of "+foundRows.length+" found":""} — ${hiddenRows} more ${hiddenRows===1?"is":"are"} here but not drawn. Type in the box above to reach ${hiddenRows===1?"it":"them"}. Tick all, Add and Fill in still work on the whole ${esc(reOpen.title)} shelf.</div>`:""}
         ${!foundRows.length?`<div class="none" style="padding:8px 2px">Nothing here matches “${esc(reShelfFind)}”.</div>`:""}
@@ -56293,6 +56313,8 @@ function renderReadEra(){
       openReColl(i);reOpen.rows.forEach((r,k)=>{if(on[k]!=null)r.on=on[k];});renderReadEra();}
   };
   qa("[data-recoll]",box).forEach(btn=>btn.onclick=()=>{reShelfFind="";openReColl(+btn.dataset.recoll);});
+  if(reSame){qa(".relist",box).forEach((x,k)=>{if(reTops[k])x.scrollTop=reTops[k];});if(window.scrollY!==reY)window.scrollTo(0,reY);}
+  box.dataset.reShelf=reOpen?String(reOpen.i):"";
   {const sf=q("#reShelfFind",box);
    if(sf)sf.oninput=()=>{reShelfFind=sf.value;renderReadEra();
      const g=q("#reShelfFind");if(g){g.focus();g.setSelectionRange(g.value.length,g.value.length);}};}
@@ -56309,7 +56331,7 @@ function renderReadEra(){
   if(tickFill)tickFill.onclick=()=>{reOpen.rows.forEach(r=>r.on=!!(r.have&&r.fill.length));renderReadEra();};
   const addBtn=q("#reAdd",box);
   if(addBtn)addBtn.onclick=async()=>{
-    const want=reOpen.rows.filter(r=>r.on&&!r.have);
+    const want=reOpen.rows.filter(r=>r.on&&(!r.have||r.near));
     if(!want.length)return;
     if(!confirm("Add "+want.length+" book"+(want.length===1?"":"s")+" from “"+reOpen.title+"” to your shelf?"))return;
     addBtn.disabled=true;addBtn.textContent="Adding…";
