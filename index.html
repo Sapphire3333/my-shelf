@@ -14599,6 +14599,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-08.3",go:["el:care:#secCovf"],lines:["<b>📚 Goodreads' own covers, by a bookmark.</b> Goodreads won't answer the app, but your own browser can read a page of it you have open. In 🧰 Shelf care → 🖼 Better covers, drag <b>📚 Covers to My Shelf</b> up to your bookmarks bar once, on a computer. Then press it on any page of your Goodreads shelf: it copies every cover on that page. Paste into the box under it, and they line up beside yours, matched by ISBN or by title and author, stories inside collections too. They start ticked where yours is the smaller, and Swap and ↶ work as they do for Amazon's. Each page you paste adds to the list."]},
   {v:"2026-11-08.2",go:["el:care:#secCovf"],lines:["<b>🖼 Better covers, from Amazon.</b> Auto-fill now tries Amazon's cover for a book's ISBN before Open Library's, whose scans were often the grey ones. And 🧰 Shelf care has a 🖼 Better covers card: it asks Amazon for every book and story here with an ISBN and lists the ones whose cover differs from yours, yours beside the new one. They start ticked where yours is the smaller; Swap changes up to a hundred at a press, and ↶ puts a whole press back. Goodreads itself can't be asked any more: it has switched its shelf feeds off, and 📚 Straight from Goodreads now says so instead of blaming your setup."]},
   {v:"2026-11-08.1",go:["tab:library"],lines:["<b>📌 Priority, for the books you mean to read first.</b> A book ReadEra has as To read comes in from your backup marked 📌, and pressing ✎ Fill in on a ReadEra shelf marks the ones you already have, stories inside collections too. Any stage list has a 📌 Priority line to set it by hand, and ☑ Select books sets or takes it off many at once. It stands before the title, ☰ Filters has a 📌 Priority button, and typing <i>prio</i> in the find box finds them. 🎡 Spin, the dare and ✨ Something to read reach for a 📌 book five times as often. Finishing a book or giving it up takes the mark off."]},
   {v:"2026-11-07.26",go:["tab:care"],lines:["<b>✨ Read them again says the right price.</b> On the import list, the button after the series finder was counting titles that name their own series, which cost nothing, so it said more than a second read would cost. It also asks first now, because pressing it forgets what was found."]},
@@ -77048,7 +77049,7 @@ async function fetchCoverData(urls,maxDim){
    │ small thumbnail of yours; the full one is read again when it is swapped.│
    └──────────────────────────────────────────────────────────────────────────┘ */
 const COVF_PRESS=100,COVF_SHOW=40;
-const COVF={busy:false,stop:false,ran:false,done:0,of:0,rows:[],off:new Set(),more:0,say:""};
+const COVF={busy:false,stop:false,ran:false,done:0,of:0,rows:[],off:new Set(),more:0,say:"",gbusy:false,gdone:0,gof:0,gsay:""};
 function amazonCover(isbn){
   const d=isbn13Of(isbn);if(!d||!d.startsWith("978"))return "";
   const b=d.slice(3,12);let t=0;for(let i=0;i<9;i++)t+=(10-i)*(+b[i]);
@@ -77099,8 +77100,11 @@ async function covfInfo(src,thumb){
 const covfSame=(a,b)=>{let n=0;for(let i=0;i<64;i++)if(a.hash[i]!==b.hash[i])n++;return n<=10;};
 async function covfRun(){
   if(COVF.busy)return;
-  const T=covfTargets();
-  Object.assign(COVF,{busy:true,stop:false,ran:true,done:0,of:T.length,rows:[],more:0,say:""});COVF.off.clear();
+  /* rows read off a Goodreads page stay, and their books are not asked again */
+  const keep=COVF.rows.filter(r=>r.src==="Goodreads"),kept=new Set(keep.map(r=>r.id));
+  const T=covfTargets().filter(t=>!kept.has(t.id));
+  Object.assign(COVF,{busy:true,stop:false,ran:true,done:0,of:T.length,rows:keep,more:0,say:""});
+  [...COVF.off].forEach(id=>{if(!kept.has(id))COVF.off.delete(id);});
   covfPaint();
   let i=0;
   const one=async t=>{
@@ -77111,7 +77115,7 @@ async function covfRun(){
     const same=!!(old&&covfSame(old,nw));
     /* the same picture, only worth listing as a sharper copy */
     if(same&&nw.w<=old.w*1.2)return;
-    COVF.rows.push({id:t.id,bid:t.b.id,eid:t.en?t.en.id:"",url:t.url,title:t.title,author:t.author,
+    COVF.rows.push({id:t.id,bid:t.b.id,eid:t.en?t.en.id:"",url:t.url,src:"Amazon",title:t.title,author:t.author,
       inColl:t.en?(t.b.title||"a collection"):"",old:old?{w:old.w,h:old.h,th:old.th}:null,nw:{w:nw.w,h:nw.h},same});
     if(old&&old.w>=nw.w)COVF.off.add(t.id);
   };
@@ -77147,7 +77151,8 @@ async function covfSwap(){
     touchBook(b);await dbPut("books",b);if(SYNC.on)enqueue({kind:"book",id});
     items.push({id,before:bf,after:JSON.parse(JSON.stringify(b))});}
   if(covs.length){pushOp({t:"bulk",items,covs});bumpCovers();
-    undoSaid(`${covs.length} cover${covs.length===1?"":"s"} swapped for Amazon's.`);}
+    const from=new Set(pick.filter(r=>done.has(r.id)).map(r=>r.src||"Amazon"));
+    undoSaid(`${covs.length} cover${covs.length===1?"":"s"} swapped${from.size===1?` for ${[...from][0]}'s`:""}.`);}
   if(SYNC.on)flushQueue();
   COVF.rows=COVF.rows.filter(r=>!done.has(r.id));
   COVF.say=failed?`${failed} would not download just now and stay as they were; Look again tries them again.`:"";
@@ -77166,33 +77171,36 @@ function covfRowHtml(r){
     <span style="display:flex;align-items:center;gap:8px;padding-left:24px">
       <span style="text-align:center">${yours}<span class="meta" style="display:block;font-size:11px">${r.old?`yours · ${r.old.w}×${r.old.h}`:"yours"}</span></span>
       <span class="meta">→</span>
-      <span style="text-align:center">${pic(r.url,46)}<span class="meta" style="display:block;font-size:11px">Amazon · ${r.nw.w}×${r.nw.h}</span></span></span>
+      <span style="text-align:center">${pic(r.url,46)}<span class="meta" style="display:block;font-size:11px">${r.src||"Amazon"} · ${r.nw.w}×${r.nw.h}</span></span></span>
   </label>`;
 }
 function covfPaint(){
   const box=q("#covfBox");if(!box)return;
   const C=COVF,n=C.ran?C.of:covfTargets().length;
   const say=C.say?`<div class="hint" style="margin:6px 0 0">${esc(C.say)}</div>`:"";
-  if(!C.ran||(!C.busy&&!C.rows.length&&!C.done)){
-    box.innerHTML=`<div class="hint" style="margin:0 0 9px">Amazon keeps the publisher's cover under each ISBN, at about the size Goodreads shows. This asks it for every book and story here that has an ISBN — ${n} of them — and lists the ones whose cover differs from yours, beside yours. Free, and no Claude. Nothing changes until you press Swap.</div>
-      <div class="hrow2" style="gap:8px;flex-wrap:wrap"><button class="btn pri" id="covfGo"${n?"":" disabled"}>🔎 Look at ${n}</button></div>${say}`;
-    covfWire(box);return;}
-  if(C.busy){
-    box.innerHTML=`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" id="covfStop"${C.stop?" disabled":""}>${C.stop?"Stopping…":"⏹ Stop"}</button>
+  const amzN=C.rows.filter(r=>r.src!=="Goodreads").length;
+  let top;
+  if(C.busy)top=`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" id="covfStop"${C.stop?" disabled":""}>${C.stop?"Stopping…":"⏹ Stop"}</button>
       <span class="prog" style="width:110px"><i style="width:${C.of?Math.round(C.done/C.of*100):0}%"></i></span>
-      <span class="hint" style="margin:0">Looked at ${C.done} of ${C.of} · ${C.rows.length} to show so far</span></div>`;
-    covfWire(box);return;}
-  const on=C.rows.filter(r=>!C.off.has(r.id)).length,shown=C.rows.slice(0,COVF_SHOW+C.more);
-  const swapN=Math.min(on,COVF_PRESS);
-  box.innerHTML=`<div class="hint" style="margin:0 0 8px">${C.rows.length?`Amazon has a different cover, or a sharper copy of the same one, for ${C.rows.length} of the ${C.of} looked at. They start ticked where yours is the smaller; untick any you'd rather keep.${on>COVF_PRESS?` A press swaps ${COVF_PRESS}, each press one step of ↶.`:""}`
+      <span class="hint" style="margin:0">Looked at ${C.done} of ${C.of} · ${amzN} to show so far</span></div>`;
+  else if(!C.ran)top=`<div class="hint" style="margin:0 0 9px">Amazon keeps the publisher's cover under each ISBN, at about the size Goodreads shows. This asks it for every book and story here that has an ISBN — ${n} of them — and lists the ones whose cover differs from yours, beside yours. Free, and no Claude. Nothing changes until you press Swap.</div>
+      <div class="hrow2" style="gap:8px;flex-wrap:wrap"><button class="btn pri" id="covfGo"${n?"":" disabled"}>🔎 Look at ${n}</button></div>`;
+  else top=`<div class="hint" style="margin:0 0 8px">${amzN?`Amazon has a different cover, or a sharper copy of the same one, for ${amzN} of the ${C.of} looked at.`
       :`Amazon has nothing better than what you have for any of the ${C.of} looked at.`}</div>
-    ${C.rows.length?`<div class="hrow2" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <div class="hrow2" style="gap:8px;flex-wrap:wrap"><button class="btn" id="covfGo">↻ Look again</button></div>`;
+  /* the list waits while either source is still reading, so it does not jump */
+  let list="";
+  if(!C.busy&&!C.gbusy&&C.rows.length){
+    const on=C.rows.filter(r=>!C.off.has(r.id)).length,shown=C.rows.slice(0,COVF_SHOW+C.more),swapN=Math.min(on,COVF_PRESS);
+    list=`<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">
+      <div class="hint" style="margin:0 0 8px">${C.rows.length} to choose from. They start ticked where yours is the smaller; untick any you'd rather keep.${on>COVF_PRESS?` A press swaps ${COVF_PRESS}, each press one step of ↶.`:""}</div>
+      <div class="hrow2" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
       <button class="btn pri" id="covfSwap"${swapN?"":" disabled"}>🖼 Swap ${on>COVF_PRESS?`the first ${COVF_PRESS} of ${on}`:`the ${on}`} ticked</button>
-      <button class="btn" id="covfAll">${on?"☐ Untick all":"☑ Tick all"}</button>
-      <button class="btn" id="covfGo">↻ Look again</button></div>
+      <button class="btn" id="covfAll">${on?"☐ Untick all":"☑ Tick all"}</button></div>
       ${shown.map(covfRowHtml).join("")}
-      ${C.rows.length>shown.length?`<div class="hrow2" style="margin-top:6px;gap:8px;flex-wrap:wrap"><button class="btn" id="covfMore">Show ${Math.min(COVF_SHOW,C.rows.length-shown.length)} more</button><span class="none" style="margin:0">…and ${C.rows.length-shown.length} more.</span></div>`:""}`
-      :`<button class="btn" id="covfGo">↻ Look again</button>`}${say}`;
+      ${C.rows.length>shown.length?`<div class="hrow2" style="margin-top:6px;gap:8px;flex-wrap:wrap"><button class="btn" id="covfMore">Show ${Math.min(COVF_SHOW,C.rows.length-shown.length)} more</button><span class="none" style="margin:0">…and ${C.rows.length-shown.length} more.</span></div>`:""}</div>`;
+  }
+  box.innerHTML=top+covgHtml()+list+say;
   covfWire(box);
 }
 function covfWire(box){
@@ -77206,6 +77214,142 @@ function covfWire(box){
     const b=q("#covfSwap",box),on=COVF.rows.filter(r=>!COVF.off.has(r.id)).length;
     if(b){b.disabled=!on;b.textContent=`🖼 Swap ${on>COVF_PRESS?`the first ${COVF_PRESS} of ${on}`:`the ${on}`} ticked`;}
     const a=q("#covfAll",box);if(a)a.textContent=on?"☐ Untick all":"☑ Tick all";});
+  const mk=q("#covgMark",box),pa=q("#covgPaste",box);
+  if(mk)mk.onclick=e=>{e.preventDefault();bannerNote("Drag it up to your bookmarks bar, then press it on a Goodreads page. Pressed here it has nothing to read.",6000);};
+  if(pa){
+    pa.onpaste=e=>{const t=(e.clipboardData||window.clipboardData).getData("text");if(t){e.preventDefault();covgTake(t);}};
+    pa.oninput=()=>{if(/myShelfCovers/.test(pa.value))covgTake(pa.value);};
+  }
+}
+
+/* ---- GOODREADS' COVERS, FROM A PAGE YOU HAVE OPEN ----
+   The app never asks Goodreads for anything (see BETTER COVERS): its feeds
+   are off and its pages turn programs away. But a page of your shelf that
+   you have opened yourself already shows every cover on it, and a bookmark
+   pressed there can read what is on that screen. covgMark is that bookmark:
+   its own source becomes the javascript: address of the 📚 button, which is
+   dragged to the bookmarks bar once. Pressed on Goodreads it finds every
+   cover picture (they live under compressed.photo.goodreads.com/books/), the
+   book link and author link nearest each — the row of the shelf's table, or
+   the nearest box holding a /book/show/ link — and the ISBN cells when the
+   shelf shows them, and copies them as {myShelfCovers:1,books:[{t,a,i,g,u}]}.
+   It reads only that page and asks no server anything. It refers to nothing
+   outside itself and keeps to plain statements ended with semicolons and to
+   block comments, because its source is folded onto one line.
+   Pasted here, covgParse keeps only cover addresses on Goodreads' and
+   Amazon's picture hosts; covgUrls drops the size tag a shelf's thumbnail
+   carries (._SY75_), which gives the full picture — measured 306 × 475 for
+   one a shelf showed at 48 × 75 — and tries m.media-amazon.com first, where
+   both hosts' pictures live and a page may download them. covgFinder matches
+   by ISBN, then by title and author through reIndex, stories inside
+   collections too; covgAdd compares each with yours the way covfRun does
+   and puts the rows at the head of the list, src "Goodreads", where Swap
+   takes them like Amazon's. A row from Goodreads replaces Amazon's for the
+   same book, and Look again leaves it standing. */
+function covgMark(){
+  var old=document.getElementById("myShelfCovg");if(old)old.remove();
+  var pick=function(el){var a=el.querySelectorAll('a[href*="/book/show/"]');for(var j=0;j<a.length;j++){var t=(a[j].getAttribute("title")||a[j].textContent||"").replace(/\s+/g," ").trim();if(t)return a[j];}return null;};
+  var seen={},list=[],im=document.images;
+  for(var i=0;i<im.length;i++){
+    var u=im[i].currentSrc||im[i].src||"";
+    if(!/compressed\.photo\.goodreads\.com\/books\//.test(u)||/nophoto/i.test(u))continue;
+    var row=im[i].closest("tr"),lk=row?pick(row):null;
+    if(!row){row=im[i];for(var k=0;k<7&&row.parentElement&&!lk;k++){row=row.parentElement;lk=pick(row);}}
+    var t=String(lk?(lk.getAttribute("title")||lk.textContent):(im[i].getAttribute("alt")||"")).replace(/\s+/g," ").trim();
+    if(!t)continue;
+    var g=((lk&&lk.getAttribute("href"))||"").match(/\/book\/show\/(\d+)/);
+    var key=g?g[1]:u;if(seen[key])continue;seen[key]=1;
+    var au=row.querySelector('a[href*="/author/show/"]');
+    var is=row.querySelector(".field.isbn13 .value")||row.querySelector(".field.isbn .value");
+    list.push({t:t,a:au?au.textContent.replace(/\s+/g," ").trim():"",i:is?is.textContent.replace(/[^0-9Xx]/g,""):"",g:g?g[1]:"",u:u});
+  }
+  var data=JSON.stringify({myShelfCovers:1,books:list});
+  var box=document.createElement("div");box.id="myShelfCovg";
+  box.style.cssText="position:fixed;top:12px;right:12px;z-index:2147483647;width:300px;max-width:calc(100vw - 24px);box-sizing:border-box;background:#fff;color:#1f1b18;border:1px solid #b9b2aa;border-radius:10px;padding:12px 14px;font:14px/1.45 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.25);text-align:left";
+  var msg=document.createElement("div");box.appendChild(msg);
+  var bar=document.createElement("div");bar.style.cssText="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap";box.appendChild(bar);
+  var button=function(txt,fn){var b=document.createElement("button");b.type="button";b.textContent=txt;b.style.cssText="font:inherit;padding:5px 12px;border-radius:7px;border:1px solid #8a8178;background:#f4f1ec;color:#1f1b18;cursor:pointer";b.onclick=fn;bar.appendChild(b);return b;};
+  var n=list.length+" cover"+(list.length===1?"":"s");
+  var done=function(){msg.textContent="📚 Copied "+n+" from this page. In My Shelf: 🧰 Shelf care → 🖼 Better covers, and paste into the box there.";};
+  var byHand=function(){var x=box.querySelector("textarea");if(!x){x=document.createElement("textarea");x.style.cssText="display:block;width:100%;height:60px;margin-top:8px;box-sizing:border-box";box.appendChild(x);}
+    x.value=data;x.select();try{if(document.execCommand("copy")){x.remove();done();return;}}catch(e){}
+    msg.textContent="📚 Found "+n+". Press Ctrl+C now to copy them, then paste in My Shelf.";};
+  var copy=function(){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(data).then(done,byHand);else byHand();};
+  document.body.appendChild(box);
+  if(list.length){msg.textContent="📚 Found "+n+" on this page.";button("📋 Copy them",copy);copy();}
+  else msg.textContent="📚 No book covers found on this page. Open one of your shelves under My Books, and press the bookmark there.";
+  button("Close",function(){box.remove();});
+}
+let COVG_HREF="";
+const covgHref=()=>COVG_HREF||(COVG_HREF="javascript:"+encodeURIComponent("void ("+covgMark.toString().replace(/\n\s*/g," ")+")();"));
+const COVG_HOST=/^https:\/\/(?:(?:i|s|images)\.gr-assets\.com|m\.media-amazon\.com|images-na\.ssl-images-amazon\.com)\//;
+function covgParse(text){
+  const s=String(text||""),a=s.indexOf("{"),z=s.lastIndexOf("}");
+  if(a<0||z<a)return null;
+  let o;try{o=JSON.parse(s.slice(a,z+1));}catch(e){return null;}
+  if(!o||o.myShelfCovers!==1||!Array.isArray(o.books))return null;
+  return o.books.filter(x=>x&&typeof x.u==="string"&&COVG_HOST.test(x.u)&&/\/compressed\.photo\.goodreads\.com\/books\//.test(x.u)&&typeof x.t==="string"&&x.t.trim())
+    .map(x=>({t:x.t.trim().slice(0,400),a:String(x.a||"").trim().slice(0,200),i:String(x.i||"").replace(/[^0-9Xx]/g,""),u:x.u}));
+}
+function covgUrls(u){
+  const full=String(u).replace(/\._[^/.]*_(?=\.[a-z]+(?:\?|$))/i,"");
+  return [...new Set(["https://m.media-amazon.com/"+full.replace(/^https:\/\/[^/]+\//,""),full,u])];
+}
+function covgFinder(){
+  const find=reIndex(),byIsbn=new Map();
+  const put=(k,v)=>{if(k&&!byIsbn.has(k))byIsbn.set(k,v);};
+  books.forEach(b=>{put(isbn13Of(b.isbn)||cleanIsbn(b.isbn),{b,en:null});
+    if(isColl(b))(b.entries||[]).forEach(en=>put(isbn13Of(en.isbn)||cleanIsbn(en.isbn),{b,en}));});
+  return it=>{const k=it.i?(isbn13Of(it.i)||cleanIsbn(it.i)):"";return (k&&byIsbn.get(k))||find(it.t,it.a)||null;};
+}
+function covgTake(text){
+  if(COVF.gbusy)return;
+  const items=covgParse(text);
+  if(!items){COVF.gsay="That isn't what the bookmark copies. Press it on a page of your Goodreads shelf, then paste here.";covfPaint();return;}
+  if(!items.length){COVF.gsay="The bookmark found no covers on that page.";covfPaint();return;}
+  covgAdd(items);
+}
+async function covgAdd(items){
+  const match=covgFinder(),T=[],ids=new Set();let notHere=0;
+  items.forEach(it=>{const h=match(it);if(!h){notHere++;return;}
+    const id=h.en?h.b.id+"|"+h.en.id:h.b.id;if(ids.has(id))return;ids.add(id);
+    T.push({id,b:h.b,en:h.en,urls:covgUrls(it.u),
+      title:h.en?(h.en.title||"Untitled"):(h.b.title||"Untitled"),author:h.en?(entAuthorOf(h.b,h.en)||""):(h.b.author||"")});});
+  Object.assign(COVF,{gbusy:true,gdone:0,gof:T.length,gsay:""});covfPaint();
+  const got=new Array(T.length);let i=0,have=0,failed=0;
+  const one=async(t,at)=>{
+    let nw=null,url="";for(const u of t.urls){nw=await covfInfo(u,false);if(nw){url=u;break;}}
+    if(!nw){failed++;return;}
+    const mine=await covfMine(t.b,t.en),old=mine?await covfInfo(mine,true):null;
+    const same=!!(old&&covfSame(old,nw));
+    /* you have Goodreads' picture already: Amazon's offer for it goes too */
+    if(same&&nw.w<=old.w*1.2){have++;COVF.rows=COVF.rows.filter(r=>r.id!==t.id);return;}
+    got[at]={id:t.id,bid:t.b.id,eid:t.en?t.en.id:"",url,src:"Goodreads",title:t.title,author:t.author,
+      inColl:t.en?(t.b.title||"a collection"):"",old:old?{w:old.w,h:old.h,th:old.th}:null,nw:{w:nw.w,h:nw.h},same};
+    if(old&&old.w>=nw.w)COVF.off.add(t.id);else COVF.off.delete(t.id);
+  };
+  const worker=async()=>{while(i<T.length){const at=i++;try{await one(T[at],at);}catch(e){failed++;}COVF.gdone++;if(COVF.gdone%10===0)covfPaint();}};
+  await Promise.all([worker(),worker(),worker(),worker()]);
+  const rows=got.filter(Boolean),fresh=new Set(rows.map(r=>r.id));
+  COVF.rows=rows.concat(COVF.rows.filter(r=>!fresh.has(r.id)));COVF.more=0;
+  const bits=[`${rows.length} to look at`];
+  if(have)bits.push(`${have} you already have`);
+  if(notHere)bits.push(`${notHere} not on your shelf here, or under another title`);
+  if(failed)bits.push(`${failed} that wouldn't download just now`);
+  COVF.gsay=`From that page of ${items.length}: ${bits.join(", ")}.`;
+  COVF.gbusy=false;covfPaint();
+}
+function covgHtml(){
+  const C=COVF;
+  return `<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">
+    <div class="when" style="font-size:14px;margin-bottom:4px">📚 Goodreads' own covers</div>
+    <div class="hint" style="margin:0 0 8px">Goodreads won't answer the app, but your own browser can read a page of it you have open. Once, on a computer, drag this up to your bookmarks bar (Ctrl+Shift+B shows the bar):</div>
+    <div class="hrow2" style="gap:8px;flex-wrap:wrap;margin-bottom:8px"><a class="btn" id="covgMark" href="${esc(covgHref())}" title="Drag this to your bookmarks bar">📚 Covers to My Shelf</a></div>
+    <div class="hint" style="margin:0 0 8px">Then press it on any page of your Goodreads shelf and paste here. Each page adds to the list below.</div>
+    ${C.gbusy?`<div class="hrow2" style="gap:8px;align-items:center;flex-wrap:wrap"><span class="prog" style="width:110px"><i style="width:${C.gof?Math.round(C.gdone/C.gof*100):0}%"></i></span><span class="hint" style="margin:0">Reading Goodreads' covers: ${C.gdone} of ${C.gof}</span></div>`
+      :`<textarea class="field" id="covgPaste" rows="1" style="width:100%;box-sizing:border-box;resize:vertical" placeholder="Paste here (Ctrl+V)"></textarea>`}
+    ${C.gsay?`<div class="hint" style="margin:6px 0 0">${esc(C.gsay)}</div>`:""}
+  </div>`;
 }
 
 /* ---- the word "fiction", wired into other people's filing ----
