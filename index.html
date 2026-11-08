@@ -428,6 +428,9 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
      `break-word` breaks the same unbreakable run — it just waits until the
      word really has a line to itself and still does not fit. */
   .rtitle{font-weight:600;display:flex;gap:7px;align-items:center;flex-wrap:wrap;min-width:0;overflow-wrap:break-word}
+  /* 📌 Priority, inside the title's own text so a long title wraps after it
+     rather than leaving the pin alone on a line — see PRIORITY */
+  .prmark{margin-right:.28em;font-size:.9em}
   .rauth{color:var(--mut);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .rser{color:var(--faint);font-size:13px}
   /* the blurb on a row — see rowSumLines. Clamped, so a row's height is the
@@ -7633,6 +7636,32 @@ const holdOf=x=>isHold(x)&&!(x&&x.dnf);
    you already own stops being worth watching, which is the whole reason it
    exists. */
 const unownedOf=x=>!!(x&&x.unowned);
+/* ---- 📌 PRIORITY ----
+   A mark on top of Want to read, the way ⌛ is: the books you mean to read
+   first. ReadEra's own To read brings it in (fromReadEra, reFillable), any
+   stage list sets it by hand, and the draws that hand you a book off Want to
+   read — 🎡 Spin, the dare, the blind draw, ✨ Something to read — reach for
+   a marked one PRIO_LEAN times as often (prioLean). It means "still waiting",
+   so finishing or giving up takes it off (markStatus, markEntStatus, the bulk
+   stage), and a book finished by any other road only stops showing it
+   (prioOf). A mark on a collection covers every story in it not read yet,
+   and a volume's its tales, as ⌛ passes down; a story's own never goes up. */
+const PRIO_LEAN=5;
+const prioOf=x=>!!(x&&x.prio)&&!x.dnf&&statusOf(x)!=="finished";
+const entPrioOf=(coll,en)=>{
+  if(!en||entDnfOf(coll,en)||entStatusOf(coll,en)==="finished")return false;
+  if(en.prio)return true;
+  const w=entWholeOf(coll,en);
+  return !!((w&&w.prio)||(coll&&coll.prio));
+};
+/* what a row and a draw go by: a collection counts as marked while it, or a
+   story in it still to read, is */
+const prioRow=b=>!!b&&(prioOf(b)||(isColl(b)&&!b._story&&(b.entries||[]).some(en=>entPrioOf(b,en))));
+/* a shuffle that leans: each book draws a random key and a marked one's is
+   divided by PRIO_LEAN, so the order is a weighted draw without repeats — the
+   first place goes to a marked book PRIO_LEAN times as often as to any one
+   unmarked book, and the rest follow the same way */
+const prioLean=list=>list.map(b=>({b,k:-Math.log(1-Math.random())/(prioRow(b)?PRIO_LEAN:1)})).sort((a,c)=>a.k-c.k).map(x=>x.b);
 /* the ready-made answers to "why". Kept on the book rather than in a shared
    vocabulary like the DNF reasons, so this adds nothing to the sync layer. */
 const HOLD_REASONS=["Waiting for the next one","Saving it for later","Got tired of it",
@@ -8469,13 +8498,15 @@ async function guessIsToday(rid){return redateReading(rid,todayStr());}
    other press says plainly what it means, and a first reading is never
    questioned. Returns false if you say no, so the caller leaves it be. */
 function markStatus(b,what){
+  /* 📌 is a mark, not a stage — see PRIORITY. Nothing about a reading moves */
+  if(what==="prio"){if(b.prio)delete b.prio;else b.prio=true;return true;}
   const finWas=statusOf(b)==="finished"&&!b.dnf;
   /* A COLLECTION IS ITS BOOKS: its stage is theirs, so a choice made on the
      collection sets what an unmarked book means, or the series' own hold and
      give-up — and never opens, closes or dates a reading on the collection */
   if(collRow(b)){
-    if(what==="finished"||what==="want"||what==="reading"){b.status=what==="finished"?"finished":"want";return true;}
-    if(what==="dnf"){b.dnf=!b.dnf;if(b.dnf)b.hold=false;return true;}
+    if(what==="finished"||what==="want"||what==="reading"){b.status=what==="finished"?"finished":"want";if(what==="finished")delete b.prio;return true;}
+    if(what==="dnf"){b.dnf=!b.dnf;if(b.dnf){b.hold=false;delete b.prio;}return true;}
     if(what==="hold"){b.hold=!b.hold;if(b.hold)b.dnf=false;return true;}
     if(what==="unowned"){b.unowned=!b.unowned;return true;}
   }
@@ -8498,7 +8529,7 @@ function markStatus(b,what){
   if(sprintOn(b)&&what!=="reading"&&what!=="unowned")
     sprintPay(sprintStop(b,what==="finished"&&parseInt(b.pages)?b.pages:""));
   /* either given up on or set down, never both — saying both says nothing */
-  if(what==="dnf"){b.dnf=!b.dnf;if(b.dnf)b.hold=false;}
+  if(what==="dnf"){b.dnf=!b.dnf;if(b.dnf){b.hold=false;delete b.prio;}}
   else if(what==="hold"){b.hold=!b.hold;if(b.hold)b.dnf=false;}
   /* returns before applyReading on purpose: whether you have the book says
      nothing about your readings of it, and going through applyReading would
@@ -8509,6 +8540,8 @@ function markStatus(b,what){
     if(what==="reading"||what==="finished")b.unowned=false;
     /* and either one takes it out of the Up next queue — it is not next any more */
     if((what==="reading"||what==="finished")&&inUpNext(b))delete b.upnext;
+    /* read, it is no longer waiting — see PRIORITY */
+    if(what==="finished")delete b.prio;
     /* reading it again opens the letter you sealed — see THE OWL'S THREE QUESTIONS */
     if(what==="reading")try{letterOpen(b);}catch(e){}
     /* …and starts the bookmark from the beginning. It stood on the last page
@@ -9207,6 +9240,8 @@ function volReadAgain(coll,en,what,volWas){
 function markEntStatus(coll,en,what){
   const finWas=en.status==="finished"&&!en.dnf;
   /* the first tale of a split volume is one tale — see A VOLUME IS ITS TALES */
+  /* 📌 is a mark on this story alone — see PRIORITY */
+  if(what==="prio"){if(en.prio)delete en.prio;else en.prio=true;return true;}
   if(what!=="unowned")pinTales(coll,en);
   /* setting a story aside is its own flag and clears the stage, as the list of
      stages here has always worked. Tapping it again takes it back off — the
@@ -9217,7 +9252,7 @@ function markEntStatus(coll,en,what){
      hands that reading back, start date and all. Measured: 📖 → ✕ → ✕ left
      the story with no stage and no reading, where a book kept both. */
   if(what==="dnf"){if(en.dnf){en.dnf=false;if(openRead(en))en.status="reading";}
-    else{en.dnf=true;en.hold=false;en.status="";}}
+    else{en.dnf=true;en.hold=false;en.status="";delete en.prio;}}
   /* Coming back off hold has to put the stage back, which a book never had to
      do: a book keeps its status through being set aside, so it returns still
      saying Reading. A story's is cleared on the way in, so it came back saying
@@ -9243,6 +9278,7 @@ function markEntStatus(coll,en,what){
     else if(what==="reading"&&!en.dnf&&entStatusOf(coll,en)!=="reading"&&!openRead(en)&&doneReads(en).length){en.progress="";en.pct="";delete en.readPos;}
     en.dnf=false;en.hold=false;en.status=what;
     if(what==="reading"||what==="finished")en.unowned=false;
+    if(what==="finished")delete en.prio;
     /* a tale is a note about the tale, not a book finished — see A PIECE OF A
        VOLUME IS NEVER A THING OF ITS OWN — so a split volume pays its one pack
        (under the volume's own id) when the tale that completes it is marked */
@@ -9731,6 +9767,8 @@ const storyProxy=(coll,en)=>Object.assign(blankBook(coll.id),{
      could never find a story — only the collection around it. Passed down
      from the collection the way on hold is (entUnownedOf) */
   status:entStatusOf(coll,en),dnf:entDnfOf(coll,en),hold:entHoldOf(coll,en),unowned:entUnownedOf(coll,en),
+  /* and 📌, passed down the same way, so the Library's pill finds a story */
+  prio:entPrioOf(coll,en),
   dateFinished:entDateOf(coll,en),favorite:!!en.favorite,summary:en.summary||"",
   /* its own readings travel with it, so a story read three times says so on the
      shelf rather than borrowing the collection's count */
@@ -9839,7 +9877,8 @@ const findMatchesStory=en=>{
   if(!f)return false;
   const fq=softFold(f);
   return softHit(en.title,fq)||softHit(en.author,fq)
-    ||(en.keywords||[]).some(k=>softHit(k,fq));
+    ||(en.keywords||[]).some(k=>softHit(k,fq))
+    ||(!!en.prio&&fq.length>=4&&"priority".startsWith(fq));
 };
 /* A word common enough to match half a collection would otherwise put half a
    collection on the shelf — forty stories, forty rows, for one search. So a
@@ -10163,7 +10202,7 @@ const printDay=d=>d?new Date(d+"T12:00").toLocaleDateString(undefined,{day:"nume
 function printListBuild(){
   const old=q("#printList");if(old)old.remove();
   const list=libLastList||[];
-  const what={all:"",finished:"Finished",reading:"Reading now",want:"Want to read",hold:"On hold",dnf:"Did not finish",unowned:"Don't have it yet",fav:"Favourites"}[statusFilter]||"";
+  const what={all:"",finished:"Finished",reading:"Reading now",want:"Want to read",hold:"On hold",dnf:"Did not finish",unowned:"Don't have it yet",prio:"Priority",fav:"Favourites"}[statusFilter]||"";
   const fb=q("#libFind"),typed=fb&&fb.value.trim();
   const el=document.createElement("div");el.id="printList";
   el.innerHTML=`<h1>My Shelf${what?" — "+esc(what):""}${typed?` — “${esc(typed)}”`:""}</h1>
@@ -14560,6 +14599,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-08.1",go:["tab:library"],lines:["<b>📌 Priority, for the books you mean to read first.</b> A book ReadEra has as To read comes in from your backup marked 📌, and pressing ✎ Fill in on a ReadEra shelf marks the ones you already have, stories inside collections too. Any stage list has a 📌 Priority line to set it by hand, and ☑ Select books sets or takes it off many at once. It stands before the title, ☰ Filters has a 📌 Priority button, and typing <i>prio</i> in the find box finds them. 🎡 Spin, the dare and ✨ Something to read reach for a 📌 book five times as often. Finishing a book or giving it up takes the mark off."]},
   {v:"2026-11-07.26",go:["tab:care"],lines:["<b>✨ Read them again says the right price.</b> On the import list, the button after the series finder was counting titles that name their own series, which cost nothing, so it said more than a second read would cost. It also asks first now, because pressing it forgets what was found."]},
   {v:"2026-11-07.25",go:["tab:settings"],lines:["<b>↩ Back in Settings comes back to your line.</b> Open a line of the Settings list and go back, with the ‹ or your phone's Back, and the line you pressed is where it stood on the screen, even if you made the text bigger while you were in there. It used to leave you at the top of the list."]},
   {v:"2026-11-07.24",go:["tab:settings"],lines:["<b>✋ Hold a thing to change it.</b> Hold the owl, the bottom bar or the dragon still for half a second and you land on its settings, on its line. A quick press still does what it always did, the owl still drags, and scrolling or pinching over them is untouched. The dragon lies behind the page, so hold an empty part of the page where you can see it. On a computer, a right click on the owl does the same."]},
@@ -17753,7 +17793,7 @@ const HIST_FIELD_NAMES={title:"title",author:"author",pages:"pages",summary:"blu
      where there is no such fallthrough — see the entries branch below. */
   readings:"readings",reads:"readings",progress:"progress",pct:"progress",progLog:"",rereads:"re-reads",series:"series",seriesNum:"series number",
   seriesTotal:"series total",isbn:"ISBN",pubYear:"year published",hcSlug:"",favorite:"favourite",dnf:"did not finish",dnfReasons:"why it wasn't finished",
-  hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",upnext:"up next",serial:"",nextOut:"",apart:"set apart",entries:"stories",maturity:"maturity",aspects:"what stood out",
+  hold:"on hold",holdReasons:"why on hold",unowned:"don't have it yet",upnext:"up next",prio:"priority",serial:"",nextOut:"",apart:"set apart",entries:"stories",maturity:"maturity",aspects:"what stood out",
   pros:"likes",cons:"dislikes",meh:"so-sos",fandoms:"fandoms",characters:"characters",ships:"relationships",
   link:"link",kind:"kind",audience:"audience",draw:"drawing",bg:"background",type:"shape",
   chapters:"chapters",warnings:"warnings",entOrdered:"",canvasV:"",modified:"",edited:"",touched:"",created:"",id:"",
@@ -19959,8 +19999,8 @@ async function upNextWrite(ids,mut){
 const WHEEL_MAX=12;
 function wheelDraw(keepUp){
   const up=upNextList().filter(b=>!b.apart).slice(0,WHEEL_MAX);
-  const pool=books.filter(b=>b&&!b.apart&&!b.dnf&&!unownedOf(b)&&!inUpNext(b)&&statusOf(b)==="want");
-  for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]];}
+  /* a 📌 book is PRIO_LEAN times as likely to be one of the slices — see PRIORITY */
+  const pool=prioLean(books.filter(b=>b&&!b.apart&&!b.dnf&&!unownedOf(b)&&!inUpNext(b)&&statusOf(b)==="want"));
   return [...up,...pool].slice(0,WHEEL_MAX);
 }
 const wheelCol=b=>`hsl(${strHash("wheel|"+b.id)%360} 42% ${38+strHash("wl|"+b.id)%14}%)`;
@@ -20131,7 +20171,13 @@ const stPickHtml=b=>`<div class="stpick">
       <button data-setst="${b.id}|dnf" class="${b.dnf?"on":""}">✕ Did not finish</button>`}
       <button data-setst="${b.id}|unowned" class="${unownedOf(b)?"on":""}" title="You want it and haven't got it — not published yet, not bought yet, waiting on the library">${unownedOf(b)?"✓ ":""}⌛ Don't have it yet</button>
       <button data-upnext="${b.id}" class="${inUpNext(b)?"on":""}" title="Your Up next queue on 🏠 Today — five at most, in the order you choose">${inUpNext(b)?"✓ ":""}⏭ Up next</button>
+      ${prioBtnHtml(b,`data-setst="${b.id}|prio"`)}
     </div>`;
+/* the 📌 line on a stage list — see PRIORITY. Offered while the book is still
+   to read, and on a finished one only so a mark left on it can come off */
+const PRIO_TIP=`One you mean to read first: 🎡 Spin, the dare and ✨ Something to read reach for it ${PRIO_LEAN} times as often. Finishing it or giving it up takes the mark off`;
+const prioBtnHtml=(x,attr,own)=>{const on=own===undefined?!!(x&&x.prio):own;
+  return on||(x&&!x.dnf&&statusOf(x)!=="finished")?`<button ${attr} class="${on?"on":""}" title="${PRIO_TIP}">${on?"✓ ":""}📌 Priority</button>`:"";};
 /* Opening this little list is a change to one row, and it was being paid for
    with a redraw of the entire shelf — measured at 985ms on a several-thousand-book
    shelf, to show a popover 180 pixels wide. Twice over, in fact: once to open it
@@ -20293,7 +20339,7 @@ function rowHtml(b,withDel,note){
       ?`<button class="favdot${b.favorite?"":" off"}" data-favt="${b.id}" title="${b.favorite?"One of your favourites — press to take the heart off":"Make it a favourite"}">${b.favorite?"♥":"♡"}</button>`
       :(b.favorite?`<span class="favdot${b._story?" story":""}">♥</span>`:"")}</div>
     <div class="rmain">
-      <div class="rtitle serif">${ph?rateBit:""}<a class="tgo" href="${esc(bookHash(b.id,b._story))}">${esc(b.title)||"Untitled"}</a>${isFic(b)?`<span class="rby">${kindOf(b)==="fanfic"?"FANFIC":"AI"}${b.author?` · <span class="rauthgo" data-authgo="${esc(authorParts(b.author)[0]||b.author)}">${esc(b.author)}</span>`:""}${b.pages?" · "+esc(String(b.pages))+" p.":""}</span>`:""} ${(()=>{const L=linkLabel(b.link);
+      <div class="rtitle serif">${ph?rateBit:""}<a class="tgo" href="${esc(bookHash(b.id,b._story))}">${prioRow(b)?`<span class="prmark" title="Priority — one you mean to read first">📌</span>`:""}${esc(b.title)||"Untitled"}</a>${isFic(b)?`<span class="rby">${kindOf(b)==="fanfic"?"FANFIC":"AI"}${b.author?` · <span class="rauthgo" data-authgo="${esc(authorParts(b.author)[0]||b.author)}">${esc(b.author)}</span>`:""}${b.pages?" · "+esc(String(b.pages))+" p.":""}</span>`:""} ${(()=>{const L=linkLabel(b.link);
         return L?`<a class="tlink" data-ext href="${esc(L.url)}" target="_blank" rel="noopener" title="Read it on ${esc(L.name)}">↗</a>`:"";})()}${marks?`<span class="rmarks">${marks}</span>`:""}</div>
       ${isFic(b)?"":`<div class="rauth">${(()=>{
         /* One name reads as one name — the same rule the book's own page has
@@ -20376,7 +20422,7 @@ function gridHtml(b,live){
         :unownedOf(b)?'<span class="gdnf wait" title="You haven\'t got this one yet">⌛</span>':""}
       ${readSignCover(b)}
     </div>
-    <div class="gtitle serif"><a class="tgo" href="${esc(bookHash(b.id,b._story))}">${isColl(b)?"📚 ":""}${b._story?"📄 ":""}${esc(b.title)||"Untitled"}</a></div>
+    <div class="gtitle serif"><a class="tgo" href="${esc(bookHash(b.id,b._story))}">${prioRow(b)?`<span class="prmark" title="Priority — one you mean to read first">📌</span>`:""}${isColl(b)?"📚 ":""}${b._story?"📄 ":""}${esc(b.title)||"Untitled"}</a></div>
     <div class="gauth">${esc(b.author)}</div>
   </div>`;
 }
@@ -22072,7 +22118,7 @@ const LIB_SORTS=["newest","waited","rating","favorites","title","author","status
 /* the words the sort pills wear: a book has a mark and a stage everywhere
    else, so the pills say so too — the keys underneath are unchanged */
 const SORT_SAY={rating:"Mark",favorites:"Favourites",status:"Stage",published:"Published"};
-const LIB_STAGES=["all","finished","reading","want","hold","dnf","unowned","fav"];
+const LIB_STAGES=["all","finished","reading","want","hold","dnf","unowned","prio","fav"];
 let libRestored=false,libKept=null;
 function libRestore(){
   const s=settings&&settings.lib;
@@ -23460,7 +23506,9 @@ function renderLibrary(){
      over twenty-five rows */
   const counts={all:(groupBy==="status"?countShelf:shelf).length,finished:plainSt("finished"),reading:plainSt("reading"),want:plainSt("want"),
     hold:countShelf.filter(b=>holdOf(b)).length,dnf:countShelf.filter(b=>b.dnf).length,
-    unowned:countShelf.filter(b=>unownedOf(b)&&!b.dnf).length};
+    unowned:countShelf.filter(b=>unownedOf(b)&&!b.dnf).length,
+    /* 📌 is a lens the same way: still counted under its stage */
+    prio:countShelf.filter(prioRow).length};
   /* ---- ♥ FAVOURITES, A PILL ----
      Not a stage but a lens, like ⌛: a book you love, a collection you love as
      a whole, and every story you love inside one — each a row of its own,
@@ -23500,15 +23548,20 @@ function renderLibrary(){
      shelf it came from in as a tag, so typing that word is what gathers the
      books it added — and the sort keeps title, author and series hits in
      front (see softBookTier), so nothing that used to come first has moved. */
+  /* and "prio…" finds the 📌 ones — four letters at least, so a title
+     search starting "pri" is not flooded with every marked book */
+  const prioWord=ffq.length>=4&&"priority".startsWith(ffq);
   const findHit=b=>!flc||((!b._moreHits&&!b._story&&rolledUp.has(b.id))?false
     :[b.title,b.author,b.series].some(t=>softHit(t,ffq))||!!b._moreHits
-      ||(b.keywords||[]).some(k=>softHit(k,ffq))||(b.genres||[]).some(g=>softHit(g,ffq)));
+      ||(b.keywords||[]).some(k=>softHit(k,ffq))||(b.genres||[]).some(g=>softHit(g,ffq))
+      ||(prioWord&&prioRow(b)));
   /* the same rule the stage groups follow: a flag beats the stage underneath it,
      so a book you gave up on stops answering to Finished */
   const stFilterOk=b=>statusFilter==="all"?true
     :statusFilter==="hold"?holdOf(b)
     :statusFilter==="dnf"?!!b.dnf
     :statusFilter==="unowned"?(unownedOf(b)&&!b.dnf)
+    :statusFilter==="prio"?prioRow(b)
     :statusFilter==="fav"?true
     :(statusOf(b)===statusFilter&&!b.dnf&&!holdOf(b));
   const readIds=onlyRead&&statusFilter==="fav"?new Set(readRows.map(b=>b.id+"|"+(b._story||""))):null;
@@ -23565,7 +23618,7 @@ function renderLibrary(){
        fold's state is REMEMBERED per device (leave it open and it stays
        open), and an active filter is always readable on the closed pill,
        with one press putting everything back to All. */
-    const stLabels={all:"All",finished:"Finished",reading:"Reading now",want:"Want to read",hold:"⏸ On hold",dnf:"✕ Did not finish",unowned:"⌛ Don't have it yet",fav:"♥ Favourites"};
+    const stLabels={all:"All",finished:"Finished",reading:"Reading now",want:"Want to read",hold:"⏸ On hold",dnf:"✕ Did not finish",unowned:"⌛ Don't have it yet",prio:"📌 Priority",fav:"♥ Favourites"};
     const filtOpen=!!settings.libFilt;
     /* ---- what you TYPE on top, what you PRESS under it
        ----
@@ -23634,6 +23687,7 @@ function renderLibrary(){
       drawers+=`<div class="filtbox">
         <div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading now"],["want","Want to read"],
           ...(counts.unowned?[["unowned","⌛ Don't have it yet"]]:[]),
+          ...(counts.prio?[["prio","📌 Priority"]]:[]),
           ...(counts.hold?[["hold","⏸ On hold"]]:[]),...(counts.dnf?[["dnf","✕ Did not finish"]]:[]),...(counts.fav?[["fav","♥ Favourites"]]:[])]
         .map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}"${id==="unowned"?' title="The ones you want and haven\'t got — they are counted under Want to read too, because wanting them is still true"':""}>${l} <b>${counts[id]}</b></button>`).join("")}</div>
         ${kindRow}${seriesRow}${(()=>{
@@ -24406,7 +24460,8 @@ function renderLibrary(){
        opens or closes the reading exactly as a single press would. */
     const sst=q("#selSt",m);
     const ST_BULK=[["★ Want to read","want"],["📖 Reading now","reading"],["✓ Finished","finished"],
-      ["⏸ On hold","hold"],["✕ Did not finish","dnf"],["⌛ Don't have it yet","unowned"]];
+      ["⏸ On hold","hold"],["✕ Did not finish","dnf"],["⌛ Don't have it yet","unowned"],
+      ["📌 Priority","prio"],["📌 Priority off","noprio"]];
     if(sst)sst.onclick=()=>openApply("Which stage",ST_BULK.map(x=>x[0]),lbl=>{
       const k=(ST_BULK.find(x=>x[0]===lbl)||[])[1];if(!k)return;
       undoSaid(`${libSel.size} book${libSel.size===1?"":"s"} set to ${lbl}.`);
@@ -24422,6 +24477,11 @@ function renderLibrary(){
            set rather than toggled: Reading now starts the next story you
            have, Finished or Want to read says what an unmarked story means,
            and no reading is opened, closed or dated on the collection. */
+        /* 📌 is a mark, set or taken off on a book and a collection alike —
+           see PRIORITY — and a finish or a give-up below takes it off */
+        if(k==="prio"){b.prio=true;return;}
+        if(k==="noprio"){delete b.prio;return;}
+        if(k==="finished"||k==="dnf")delete b.prio;
         if(collRow(b)){
           if(k==="hold"){b.hold=true;b.dnf=false;}
           else if(k==="dnf"){b.dnf=true;b.hold=false;}
@@ -30027,8 +30087,10 @@ function recWant(p){
   const bits=[p.moods.length?"moods: "+p.moods.join(", "):"",p.genres.length?"genres: "+p.genres.join(", "):"",p.words.trim()?`in their words: “${p.words.trim()}”`:""].filter(Boolean);
   return bits.length?`What they want now — ${bits.join("; ")}.`:"Nothing in particular now: go by their taste.";
 }
+/* the 📌 ones first, so a long Want to read never leaves them out of the 300 —
+   see PRIORITY; then the newest */
 const recWantList=()=>books.filter(b=>b&&!b.apart&&claudeKindsOn().includes(kindOf(b))&&statusOf(b)==="want"&&!b.dnf)
-  .sort((a,c)=>(Date.parse(c.added||"")||c.created||0)-(Date.parse(a.added||"")||a.created||0)).slice(0,300);
+  .sort((a,c)=>(prioRow(c)?1:0)-(prioRow(a)?1:0)||(Date.parse(c.added||"")||c.created||0)-(Date.parse(a.added||"")||a.created||0)).slice(0,300);
 async function recsAsk(more){
   const p=recState(),prev=settings.recs&&settings.recs.from===p.from?settings.recs:null;
   /* everything shown since the source last changed is not suggested again —
@@ -30042,8 +30104,8 @@ async function recsAsk(more){
     /* all of it suggested once: start the round again */
     if(!left.length){left=list;if(settings.recs)settings.recs.seen=[];}
     const schema={type:"object",properties:{books:{type:"array",items:{type:"object",properties:{n:S,pitch:S,why:S},required:["n","pitch","why"],additionalProperties:false}}},required:["books"],additionalProperties:false};
-    const text=`${recWant(p)}\n\nFrom the books on their Want to read below, pick the five that suit them best right now. For each give n (its number in the list), pitch (one or two sentences on what it is, no spoilers) and why (one sentence tying it to their taste). ${VERDICT_VOICE}\n\n`
-      +left.map((b,i)=>`${i+1}. ${b.title}${b.author?" — "+b.author:""}${(b.genres||[]).length?" | "+b.genres.slice(0,3).join(", "):""}${cwBlurbOf(b)?" | "+cwBlurbOf(b).slice(0,160):""}`).join("\n");
+    const text=`${recWant(p)}\n\nFrom the books on their Want to read below, pick the five that suit them best right now. For each give n (its number in the list), pitch (one or two sentences on what it is, no spoilers) and why (one sentence tying it to their taste).${left.some(prioRow)?` A 📌 before a title means they marked it as one they mean to read first: between a 📌 book and another that suit them as well, take the 📌 one, about ${PRIO_LEAN} times in ${PRIO_LEAN+1}.`:""} ${VERDICT_VOICE}\n\n`
+      +left.map((b,i)=>`${i+1}. ${prioRow(b)?"📌 ":""}${b.title}${b.author?" — "+b.author:""}${(b.genres||[]).length?" | "+b.genres.slice(0,3).join(", "):""}${cwBlurbOf(b)?" | "+cwBlurbOf(b).slice(0,160):""}`).join("\n");
     const j=await claudeAsk({what:"💡 Recommendations",kind:"ask",text,schema,effort:"low",max_tokens:2500,system:recTaste(),cache:true});
     return ((j.json&&j.json.books)||[]).map(x=>{const b=left[(parseInt(x.n)||0)-1];return b?{id:b.id,title:b.title,author:b.author||"",pitch:String(x.pitch||""),why:String(x.why||"")}:null;}).filter(Boolean).slice(0,5);
   }
@@ -40777,7 +40839,8 @@ function questDrawBook(){
   const two=quests.bookCh2&&quests.bookCh2.id,bd=quests.bday&&quests.bday.id;
   const pool=books.filter(b=>dareOk(b)&&!b.apart&&!kept.has(b.id)&&b.id!==two&&b.id!==bd);
   if(!pool.length)return null;
-  let b=pick1(freshFrom("dare",pool,x=>x.id));
+  /* leaning toward 📌 — see PRIORITY */
+  let b=prioLean(freshFrom("dare",pool,x=>x.id))[0];
   /* the walk back. `from` is what the dice actually said, kept so the card can
      say it too — a draw that silently changed itself would look like a bug. */
   /* …and the walk back may not land on it either: two dares on one book pay
@@ -40948,7 +41011,7 @@ function blindTear(box,id,done){
 function blindDraw(){
   const kept=new Set((quests.picks||[]).filter(p=>!p.done).map(p=>p.id));
   const two=quests.bookCh2&&quests.bookCh2.id,bd=quests.bday&&quests.bday.id;
-  const pool=shuffled(books.filter(b=>dareOk(b)&&!b.apart&&!kept.has(b.id)&&!earlierToRead(b)&&b.id!==two&&b.id!==bd))
+  const pool=prioLean(books.filter(b=>dareOk(b)&&!b.apart&&!kept.has(b.id)&&!earlierToRead(b)&&b.id!==two&&b.id!==bd))
     .map(b=>({id:b.id,text:guessScrub(b.summary,b)})).filter(x=>guessSeen(x.text)>=60).slice(0,3);
   if(pool.length<3)return null;
   quests.blind={opts:pool.map(x=>({id:x.id,text:x.text.slice(0,420)})),at:Date.now()};
@@ -50792,7 +50855,8 @@ function questDrawBook2(){
   const pool=books.filter(b=>dareOk(b)&&!b.apart&&!kept.has(b.id)&&b.id!==other&&b.id!==bd);
   if(!pool.length)return null;
   /* the same ten-deal memory the first dare keeps */
-  let b=pick1(freshFrom("dare",pool,x=>x.id));
+  /* leaning toward 📌 — see PRIORITY */
+  let b=prioLean(freshFrom("dare",pool,x=>x.id))[0];
   /* …and the walk back lands on no book another dare or a kept pick holds:
      two cards on one book paid twice for one reading */
   const back0=earlierToRead(b),back=back0&&back0.id!==other&&back0.id!==bd&&!kept.has(back0.id)?back0:null;
@@ -55712,12 +55776,9 @@ function reRematch(){
       if(!byTitle2[t])byTitle2[t]=b;
     });
     reOpen.rows.forEach(r=>{
-      const t=r.it.title.toLowerCase().replace(/\s+/g," ").trim();
-      const both=byBoth[dupeKey(r.it.title,r.it.author)],one=byTitle2[t];
-      r.have=both||one||null;
-      r.near=!both&&!!one;
-      r.fill=r.have?reFillable(r.have,r.it):[];
-      if(r.have)r.on=false;
+      const m=reShelfMatch(r.it,byBoth,byTitle2,find);
+      Object.assign(r,m);
+      if(r.have)r.on=reStartsOn(m);
     });
   }
 }
@@ -55750,10 +55811,36 @@ function reFillable(b,it){
   if(it.progress&&!String(b.progress||"").trim()&&(it.pages||String(b.pages||"").trim()))
     out.push(["progress","how far you have read"]);
   if(it.dateFinished&&!String(b.dateFinished||"").trim())out.push(["date","when you finished it"]);
+  /* ReadEra's To read, on a book here still to read — see PRIORITY */
+  if(it.prio&&!prioRow(b)&&!b.dnf&&statusOf(b)!=="finished")out.push(["prio","📌 Priority"]);
   return out;
 }
-function reFillInto(b,it,what){
+/* What one row of an opened shelf is to the shelf as it stands. The same
+   title AND author is certainly it; the same title alone might be. A story
+   inside a collection is found too, through reIndex: a story kept inside a
+   collection here is often a file of its own in ReadEra, and offering that
+   file as new added a second copy of a story already filed. A story is only ever given
+   📌 from here; the blanks Fill in writes are a book's. */
+function reShelfMatch(it,byBoth,byTitle,find){
+  const t=it.title.toLowerCase().replace(/\s+/g," ").trim();
+  const both=byBoth[dupeKey(it.title,it.author)],one=byTitle[t];
+  const have=both||one||null;
+  if(have)return {have,near:!both&&!!one,en:null,fill:reFillable(have,it)};
+  const st=find(it.title,it.author);
+  if(st&&st.en){
+    const c=st.b,en=st.en;
+    const mark=it.prio&&!entPrioOf(c,en)&&!entDnfOf(c,en)&&entStatusOf(c,en)!=="finished";
+    return {have:c,near:false,en,fill:mark?[["prio","📌 Priority"]]:[]};
+  }
+  return {have:null,near:false,en:null,fill:[]};
+}
+/* a row starts ticked when it is new, or when it is certainly a book or story
+   you have and ReadEra's To read would give it 📌 — never a near match */
+const reStartsOn=m=>!m.have||(!m.near&&m.fill.some(x=>x[0]==="prio"));
+function reFillInto(b,it,what,en){
   const did=new Set(what.map(w=>w[0]));
+  if(did.has("prio")){if(en)en.prio=true;else b.prio=true;}
+  if(en)return;
   if(did.has("summary"))b.summary=importHtml(it.summary);
   if(did.has("tags"))b.keywords=(it.tags||[]);
   if(did.has("series")){b.series=it.series;if(it.seriesNum&&!String(b.seriesNum||"").trim())b.seriesNum=it.seriesNum;}
@@ -55825,6 +55912,7 @@ function openReColl(i){
     byBoth[dupeKey(b.title,b.author)]=b;
     if(!byTitle[t])byTitle[t]=b;
   });
+  const find=reIndex();
   /* the staged rows were made when the file was read; the only thing left to
      decide here is whether the reading position comes with them */
   const rows=c.items.map(src=>{
@@ -55832,12 +55920,8 @@ function openReColl(i){
       if(!reWantProgress){it.pages="";it.progress="";}
       return it;
     }).map(it=>{
-      const t=it.title.toLowerCase().replace(/\s+/g," ").trim();
-      const both=byBoth[dupeKey(it.title,it.author)];
-      const one=byTitle[t];
-      const have=both||one||null;
-      const fill=have?reFillable(have,it):[];
-      return {it,have,near:!both&&!!one,fill,on:!have};
+      const m=reShelfMatch(it,byBoth,byTitle,find);
+      return Object.assign({it,on:reStartsOn(m)},m);
     });
   reOpen={i,title:c.title,rows};
   renderReadEra();
@@ -55916,12 +56000,17 @@ function renderReadEra(){
       const canFill=rows.filter(r=>r.have&&r.fill.length);
       const known=rows.filter(r=>r.have).length;
       const st=k=>rows.filter(r=>r.it.status===k).length;
-      const bits=[st("want")+" want to read",st("reading")+" part-read",st("finished")+" finished"]
+      const bits=[st("want")+" want to read",st("reading")+" part-read",st("finished")+" finished",
+        rows.filter(r=>r.it.prio).length+" 📌 To read in ReadEra"]
         .filter(b=>!/^0 /.test(b));
+      /* the ones you have that ReadEra's To read would mark — see PRIORITY */
+      const marking=rows.filter(r=>r.have&&reStartsOn(r)).length;
       return `<div class="hcard" style="margin:4px 0 0;padding:11px 13px">
         <div class="hrow2" style="margin-bottom:7px"><b style="font-size:13px">${esc(reOpen.title)}</b>
           <span class="rr">${rows.length} book${rows.length===1?"":"s"}${bits.length?" · "+bits.join(" · "):""}</span></div>
-        ${known?`<div class="hint" style="margin:0 0 7px">${known} ${known===1?"is":"are"} already on your shelf and start unticked.
+        ${known?`<div class="hint" style="margin:0 0 7px">${known} ${known===1?"is":"are"} already on your shelf${marking
+            ?`. The ${marking===1?"one":marking} that ReadEra has as To read start${marking===1?"s":""} ticked, so ✎ Fill in gives ${marking===1?"it":"them"} 📌 Priority, filling in anything blank as it goes; the rest start unticked.`
+            :" and start unticked."}
           Adding one again makes a second copy — nothing is merged into the book you already have.</div>`:""}
         <label class="chk" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--mut);margin:0 0 8px">
           <input type="checkbox" id="reProg" ${reWantProgress?"checked":""}>
@@ -55949,10 +56038,10 @@ function renderReadEra(){
           <span style="min-width:0;flex:1">
             <span class="when" style="font-size:13px">${esc(r.it.title)||"Untitled"}</span>
             <span class="meta">${esc(r.it.author)||"Unknown author"}
-              · ${r.it.status==="want"?"want to read":r.it.status==="reading"?"part-read":"finished"}
+              · ${r.it.status==="want"?"want to read":r.it.status==="reading"?"part-read":"finished"}${r.it.prio?" · 📌 To read in ReadEra":""}
               ${r.it.series?" · "+esc(r.it.series)+(r.it.seriesNum?" #"+esc(r.it.seriesNum):""):""}
               ${(r.it.tags||[]).length?" · "+(r.it.tags||[]).slice(0,3).map(esc).join(", "):""}</span>
-            ${r.have?`<span class="meta" style="color:#b45309">already on your shelf${r.near?" — a near match":""}${r.fill.length?" · could fill in "+r.fill.map(x=>x[1]).join(", "):" · nothing here it does not have"}</span>`:""}
+            ${r.have?`<span class="meta" style="color:#b45309">already on your shelf${r.near?" — a near match":""}${r.en?`, a story inside “${esc(r.have.title||"Untitled")}”`:""}${r.fill.length?" · could fill in "+r.fill.map(x=>x[1]).join(", "):" · nothing here it does not have"}</span>`:""}
           </span></label>`).join("")}</div>
         ${hiddenRows>0?`<div class="hint" style="margin:7px 0 0">Showing the first ${shownRows.length}${shelfQ?" of "+foundRows.length+" found":""} — ${hiddenRows} more ${hiddenRows===1?"is":"are"} here but not drawn. Type in the box above to reach ${hiddenRows===1?"it":"them"}. Tick all, Add and Fill in still work on the whole ${esc(reOpen.title)} shelf.</div>`:""}
         ${!foundRows.length?`<div class="none" style="padding:8px 2px">Nothing here matches “${esc(reShelfFind)}”.</div>`:""}
@@ -56054,13 +56143,17 @@ function renderReadEra(){
     const items=[];let full=false;
     for(const r of want){
       const bk=r.have,before=JSON.parse(JSON.stringify(bk));
-      reFillInto(bk,r.it,r.fill);
+      reFillInto(bk,r.it,r.fill,r.en);
       touchBook(bk);
       /* storage full mid-run: stop, keep what was written, and still push the
          undo step below — see the same stop in the bulk fill's writeAll */
       if(!(await putOrRestore(bk,before))){full=true;break;}
       if(SYNC.on)enqueue({kind:"book",id:bk.id});
-      items.push({id:bk.id,before,after:JSON.parse(JSON.stringify(bk))});
+      /* two stories of one collection are one book: it keeps its first
+         before and its last after, or ↶ would put back the middle */
+      const had=items.find(x=>x.id===bk.id);
+      if(had)had.after=JSON.parse(JSON.stringify(bk));
+      else items.push({id:bk.id,before,after:JSON.parse(JSON.stringify(bk))});
     }
     /* no `label`: it is a SHAPE applyOp reads as a vocabulary entry, never
        prose — see the door at pushOp. One bulk op is already one undo step. */
@@ -63537,7 +63630,7 @@ function renderBookView(){
         <div class="covunder">${(vCovTools||!curCover)?covToolsHtml(b):`<button class="btn covsharp" id="vCovMore" title="Paste a cover, look for a sharper one, or frame it">🖼 Cover ▾</button>`}</div>
       </div>
       <div class="vtitlebox">
-        <h1 class="serif vtitle">${esc(b.title)||"Untitled"} ${lookupIcons(b,null)}</h1>
+        <h1 class="serif vtitle">${prioRow(b)?`<span class="prmark" title="Priority — one you mean to read first">📌</span>`:""}${esc(b.title)||"Untitled"} ${lookupIcons(b,null)}</h1>
         <div class="vauthor">${(()=>{
           /* One name reads as one name. Several used to read as one long link
              saying all of them at once, so you could not ask about just the
@@ -63576,6 +63669,7 @@ function renderBookView(){
             <button data-vst="dnf" class="${b.dnf?"on":""}" title="Given up on">✕ Did not finish</button>`}
             <button data-vst="upnext" class="${inUpNext(b)?"on":""}" title="Your Up next queue on 🏠 Today — five at most, in the order you choose">${inUpNext(b)?"✓ ":""}⏭ Up next</button>
             <button data-vst="unowned" class="${unownedOf(b)?"on":""}" title="You want it and haven't got it — not published yet, not bought yet, waiting on the library">${unownedOf(b)?"✓ ":""}⌛ Don't have it yet</button>
+            ${prioBtnHtml(b,`data-vst="prio"`)}
           </div>`:""}
           ${(()=>{
             /* The move you were most likely about to make, as its own press.
@@ -63808,7 +63902,7 @@ function renderBookView(){
         <div class="entcov" style="cursor:default">${entCovSrc(en)?entCovImg(en)
           :genCoverHtml({title:en.title||"Untitled",genres:b.genres},false)}</div>
         <div class="entmain">
-          <div class="hrow2"><b class="enth">${esc(en.title)||"Untitled"}</b>
+          <div class="hrow2"><b class="enth">${entPrioOf(b,en)?`<span class="prmark" title="Priority — one you mean to read first">📌</span>`:""}${esc(en.title)||"Untitled"}</b>
             ${lookupChip(b,en)}
             ${entFileBtnsHtml(b,en)}
             ${freeEntLink(b,en)}
@@ -63843,6 +63937,7 @@ function renderBookView(){
             <button data-evst="${en.id}|hold" class="${holdOf(en)?"on":""}">⏸ On hold</button>
             <button data-evst="${en.id}|dnf" class="${en.dnf?"on":""}">✕ Did not finish</button>
             <button data-evst="${en.id}|unowned" class="${unownedOf(en)?"on":""}" title="You want it and haven't got it — the next one in a series that isn't out yet lives here">${unownedOf(en)?"✓ ":""}⌛ Don't have it yet</button>
+            ${!en.prio&&(entDnfOf(b,en)||entStatusOf(b,en)==="finished")?"":`<button data-evst="${en.id}|prio" class="${en.prio?"on":""}" title="${PRIO_TIP}">${en.prio?"✓ ":""}📌 Priority</button>`}
             <button data-evst="${en.id}|" class="${!en.dnf&&!en.status?"on":""}">↩ Same as collection</button>
           </div>`:""}
             ${vEntRate===en.id?`<div class="stpick vpick ratepick" style="position:static;flex:1 1 100%;margin:0;min-width:0;max-width:100%">
@@ -72338,7 +72433,10 @@ function fromReadEra(d,fixAuthor,withProgress){
     readings:[],rereads:0,
     summary:String(D.doc_annotation||"").trim(),notes:"",
     series:m?m[1].trim():ser,seriesNum:m?m[2]:"",
-    tags:reSubjects(D.doc_genres)};
+    tags:reSubjects(D.doc_genres),
+    /* ReadEra's own To read is the 📌 — see PRIORITY. A book it also has as
+       read is read, and carries none */
+    ...(reNum(D.doc_to_read_time)>0&&!read?{prio:true}:{})};
 }
 const reTitle=d=>String((d.data&&(d.data.doc_title||d.data.doc_file_name_title))
   ||((d.links||[])[0]||{}).file_name||"").replace(/\.(epub|pdf|fb2|mobi|txt|djvu|rtf|doc|docx)$/i,"").trim();
@@ -73817,6 +73915,7 @@ async function importOne(it,extra,steps){
     /* what the app's own spreadsheet carries — see THE APP'S OWN SPREADSHEET */
     ...((it.genres||[]).length?{genres:it.genres.slice()}:{}),
     ...(it.favorite?{favorite:true}:{}),...(it.hold?{hold:true}:{}),...(it.unowned?{unowned:true}:{}),
+    ...(it.prio&&it.status!=="finished"&&!it.dnf?{prio:true}:{}),
     ...(it.lang?{lang:it.lang}:{}),...(it.from?{from:it.from}:{}),
     ...((it.setIn||[]).length?{setIn:it.setIn.slice()}:{}),
     ...(it.progress?{progress:it.progress}:{}),
