@@ -14599,6 +14599,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-08.2",go:["el:care:#secCovf"],lines:["<b>🖼 Better covers, from Amazon.</b> Auto-fill now tries Amazon's cover for a book's ISBN before Open Library's, whose scans were often the grey ones. And 🧰 Shelf care has a 🖼 Better covers card: it asks Amazon for every book and story here with an ISBN and lists the ones whose cover differs from yours, yours beside the new one. They start ticked where yours is the smaller; Swap changes up to a hundred at a press, and ↶ puts a whole press back. Goodreads itself can't be asked any more: it has switched its shelf feeds off, and 📚 Straight from Goodreads now says so instead of blaming your setup."]},
   {v:"2026-11-08.1",go:["tab:library"],lines:["<b>📌 Priority, for the books you mean to read first.</b> A book ReadEra has as To read comes in from your backup marked 📌, and pressing ✎ Fill in on a ReadEra shelf marks the ones you already have, stories inside collections too. Any stage list has a 📌 Priority line to set it by hand, and ☑ Select books sets or takes it off many at once. It stands before the title, ☰ Filters has a 📌 Priority button, and typing <i>prio</i> in the find box finds them. 🎡 Spin, the dare and ✨ Something to read reach for a 📌 book five times as often. Finishing a book or giving it up takes the mark off."]},
   {v:"2026-11-07.26",go:["tab:care"],lines:["<b>✨ Read them again says the right price.</b> On the import list, the button after the series finder was counting titles that name their own series, which cost nothing, so it said more than a second read would cost. It also asks first now, because pressing it forgets what was found."]},
   {v:"2026-11-07.25",go:["tab:settings"],lines:["<b>↩ Back in Settings comes back to your line.</b> Open a line of the Settings list and go back, with the ‹ or your phone's Back, and the line you pressed is where it stood on the screen, even if you made the text bigger while you were in there. It used to leave you at the top of the list."]},
@@ -18339,8 +18340,9 @@ function pushOp(op){
      book alone, which is exactly what every cover change did before this. */
   {let n=0;
    for(let i=HIST.undo.length-1;i>=0;i--){const o=HIST.undo[i];
-     if(!o.cover)continue;
-     if(++n>COVER_OPS)delete o.cover;}}
+     /* a swap of covers (op.covs, see BETTER COVERS) counts the same, as one */
+     if(!o.cover&&!o.covs)continue;
+     if(++n>COVER_OPS){delete o.cover;delete o.covs;}}}
   /* the same for a whole file kept beside a book (op.imgs — a file to read
      can be megabytes): the three newest steps keep theirs */
   {let n=0;
@@ -18604,6 +18606,17 @@ async function applyOp(op,inv,quiet){
         else{try{await dbDel("images",k);}catch(e){}coverCache.delete(k);if(SYNC.on)enqueue({kind:"imgDel",key:k});}
       }
     }
+    /* covers a bulk step changed — see BETTER COVERS. A cover is not part of
+       its book, so the book's own before and after cannot bring one back */
+    for(const p of op.covs||[]){
+      const d=inv?p.before:p.after;
+      try{if(d)await dbPut(p.store,p.store==="covers"?{id:p.key,data:d}:{key:p.key,data:d,v:(inv?p.vb:p.va)||Date.now()});
+        else await dbDel(p.store,p.key);}catch(e){}
+      coverCache.set(p.key,d||null);
+      if(p.store==="covers"&&SYNC.triedCover)SYNC.triedCover.delete(p.key);
+      if(SYNC.on)enqueue(p.store==="covers"?{kind:d?"cover":"coverDel",id:p.key}:{kind:d?"img":"imgDel",key:p.key});
+    }
+    if((op.covs||[]).length)bumpCovers();
     countTrash();   /* an item may have come out of the bin just above */
     /* `label` may be ONE vocabulary entry or a list of them. A merge retires a
        single word, but a bulk fill can bring in half a dozen new genres at
@@ -54951,6 +54964,10 @@ async function renderHub(part){
         <div class="bgpanel" id="qfromPanel" hidden></div>
       </div>
     </div>
+    <div class="sec" id="secCovf">
+      <div class="heading"><h2 class="serif">🖼 Better covers</h2></div>
+      <div class="hcard"><div id="covfBox"></div></div>
+    </div>
     <div class="sec">
       <div class="heading"><h2 class="serif">Pictures from your files</h2></div>
       <div class="hcard">
@@ -55226,6 +55243,7 @@ async function renderHub(part){
      saveSettings();renderMain();importGoodreadsFeed(name);
    };}
   {const rb=q("#reBtn");if(rb)rb.onclick=()=>q("#reFile").click();renderShareHint();renderReadEra();}
+  covfPaint();
   {const sb=q("#scanBtn");if(sb)sb.onclick=()=>q("#scanFiles").click();
    const sd=q("#scanDirBtn");if(sd)sd.onclick=()=>q("#scanDir").click();
    drawScan();}
@@ -73796,6 +73814,13 @@ async function fetchGoodreadsFeed(shelf,page){
   }finally{if(t)clearTimeout(t);}
   if(!r.ok){
     let why="";try{why=String(JSON.parse(text).error||"");}catch(e){}
+    /* ---- GOODREADS SWITCHED ITS SHELF FEEDS OFF ----
+       From November 2026 every shelf of a keyed feed, and every public one,
+       answers 404 with Goodreads' own <error>Page not found</error>, passed
+       through by the function. That is Goodreads, not the setup, and the line
+       below used to say it was the setup. The export still comes in above. */
+    if(r.status===404&&/<error>\s*Page not found/i.test(text))
+      throw new Error("Goodreads has switched its shelf feeds off — every shelf now answers “Page not found”, for everyone, so the app can't read your shelves straight from Goodreads any more. Its export still works: My Books → Import and Export → Export Library, and bring the .csv in here");
     /* a function never deployed answers 404 with Supabase's own words, not ours */
     if(r.status===404&&!/goodreads-function/.test(why))
       throw new Error("nothing answered at your Supabase — if the one-time setup in goodreads-function.ts hasn't been done yet, this is just that");
@@ -76727,8 +76752,12 @@ async function fetchBookInfo(title,author,isbn,probe,loose,quick){
      cover, it downloads (measured), and on a manhwa Open Library's, when it
      has one at all, is usually a novel's */
   /* Apple's next: it is the one at full size, and its host lets it download */
+  /* Amazon's cover for the ISBN next, before Open Library's: the publisher's
+     picture at about 330 × 500, where Open Library's are often scans and on
+     children's series measured the greyest — see BETTER COVERS */
   out.covers=[out.alCover||"",
     out.apCover||"",
+    amazonCover(isbnForCover),
     out.olCover,
     isbnForCover?`https://covers.openlibrary.org/b/isbn/${isbnForCover}-L.jpg?default=false`:"",
     ...(out.olCovers||[]),
@@ -77000,6 +77029,183 @@ async function fetchCoverData(urls,maxDim){
     try{return await urlToDataURL(u,maxDim);}catch(e){last=e;}
   }
   throw last||new Error("no cover");
+}
+/* ┌─ BETTER COVERS, FROM AMAZON BY ISBN ─────────────────────────────────────┐
+   │ Auto-fill takes Apple's cover first and, with none, Open Library's —     │
+   │ on children's series measured the greyest, often a scan of a worn copy. │
+   │ Amazon files the publisher's picture under each ISBN-10, open to a page │
+   │ (CORS), about 330 × 500 — the size Goodreads shows — and a 43-byte      │
+   │ blank where it has none, which urlToDataURL already refuses. Goodreads  │
+   │ itself is closed: its shelf feeds answer Page not found, and its pages  │
+   │ turn a program away after a few asks, so it is not asked at all.        │
+   │ fetchBookInfo puts amazonCover after Apple. This card asks for every     │
+   │ book and story with an ISBN, four at a time, and compares what comes   │
+   │ back with the cover you have (covfInfo: an 8 × 8 grey fingerprint): a   │
+   │ different picture, or the same one larger, stands in a list beside      │
+   │ yours, ticked where yours is the smaller. Swap writes up to COVF_PRESS  │
+   │ in one step of ↶, both pictures carried on the op (op.covs) — about as  │
+   │ many as an undo step can hold in a phone's memory. A row keeps only a   │
+   │ small thumbnail of yours; the full one is read again when it is swapped.│
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const COVF_PRESS=100,COVF_SHOW=40;
+const COVF={busy:false,stop:false,ran:false,done:0,of:0,rows:[],off:new Set(),more:0,say:""};
+function amazonCover(isbn){
+  const d=isbn13Of(isbn);if(!d||!d.startsWith("978"))return "";
+  const b=d.slice(3,12);let t=0;for(let i=0;i<9;i++)t+=(10-i)*(+b[i]);
+  const c=(11-t%11)%11;
+  return `https://m.media-amazon.com/images/P/${b}${c===10?"X":c}.01.LZZZZZZZ.jpg`;
+}
+/* every book and story that has an ISBN Amazon can be asked by */
+function covfTargets(){
+  const out=[];
+  books.forEach(b=>{
+    if(kindOf(b)!=="book")return;
+    const u=amazonCover(b.isbn);
+    if(u)out.push({id:b.id,b,en:null,url:u,title:b.title||"Untitled",author:b.author||""});
+    if(isColl(b))(b.entries||[]).forEach(en=>{const v=amazonCover(en.isbn);
+      if(v)out.push({id:b.id+"|"+en.id,b,en,url:v,title:en.title||"Untitled",author:entAuthorOf(b,en)||""});});
+  });
+  return out;
+}
+/* the picture you have now: a book's in the covers store, a story's own among
+   the images under "collection|story" — a story without one of its own has
+   none here, whatever its collection shows */
+async function covfMine(b,en){
+  const k=en?b.id+"|"+en.id:b.id;
+  if(en&&!en.cover)return null;
+  const c=coverCache.get(k);if(c)return c;
+  try{const d=await dbGet(en?"images":"covers",k);return (d&&d.data)||null;}catch(e){return null;}
+}
+/* size, a fingerprint, and a thumbnail small enough to keep for a long list */
+async function covfInfo(src,thumb){
+  try{
+    const r=await fetch(src,String(src).startsWith("data:")?undefined:{mode:"cors"});
+    if(!r.ok)return null;
+    const bl=await r.blob();if(bl.size<1200)return null;
+    const bm=await createImageBitmap(bl);
+    const c=document.createElement("canvas");c.width=8;c.height=8;
+    const x=c.getContext("2d",{willReadFrequently:true});x.drawImage(bm,0,0,8,8);
+    const d=x.getImageData(0,0,8,8).data,g=[];
+    for(let i=0;i<d.length;i+=4)g.push(d[i]*.3+d[i+1]*.59+d[i+2]*.11);
+    const avg=g.reduce((a,v)=>a+v,0)/g.length;
+    let th="";
+    if(thumb){const t=document.createElement("canvas");t.width=60;t.height=Math.max(1,Math.round(60*bm.height/bm.width));
+      t.getContext("2d").drawImage(bm,0,0,t.width,t.height);th=t.toDataURL("image/jpeg",.7);}
+    return {w:bm.width,h:bm.height,hash:g.map(v=>v>avg?1:0),th};
+  }catch(e){return null;}
+}
+/* ten of the sixty-four squares may differ and it is still the same picture —
+   a re-scan, a crop, another compression */
+const covfSame=(a,b)=>{let n=0;for(let i=0;i<64;i++)if(a.hash[i]!==b.hash[i])n++;return n<=10;};
+async function covfRun(){
+  if(COVF.busy)return;
+  const T=covfTargets();
+  Object.assign(COVF,{busy:true,stop:false,ran:true,done:0,of:T.length,rows:[],more:0,say:""});COVF.off.clear();
+  covfPaint();
+  let i=0;
+  const one=async t=>{
+    const nw=await covfInfo(t.url,false);
+    if(!nw)return;
+    const mine=await covfMine(t.b,t.en);
+    const old=mine?await covfInfo(mine,true):null;
+    const same=!!(old&&covfSame(old,nw));
+    /* the same picture, only worth listing as a sharper copy */
+    if(same&&nw.w<=old.w*1.2)return;
+    COVF.rows.push({id:t.id,bid:t.b.id,eid:t.en?t.en.id:"",url:t.url,title:t.title,author:t.author,
+      inColl:t.en?(t.b.title||"a collection"):"",old:old?{w:old.w,h:old.h,th:old.th}:null,nw:{w:nw.w,h:nw.h},same});
+    if(old&&old.w>=nw.w)COVF.off.add(t.id);
+  };
+  const worker=async()=>{while(i<T.length&&!COVF.stop){const t=T[i++];try{await one(t);}catch(e){}COVF.done++;if(COVF.done%25===0)covfPaint();}};
+  await Promise.all([worker(),worker(),worker(),worker()]);
+  COVF.busy=false;covfPaint();
+}
+async function covfSwap(){
+  const pick=COVF.rows.filter(r=>!COVF.off.has(r.id)).slice(0,COVF_PRESS);if(!pick.length)return;
+  const btn=q("#covfSwap");if(btn){btn.disabled=true;btn.textContent="Swapping…";}
+  const before=new Map(),covs=[],done=new Set();let failed=0;
+  for(const r of pick){
+    const b=books.find(x=>x.id===r.bid);
+    const en=b&&r.eid?(b.entries||[]).find(x=>x.id===r.eid):null;
+    if(!b||(r.eid&&!en)){failed++;continue;}
+    let data;try{data=await urlToDataURL(r.url,COVER_MAX);}catch(e){failed++;continue;}
+    if(!before.has(b.id))before.set(b.id,JSON.parse(JSON.stringify(b)));
+    const was=await covfMine(b,en);
+    try{
+      if(en){const key=b.id+"|"+en.id,vb=en.coverV||0;en.coverV=Date.now();en.cover=true;
+        await dbPut("images",{key,data,v:en.coverV});coverCache.set(key,data);
+        covs.push({store:"images",key,before:was,after:data,vb,va:en.coverV});
+        if(SYNC.on)enqueue({kind:"img",key});}
+      else{await dbPut("covers",{id:b.id,data});coverCache.set(b.id,data);b.coverV=Date.now();
+        if(SYNC.triedCover)SYNC.triedCover.delete(b.id);
+        covs.push({store:"covers",key:b.id,before:was,after:data});
+        if(SYNC.on)enqueue({kind:"cover",id:b.id});}
+    }catch(e){failed++;continue;}
+    done.add(r.id);
+  }
+  const items=[];
+  for(const [id,bf] of before){const b=books.find(x=>x.id===id);if(!b)continue;
+    touchBook(b);await dbPut("books",b);if(SYNC.on)enqueue({kind:"book",id});
+    items.push({id,before:bf,after:JSON.parse(JSON.stringify(b))});}
+  if(covs.length){pushOp({t:"bulk",items,covs});bumpCovers();
+    undoSaid(`${covs.length} cover${covs.length===1?"":"s"} swapped for Amazon's.`);}
+  if(SYNC.on)flushQueue();
+  COVF.rows=COVF.rows.filter(r=>!done.has(r.id));
+  COVF.say=failed?`${failed} would not download just now and stay as they were; Look again tries them again.`:"";
+  covfPaint();
+}
+function covfRowHtml(r){
+  const pic=(src,w)=>`<img src="${esc(src)}" alt="" loading="lazy" style="width:${w}px;height:auto;max-height:${Math.round(w*1.6)}px;object-fit:contain;border-radius:3px;border:1px solid var(--line);display:block">`;
+  const yours=r.old?pic(r.old.th,46):`<span class="meta" style="display:flex;align-items:center;justify-content:center;width:46px;height:68px;border:1px dashed var(--line);border-radius:3px">none</span>`;
+  /* the title on a line of its own and the two pictures under it: beside them,
+     a phone at big text left the title 25 px, a word to a line */
+  return `<label class="snap" style="display:flex;flex-direction:column;align-items:stretch;padding:6px 9px;gap:5px">
+    <span style="display:flex;gap:8px;align-items:flex-start;min-width:0">
+      <input type="checkbox" data-covf="${esc(r.id)}"${COVF.off.has(r.id)?"":" checked"} style="flex:none;margin-top:3px">
+      <span style="min-width:0;flex:1"><span class="when" style="font-size:13px">${esc(r.title)}</span>
+        <span class="meta">${esc(r.author)||"Unknown author"}${r.inColl?` · a story inside ${esc(r.inColl)}`:""}${r.same?" · the same picture, sharper":""}</span></span></span>
+    <span style="display:flex;align-items:center;gap:8px;padding-left:24px">
+      <span style="text-align:center">${yours}<span class="meta" style="display:block;font-size:11px">${r.old?`yours · ${r.old.w}×${r.old.h}`:"yours"}</span></span>
+      <span class="meta">→</span>
+      <span style="text-align:center">${pic(r.url,46)}<span class="meta" style="display:block;font-size:11px">Amazon · ${r.nw.w}×${r.nw.h}</span></span></span>
+  </label>`;
+}
+function covfPaint(){
+  const box=q("#covfBox");if(!box)return;
+  const C=COVF,n=C.ran?C.of:covfTargets().length;
+  const say=C.say?`<div class="hint" style="margin:6px 0 0">${esc(C.say)}</div>`:"";
+  if(!C.ran||(!C.busy&&!C.rows.length&&!C.done)){
+    box.innerHTML=`<div class="hint" style="margin:0 0 9px">Amazon keeps the publisher's cover under each ISBN, at about the size Goodreads shows. This asks it for every book and story here that has an ISBN — ${n} of them — and lists the ones whose cover differs from yours, beside yours. Free, and no Claude. Nothing changes until you press Swap.</div>
+      <div class="hrow2" style="gap:8px;flex-wrap:wrap"><button class="btn pri" id="covfGo"${n?"":" disabled"}>🔎 Look at ${n}</button></div>${say}`;
+    covfWire(box);return;}
+  if(C.busy){
+    box.innerHTML=`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" id="covfStop"${C.stop?" disabled":""}>${C.stop?"Stopping…":"⏹ Stop"}</button>
+      <span class="prog" style="width:110px"><i style="width:${C.of?Math.round(C.done/C.of*100):0}%"></i></span>
+      <span class="hint" style="margin:0">Looked at ${C.done} of ${C.of} · ${C.rows.length} to show so far</span></div>`;
+    covfWire(box);return;}
+  const on=C.rows.filter(r=>!C.off.has(r.id)).length,shown=C.rows.slice(0,COVF_SHOW+C.more);
+  const swapN=Math.min(on,COVF_PRESS);
+  box.innerHTML=`<div class="hint" style="margin:0 0 8px">${C.rows.length?`Amazon has a different cover, or a sharper copy of the same one, for ${C.rows.length} of the ${C.of} looked at. They start ticked where yours is the smaller; untick any you'd rather keep.${on>COVF_PRESS?` A press swaps ${COVF_PRESS}, each press one step of ↶.`:""}`
+      :`Amazon has nothing better than what you have for any of the ${C.of} looked at.`}</div>
+    ${C.rows.length?`<div class="hrow2" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <button class="btn pri" id="covfSwap"${swapN?"":" disabled"}>🖼 Swap ${on>COVF_PRESS?`the first ${COVF_PRESS} of ${on}`:`the ${on}`} ticked</button>
+      <button class="btn" id="covfAll">${on?"☐ Untick all":"☑ Tick all"}</button>
+      <button class="btn" id="covfGo">↻ Look again</button></div>
+      ${shown.map(covfRowHtml).join("")}
+      ${C.rows.length>shown.length?`<div class="hrow2" style="margin-top:6px;gap:8px;flex-wrap:wrap"><button class="btn" id="covfMore">Show ${Math.min(COVF_SHOW,C.rows.length-shown.length)} more</button><span class="none" style="margin:0">…and ${C.rows.length-shown.length} more.</span></div>`:""}`
+      :`<button class="btn" id="covfGo">↻ Look again</button>`}${say}`;
+  covfWire(box);
+}
+function covfWire(box){
+  const go=q("#covfGo",box),stop=q("#covfStop",box),sw=q("#covfSwap",box),all=q("#covfAll",box),more=q("#covfMore",box);
+  if(go)go.onclick=()=>covfRun();
+  if(stop)stop.onclick=()=>{COVF.stop=true;covfPaint();};
+  if(sw)sw.onclick=()=>covfSwap();
+  if(all)all.onclick=()=>{const on=COVF.rows.some(r=>!COVF.off.has(r.id));COVF.rows.forEach(r=>on?COVF.off.add(r.id):COVF.off.delete(r.id));covfPaint();};
+  if(more)more.onclick=()=>{COVF.more+=COVF_SHOW;covfPaint();};
+  qa("[data-covf]",box).forEach(c=>c.onchange=()=>{c.checked?COVF.off.delete(c.dataset.covf):COVF.off.add(c.dataset.covf);
+    const b=q("#covfSwap",box),on=COVF.rows.filter(r=>!COVF.off.has(r.id)).length;
+    if(b){b.disabled=!on;b.textContent=`🖼 Swap ${on>COVF_PRESS?`the first ${COVF_PRESS} of ${on}`:`the ${on}`} ticked`;}
+    const a=q("#covfAll",box);if(a)a.textContent=on?"☐ Untick all":"☑ Tick all";});
 }
 
 /* ---- the word "fiction", wired into other people's filing ----
