@@ -60,7 +60,7 @@ as it stood in the copy; `why` and `src` are shown beside it.
 | kind | what it does | its fields |
 |---|---|---|
 | `series` | becomes the answer of the import list's ✨ Suggested series and the Library's ✨ Find their series; nothing is made until 📚 Make them there | `series` ("" = in no series), `num`, `sure` = checked on the web here, so the app's check counts it as done |
-| `whole` | one series as it should stand: wrong stories out (back to books of their own, or, when `to` names the series they belong to, into that series' collection at its number, made if there is none), one book twice made one, loose books moved in, missing ones added as Want to read with pages and blurb, all in series order; a new collection when `book` is absent | `name`, `author`, `book` + `was` (its story ids in the copy), `items` ({story}/{book}/{add}) in order, `out` ({story, why, to?: {name, pos}}), `drop` — write it with `corr.File.whole` |
+| `whole` | one series as it should stand: wrong stories out (back to books of their own, or, when `to` names the series they belong to, into that series' collection at its number, made if there is none), one book twice made one, loose books moved in, missing ones added as Want to read with pages and blurb, all in series order; a new collection when `book` is absent; `rename` gives an existing collection the series' name and author; `{self}` turns a collection that holds no stories, because it is the one book read, into that book's story at its number, its rating, dates, stage and notes going with it | `name`, `author`, `book` + `was` (its story ids in the copy), `items` ({story}/{book}/{add}/{self}) in order, `out` ({story, why, to?: {name, pos}}), `drop`, `rename` — write it with `corr.File.whole` |
 | `blurb` | replaces a book's, story's or collection's blurb | `to` (plain text, blank lines between paragraphs) |
 | `pages` | sets the page count | `to` (digits) |
 
@@ -127,7 +127,15 @@ its job, and here with its fields. A new kind never needs a new loader.
     another change moves there by `to` then finds it (`serInColl`) instead of
     making a second one.
   - A collection with no stories at all (the collection itself carries the
-    reading and the notes) is left out and asked about.
+    reading and the notes) is filled like any other: the book it is goes in
+    as `{self}` at its number, the collection takes the series' name with
+    `rename`, the rest are added. A standalone is left alone. Its collection
+    blurb waits for a later file: `{self}` takes the collection's blurb down
+    into the story, and a press applies blurbs before series.
+  - A collection whose stories are all a spin-off (Herman Parish's Amelia
+    Bedelia Chapter Books in a collection named for Peggy Parish's series)
+    becomes the spin-off with `rename`; the collection's own rating, blurb
+    and notes stay where they are, and `why` says so.
 - A collection's own blurb rides in the same file as kind `blurb` on the
   collection's book id, written the way ✨ A blurb for the whole collection
   writes it (`cwSeriesAsk` + `CW_BLURB` in index.html: the series as a whole,

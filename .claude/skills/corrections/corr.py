@@ -101,18 +101,23 @@ class File:
         a = (sf.get("shelf") or {}).get(t["id"])
         return (a.get("s", ""), a.get("p", "")) if a else None
 
-    def whole(self, name, author, items, coll=None, out=(), drop=(), why=""):
+    def whole(self, name, author, items, coll=None, out=(), drop=(), why="", rename=False):
         """One series as it should stand, in series order. coll: the collection (a dict from
         shelf.books), or None for a new one. items: ("story", entry, pos) for one of its own,
         ("book", book, pos) for a loose book that moves in, ("add", {"title", "pos", "pages",
-        "blurb"}) for a missing book, added as Want to read. out: (entry, why) pairs, stories
-        that aren't this series and go back on the shelf as books; (entry, why, {"name", "pos"})
-        for a story of ANOTHER series, which goes into that series' collection at its number
-        (made if the shelf has none). drop: (entry, kept_entry) pairs, one book twice, carried
-        into the one kept."""
+        "blurb"}) for a missing book, added as Want to read, ("self", {"title", "pos"}) for a
+        collection that holds no stories because it IS the one book read: that book becomes the
+        story at its number, taking the collection's own rating, dates, stage and notes.
+        out: (entry, why) pairs, stories that aren't this series and go back on the shelf as
+        books; (entry, why, {"name", "pos"}) for a story of ANOTHER series, which goes into that
+        series' collection at its number (made if the shelf has none). drop: (entry, kept_entry)
+        pairs, one book twice, carried into the one kept. rename: an existing collection takes
+        `name` and `author` (build 2026-11-09.31 on); without it they name only a new one."""
         c = {"kind": "whole", "name": name, "author": author}
         if coll:
             c.update(book=coll["id"], title=coll.get("title", ""), was=[e["id"] for e in coll.get("entries") or []])
+            if rename:
+                c["rename"] = True
         its = []
         for it in items:
             if it[0] == "story":
@@ -123,6 +128,9 @@ class File:
                 a = it[1]
                 its.append({"add": {"title": a["title"], "pos": str(a.get("pos", "") or ""),
                                     "pages": str(a.get("pages", "") or ""), "blurb": (a.get("blurb") or "").strip()}})
+            elif it[0] == "self":
+                s = it[1]
+                its.append({"self": {"title": str(s.get("title") or "").strip(), "pos": str(s.get("pos", "") or "")}})
         c["items"] = its
         if out:
             c["out"] = []
