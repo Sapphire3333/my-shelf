@@ -14626,6 +14626,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-09.16",go:["el:care:#drvSortSec"],lines:["<b>🗂 Sort your Drive.</b> A new card in 🧰 Shelf care, under Tidy your Drive. It moves the files your books, stories and fics are linked to into folders inside your Drive folder, the way your shelf is arranged: one folder for each collection, with its files named in reading order like “01 Title - Author”; books on their own in a folder for each author; fics in a folder for each fandom. A book's volume or series number stays in its name. Every other file stays exactly where it is, and so does anything in a folder a reading app on your phone may read from, unless you tick it. <b>▸ See where they go</b> shows the plan before anything moves. Links go by each file's own number, so no book loses its file, your place or your highlights. It asks Google once for permission to edit your Drive, says how long is left as it goes, and <b>↶ Put them back</b> returns every file to its old folder and name."]},
   {v:"2026-11-09.15",go:["el:care:#secBlb"],lines:["<b>📝 Better blurbs and page counts.</b> A new card in 🧰 Shelf care, under 🖼 Better covers, for the books and stories with no blurb, a short one, or one that talks about things other than the story. <b>🔎 Look in the free places</b> asks Hardcover, Apple Books, Open Library and Google for every blurb and page count they have, free; it says how long it will take once it starts, and Stop keeps what it found. <b>✨ Tidy</b> has Claude keep only what's about the book: praise, the author, the series as a product, who it's for and links come out, and a date the story is set on stays. It only cuts, never rewrites. The first 30 go to Haiku and Sonnet side by side, and you choose which does the rest; the price is on every button. <b>🌐 Search the web</b> looks for the ones nothing has. Then yours and the new one stand together, ticked where the new one is better; <b>Use these</b> changes up to a hundred at a press, and ↶ puts them back. Page counts fill the blanks, and one far from the usual count is listed for you to look at, never changed for you. Fics keep their authors' own words."]},
   {v:"2026-11-09.14",lines:["<b>🔗 A link can open My Shelf on one screen.</b> An address that ends in <b>?go=</b> and a place opens the app straight there: a tab, like <i>?go=tab:library</i>, or one card, the same places these What's new buttons take you. It's for links you keep elsewhere, so one press lands on the screen you mean. The shortcuts on the app's icon work as before."]},
   {v:"2026-11-09.13",go:["el:care:#healthSec"],lines:["<b>🧪 Shelf health.</b> A new card in 🧰 Shelf care, under Tidying up, that looks over what's written on your books and says what looks wrong: a title and author the wrong way round, no author, one story inside two collections, a reading that ends before it starts or on a day still to come, one AO3 work there twice, and what's marked finished with no date anywhere. Each row has its count and ▸ its list, with Open beside every book or story. It changes nothing itself: you put each right on its own page. A finish with no date can't count towards a week or a year, so that row says how many of them are fics, which come in from AO3 files read with no date, and opens the whole list on 🔍 Search. ✕ It's right puts away a row that's fine as it is."]},
@@ -34044,6 +34045,180 @@ function refreshDrvTidy(){
     const {done,err}=await run(ids,false,"Putting back:");
     const back=new Set(done);settings.drvTidyLast=Object.assign({},last,{ids:ids.filter(id=>!back.has(id))});if(!settings.drvTidyLast.ids.length)settings.drvTidyLast=null;saveSettings();
     DRV_TIDY=Object.assign({},T||{groups:[]},{busy:false,say:`${done.length.toLocaleString()} put back.${err?` Stopped: ${err}.`:""} Look again to list them.`});paint();};
+}
+/* ┌─ 🗂 SORT YOUR DRIVE: THE FILES YOUR SHELF IS LINKED TO, IN ITS ORDER ────┐
+   │ drvSortPlan reads the saved Drive list (drvFilesMemo: files with their   │
+   │ folder p, and the folders under the chosen one) against the shelf. Only │
+   │ a file a book, story or fic is linked to moves; the rest stay put. A     │
+   │ story's file goes to a folder named for its collection, named           │
+   │ "01 Title - Author.epub" by its place in Contents (entNumbers, padded),  │
+   │ so Drive lists them in reading order; a book on its own to "Books on    │
+   │ their own / Author"; a fic, keeping its name, to "Fics / its first      │
+   │ fandom", an existing Fics folder used if there is one. A file linked     │
+   │ twice goes where its first link sends it. A file under a folder named   │
+   │ like a reading app's (DRV_SORT_APP: a phone, Moon+ Reader, ReadEra…)     │
+   │ is left alone unless that folder is ticked to be sorted                  │
+   │ (settings.drvSortMove), because an app reading from it would find it     │
+   │ empty. drvSortRun makes each folder the first time a file needs it       │
+   │ (drvSortFolder), and for each file                                       │
+   │ asks Drive where it is now (the list can be days old) and moves and     │
+   │ renames it in one PATCH; a file already in place is skipped, one gone    │
+   │ from Drive is counted. Every move is logged in the meta store            │
+   │ ("drvsort:last") as it happens, so a stop or a closed tab still has its  │
+   │ ↶: Put them back moves each to its old folders and name, and bins the    │
+   │ folders it made once they are empty. Links go by file id, so nothing     │
+   │ loses its book, its place or its highlights; the books themselves are   │
+   │ not touched.                                                             │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const DRV_SORT_APP=/moon\s*\+?\s*reader|readera|librera|kindle|kobo|pocketbook|\bphone\b/i;
+const DRV_SORT_OWN="Books on their own",DRV_SORT_FICS="Fics";
+let DRV_SORT=null;
+/* a name Drive, Windows and a phone all take: no slashes or the other marks a desktop sync refuses */
+const drvSortClean=s=>String(s||"").replace(/\s*:\s*/g," - ").replace(/[\\/*?"<>|\u0000-\u001f]+/g," ").replace(/\s+/g," ").trim().slice(0,150).trim();
+const drvSortExt=f=>(String(f.name||"").match(/\.[a-z0-9]{2,5}$/i)||[f.mime==="application/pdf"?".pdf":f.mime==="application/epub+zip"?".epub":""])[0];
+const drvSortWho=a=>drvSortClean(authorParts(a)[0]||"")||"Unknown author";
+/* a book's own title, with the number that tells its volumes apart: the shelf's
+   series number, or else the one in the file's old name. Measured on a shelf of
+   242 books on their own with files: 103 old names held a "Vol. 1" or "#3" the
+   title didn't, and the new name would have lost it */
+function drvSortTitle(b,oldName){
+  const t=String(b.title||"Untitled"),ser=seriesShown(b),num=String(b.seriesNum||"").trim();
+  if(ser)return `${t} (${ser}${num?" #"+num:""})`;
+  if(num&&!new RegExp("\\b"+num.replace(/\./g,"\\.")+"\\b").test(t))return `${t} #${num}`;
+  const m=String(oldName||"").replace(/\.[a-z0-9]{2,5}$/i,"").match(/\b(?:vol(?:ume)?|book|part|tome)\.?\s*(\d+(?:\.\d+)?)\b|#\s*(\d+(?:\.\d+)?)\b/i);
+  const n=m&&(m[1]||m[2]);
+  return n&&!new RegExp("\\b"+n.replace(/\./g,"\\.")+"\\b").test(t)?`${t} ${m[1]?"Vol. "+n:"#"+n}`:t;
+}
+function drvSortPlan(memo){
+  memo=memo||drvFilesMemo;const fo=settings.drive&&settings.drive.folder;
+  if(!memo||!fo||!Array.isArray(memo.files))return null;
+  const byId=new Map(memo.files.map(f=>[f.id,f])),dn=new Map((memo.dirs||[]).map(d=>[d.id,d]));
+  const pathOf=p=>{const out=[];let x=p,g=0;while(x&&x!==fo.id&&dn.has(x)&&g++<40){out.unshift(dn.get(x));x=dn.get(x).p;}return out;};
+  const move=new Set(settings.drvSortMove||[]),apps=new Map();
+  const moves=[],seen=new Set(),tally={gone:0,left:0,inPlace:0};
+  const reserved=new Set([DRV_SORT_OWN,DRV_SORT_FICS].map(x=>x.toLowerCase()));
+  const add=(fid,path,name,why)=>{
+    if(!fid||seen.has(fid))return;seen.add(fid);
+    const f=byId.get(fid);if(!f){tally.gone++;return;}
+    const app=pathOf(f.p).find(d=>DRV_SORT_APP.test(d.name));
+    if(app){if(!apps.has(app.id))apps.set(app.id,{id:app.id,name:app.name,n:0});apps.get(app.id).n++;if(!move.has(app.id)){tally.left++;return;}}
+    const to=name||f.name,here=pathOf(f.p).map(d=>d.name);
+    if(here.length===path.length&&here.every((x,i)=>x===path[i])&&f.name===to){tally.inPlace++;return;}
+    moves.push({id:fid,from:f.p,fromName:f.name,path,name:to,why,size:f.size||0});};
+  books.forEach(b=>{if(!b)return;
+    if(isFic(b)){if(b.driveFile)add(b.driveFile.id,[DRV_SORT_FICS,drvSortClean((b.fandoms||[])[0])||"No fandom"],"","fic");return;}
+    if(isColl(b)){
+      let folder=drvSortClean(b.title)||"Untitled collection";if(reserved.has(folder.toLowerCase()))folder+=" (collection)";
+      const nums=entNumbers(b),w=Math.max(2,String((b.entries||[]).length).length);
+      (b.entries||[]).forEach(en=>{if(!en||!en.driveFile)return;const f=byId.get(en.driveFile.id);
+        const n=String(nums[en.id]||"").replace(/^\d+/,d=>d.padStart(w,"0"));
+        add(en.driveFile.id,[folder],f?drvSortClean(`${n} ${en.title||"Untitled"} - ${drvSortWho(entAuthorOf(b,en))}`)+drvSortExt(f):"","story");});
+      if(b.driveFile){const f=byId.get(b.driveFile.id);add(b.driveFile.id,[folder],f?drvSortClean(`${b.title||"Untitled"} - ${drvSortWho(b.author)}`)+drvSortExt(f):"","story");}
+      return;}
+    if(b.driveFile){const f=byId.get(b.driveFile.id);
+      add(b.driveFile.id,[DRV_SORT_OWN,drvSortWho(b.author)],f?drvSortClean(`${drvSortTitle(b,f.name)} - ${drvSortWho(b.author)}`)+drvSortExt(f):"","book");}});
+  const folders=new Set(moves.map(m=>m.path.join("/")));
+  return {moves,tally,apps:[...apps.values()],folders:folders.size,root:fo};
+}
+/* the id of a folder by its path under the chosen one, made the first time a
+   file needs it. The cache holds a promise for each step of a path, so three
+   files moving at once into one new folder make it once, not three times */
+function drvSortFolder(path,cache,made){
+  let prev=Promise.resolve(settings.drive.folder.id),key="";
+  for(const name of path){key+="/"+name;
+    if(!cache.has(key))cache.set(key,prev.then(async parent=>{
+      const have=((drvFilesMemo&&drvFilesMemo.dirs)||[]).find(d=>d.p===parent&&d.name===name);if(have)return have.id;
+      const j=await drvSortCall("files?supportsAllDrives=true&fields=id","POST",{name,mimeType:DRV_DIR,parents:[parent]});
+      made.push(j.id);if(drvFilesMemo&&drvFilesMemo.dirs)drvFilesMemo.dirs.push({id:j.id,name,p:parent});return j.id;}));
+    prev=cache.get(key);}
+  return prev;
+}
+async function drvSortCall(path,method,body){
+  for(let tries=0;;tries++){
+    const r=await fetch(DRV_API+path,{method,headers:Object.assign({Authorization:"Bearer "+await drvEditToken()},body?{"Content-Type":"application/json"}:{}),body:body?JSON.stringify(body):undefined});
+    if(r.status===401&&tries<1){drvEditTok="";continue;}
+    if(r.ok)return r.status===204?{}:r.json();
+    let m="";try{m=(await r.clone().json()).error.message;}catch(e){}
+    if(r.status===404){const e=new Error("gone");e.gone=true;throw e;}
+    if(tries<3&&(r.status===429||r.status>=500||(r.status===403&&/rate|quota/i.test(m)))){await new Promise(res=>setTimeout(res,1000*(tries+1)));continue;}
+    throw new Error(m||("Drive answered "+r.status));
+  }
+}
+async function drvSortLog(log){try{await dbPut("meta",{k:"drvsort:last",v:log});}catch(e){}}
+async function drvSortRun(plan){
+  const S=DRV_SORT=Object.assign({},DRV_SORT,{busy:true,stop:false,say:"Starting…",pct:0,t0:Date.now()});refreshDrvSort();
+  const log={at:Date.now(),moved:[],made:[]},cache=new Map();let err="",gone=0,i=0,done=0;
+  await drvSortLog(log);
+  const one=async m=>{
+    const to=await drvSortFolder(m.path,cache,log.made);
+    let now;try{now=await drvSortCall("files/"+encodeURIComponent(m.id)+"?supportsAllDrives=true&fields=parents,name,trashed","GET");}
+    catch(e){if(e.gone){gone++;return;}throw e;}
+    if(now.trashed){gone++;return;}
+    const from=(now.parents||[]).filter(p=>p!==to);
+    if(!from.length&&now.name===m.name)return;
+    await drvSortCall("files/"+encodeURIComponent(m.id)+"?supportsAllDrives=true&fields=id"+(from.length?`&addParents=${encodeURIComponent(to)}&removeParents=${encodeURIComponent(from.join(","))}`:""),"PATCH",{name:m.name});
+    log.moved.push({id:m.id,from,to,fromName:now.name,toName:m.name});
+    const f=drvFilesMemo&&drvFilesMemo.files.find(x=>x.id===m.id);if(f){f.p=to;f.name=m.name;}};
+  const worker=async()=>{while(!err&&!S.stop&&i<plan.moves.length){const m=plan.moves[i++];
+    try{await one(m);}catch(e){err=e.message;break;}
+    done++;if(done%10===0||done===plan.moves.length){S.pct=done/plan.moves.length*100;
+      const mins=done>=20?Math.ceil((Date.now()-S.t0)/done*(plan.moves.length-done)/60000):0;
+      S.say=`Moved ${done.toLocaleString()} of ${plan.moves.length.toLocaleString()}…${mins?` about ${mins} minute${mins===1?"":"s"} left`:""}`;refreshDrvSort();await drvSortLog(log);}}};
+  await Promise.all([worker(),worker(),worker()]);
+  await drvSortLog(log);if(drvFilesMemo)drvListSave(drvFilesMemo);
+  DRV_SORT={say:`${log.moved.length.toLocaleString()} file${log.moved.length===1?"":"s"} moved${log.made.length?` into ${log.made.length.toLocaleString()} new folder${log.made.length===1?"":"s"}`:""}.${gone?` ${gone} were no longer on Drive.`:""}${S.stop?" Stopped; press again to carry on.":""}${err?` Stopped: ${err}.`:""}`};
+  refreshDrvSort();
+}
+async function drvSortBack(){
+  let log=null;try{const r=await dbGet("meta","drvsort:last");log=r&&r.v;}catch(e){}
+  if(!log||!(log.moved||[]).length)return;
+  const S=DRV_SORT=Object.assign({},DRV_SORT,{busy:true,stop:false,say:"Putting them back…",pct:0});refreshDrvSort();
+  const left=log.moved.slice().reverse();let n=0,err="";
+  for(const m of left){if(S.stop)break;
+    try{await drvSortCall("files/"+encodeURIComponent(m.id)+"?supportsAllDrives=true&fields=id"+(m.from.length?`&addParents=${encodeURIComponent(m.from.join(","))}&removeParents=${encodeURIComponent(m.to)}`:""),"PATCH",{name:m.fromName});}
+    catch(e){if(!e.gone){err=e.message;break;}}
+    const f=drvFilesMemo&&drvFilesMemo.files.find(x=>x.id===m.id);if(f){f.p=m.from[0]||f.p;f.name=m.fromName;}
+    n++;if(n%10===0){S.pct=n/left.length*100;S.say=`Put back ${n.toLocaleString()} of ${left.length.toLocaleString()}…`;refreshDrvSort();}}
+  log.moved=log.moved.slice(0,log.moved.length-n);
+  /* the folders it made go to Drive's bin once nothing is left in them */
+  let binned=0;
+  if(!log.moved.length&&!err){for(const id of log.made.slice().reverse()){
+    try{const j=await drvSortCall(`files?supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=1&fields=files(id)&q=${encodeURIComponent(`'${id}' in parents and trashed=false`)}`,"GET");
+      if(!(j.files||[]).length){await drvSetTrashed(id,true);binned++;if(drvFilesMemo&&drvFilesMemo.dirs)drvFilesMemo.dirs=drvFilesMemo.dirs.filter(d=>d.id!==id);}}catch(e){}}
+    log.made=[];}
+  await drvSortLog(log);if(drvFilesMemo)drvListSave(drvFilesMemo);
+  DRV_SORT={say:`${n.toLocaleString()} put back where they were${binned?`, and the ${binned} folder${binned===1?"":"s"} it made are in Drive's bin`:""}.${err?` Stopped: ${err}.`:""}`};
+  refreshDrvSort();
+}
+function refreshDrvSort(){
+  const box=q("#drvSortBox");if(!box)return;
+  const fo=settings.drive&&settings.drive.folder;if(!fo){box.innerHTML="";return;}
+  const S=DRV_SORT||{},paint=()=>refreshDrvSort();
+  const intro=`<div class="hint" style="margin:0 0 8px">Moves the files your books, stories and fics are linked to into folders inside ${esc(fo.name)}, like your shelf: one folder for each collection, its files named in reading order (“01 Title - Author”); books on their own in a folder for each author, inside “${esc(DRV_SORT_OWN)}”; fics in a folder for each fandom, inside “${esc(DRV_SORT_FICS)}”. Every other file stays where it is. Links go by each file's own number, so no book loses its file, place or highlights.</div>`;
+  if(S.busy){box.innerHTML=intro+drvBarHtml(esc(S.say||"…"),S.pct)+`<div class="hrow2" style="margin-top:6px"><button class="btn smallbtn" id="dsStop"${S.stop?" disabled":""}>${S.stop?"Stopping…":"⏹ Stop"}</button></div>`;
+    q("#dsStop",box).onclick=()=>{S.stop=true;paint();};return;}
+  if(!drvFilesMemo){box.innerHTML=intro+`<span class="none">Reading your Drive list…</span>`;drvFolderFiles(false).then(paint,e=>{box.innerHTML=intro+`<span class="none">Drive couldn't be read: ${esc(e.message)}</span>`;});return;}
+  const P=drvSortPlan();if(!P){box.innerHTML="";return;}
+  const kinds={story:0,book:0,fic:0};P.moves.forEach(m=>kinds[m.why]++);
+  const apps=P.apps.length?`<div class="hint" style="margin:8px 0 4px">Folders a reading app may read from are left alone; tick one to sort it too.</div>${P.apps.map(a=>`<label class="hrow2" style="gap:6px;font-size:13px"><input type="checkbox" data-dsapp="${esc(a.id)}"${(settings.drvSortMove||[]).includes(a.id)?" checked":""}> ${esc(a.name)} <span class="meta" style="display:inline">· ${a.n.toLocaleString()} linked file${a.n===1?"":"s"}</span></label>`).join("")}`:"";
+  const groups=new Map();P.moves.forEach(m=>{const k=m.path.join(" / ");if(!groups.has(k))groups.set(k,[]);groups.get(k).push(m);});
+  const peek=[...groups].slice(0,40).map(([k,ms])=>`<div class="snap" style="display:block;padding:5px 10px;font-size:13px;overflow-wrap:anywhere"><b>${esc(fo.name)} / ${esc(k)}</b> <span class="meta" style="display:inline">· ${ms.length}</span>${ms.slice(0,3).map(m=>`<div class="meta">${esc(m.fromName)} → ${esc(m.name)}</div>`).join("")}${ms.length>3?`<div class="meta">…and ${ms.length-3} more</div>`:""}</div>`).join("");
+  box.innerHTML=intro+(S.say?`<div class="hint" style="margin:0 0 8px">${esc(S.say)}</div>`:"")
+    +(P.moves.length?`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><b style="font-size:14px">${P.moves.length.toLocaleString()} file${P.moves.length===1?"":"s"} to move or rename</b>
+        <span class="hint" style="margin:0;flex:1 1 220px">${[kinds.story&&`${kinds.story.toLocaleString()} into their collection's folder`,kinds.book&&`${kinds.book.toLocaleString()} under their author`,kinds.fic&&`${kinds.fic.toLocaleString()} fics under their fandom`].filter(Boolean).join(", ")}; ${P.folders.toLocaleString()} folders.${P.tally.inPlace?` ${P.tally.inPlace.toLocaleString()} already in place.`:""}${P.tally.left?` ${P.tally.left.toLocaleString()} left alone.`:""}${P.tally.gone?` ${P.tally.gone.toLocaleString()} linked files aren't in your Drive list; ↻ Look again in Connect your Drive files reads it again.`:""}</span>
+        <button class="btn pri" id="dsGo">🗂 Sort them</button></div>
+      <details><summary style="cursor:pointer;font-size:13px">▸ See where they go</summary><div style="max-height:45vh;overflow:auto;margin-top:6px">${peek}${groups.size>40?`<div class="meta" style="padding:4px 10px">…and ${(groups.size-40).toLocaleString()} more folders</div>`:""}</div></details>`
+      :`<div class="hint" style="margin:0">Every linked file is already in its place.</div>`)
+    +apps+`<div class="hrow2" id="dsBackRow" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center"></div>`;
+  qa("[data-dsapp]",box).forEach(c=>c.onchange=()=>{const s=new Set(settings.drvSortMove||[]);c.checked?s.add(c.dataset.dsapp):s.delete(c.dataset.dsapp);settings.drvSortMove=[...s];saveSettings();paint();});
+  const go=q("#dsGo",box);if(go)go.onclick=async()=>{
+    try{await drvEditToken();}catch(e){DRV_SORT={say:`Google didn't give the permission: ${e.message}.`};paint();return;}
+    if(!confirm(`Move and rename ${P.moves.length.toLocaleString()} files on your Drive, into ${P.folders.toLocaleString()} folders inside ${fo.name}?\n\nOther files stay where they are, and ↶ Put them back here moves them back.`))return;
+    drvSortRun(P);};
+  dbGet("meta","drvsort:last").then(r=>{const L=r&&r.v,row=q("#dsBackRow",box);if(!row||!L||!(L.moved||[]).length)return;
+    row.innerHTML=`<span class="hint" style="margin:0">Last time ${L.moved.length.toLocaleString()} were moved, ${esc(drvAgo(L.at))}.</span><button class="btn smallbtn" id="dsBack">↶ Put them back</button>`;
+    q("#dsBack",row).onclick=async()=>{try{await drvEditToken();}catch(e){DRV_SORT={say:`Google didn't give the permission: ${e.message}.`};paint();return;}
+      if(!confirm(`Move the ${L.moved.length.toLocaleString()} files back to their old folders and names?`))return;drvSortBack();};}).catch(()=>{});
 }
 /* 📖 on a fic's own row, its page not needed first */
 /* ┌─ 📖 THE SIGN THAT YOU CAN READ IT HERE ──────────────────────────────────┐
@@ -55525,7 +55700,7 @@ async function renderHub(part){
     <div class="sec" id="ownClashSec" hidden><div class="heading"><h2 class="serif">⌛ Says you don't have it, but…</h2></div><div class="hcard" id="ownClashBox"></div></div>
     <div class="sec" id="volMarkSec" hidden><div class="heading"><h2 class="serif">Page trails to put right</h2></div><div class="hcard" id="volMarkBox"></div></div>
     ${claudeReady()?`<div class="sec" id="nxSec"><div class="heading"><h2 class="serif">🔎 Is the next one out?</h2></div><div class="hcard" id="nxBox"></div></div>`:""}
-    ${driveReady()?`<div class="sec"><div class="heading"><h2 class="serif">Connect your Drive files</h2></div><div class="hcard" id="drvConnBox"></div></div><div class="sec"><div class="heading"><h2 class="serif">Tidy your Drive</h2></div><div class="hcard" id="drvTidyBox"></div></div>`:""}
+    ${driveReady()?`<div class="sec"><div class="heading"><h2 class="serif">Connect your Drive files</h2></div><div class="hcard" id="drvConnBox"></div></div><div class="sec"><div class="heading"><h2 class="serif">Tidy your Drive</h2></div><div class="hcard" id="drvTidyBox"></div></div><div class="sec" id="drvSortSec"><div class="heading"><h2 class="serif">🗂 Sort your Drive</h2></div><div class="hcard" id="drvSortBox"></div></div>`:""}
     <div class="sec" id="wikiBlurbSec">
       <div class="heading"><h2 class="serif">📖 Blurbs from a wiki</h2></div>
       <div class="hcard"><div class="hint" style="margin:0 0 6px">Your books and stories with the same title as a wiki's page, with its blurb beside yours. Free, and nothing changes until you tick it.</div>
@@ -55722,7 +55897,7 @@ async function renderHub(part){
   };
   /* the housekeeping half's wiring — every refresher looks its box up and
      returns when it is not on the page, and the two buttons are guarded here */
-  refreshDupes();refreshStoryCopies();refreshShelfTwins();refreshHealth();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshCastTwins();refreshClaudeTidy();refreshFandomTidy();refreshScreen();refreshDrvConnect();refreshDrvTidy();refreshVolTrail();refreshOwnClash();nxDraw();
+  refreshDupes();refreshStoryCopies();refreshShelfTwins();refreshHealth();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshCastTwins();refreshClaudeTidy();refreshFandomTidy();refreshScreen();refreshDrvConnect();refreshDrvTidy();refreshDrvSort();refreshVolTrail();refreshOwnClash();nxDraw();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
   /* many books off one picture — see ONE PHOTO, THREE ANSWERS */
   {const pb=q("#impPhoto"),pf=q("#impPhotoFile"),ps=q("#impPhotoSay");
@@ -72863,7 +73038,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["blurbModel","healthLeave","drvConnNot","twinLeave","storyCopyLeave","castTwinLeave","castKeep","ownClashLeave","rdUsual","freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover","devCopyPhone","devCopyComputer","setHistPhone","setHistComputer"];
+const SHARED_PREFS=["drvSortMove","blurbModel","healthLeave","drvConnNot","twinLeave","storyCopyLeave","castTwinLeave","castKeep","ownClashLeave","rdUsual","freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover","devCopyPhone","devCopyComputer","setHistPhone","setHistComputer"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
