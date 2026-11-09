@@ -37,6 +37,15 @@ javascript    await new Promise(r=>{const t=setInterval(()=>{if(window.__smoke||
 Pass is `bad: 0`. If the second call comes back empty, call it again; the run
 continues between calls.
 
+**What a fix was measured on becomes a check.** The cases you built to prove
+the change (the file names, titles and rows that went wrong) go into the
+smoke as a check of their own before the commit, in the shape of the ones
+after "what each fix since was measured on" in `dev-check.html`: invented
+names of the same shape, a shelf of their own in memory through `onShelf`.
+A probe that is thrown away after the commit catches nothing the next time.
+When the change depends on real names, try it on a copy of the shelf first
+(the `shelf-copy` skill).
+
 If rows fail at the very first step with `reading 'transaction'` or "opened
 undefined", that is a stray tab holding the database, not the build:
 `tabs_context`, close the strays, run again — or use the `my-shelf-check`
