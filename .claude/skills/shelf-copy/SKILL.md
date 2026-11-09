@@ -58,8 +58,10 @@ Read-only questions first, and give the owner the answer with numbers:
 - The import list: `markDupes()` then count `dupe` / `near`.
 - A ReadEra backup they put beside the copy: `loadReadEraBlob(file)`.
 
-Claude, Hardcover and Google Drive are not reachable here (no sign-in): stand
-them in, as the smoke does. Pressing a button writes only into `myShelf-copy`;
+Claude and Google Drive are not reachable here (no sign-in): stand them in, as
+the smoke does. Hardcover is: its function needs only the app's public key, so
+`hardcoverOn()` is true and real lookups work, about 2.5 s a series. Its "in no
+series" is not final; its lists miss books. Pressing a button writes only into `myShelf-copy`;
 load the copy again to start clean.
 
 ## 4. After

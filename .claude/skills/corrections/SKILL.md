@@ -1,0 +1,80 @@
+---
+name: corrections
+description: Do a whole-shelf job for My Shelf here, in Claude Code, from a copy of the shelf, and hand the app one corrections file to load in Shelf care → 📥 Corrections from a file, instead of the app paying for Claude per press. Use for series, blurbs, page counts, and the later kinds (genres, tags, Set in, names written two ways, who an author is, on screen, coming next).
+---
+
+# A corrections file
+
+Big one-off jobs over the whole shelf cost money when the app asks Claude for
+each book. Done here they come out of the owner's Claude plan instead, and come
+back as **one file** the app reads: 📥 Corrections from a file, in 🧰 Shelf care,
+shows each change beside what the shelf has now, ticked, and nothing changes
+until ✓ Use these (one ↶ takes a press back). The app's own buttons stay for
+day-to-day use.
+
+## 1. The copy
+
+The job works from a copy the owner saves with ⚙ Settings → Export & import →
+🧪 Save a copy for testing (see the `shelf-copy` skill). Use the newest one in
+`~/.claude/shelf-copy/`. The file you write is only as fresh as that copy: the app
+checks each change's title and present value against the shelf as it is now,
+and anything changed since starts unticked and says so.
+
+**It is private.** The copy and every corrections file stay on this computer:
+never into the repo, a commit, a code comment, What's new or a test row.
+
+## 2. Write it with corr.py
+
+`corr.py` beside this file reads the copy and writes the file, so every job
+writes the same shape. Run Python with `-I`:
+
+```python
+import sys; sys.path.insert(0, r"<repo>/.claude/skills/corrections"); import corr
+shelf = corr.load(r"C:/Users/<you>/.claude/shelf-copy/my-shelf-test-copy-<date>.json")
+out = corr.File("Series for the import list", shelf)
+out.series(row, "Series Name", "2", why="what says so", sure=True)   # a row of shelf.rows, or a book
+out.series(row, "", why="a standalone")                             # in no series
+out.blurb(book, "the blurb", story=entry, why="…", src="https://…")
+out.pages(book, 240, story=entry, src="…")
+print(out.write())   # → Downloads/my-shelf-corrections-<date>-<job>.json
+```
+
+Tell the owner the file's name and where it is, and that it loads on the
+computer from Shelf care.
+
+## 3. The format
+
+```json
+{"myShelfCorrections": 1, "made": "2026-11-09T15:00:00", "copy": "2026-11-09",
+ "job": "Series for the import list",
+ "changes": [ {"kind": "series", "row": "<import row id>", "title": "…", "author": "…",
+               "was": "Old Name #1", "series": "Name", "num": "2", "why": "…", "sure": true} ]}
+```
+
+Every change has a `kind`, its target, and `title` / `author` as they were in the
+copy. The target is `"book": "<id>"` (with `"story": "<entry id>"` for a story in
+a collection) or, for the import list, `"row": "<id>"` (found again by title and
+author if the list was loaded afresh). `was` is the value the change replaces,
+as it stood in the copy; `why` and `src` are shown beside it.
+
+| kind | what it does | its fields |
+|---|---|---|
+| `series` | becomes the answer of the import list's ✨ Suggested series and the Library's ✨ Find their series; nothing is made until 📚 Make them there | `series` ("" = in no series), `num`, `sure` = checked on the web here, so the app's check counts it as done |
+| `blurb` | replaces a book's or story's blurb | `to` (plain text, blank lines between paragraphs) |
+| `pages` | sets the page count | `to` (digits) |
+
+Kinds named for later jobs, which this build counts and keeps but can't use
+yet: `genres`, `tags`, `setin`, `rename`, `author`, `screen`, `upcoming`. Each one
+is added to `CORR_DO` in index.html (door 📥 CORRECTIONS FROM A FILE) with
+its job, and here with its fields. A new kind never needs a new loader.
+
+## 4. How sure to be
+
+- Only what you are sure of. A book you aren't sure of is left out, not guessed.
+- Check on the web (WebSearch) anything you'd only be guessing from memory,
+  and mark a series answer you checked `sure`. The in-app series finder's own
+  guesses went wrong exactly where memory was trusted: two standalones by one
+  author taken for a series, a standalone placed beside a real #1.
+- A title that already names its series, "(Series, #2)", needs no answer.
+- One job a file. A few hundred books a chat is a sensible size; say how far
+  you got and where the next chat carries on.
