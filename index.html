@@ -14617,6 +14617,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-09.7",go:["tab:library"],lines:["<b>✨ Find their series.</b> Tick books in the Library and press <b>⚙ Do something with them → ✨ Find their series</b>. A book whose series is written on it, or in a bracket like “(Tom Pike, #2)”, says so for free; Claude reads the rest, about 3¢ for a hundred. Each series becomes a row: your books moving in, any others of it already on your shelf, and the books you're missing, from Hardcover for free or from Claude for about 3¢ a series. The missing ones are ticked, unless a series misses more than 40, when they start unticked. <b>📚 Make them</b> makes each series a collection in order, or puts the books into the collection you already have at their places, and adds the ticked missing ones as Want to read. A ticked collection gets its missing books; a book with no series stays as it is. One ↶ takes the whole press back."]},
   {v:"2026-11-09.6",go:["el:care:#twinBox"],lines:["<b>🧹 A book twice, made one.</b> The import list now has <b>🧹 books on the list twice</b> above it: two rows of one book, like “Kite Days” and “Kite Days (Kite Days, #1)”, or the same #1 of one series in two languages. The fuller row stays and takes what only the other had, and the other comes off the list; ⇄ keeps the other instead, and <b>Drop all</b> takes only the ones with the same title. Under a series suggestion, the other row starts unticked and says which book it repeats.","<b>🧹 Two copies on your shelf.</b> Shelf care, under Tidying up, finds the same pairs among your books. <b>Make them one</b> keeps the fuller copy, gives it what only the other had (📌, its file, pages, blurb, series), and puts the other in Recently deleted. If both have something of their own, like a rating or a finish, it opens them for you to choose instead.","<b>✕ on every row of the import list</b>, and on each book under a series suggestion, takes that row off. One ↶ puts back anything here."]},
   {v:"2026-11-09.5",go:["tab:library"],lines:["<b>☑ Tick a run of books.</b> In the Library's ☑ Select books on a computer, press one book, then hold <b>Shift</b> and press another: every book between them ticks too. Shift-press a ticked book and the run unticks instead. It goes by the order the books stand on the page, so sort or narrow first."]},
   {v:"2026-11-09.4",go:["el:care:#drvConnBox"],lines:["<b>🔗 Connect my files is sure of four more kinds of name.</b> An illustrator beside the author, as in “Doe, Jane_ Roe, Sam - Title”. A second name in brackets, like “Ada (Una) the Kite Fairy” for Una the Kite Fairy. A book here called “Series: Title #25”, or “Title (Series #2)”, finding a file called just the title. And a name so long that Drive cut it off before its closing bracket, which used to leave the publisher and ISBNs counted as words of the title."]},
@@ -23488,7 +23489,7 @@ function refreshLibPick(){
   const able=(id,ok)=>{const b=q("#"+id);if(b)b.disabled=!ok;};
   /* one ticked book is enough for a series now: joining one you already have
      is the commonest case, and it was the one the button refused */
-  able("selSer",n>0);able("selColl",n>1);able("selInto",n>0);able("selNone",n>0);
+  able("selSer",n>0);able("selColl",n>1);able("selSerFind",n>0);able("selInto",n>0);able("selNone",n>0);
   able("selGen",n>0);able("selAud",n>0);able("selKw",n>0);able("selFill",n>0);
   able("selDel",n>0);able("selSt",n>0);able("selFmt",n>0);
 }
@@ -23927,6 +23928,7 @@ function renderLibrary(){
       ${selSlim?"":`<b style="font-size:13px" id="selCount">${libSel.size} ticked</b>`}
       <button class="btn" id="selSer" ${libSel.size?"":"disabled"} title="Put them in a series you already have, or start a new one">🔗 Into a series…</button>
       <button class="btn" id="selColl" ${libSel.size>1?"":"disabled"}>📚 Fold into one collection…</button>
+      <button class="btn" id="selSerFind" ${libSel.size?"":"disabled"} title="Claude says which of them are in a series; you check the list, then each series becomes a collection in order, with the books you're missing">✨ Find their series…</button>
       ${collsOnShelf().length?`<button class="btn" id="selInto" ${libSel.size?"":"disabled"} title="Put them inside a collection you already have">📥 Into a collection…</button>`:""}
       ${selSlim?"":selAllHtml+selNoneHtml}</div>
       <div class="hrow2" style="margin-top:7px">
@@ -24672,6 +24674,7 @@ function renderLibrary(){
            inp.onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();go();}};
          }});
     };
+    {const sf=q("#selSerFind",m);if(sf)sf.onclick=()=>lsfOpen([...libSel]);}
     const sc=q("#selColl",m);
     if(sc)sc.onclick=async()=>{
       /* a collection can't be folded into a collection — it would lose its stories */
@@ -75699,8 +75702,10 @@ function serFindKin(rows){
       put.add(b);}));});
   return {shelf:[...shelf],colls:[...colls]};
 }
-async function serFindAsk(rows){
-  const {shelf,colls}=serFindKin(rows),S={type:"string"};
+async function serFindAsk(rows,what){
+  /* books asked about from the Library are on the shelf too: not twice in the ask */
+  let {shelf,colls}=serFindKin(rows);const S={type:"string"};
+  {const ids=new Set(rows.map(r=>r&&r.id));shelf=shelf.filter(b=>!ids.has(b.id));}
   const schema={type:"object",properties:{series:{type:"array",items:{type:"object",properties:{name:S,books:S},required:["name","books"],additionalProperties:false}}},required:["series"],additionalProperties:false};
   const by=x=>String(x.title||"")+(x.author?` by ${x.author}`:"");
   const text=`Below is a numbered list of books from my reading list. From what you already know, without searching, say which of them belong to a book series.\n`
@@ -75713,7 +75718,7 @@ async function serFindAsk(rows){
     +`\nThe list:\n${rows.map((it,i)=>`${i+1}. ${by(it)}`).join("\n")}`
     +(shelf.length?`\n\nBooks I already have by these authors:\n${shelf.map((b,i)=>`S${i+1}. ${by(b)}`).join("\n")}`:"")
     +(colls.length?`\n\nCollections I already have by these authors: ${colls.map(b=>b.title).join("; ")}`:"");
-  const j=await claudeAsk({what:"✨ Series on the import list",kind:"ask",model:SERF_MODEL,effort:"low",max_tokens:CLAUDE_SERIES_MAX,waitMs:CLAUDE_BIG_WAIT,schema,text});
+  const j=await claudeAsk({what:what||"✨ Series on the import list",kind:"ask",model:SERF_MODEL,effort:"low",max_tokens:CLAUDE_SERIES_MAX,waitMs:CLAUDE_BIG_WAIT,schema,text});
   SERF.usd+=claudePriceOf(j.usage||{},j.model||SERF_MODEL);SERF.read+=rows.length;
   ((j.json&&j.json.series)||[]).forEach(x=>{
     const name=String(x&&x.name||"").replace(/\s+/g," ").trim();if(!name)return;
@@ -75798,6 +75803,263 @@ async function serFindMake(){
   SB_SHELF=null;
   N.say=(failed?"Stopped: storage may be full. ":"")+(nBooks?`Made ${nNew} collection${nNew===1?"":"s"}${nInto?` and filled ${nInto}`:""} with ${nBooks} book${nBooks===1?"":"s"}. One ↶ takes it all back.`:"");
   refreshShelfSub();refreshImport();
+}
+/* ┌─ ✨ FIND THEIR SERIES, FROM THE LIBRARY ──────────────────────────────────┐
+   │ Ticked books in the Library, ⚙ → ✨ Find their series. lsfOpen opens a   │
+   │ panel over the page. A book's series is first what it says itself (its   │
+   │ series field or a "(Name, #2)" bracket), then what Claude has said before │
+   │ (SERF, the import list's record, keyed by title and author), and only     │
+   │ the rest are sent: ✨ Find their series, priced by serFindEst, a hundred  │
+   │ at a time through serFindAsk. lsfGroup puts the answers together as one   │
+   │ row per series: the ticked books, the series' other plain books on the    │
+   │ shelf (moving in too, each with its tick), and a ticked collection as the │
+   │ series it is. A series with a collection of that very name goes into it   │
+   │ (serFindHave). A series with one book of yours is still a collection.     │
+   │ Then the missing books: Hardcover by itself, free (lsfHardcover, the same │
+   │ rule as Many series at once: short of the list it's no answer while Claude│
+   │ can be asked), and for what's left ✨ Ask Claude, about 3¢ a series,     │
+   │ kept a month by sbPaidPut. A missing book is one no book or story here    │
+   │ answers to by the same hand, with the series' name in front or not        │
+   │ (lsfOnShelf, storyAlsoNames, lsfBare). They are listed ticked, unless a   │
+   │ series misses more than LSF_CAP, when they start unticked. 📚 Make them   │
+   │ (lsfMake) folds each series' books in with bookToEntry, adds the ticked   │
+   │ missing ones as Want to read, puts everything in series order, and into a │
+   │ collection already there by the number its stories have in the list       │
+   │ (lsfInsert). One ↶ takes the whole press back. A ticked book with no      │
+   │ series is named at the foot and left as it is.                            │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const LSF_CAP=40,LSF_SHOW=30;
+let LSF=null;
+const lsfAnswer=b=>{const sn=seriesShown(b);if(sn)return {s:sn,p:String(b.seriesNum||"").trim()};
+  return serFindFree({title:b.title})||SERF.series[serFindKey(b)]||SERF.shelf[b.id]||null;};
+const lsfWaiting=()=>LSF?LSF.picked.filter(b=>!isColl(b)&&!lsfAnswer(b)&&!SERF.asked[serFindKey(b)]):[];
+/* "Name and the Title", "Name: Title", "Name… Title" without the name */
+function lsfBare(t,name){
+  const n=String(name||"").replace(/[\s.…:,;–—-]+$/,"").trim();if(!n)return String(t||"");
+  const re=new RegExp("^"+n.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"[\\s.…:,;–—-]*(?:and\\s+)?","i");
+  return String(t||"").replace(re,"").trim()||String(t||"");
+}
+function lsfShelfIdx(){
+  const idx=titleIndex();
+  books.forEach(b=>{if(!b)return;idx.put(b.title,{b,en:null});
+    (b.entries||[]).forEach(en=>{if(!en||!en.title)return;const v={b,en};idx.put(en.title,v);storyAlsoNames(b,en).forEach(x=>idx.put(x,v));});});
+  return idx;
+}
+const lsfOnShelf=(idx,title,author,name)=>[title,lsfBare(title,name)].some(t=>!!idx.find(t,v=>authorsOverlap(author,v.en?(entAuthorOf(v.b,v.en)||v.b.author):v.b.author)).hit);
+function lsfMissing(s,idx){
+  if(!s.got)return [];
+  const seen=new Set(),mine=new Set(s.mine.flatMap(x=>[titleKey(x.b.title),titleKey(lsfBare(x.b.title,s.name))]));
+  return s.got.filter(x=>{if(x.foreign||!x.title)return false;const k=titleKey(x.title),kb=titleKey(lsfBare(x.title,s.name));
+    if(seen.has(k)||mine.has(k)||mine.has(kb))return false;seen.add(k);
+    return !lsfOnShelf(idx,x.title,x.author||s.author,s.name);});
+}
+function lsfMissInit(s){const list=lsfMissing(s,lsfShelfIdx()),on=list.length<=LSF_CAP;s.miss=new Map(list.map(x=>[titleKey(x.title),on]));}
+function lsfGroup(){
+  const L=LSF,map=new Map(),none=[],prev=new Map((L.series||[]).map(s=>[s.key,s]));
+  const at=(name,author)=>{const k=serFindName(name);let s=map.get(k);if(!s)map.set(k,s={key:k,name,author:author||"",mine:[],got:null,from:"",why:"",on:true,miss:null,into:null,count:0});return s;};
+  L.picked.forEach(b=>{
+    if(!books.includes(b))return;
+    if(isColl(b)){const s=at(seriesShown(b)||b.title,b.author);s.into=b;return;}
+    const a=lsfAnswer(b);
+    if(!a){if(SERF.asked[serFindKey(b)]||!claudeReady())none.push(b);return;}
+    const s=at(a.s,b.author);if(!s.mine.some(x=>x.b===b))s.mine.push({b,p:a.p||"",ticked:true,on:true});
+  });
+  /* the series' other plain books on the shelf, by Claude's answer or the series written on them */
+  const byId=new Map(books.map(b=>[b.id,b]));
+  const mate=(b,name,p)=>{if(!b||isColl(b)||kindOf(b)!=="book")return;const s=map.get(serFindName(name));
+    if(s&&!s.mine.some(x=>x.b===b)&&authorsOverlap(b.author,s.author))s.mine.push({b,p:p||"",ticked:false,on:true});};
+  Object.keys(SERF.shelf).forEach(id=>{const a=SERF.shelf[id];mate(byId.get(id),a.s,a.p);});
+  books.forEach(b=>{const sn=seriesShown(b);if(sn)mate(b,sn,String(b.seriesNum||""));});
+  const place=p=>{const n=parseFloat(p);return isNaN(n)?1e9:n;};
+  map.forEach(s=>{
+    if(!s.into){const h=serFindHave(s.name);if(h&&h.same&&!h.en&&isColl(h.b))s.into=h.b;}
+    const was=prev.get(s.key);
+    if(was){["got","from","why","on","miss","count"].forEach(k=>{s[k]=was[k];});s.mine.forEach(x=>{const o=was.mine.find(y=>y.b===x.b);if(o)x.on=o.on;});}
+    else{const kept=sbPaid({name:s.name,author:s.author});if(kept){s.got=kept.books;s.from="Claude, kept from before";lsfMissInit(s);}}
+    s.mine.sort((a,c)=>place(a.p)-place(c.p));
+    s.author=s.author||(s.mine[0]&&s.mine[0].b.author)||(s.into&&s.into.author)||"";
+  });
+  L.series=[...map.values()].filter(s=>s.mine.length||s.into).sort((a,c)=>a.name.localeCompare(c.name));
+  L.none=none;
+}
+function lsfOpen(ids){
+  const old=q("#lsfPanel");if(old&&old.__close)old.__close();
+  const picked=ids.map(id=>books.find(b=>b.id===id)).filter(Boolean);if(!picked.length)return;
+  const d=document.createElement("div");d.id="lsfPanel";d.className="ratepanel storypanel";
+  const L=LSF={picked,series:[],none:[],busy:false,stop:false,say:"",usd:0,hcDone:false,d};
+  lsfGroup();
+  d.setAttribute("role","dialog");d.setAttribute("aria-label","Their series");
+  d.addEventListener("click",lsfClick);d.addEventListener("change",lsfChange);
+  document.body.appendChild(d);d.__close=dismissable(d,()=>{L.stop=true;if(LSF===L)LSF=null;});
+  lsfPaint();
+  if(!lsfWaiting().length)lsfHardcover();
+}
+async function lsfFind(){
+  const L=LSF;if(!L||L.busy)return;
+  L.busy=true;L.stop=false;L.say="";lsfPaint();
+  const usd0=SERF.usd;
+  try{
+    while(claudeReady()&&LSF===L&&!L.stop){
+      const rows=lsfWaiting().slice(0,SERF_BATCH);if(!rows.length)break;
+      L.say=`Claude is reading ${rows.length} book${rows.length===1?"":"s"}…`;lsfPaint();
+      await serFindAsk(rows,"✨ Their series, from the Library");serFindSave();
+    }
+  }catch(e){
+    if(e&&e.usage)SERF.usd+=claudePriceOf(e.usage,SERF_MODEL);
+    L.say=`Claude didn't answer: ${String(e&&e.message||e).slice(0,120)}. What it found so far stays.`;
+  }
+  L.usd+=SERF.usd-usd0;serFindSave();serFindFresh();
+  L.busy=false;if(LSF!==L)return;
+  const said=L.say;lsfGroup();L.say=said;lsfPaint();
+  await lsfHardcover();
+}
+async function lsfLook(s,who,get){
+  try{const g=await get(),kept=g&&g.ok?g.books.filter(x=>!x.foreign).length:0,want=s.count||(g&&g.count)||0;
+    /* Hardcover short of the list is no answer while Claude can be asked */
+    if(kept&&(who!=="Hardcover"||kept>=want||!claudeReady())){s.got=g.books;s.from=who;s.why="";if(!s.count)s.count=want;
+      if(who==="Claude")sbPaidPut({name:s.name,author:s.author},g);lsfMissInit(s);}
+    else s.why=kept?`Hardcover has ${kept} of ${want}, so this one needs Claude.`:`${who} ${(g&&g.why)||"found nothing"}${who==="Hardcover"&&claudeReady()?", so this one needs Claude":""}.`;}
+  catch(e){s.why=`${who} didn't answer: ${String(e&&e.message||e).slice(0,80)}.`;}
+}
+async function lsfHardcover(){
+  const L=LSF;if(!L||L.busy)return;
+  const list=L.series.filter(s=>s.on&&!s.got&&!s.why);
+  if(!list.length||!hardcoverOn()){L.hcDone=true;lsfPaint();return;}
+  L.busy=true;let i=0;
+  for(const s of list){if(LSF!==L||L.stop)break;L.say=`Hardcover, free: ${++i} of ${list.length}, ${s.name}…`;lsfPaint();
+    await lsfLook(s,"Hardcover",()=>fetchHardcoverSeries(s.name,s.author,{exact:true,lang:"en"}));}
+  L.busy=false;L.stop=false;L.hcDone=true;L.say="";lsfPaint();
+}
+async function lsfClaude(){
+  const L=LSF;if(!L||L.busy)return;
+  const list=L.series.filter(s=>s.on&&!s.got);if(!list.length)return;
+  L.busy=true;L.stop=false;let at=0,n=0;
+  const worker=async()=>{while(at<list.length&&LSF===L&&!L.stop){const s=list[at++];L.say=`Claude: ${++n} of ${list.length}, ${s.name}…`;lsfPaint();
+    s.why="";await lsfLook(s,"Claude",()=>fetchClaudeSeries(s.name,s.author,s.mine.map(x=>x.b.title),{count:s.count,english:true}));lsfPaint();}};
+  await Promise.all(Array.from({length:SB_CLAUDE_AT_ONCE},worker));
+  L.busy=false;L.stop=false;L.say="";lsfPaint();
+}
+/* a new story's place: before the first one the list numbers higher */
+function lsfInsert(coll,en,p,posOf){
+  const list=coll.entries=coll.entries||[],n=parseFloat(p);
+  if(isNaN(n)){list.push(en);return;}
+  const i=list.findIndex(e=>{const q=posOf(e.title);return q!=null&&q>n;});
+  if(i<0)list.push(en);else list.splice(i,0,en);
+}
+function lsfPlan(){
+  const L=LSF,idx=lsfShelfIdx();
+  return L.series.filter(s=>s.on).map(s=>{
+    const ins=s.mine.filter(x=>x.on).map(x=>x.b).filter(b=>books.includes(b));
+    const miss=lsfMissing(s,idx).filter(x=>s.miss&&s.miss.get(titleKey(x.title)));
+    return {s,ins,miss};
+  }).filter(p=>p.ins.length+p.miss.length&&(p.s.into||p.ins.length));
+}
+async function lsfMake(){
+  const L=LSF;if(!L||L.busy)return;
+  const plan=lsfPlan();if(!plan.length)return;
+  const moving=plan.flatMap(p=>p.ins),behind=foldLeftBehind(moving.map(b=>Object.assign({},b,{series:""})));
+  if(behind&&!confirm(`${moving.length} book${moving.length===1?"":"s"} on your shelf will move inside a collection, and their own pages go to Recently deleted.${behind}`))return;
+  L.busy=true;L.say="Making them…";lsfPaint();
+  const items=[],clone=x=>JSON.parse(JSON.stringify(x)),place=p=>{const n=parseFloat(p);return isNaN(n)?null:n;};
+  let nNew=0,nInto=0,nIn=0,nMiss=0,failed=false;const was=histSrc;histSrc="✨ their series";
+  try{
+    for(const {s,ins,miss} of plan){
+      const pos=new Map();
+      (s.got||[]).forEach(x=>{const n=place(x.pos);if(n==null)return;[x.title,lsfBare(x.title,s.name)].forEach(t=>{const k=titleKey(t);if(k&&!pos.has(k))pos.set(k,n);});});
+      s.mine.forEach(x=>{const n=place(x.p);if(n!=null)[x.b.title,lsfBare(x.b.title,s.name)].forEach(t=>{const k=titleKey(t);if(k&&!pos.has(k))pos.set(k,n);});});
+      const posOf=t=>{for(const k of [titleKey(t),titleKey(lsfBare(t,s.name))])if(pos.has(k))return pos.get(k);return null;};
+      let coll=s.into?books.find(b=>b.id===s.into.id):null;const before=coll?clone(coll):null;
+      if(!coll){
+        const done=ins.every(b=>statusOf(b)==="finished"||b.dnf);
+        const low=l=>new Set((l||[]).map(k=>String(k).toLowerCase())),sets=ins.map(b=>low(b.keywords));
+        coll=Object.assign(blankBook(uid()),{type:"collection",title:s.name,series:s.name,author:s.author,status:done?"finished":"want",
+          dnf:ins.every(b=>b.dnf),genres:[...new Set(ins.flatMap(b=>b.genres||[]))],
+          keywords:(ins[0].keywords||[]).filter(k=>sets.every(st=>st.has(String(k).toLowerCase()))).slice(0,20),entries:[]});
+      }
+      const units=[...ins.map(b=>({b,p:posOf(b.title)})),...miss.map(x=>({x,p:place(x.pos)}))].sort((a,c)=>(a.p==null?1e9:a.p)-(c.p==null?1e9:c.p));
+      const folded=[];
+      for(const u of units){
+        let en;
+        if(u.b){const w=clone(u.b);({en}=await bookToEntry(u.b,coll.id,collDefault(coll),coll.author,coll.dnf,coll.keywords));foldCarry(coll,u.b,en);folded.push({b:u.b,en,was:w});}
+        else{en=Object.assign(blankEntry(),{title:u.x.title,pages:u.x.pages||"",status:collDefault(coll)==="want"?"":"want"});nMiss++;}
+        lsfInsert(coll,en,u.p,posOf);
+      }
+      syncCollRating(coll);touchBook(coll);
+      await dbPut("books",coll);if(!before)books.unshift(coll);
+      if(SYNC.on)enqueue({kind:"book",id:coll.id});
+      for(const f of folded){await retireBook(f.b);await noteFold(f.b,coll.id,f.en);items.push({id:f.b.id,before:f.was,after:null});nIn++;}
+      items.push({id:coll.id,before,after:clone(coll)});
+      if(before&&cur&&cur.id===coll.id)try{await rebaseOpenBook(coll.id);}catch(e){}
+      before?nInto++:nNew++;s.made=true;
+    }
+  }catch(e){failed=true;}
+  finally{histSrc=was;}
+  if(items.length){const w=histSrc;histSrc="✨ their series";try{pushOp({t:"bulk",items});}finally{histSrc=w;}}
+  if(SYNC.on)flushQueue();
+  SB_SHELF=null;serFindFresh();
+  moving.forEach(b=>libSel.delete(b.id));
+  L.busy=false;L.series=L.series.filter(s=>!s.made);
+  L.say=(failed?"Stopped: storage may be full. ":"")+`Made ${nNew} collection${nNew===1?"":"s"}${nInto?` and filled ${nInto}`:""}: ${nIn} of your book${nIn===1?"":"s"} moved in, ${nMiss} missing one${nMiss===1?"":"s"} came in as Want to read. One ↶ takes it all back.`;
+  lsfPaint();
+  try{render();}catch(e){}
+}
+function lsfPaint(){
+  const L=LSF;if(!L)return;const d=L.d;
+  const listEl=q(".lsflist",d),listTop=listEl?listEl.scrollTop:0,panelTop=d.scrollTop;
+  const idx=lsfShelfIdx(),waiting=lsfWaiting(),free=L.picked.filter(b=>!isColl(b)&&lsfAnswer(b)).length;
+  const needC=L.series.filter(s=>s.on&&!s.got),plan=lsfPlan(),nBooks=plan.reduce((n,p)=>n+p.ins.length+p.miss.length,0);
+  const dis=L.busy?" disabled":"";
+  const posOf=p=>p?`<span class="meta">#${esc(p)}</span> `:"";
+  const row=(s,i)=>{
+    const miss=lsfMissing(s,idx),onN=miss.filter(x=>s.miss&&s.miss.get(titleKey(x.title))).length;
+    const where=s.into?`📚 goes into your collection ${esc(s.into.title||"Untitled")}`:s.mine.length===1?"a new collection, your one book its first":"a new collection";
+    const mine=s.mine.map((x,j)=>`<label class="serfl"><input type="checkbox" data-lsfb="${i}|${j}"${x.on?" checked":""}${dis} style="flex:none"><span>${posOf(x.p)}${esc(x.b.title||"Untitled")}<span class="meta"> · ${x.ticked?"yours, moves in":"also on your shelf, moves in"}</span></span></label>`).join("");
+    const shown=miss.slice(0,LSF_SHOW);
+    const missHtml=s.got?(miss.length
+      ?shown.map(x=>`<label class="serfl"><input type="checkbox" data-lsfm="${i}|${esc(titleKey(x.title))}"${s.miss&&s.miss.get(titleKey(x.title))?" checked":""}${dis} style="flex:none"><span>${posOf(x.pos)}${esc(x.title)}<span class="meta"> · comes in as Want to read</span></span></label>`).join("")
+        +(miss.length>shown.length?`<div class="meta" style="margin:2px 0 0 26px">…and ${miss.length-shown.length} more, ${onN>shown.filter(x=>s.miss.get(titleKey(x.title))).length?"ticked":"unticked"} with these</div>`:"")
+        +`<div class="hrow2" style="gap:6px;margin-top:3px;flex-wrap:wrap;align-items:center"><span class="meta">${miss.length} missing, from ${esc(s.from)}${miss.length>LSF_CAP&&!onN?`: more than ${LSF_CAP}, so they start unticked`:""}</span><button class="btn smallbtn" data-lsfall="${i}|1"${dis}>Tick all ${miss.length}</button><button class="btn smallbtn" data-lsfall="${i}|0"${dis}>Untick all</button></div>`
+      :`<div class="meta">Nothing missing, by ${esc(s.from)}.</div>`)
+      :`<div class="meta"${s.why?' style="color:var(--amber-ink,#b45309)"':""}>${esc(s.why||(L.hcDone?"The missing books aren't known yet.":L.busy?"Asking Hardcover for the rest of the series…":"The rest of the series is looked up once ✨ Find their series has run."))}</div>`;
+    return `<div class="snap serfrow" style="padding:6px 10px;${s.on?"border-color:var(--teal)":""}">
+      <input type="checkbox" data-lsfs="${i}"${s.on?" checked":""}${dis} aria-label="Make ${esc(s.name)}">
+      <div style="min-width:0;flex:1"><div class="when" style="font-size:14px;font-weight:700">${esc(s.name)}</div>
+        <div class="meta">${esc(s.author)||"Unknown author"} · ${where}</div>
+        <div style="margin-top:3px">${mine}${missHtml}</div></div></div>`;};
+  const est=waiting.length?claudeUsd(serFindEst(waiting)):"";
+  d.innerHTML=`<div class="hrow2" style="margin-bottom:6px;gap:8px"><b class="serif" style="font-size:17px">✨ Their series</b><button class="btn" data-lsf="x" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+    <div class="hint" style="margin:0 0 6px">${L.picked.length} ticked. A book with no series stays as it is. Nothing changes until 📚 Make them, and one ↶ takes that back.</div>
+    ${waiting.length?(claudeReady()
+      ?`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><button class="btn pri" data-lsf="find"${dis}>✨ Find their series, ${est}</button><span class="hint" style="margin:0;flex:1 1 200px;min-width:0">Claude reads the ${waiting.length} that don't say it themselves${free?` (${free} ${free===1?"does":"do"})`:""}, from what it knows.</span></div>`
+      :`<div class="hint" style="margin:0 0 6px">Set Claude up in ⚙ Settings to ask about the ${waiting.length} that don't say their series themselves.</div>`):""}
+    ${L.busy?`<div class="hrow2" style="gap:8px;align-items:center;margin-bottom:6px"><span class="hint" style="margin:0;flex:1;min-width:0">${esc(L.say)}</span><button class="btn smallbtn" data-lsf="stop"${L.stop?" disabled":""}>${L.stop?"Stopping…":"⏹ Stop"}</button></div>`:""}
+    ${L.series.length?`<div class="lsflist" style="display:grid;gap:6px">${L.series.map(row).join("")}</div>`:(!waiting.length&&!L.busy?`<div class="hint" style="margin:0">No series among them.</div>`:"")}
+    ${L.none.length?`<details class="meta" style="margin-top:6px"><summary style="cursor:pointer">No series: ${L.none.length} stay${L.none.length===1?"s":""} as ${L.none.length===1?"it is":"they are"}</summary>${L.none.map(b=>esc(b.title||"Untitled")).join(" · ")}</details>`:""}
+    ${L.series.length?`<div class="hrow2" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+      ${needC.length&&L.hcDone&&claudeReady()?`<button class="btn" data-lsf="claude"${dis}>✨ Ask Claude for the missing books of ${needC.length} series, about ${needC.length*3}¢</button>`:""}
+      <button class="btn pri" data-lsf="make"${dis||!plan.length?" disabled":""}>📚 Make them: ${plan.length} series, ${nBooks} book${nBooks===1?"":"s"}</button></div>`:""}
+    ${!L.busy&&L.say?`<div class="hint" style="margin:6px 0 0">${esc(L.say)}</div>`:""}`;
+  const nl=q(".lsflist",d);if(nl&&listTop)nl.scrollTop=listTop;if(panelTop)d.scrollTop=panelTop;
+}
+async function lsfClick(e){
+  const L=LSF;if(!L)return;
+  const a=e.target.closest&&e.target.closest("[data-lsfall]");
+  if(a){const [i,v]=a.dataset.lsfall.split("|"),s=L.series[+i];if(s&&s.miss){[...s.miss.keys()].forEach(k=>s.miss.set(k,v==="1"));lsfPaint();}return;}
+  const b=e.target.closest&&e.target.closest("[data-lsf]");if(!b)return;const k=b.dataset.lsf;
+  if(k==="x"){L.d.__close();return;}
+  if(k==="stop"){L.stop=true;lsfPaint();return;}
+  if(L.busy)return;
+  if(k==="find")await lsfFind();
+  else if(k==="claude")await lsfClaude();
+  else if(k==="make")await lsfMake();
+}
+function lsfChange(e){
+  const L=LSF,t=e.target;if(!L||!t||!t.dataset)return;
+  if(t.dataset.lsfs!=null){const s=L.series[+t.dataset.lsfs];if(s)s.on=t.checked;}
+  else if(t.dataset.lsfb){const [i,j]=t.dataset.lsfb.split("|"),s=L.series[+i],x=s&&s.mine[+j];if(x)x.on=t.checked;}
+  else if(t.dataset.lsfm){const c=t.dataset.lsfm.indexOf("|"),s=L.series[+t.dataset.lsfm.slice(0,c)];if(s&&s.miss)s.miss.set(t.dataset.lsfm.slice(c+1),t.checked);}
+  else return;
+  lsfPaint();
 }
 /* ┌─ BLURBS FROM A WIKI ─────────────────────────────────────────────────────┐
    │ A fan wiki often holds a book's blurb as plain words under its own        │
