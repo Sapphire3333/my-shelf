@@ -865,6 +865,59 @@ const SMOKE=`
       const t=impTwins();
       must(t.length===1&&[t[0].a.id,t[0].b.id].sort().join()==="a1,a2","pairs: "+t.map(p=>p.a.id+"/"+p.b.id).join(", "));
       return "& and and are one title; two authors stay apart";});});
+  await check("the series finder's guesses are checked before they are made",async()=>{
+    const keepS=JSON.stringify(SERF),N=SERF_NOW,keepN={on:new Set(N.on),off:new Set(N.off),seen:N.chkSeen instanceof Map?new Map(N.chkSeen):null},keepC=Object.assign({},SERC);
+    const hs=window.fetchHardcoverSeries,hb=window.fetchHardcover,ask=window.claudeAsk,calls=[];let sent=null;
+    try{return await onShelf([B("fx-g0","We Never Do Puzzles","Bea Fixture")],async()=>{
+      importQueue.length=0;
+      const R=(id,t,a)=>({id:id,title:t,author:a,status:"want",rating:null});
+      importQueue.push(R("g1","Wisp Hollow","Ann Fixture"),R("g2","The House That Hummed","Ann Fixture"),R("g3","The Vanishing of Mo B.","Bea Fixture"),
+        R("g4","Sea Glass","Cy Fixture"),R("g5","Salt","Cy Fixture"),R("g6","Kite Days (Tide, #3)","Cy Fixture"),
+        R("g7","Moss Lane","Dee Fixture"),R("g8","Moss Lane Again","Dee Fixture"),R("g9","Gull","Eve Fixture"));
+      SERF.asked={};SERF.series={};SERF.shelf={};SERF.gone={};SERF.check={};SERF.chkCost={n:0,usd:0};
+      const put=(id,s,p)=>{SERF.series[serFindKey(importQueue.find(x=>x.id===id))]={s:s,p:p};};
+      put("g1","Wisp Hollow","1");put("g2","Wisp Hollow","2");put("g3","We Never Do","2");put("g4","Tide","1");put("g5","Tide","2");put("g6","Tide","3");
+      put("g7","Moss Lane","1");put("g8","Moss Lane","2");put("g9","Gull Point","1");SERF.shelf["fx-g0"]={s:"We Never Do",p:"1"};
+      N.on.clear();N.off.clear();if(N.chkSeen)N.chkSeen.clear();serFindFresh();
+      window.fetchHardcoverSeries=async name=>{calls.push("S:"+name);
+        if(name==="We Never Do")return {ok:true,name:"We Never Do",count:4,books:[{pos:"1",title:"We Never Do Puzzles"},{pos:"2",title:"We Never Do Ghosts"}],all:[{pos:"3",title:"We Never Do Glitter"}]};
+        if(name==="Tide")return {ok:true,name:"The Tide Books",count:3,books:[{pos:"1",title:"Sea Glass"}],all:[]};
+        return {ok:false,why:"knows no series called that"};};
+      const filed={"Wisp Hollow":[],"The House That Hummed":[],"The Vanishing of Mo B.":[],"Salt":["Harbour Tales"],"Gull":[]};
+      window.fetchHardcover=async t=>{calls.push("B:"+t);return t in filed?{ok:true,title:t,series:filed[t][0]||"",seriesPos:"",seriesAll:filed[t]}:{ok:false,why:"but it doesn't know this one"};};
+      const all0=serFindSeries();all0.forEach(s=>N.on.add(s.key));
+      must(serChkForClaude(all0,false).length===5,"before any check, Claude would be asked about "+serChkForClaude(all0,false).length+" series");
+      await serChkRun("Hardcover");
+      must(calls.indexOf("B:Kite Days")<0&&calls.indexOf("B:Kite Days (Tide, #3)")<0,"a title that names its series was looked up: "+calls.join(", "));
+      must(calls.indexOf("B:Sea Glass")<0&&calls.indexOf("B:We Never Do Puzzles")<0,"a book on Hardcover's list was looked up again");
+      const all=serFindSeries(),by={};all.forEach(s=>{by[s.name]=s;});
+      const tick=serFindTickable(all).map(s=>s.name).sort().join();
+      must(tick==="Moss Lane,Tide,We Never Do","Tick all would take "+tick);
+      must(!N.on.has(by["Wisp Hollow"].key)&&!N.on.has(by["Gull Point"].key),"two standalones, or a series of one in no series, kept its tick");
+      must(N.off.has("r:g3")&&N.off.has("r:g5")&&!N.off.has("r:g4")&&!N.off.has("b:fx-g0")&&!N.off.has("r:g6"),"unticked: "+[...N.off].join());
+      const h=serFindRowHtml(by["Tide"]),w=serFindRowHtml(by["We Never Do"]);
+      must(h.indexOf("“Harbour Tales”")>0&&h.indexOf("“The Tide Books”")>0&&w.indexOf("in no series")>0&&w.indexOf("✓ Hardcover #1")>0,"the reasons aren't on the rows");
+      const forC=serChkForClaude(all,true).map(s=>s.name).sort().join();
+      must(forC==="Gull Point,Moss Lane,Tide,We Never Do,Wisp Hollow","Claude would be asked about "+forC+": every doubt goes, an agreed one doesn't");
+      const say={"Wisp Hollow":[["none"],["none"]],"We Never Do":[["in","1"],["none"]],"Tide":[["in","1"],["in","2"],["in","3"]],
+        "Moss Lane":[["in","1"],["other","","Moss Lane Stories"]],"Gull Point":[["none"]]};
+      sent=[];window.claudeAsk=async body=>{sent.push(body);const name=(body.text.match(/called “([^”]+)”/)||[])[1];
+        return {ok:true,model:CLAUDE_SONNET,usage:{input:9000,output:300,searches:2},json:{series:/Hollow|Gull/.test(name)?"":name,
+          books:(say[name]||[]).map((v,i)=>({n:String(i+1),verdict:v[0],pos:v[1]||"",other:v[2]||""}))}};};
+      await serChkRun("Claude");
+      const ma=sent.find(b=>/Moss Lane Again by Dee Fixture/.test(b.text));
+      must(sent.length===5&&ma&&ma.model===CLAUDE_SONNET&&ma.web===2,"the asks: "+sent.length+" "+(ma&&[ma.model,ma.web].join(" ")));
+      const ml=SERF.check[by["Moss Lane"].key],td=SERF.check[by["Tide"].key];
+      must(ml&&ml.by==="Claude"&&Object.values(ml.b).every(v=>v.v==="in")&&SERF.chkCost.n===5,"Claude's word on Moss Lane: "+JSON.stringify(ml));
+      must(td&&!td.b[serFindKey(importQueue.find(x=>x.id==="g6"))],"a title that names its series took Claude's verdict");
+      must(!N.off.has("r:g5")&&N.off.has("r:g3"),"Claude's in didn't give Salt its tick back, or Mo B. got one: "+[...N.off].join());
+      N.off.delete("r:g3");serChkApply(by["We Never Do"]);
+      must(!N.off.has("r:g3"),"a book ticked again by hand lost its tick on the next draw");
+      const plan=serFindPlan().map(s=>s.name+":"+s.items.length).sort().join();
+      must(plan==="Moss Lane:2,Tide:3,We Never Do:2","Make them would make "+plan);
+      return "two standalones and a series of one untick, a standalone and another series' book untick, a title's own series never asked, Claude for every doubt, its in gives a tick back, a hand tick holds";});}
+    finally{window.fetchHardcoverSeries=hs;window.fetchHardcover=hb;window.claudeAsk=ask;Object.keys(SERF).forEach(k=>{delete SERF[k];});Object.assign(SERF,JSON.parse(keepS));
+      N.on=keepN.on;N.off=keepN.off;N.chkSeen=keepN.seen||new Map();Object.assign(SERC,keepC);serFindFresh();}});
   await check("sort your drive: where each linked file goes, and what stays",async()=>{
     const was=settings.drive,wasMove=settings.drvSortMove;
     const df=(id,name)=>({id:id,name:name});

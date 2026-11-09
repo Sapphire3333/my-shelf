@@ -14626,6 +14626,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-09.19",go:["el:care:#serfSec"],lines:["<b>🔎 The series finder checks its guesses.</b> On the import list, ✨ Suggested series now has <b>🔎 Check them with Hardcover</b>, free, and it runs by itself after a Find. Each book Claude put in a series is looked up in Hardcover's own series lists. A book Hardcover has on its own, or in another series, starts unticked and says why beside it; two books that only sound alike lose the series' tick altogether. A book whose title already names its series is never a guess and is never checked.","<b>✨ A second word from Claude.</b> Hardcover's lists miss books, so whatever it doubted or didn't know can go to Claude, who searches the web. The price is on the button, and a book Claude finds in the series gets its tick back. Nothing is made until you press 📚 Make them, which now asks before making a series nobody has checked."]},
   {v:"2026-11-09.18",go:["el:care:#serInBox"],lines:["<b>📚 A found book goes into its series.</b> A book Is the next one out? finds now goes into your collection of that series, at its number, marked ⌛ with its date, even when it was found through an author you starred rather than through the collection. Before, it stood on the shelf on its own.","<b>📚 A book of a series you keep as a collection.</b> A new row in 🧰 Shelf care, under Tidying up, lists books standing on their own whose series is one of your collections. <b>⤵ Move in</b> makes one a story there, placed by its number, keeping its marks, ⌛ and 📌; one ↶ puts it back. One that's already a story there under another name is only shown, so it can't go in twice."]},
   {v:"2026-11-09.17",go:["el:care:#impList"],lines:["<b>🧹 “&” and “and” are one title.</b> A book listed twice, once as “Kite & Moon” and once as “Kite and Moon”, wasn't seen as the same book, so both rows stayed on the import list and the series finder could take them for two books of a series. 🧹 books on the list twice finds them now, on the shelf too."]},
   {v:"2026-11-09.16",go:["el:care:#drvSortSec"],lines:["<b>🗂 Sort your Drive.</b> A new card in 🧰 Shelf care, under Tidy your Drive. It moves the files your books, stories and fics are linked to into folders inside your Drive folder, the way your shelf is arranged: one folder for each collection, with its files named in reading order like “01 Title - Author”; books on their own in a folder for each author; fics in a folder for each fandom. A book's volume or series number stays in its name. Every other file stays exactly where it is, and so does anything in a folder a reading app on your phone may read from, unless you tick it. <b>▸ See where they go</b> shows the plan before anything moves. Links go by each file's own number, so no book loses its file, your place or your highlights. It asks Google once for permission to edit your Drive, says how long is left as it goes, and <b>↶ Put them back</b> returns every file to its old folder and name."]},
@@ -75772,6 +75773,10 @@ async function fetchHardcover(title,author,isbn){
   const sName=String(fs.series_name||(fs.series&&fs.series.name)||fs.name
     ||(Array.isArray(doc.series_names)?doc.series_names[0]:"")||"").trim();
   const sPos=doc.featured_series_position||fs.position||"";
+  /* every series the book is filed under, for the series finder's check; null when the
+     answer carries neither field, so a changed answer is "not known", never "in no series" */
+  const sAll=("series_names" in doc)||("featured_series" in doc)
+    ?[...new Set([sName,...(Array.isArray(doc.series_names)?doc.series_names:[]).map(x=>String(typeof x==="string"?x:(x&&x.name)||"").trim())].filter(Boolean))]:null;
   const ns=strs(doc.isbns).map(cleanIsbn).filter(Boolean);
   const img=doc.image;
   return {ok:true,
@@ -75786,7 +75791,7 @@ async function fetchHardcover(title,author,isbn){
     isbn:(wanted&&ns.includes(wanted)?wanted:"")||ns.find(x=>x.length===13)||ns.find(x=>x.length===10)||"",
     cover:String((img&&typeof img==="object"?img.url:img)||"").trim(),
     slug:String(doc.slug||"").trim(),
-    series:sName,seriesPos:sPos?String(sPos):""};
+    series:sName,seriesPos:sPos?String(sPos):"",seriesAll:sAll};
 }
 /* ---- the rest of a series, from Hardcover ----
    The edge function takes a read-only GraphQL query beside its search
@@ -75799,9 +75804,11 @@ async function fetchHardcover(title,author,isbn){
    opts is for a door filling many at once, with no eye on each: exact takes only a
    series of the very name and by that author, since "the fullest that holds the name"
    took a series of 167 for a subseries of 10; lang prefers that language's editions and
-   holds back the rest. */
+   holds back the rest. own is for a check: a series whose name holds the other's words
+   (serChkNameNear), and only one with a book by that author. Every edition's title comes
+   back in `all`, since a list may name a book by any of them. */
 async function fetchHardcoverSeries(name,author,opts){
-  const exact=!!(opts&&opts.exact),lang=(opts&&opts.lang)||"";
+  const exact=!!(opts&&opts.exact),byHand=!!(opts&&opts.own),lang=(opts&&opts.lang)||"";
   const nm=String(name||"").trim();
   if(!nm)return {ok:false,why:"has no series name to ask with"};
   const base=String(CFG.url||"").replace(/\/+$/,"");
@@ -75830,7 +75837,7 @@ async function fetchHardcoverSeries(name,author,opts){
   const found=((res&&res.hits)||[]).map(h=>h&&(h.document||h)).filter(h=>h&&h.id!=null);
   if(!found.length)return {ok:false,why:"knows no series called that"};
   const wordsKey=t=>[...serWords(t)].sort().join(" ");
-  const named=exact?found.filter(h=>wordsKey(h.name)===wordsKey(nm)):found;
+  const named=exact?found.filter(h=>wordsKey(h.name)===wordsKey(nm)):byHand?found.filter(h=>serChkNameNear(h.name,nm)):found;
   if(!named.length)return {ok:false,why:"has no series of exactly that name"};
   /* the fullest series whose name holds the name asked for (or the other way
      round) — "Frostmere" alone was a two-book Spanish listing beside the
@@ -75865,7 +75872,7 @@ async function fetchHardcoverSeries(name,author,opts){
     const names=((s.book_series)||[]).flatMap(bs=>((bs&&bs.book&&bs.book.contributions)||[]).map(c=>c&&c.author&&c.author.name)).filter(Boolean);
     if(names.some(n=>[...authorWords(n)].some(w=>aw.has(w)))){pick=s;thin=r.thin;break;}
   }
-  if(!pick&&exact&&aw.size)return {ok:false,why:"has that name only under another author"};
+  if(!pick&&(exact||byHand)&&aw.size)return {ok:false,why:"has that name only under another author"};
   if(!pick)pick=first;
   if(!pick)return {ok:false,why:"named a series and then had nothing under it"};
   const raw=((pick.book_series)||[]).map(bs=>{
@@ -75918,7 +75925,8 @@ async function fetchHardcoverSeries(name,author,opts){
     return best;
   }).sort((a,b)=>{const x=parseFloat(a.pos),y=parseFloat(b.pos);
     if(isFinite(x)&&isFinite(y)&&x!==y)return x-y;if(isFinite(x)!==isFinite(y))return isFinite(x)?-1:1;return a.title.localeCompare(b.title);});
-  return {ok:true,name:String(pick.name||nm),count:parseInt(pick.primary_books_count||pick.books_count)||list.length,books:list,thin,editions:raw.length};
+  return {ok:true,name:String(pick.name||nm),count:parseInt(pick.primary_books_count||pick.books_count)||list.length,books:list,thin,editions:raw.length,
+    all:raw.map(x=>({pos:x.pos,title:x.title}))};
 }
 /* A series' books from Claude, searched on the web, in the shape
    fetchHardcoverSeries answers in ({ok, name, count, books:[{pos, title,
@@ -76180,7 +76188,7 @@ document.addEventListener("click",e=>{const t=e.target.closest&&e.target.closest
 const SERF_MODEL=CLAUDE_OPUS,SERF_BATCH=100,SERF_SHELF_MAX=120,SERF_COLLS_MAX=40;
 /* for the first price only: words around the list, the shelf's books sent with it, and an answer's length */
 const SERF_PROMPT_TOKENS=300,SERF_SHELF_TOKENS=1000,SERF_OUT_PER_ROW=12;
-let SERF={asked:{},series:{},shelf:{},gone:{},usd:0,read:0};
+let SERF={asked:{},series:{},shelf:{},gone:{},usd:0,read:0,check:{}};
 const SERF_NOW={busy:false,stop:false,say:"",op:null,on:new Set(),off:new Set(),more:0,moreOne:0,oneOpen:false,marks:new Map(),names:null,have:new Map(),idx:null,written:null};
 function serFindSave(){dbPut("meta",{k:"serFind",v:SERF});}
 /* what a redraw may keep until the shelf or the list really changes */
@@ -76267,7 +76275,7 @@ function serFindRowHtml(s){
     return [x.it.rating!=null?`★ ${Number(x.it.rating).toFixed(1)}`:"",stage||""].filter(Boolean).join(" · ");};
   const titleOf=x=>(x.b?x.b.title:x.it.title)||"Untitled",idOf=x=>x.b?"b:"+x.b.id:"r:"+x.it.id;
   const tail=x=>{const t=bits(x),tw=x.it&&N.twinOf&&N.twinOf.get(x.it.id);
-    return (t?`<span class="meta"> · ${esc(t)}</span>`:"")+(tw?`<span class="meta" style="color:#b45309"> · the same book as “${esc(tw.title||"Untitled")}”</span>`:"");};
+    return (t?`<span class="meta"> · ${esc(t)}</span>`:"")+(tw?`<span class="meta" style="color:#b45309"> · the same book as “${esc(tw.title||"Untitled")}”</span>`:"")+serChkSaid(s,x);};
   const body=s.n===1
     ?`<div class="serfone">${posOf(s.items[0].p)}${esc(titleOf(s.items[0]))}${tail(s.items[0])}</div>`
     :`<div style="margin-top:3px">${s.items.map(x=>`<div class="hrow2" style="gap:4px;align-items:center;flex-wrap:nowrap"><label class="serfl" style="flex:1;min-width:0"><input type="checkbox" data-serfb="${esc(idOf(x))}"${N.off.has(idOf(x))?"":" checked"} style="flex:none"><span>${posOf(x.p)}${esc(titleOf(x))}${tail(x)}</span></label>${x.it?`<button class="btn smallbtn" data-impdrop="${esc(x.it.id)}" title="Take this row off the list" aria-label="Take ${esc(titleOf(x))} off the list" style="flex:none">✕</button>`:""}</div>`).join("")}</div>`;
@@ -76276,11 +76284,12 @@ function serFindRowHtml(s){
   const note=h&&!s.into&&h.en&&h.same?`You have a story called “${h.name}” inside “${h.b.title||"Untitled"}”. This makes a collection of its own.`
     :h&&!s.into&&!h.same&&!h.en&&isColl(h.b)?`You have a collection called “${h.name}”, which may be the same series. This makes a new one beside it.`:"";
   const stays=s.stays.map(t=>`<div class="meta" style="margin-top:3px">${esc(t.en.title||"A story")} is ${entIsPart(t.b,t.en)?"a part of a book":"a story"} inside your ${esc(t.b.title||"Untitled")}, and stays there.</div>`).join("");
-  return `<div class="snap serfrow" style="padding:6px 10px;${on?"border-color:var(--teal)":""}">
+  return `<div class="snap serfrow" data-serfkey="${esc(s.key)}" style="padding:6px 10px;${on?"border-color:var(--teal)":""}">
     <input type="checkbox" data-serfs="${esc(s.key)}"${on?" checked":""} aria-label="Make ${esc(s.name)}">
     <div style="min-width:0;flex:1"><div class="when" style="font-size:14px;font-weight:700">${esc(s.name)}</div>
       <div class="meta">${esc(s.author)||"Unknown author"} · ${s.n} book${s.n===1?"":"s"} · ${where}</div>
       ${note?`<div class="meta" style="color:var(--amber-ink,#b45309)">${esc(note)}</div>`:""}
+      ${serChkSeriesHtml(s)}
       ${body}${stays}</div>
     <div class="sp"><button class="btn" data-serfx="${esc(s.key)}" title="Not a series: take this suggestion away" aria-label="Take ${esc(s.name)} away">✕</button></div>
   </div>`;
@@ -76303,15 +76312,18 @@ function serFindSectionHtml(){
    (IMP_TWINS||[]).forEach(p=>{N.twinOf.set(p.drop.id,p.keep);if(!N.twinSeen.has(p.drop.id)){N.twinSeen.add(p.drop.id);N.twinAuto.add(p.drop.id);N.off.add("r:"+p.drop.id);}});
    /* ⇄ made it the one kept: the tick it lost by itself comes back */
    N.twinAuto.forEach(id=>{if(!N.twinOf.has(id)){N.twinAuto.delete(id);N.off.delete("r:"+id);}});}
-  const main=all.filter(s=>!s.lone),lone=all.filter(s=>s.lone),plan=serFindPlan(all);
+  /* what the check said takes its ticks off once (see THE GUESSES, CHECKED) */
+  all.forEach(serChkApply);
+  const main=all.filter(s=>!s.lone),lone=all.filter(s=>s.lone),plan=serFindPlan(all),tick=serFindTickable(all);
   const showM=main.slice(0,IMP_SHOW+N.more),showL=lone.slice(0,IMP_SHOW+N.moreOne);
-  const books2=main.reduce((n,s)=>n+s.n,0),allOn=main.length&&main.every(s=>N.on.has(s.key));
+  const books2=main.reduce((n,s)=>n+s.n,0),allOn=tick.length&&tick.every(s=>N.on.has(s.key));
   return `<div style="margin-top:15px" id="serfSec">
     <div class="hrow2 serfhead" style="margin-bottom:6px">
       <b style="font-size:14px">✨ Suggested series</b><span class="none">${main.length} · ${books2} book${books2===1?"":"s"}</span>
-      ${main.length?`<button class="btn" id="serfAll" style="margin-left:auto;padding:5px 11px">${allOn?"☐ Untick":"☑ Tick"} all ${main.length}</button>`:""}
-      <button class="btn pri" id="serfMake" style="${main.length?"":"margin-left:auto;"}padding:5px 11px"${plan.length?"":" disabled"}>${serFindMakeWord(plan)}</button>
+      ${tick.length?`<button class="btn" id="serfAll" style="margin-left:auto;padding:5px 11px">${allOn?"☐ Untick":"☑ Tick"} all ${tick.length}</button>`:""}
+      <button class="btn pri" id="serfMake" style="${tick.length?"":"margin-left:auto;"}padding:5px 11px"${plan.length?"":" disabled"}>${serFindMakeWord(plan)}</button>
     </div>
+    <div id="serfChk">${serChkLineHtml(all)}</div>
     ${showM.map(serFindRowHtml).join("")}
     ${main.length>showM.length?`<div class="hrow2" style="margin-top:6px;flex-wrap:wrap;gap:8px"><button class="btn" data-serfmore="more" style="padding:5px 11px">Show ${Math.min(IMP_SHOW,main.length-showM.length)} more</button><span class="none" style="margin:0">…and ${main.length-showM.length} more.</span></div>`:""}
     ${lone.length?`<details id="serfOnes" style="margin-top:10px"${N.oneOpen?" open":""}><summary class="hint" style="cursor:pointer;margin:0">${lone.length} series with one book on your list</summary>
@@ -76326,16 +76338,17 @@ function serFindPaint(box){
   const b=q("#serfMake",box);if(!b)return;
   const plan=serFindPlan();b.textContent=serFindMakeWord(plan);b.disabled=!plan.length;
   qa("[data-serfs]",box).forEach(c=>{const r=c.closest(".serfrow");if(r)r.style.borderColor=c.checked?"var(--teal)":"";});
-  const a=q("#serfAll",box);if(a){const main=serFindSeries().filter(s=>!s.lone);a.textContent=`${main.length&&main.every(s=>SERF_NOW.on.has(s.key))?"☐ Untick":"☑ Tick"} all ${main.length}`;}
+  const a=q("#serfAll",box);if(a){const main=serFindTickable(serFindSeries());a.textContent=`${main.length&&main.every(s=>SERF_NOW.on.has(s.key))?"☐ Untick":"☑ Tick"} all ${main.length}`;}
 }
 function serFindWire(box){
   const N=SERF_NOW,go=q("#serfGo",box),stop=q("#serfStop",box),again=q("#serfAgain",box),all=q("#serfAll",box),make=q("#serfMake",box),ones=q("#serfOnes",box);
   if(go)go.onclick=()=>serFindRun();
   if(stop)stop.onclick=()=>{N.stop=true;serFindRedraw();};
   if(again)again.onclick=()=>{if(!confirm("Forget what it found and ask Claude again from the start? It costs about what it says on the button, and the answers may differ. Collections you've already made stay."))return;
-    SERF.asked={};SERF.series={};SERF.shelf={};SERF.usd=0;SERF.read=0;serFindSave();serFindRun();};
-  if(all)all.onclick=()=>{const main=serFindSeries().filter(s=>!s.lone),on=main.every(s=>N.on.has(s.key));main.forEach(s=>on?N.on.delete(s.key):N.on.add(s.key));serFindRedraw();};
+    SERF.asked={};SERF.series={};SERF.shelf={};SERF.usd=0;SERF.read=0;SERF.check={};if(N.chkSeen)N.chkSeen.clear();serFindSave();serFindRun();};
+  if(all)all.onclick=()=>{const main=serFindTickable(serFindSeries()),on=main.every(s=>N.on.has(s.key));main.forEach(s=>on?N.on.delete(s.key):N.on.add(s.key));serFindRedraw();};
   if(make)make.onclick=()=>serFindMake();
+  qa("[data-serchk]",box).forEach(b=>b.onclick=()=>{const k=b.dataset.serchk;if(k==="stop"){SERC.stop=true;serChkPaint();}else serChkRun(k);});
   if(ones)ones.ontoggle=()=>{N.oneOpen=ones.open;};
   qa("[data-serfs]",box).forEach(c=>c.onchange=()=>{c.checked?N.on.add(c.dataset.serfs):N.on.delete(c.dataset.serfs);serFindPaint(box);});
   qa("[data-serfb]",box).forEach(c=>c.onchange=()=>{c.checked?N.off.delete(c.dataset.serfb):N.off.add(c.dataset.serfb);serFindPaint(box);});
@@ -76406,10 +76419,16 @@ async function serFindRun(){
     if(e&&e.usage)SERF.usd+=claudePriceOf(e.usage,SERF_MODEL);
     N.say=`Claude didn't answer: ${String(e&&e.message||e).slice(0,120)}. What it found so far stays.`;
   }
+  const whole=!N.stop&&!N.say;
   N.busy=false;N.stop=false;serFindSave();serFindRedraw();
+  /* free, so the guesses are checked straight after a whole run without a press */
+  if(whole&&hardcoverOn())serChkRun("Hardcover");
 }
 async function serFindMake(){
   const N=SERF_NOW,plan=serFindPlan();if(!plan.length)return;
+  /* a ticked guess nobody has checked: made as it is only when that is said */
+  {const raw=serChkTodo(plan).length;
+   if(raw&&!SERC.busy&&hardcoverOn()&&!confirm(`${raw} of these ${plan.length} series ${raw===1?"hasn't":"haven't"} been checked yet. Make them as they are?\n\nCancel, and Hardcover checks them first, free. Then press Make them again.`)){serChkRun("Hardcover");return;}}
   /* the series written on a book it is moving into isn't left behind: the collection carries it */
   const moving=plan.flatMap(s=>s.shelfNow.map(x=>x.b)),behind=foldLeftBehind(plan.flatMap(s=>s.shelfNow.map(x=>Object.assign({},x.b,{series:""}))));
   if(behind&&!confirm(`${moving.length} book${moving.length===1?"":"s"} on your shelf will move inside a collection, and their own pages go to Recently deleted.${behind}`))return;
@@ -76461,6 +76480,198 @@ async function serFindMake(){
   SB_SHELF=null;
   N.say=(failed?"Stopped: storage may be full. ":"")+(nBooks?`Made ${nNew} collection${nNew===1?"":"s"}${nInto?` and filled ${nInto}`:""} with ${nBooks} book${nBooks===1?"":"s"}. One ↶ takes it all back.`:"");
   refreshShelfSub();refreshImport();
+}
+/* ┌─ ✨ THE GUESSES, CHECKED BEFORE THEY ARE MADE ────────────────────────────┐
+   │ Claude names a series from memory, without searching, and now and then  │
+   │ two standalones by one hand come back as a series, or a standalone joins │
+   │ a real series beside its #1. So each suggestion can be checked before    │
+   │ 📚 Make them, and nothing but ticks ever changes on the way. Only the     │
+   │ guesses are checked (serChkGuessed): a book whose title says "(Series,    │
+   │ #2)", or that has the series written on it, came with it (serChkSelf).    │
+   │ On a long Goodreads list, nearly a third of the rows are such.            │
+   │ 🔎 Check them with Hardcover, free (serChkRun, which also starts by       │
+   │ itself after a whole Find run): serChkHc asks Hardcover for a series of  │
+   │ that name by that author (fetchHardcoverSeries with own: a name holding   │
+   │ the other's words, serChkNameNear, and a book by the author in it) and    │
+   │ matches each book against every edition in its list (serChkKeys: the      │
+   │ title, the title without "(Series, #2)", without the series' name in      │
+   │ front, the part after a colon). A book not in the list, and every book    │
+   │ when Hardcover knows no such series, is looked up as a book               │
+   │ (fetchHardcover's seriesAll): filed under a series of a name near it      │
+   │ agrees, under another series or none is a no, not known at all is "?".    │
+   │ A no takes its book's tick off once (serChkApply, N.chkSeen); a series of │
+   │ one, or one whose every book is a no, loses its own tick and is left out  │
+   │ of Tick all (serFindTickable). Ticked again by hand, it stays ticked.     │
+   │ A series with a "?" left goes to ✨ Ask Claude (serChkClaude: Sonnet, two │
+   │ web searches, since Haiku can't search), priced on the button by what     │
+   │ such asks have cost here (SERF.chkCost) or by the price list before, and  │
+   │ its word replaces Hardcover's for that series. The verdicts live in       │
+   │ SERF.check by series and by the book's title and author, so a book is     │
+   │ never asked twice; ↻ Read them again forgets them with the rest. A         │
+   │ ticked series nobody has checked asks once before Make them makes it.    │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const SERC_MODEL=CLAUDE_SONNET,SERC_AT_ONCE=3,SERC_WEB=2;
+const SERC={busy:"",stop:false,done:0,of:0,say:"",t0:0,now:""};
+const serChkKey=x=>serFindKey(x.it||x.b);
+const serChkTitle=x=>{const t=String((x.it||x.b).title||"");return t.replace(/\s*\([^()]*\)\s*$/,"").trim()||t;};
+const serChkAuthor=(x,s)=>String((x.it||x.b).author||"").trim()||s.author||"";
+/* two series names are one when every word of the shorter stands in the longer, or when they
+   share two words: "An Emily Lime Mystery" and "Emily Lime, Librarian Detective" are one */
+function serChkNameNear(a,b){
+  const A=serWords(a),B=serWords(b);if(!A.length||!B.length)return false;
+  const [sh,lo]=A.length<=B.length?[A,new Set(B)]:[B,new Set(A)];
+  const both=new Set(sh.filter(w=>lo.has(w)));
+  return both.size===new Set(sh).size||both.size>=2;
+}
+const serChkFold=t=>titleKey(String(t||"").toLowerCase().replace(/&/g," and ").replace(/['’`´]/g,"").replace(/^\s*(the|a|an)\s+/,""));
+/* "Unforgettable Logan Foster #1" is the book "The Unforgettable Logan Foster": the number at
+   the end goes too (VOL_TAIL) */
+function serChkKeys(t,names){
+  const out=new Set();
+  [t,...names.map(n=>lsfBare(t,n))].forEach(x=>titleVariants(x).forEach(v=>[v,v.replace(VOL_TAIL,"")].forEach(w=>{const k=serChkFold(w);if(k.length>2)out.add(k);})));
+  return out;
+}
+const serChkNo=v=>!!v&&(v.v==="other"||v.v==="none");
+const serChkVerdict=(s,x)=>{const c=SERF.check[s.key];return c&&c.b?c.b[serChkKey(x)]||null:null;};
+/* a book that names this series itself, in its title's "(Series, #2)" or its series field, is not
+   a guess: the list it came from said so, and it is never sent */
+function serChkSelf(s,x){
+  const f=x.it?serFindFree(x.it):(seriesShown(x.b)?{s:seriesShown(x.b)}:serFindFree({title:x.b.title}));
+  return !!f&&serFindName(f.s)===s.key;
+}
+const serChkGuessed=s=>s.items.filter(x=>!serChkSelf(s,x));
+const serChkDead=s=>!!SERF.check[s.key]&&s.items.every(x=>serChkNo(serChkVerdict(s,x)));
+const serFindTickable=all=>all.filter(s=>!s.lone&&!serChkDead(s));
+/* series with a guessed book no verdict covers yet */
+const serChkTodo=all=>all.filter(s=>serChkGuessed(s).some(x=>!serChkVerdict(s,x)));
+/* what Claude is asked about: anything Hardcover didn't agree with, or, with Hardcover first,
+   nothing it hasn't seen. Its "in no series" is a doubt, not a word: Hardcover's lists miss
+   books, and a book missing from a list is often filed under no series too */
+const serChkForClaude=(all,hcFirst)=>all.filter(s=>{const c=SERF.check[s.key];if(c&&c.by==="Claude")return false;
+  return serChkGuessed(s).some(x=>{const v=serChkVerdict(s,x);return v?v.v!=="in":!hcFirst;});});
+async function serChkHc(s){
+  const names=[s.name],prev=SERF.check[s.key],c={by:"Hardcover",known:false,name:"",n:0,at:Date.now(),b:{}};
+  const g=await fetchHardcoverSeries(s.name,s.author,{own:true});
+  const pos=new Map(),whole=[];
+  if(g&&g.ok){c.known=true;c.name=g.name||"";c.n=g.count||g.books.length;if(c.name)names.push(c.name);
+    [...g.books,...(g.all||[])].forEach(x=>{whole.push(serChkFold(x.title));serChkKeys(x.title,names).forEach(k=>{if(!pos.has(k))pos.set(k,x.pos||"");});});}
+  for(const x of serChkGuessed(s)){
+    const k=serChkKey(x);let hit=null;
+    for(const key of serChkKeys(serChkTitle(x),names))if(pos.has(key)){hit=pos.get(key);break;}
+    /* a box set or a later book whose title holds this one's whole title: in, at no number */
+    if(hit==null){const f=serChkFold(serChkTitle(x));if(f.length>=10&&whole.some(w=>w.length>f.length&&w.includes(f)))hit="";}
+    if(hit!=null){c.b[k]={v:"in",p:hit};continue;}
+    const old=prev&&prev.b&&prev.b[k];if(old&&old.v!=="?"){c.b[k]=old;continue;}
+    const r=await fetchHardcover(serChkTitle(x),serChkAuthor(x,s));
+    if(!r||!r.ok||!Array.isArray(r.seriesAll)){c.b[k]={v:"?"};continue;}
+    const near=r.seriesAll.find(n=>names.some(m=>serChkNameNear(n,m)));
+    c.b[k]=near?{v:"in",p:String(r.seriesPos||"")}:r.seriesAll.length?{v:"other",s:r.seriesAll[0]}:{v:"none"};
+  }
+  return c;
+}
+async function serChkClaude(s){
+  const S={type:"string"};
+  const schema={type:"object",properties:{series:S,books:{type:"array",items:{type:"object",properties:{n:S,verdict:{type:"string",enum:["in","other","none","unsure"]},pos:S,other:S},
+    required:["n","verdict","pos","other"],additionalProperties:false}}},required:["series","books"],additionalProperties:false};
+  const text=`A reading list guessed that the books below make up a book series called “${s.name}”${s.author?` by ${s.author}`:""}. Search the web and check each one.\n`
+    +`- verdict: "in" if the book is part of that series, under that name or the one it usually goes by; "other" if it belongs to a different series, named in other; "none" if it is a standalone book in no series; "unsure" if you can't tell.\n`
+    +`- pos: its number in that series, like 2 or 2.5, or "".\n- other: the other series' name when the verdict is "other", else "".\n`
+    +`- series: that series' name as it is usually written, or "" if this author has no series of that name.\n- n: the book's number in the list.\n\nThe books:\n`
+    +s.items.map((x,i)=>{const a=serChkAuthor(x,s);return `${i+1}. ${serChkTitle(x)}${a?` by ${a}`:""}`;}).join("\n");
+  const cost=u=>{const A=SERF.chkCost||(SERF.chkCost={n:0,usd:0});A.n++;A.usd+=claudePriceOf(u||{},SERC_MODEL);};
+  let j;try{j=await claudeAsk({what:"✨ A suggested series, checked on the web",kind:"ask",model:SERC_MODEL,web:SERC_WEB,effort:"low",max_tokens:1500,schema,text});}
+  catch(e){if(e&&e.usage)cost(e.usage);throw e;}
+  cost(j.usage);
+  const o=j.json||{},name=String(o.series||"").trim(),c={by:"Claude",known:!!name,name,n:0,at:Date.now(),b:{}};
+  /* every book goes, for its context; only the guessed ones take a verdict */
+  (Array.isArray(o.books)?o.books:[]).forEach(y=>{const x=s.items[parseInt(y&&y.n)-1];if(!x||serChkSelf(s,x))return;
+    const other=String(y.other||"").trim();
+    let v=y.verdict==="in"?"in":y.verdict==="other"?"other":y.verdict==="none"?"none":"?";
+    if(v==="other"&&other&&[s.name,name].some(m=>m&&serChkNameNear(other,m)))v="in";
+    c.b[serChkKey(x)]=v==="in"?{v,p:String(y.pos||"").replace(/^#/,"").trim()}:v==="other"?{v,s:other||"another series"}:{v};});
+  serChkGuessed(s).forEach(x=>{const k=serChkKey(x);if(!c.b[k])c.b[k]={v:"?"};});
+  return c;
+}
+/* a no takes the tick off once, and a later "in" (Claude's, over Hardcover's no) puts back only
+   a tick the check took; a tick put back or taken off by hand is left alone. chkSeen holds 1
+   for a tick the check took, 0 for one it found already off, 2 once settled */
+function serChkApply(s){
+  const N=SERF_NOW,c=SERF.check[s.key];if(!c)return;
+  if(!(N.chkSeen instanceof Map))N.chkSeen=new Map();
+  let no=0;
+  s.items.forEach(x=>{const v=serChkVerdict(s,x);if(!v)return;const id=x.b?"b:"+x.b.id:"r:"+x.it.id;
+    if(serChkNo(v)){no++;if(!N.chkSeen.has(id)){N.chkSeen.set(id,N.off.has(id)?0:1);N.off.add(id);}}
+    else if(v.v==="in"&&N.chkSeen.get(id)===1){N.chkSeen.set(id,2);N.off.delete(id);}});
+  const sk="s:"+s.key,out=no&&(s.n===1||no===s.items.length);
+  if(out&&!N.chkSeen.has(sk)){N.chkSeen.set(sk,N.on.has(s.key)?1:0);N.on.delete(s.key);}
+  else if(!out&&N.chkSeen.get(sk)===1){N.chkSeen.set(sk,2);N.on.add(s.key);}
+}
+const serChkEst=n=>{const A=SERF.chkCost;if(A&&A.n>=3)return A.usd/A.n*n;return n*(claudePriceOf({input:9000,output:400},SERC_MODEL)+SERC_WEB*.01);};
+function serChkSaid(s,x){
+  const c=SERF.check[s.key],v=serChkVerdict(s,x);if(!v)return "";
+  /* a reason stands on a line of its own: a book's line is about 300 px wide in Shelf care on a
+     computer, and tacked on the end it broke mid-phrase over three lines */
+  const who=c.by==="Claude"?"Claude":"Hardcover",own=(t,col)=>`<span class="meta" style="display:block;${col?`color:${col}`:""}">${t}</span>`;
+  if(v.v==="in")return `<span class="meta" style="color:var(--teal)"> · ✓ ${who}${v.p?` #${esc(v.p)}`:""}</span>`;
+  if(v.v==="none")return own(`${who}: in no series`,"var(--amber-ink,#b45309)");
+  if(v.v==="other")return own(`${who} puts it in “${esc(v.s)}”`,"var(--amber-ink,#b45309)");
+  return own(`${who} doesn't know this book`,"");
+}
+function serChkSeriesHtml(s){
+  const c=SERF.check[s.key];if(!c)return "";
+  /* short, to stand on one line in Shelf care's 530 px column */
+  const cl=c.by==="Claude",line=(t,col)=>`<div class="meta"${col?` style="color:${col}"`:""}>${t}</div>`;
+  const amber="var(--amber-ink,#b45309)",no=s.items.filter(x=>serChkNo(serChkVerdict(s,x))).length,unk=s.items.filter(x=>{const v=serChkVerdict(s,x);return v&&v.v==="?";}).length;
+  if(serChkDead(s))return line(`Not ${s.items.length===1?"in ":""}a series, says ${cl?"Claude from the web":"Hardcover"}, so ${s.items.length===1?"it starts":"these start"} unticked.`,amber);
+  const tail=no?` ${no} book${no===1?" isn't":"s aren't"} in it: unticked.`:"";
+  /* no count: Hardcover's own list of a series can be short of it */
+  if(c.known)return line(`✓ ${cl?"Claude found this series on the web":"Hardcover knows this series"}${c.name&&softFold(c.name)!==softFold(s.name)?` as “${esc(c.name)}”`:""}.${tail}`,no?amber:"var(--teal)");
+  if(!no&&!unk)return line(`✓ ${cl?"Claude":"Hardcover"} has ${s.items.length===1?"it":"these"} in a series of that name.`,"var(--teal)");
+  return line(`${cl?"Claude found no series called that":"Hardcover knows no series called that"}.${tail}${unk?` ${unk===s.items.length?(unk===1?"Nor this book":"Nor these books"):`${unk} book${unk===1?"":"s"} it doesn't know`}.`:""}`,no?amber:"");
+}
+function serChkLineHtml(all){
+  all=all||serFindSeries();
+  const hc=hardcoverOn(),cl=claudeReady(),todo=serChkTodo(all),forC=serChkForClaude(all,hc);
+  const line=inner=>`<div class="hrow2" style="margin:0 0 8px;gap:8px;flex-wrap:wrap;align-items:center">${inner}</div>`;
+  const hint=t=>`<span class="hint" style="margin:0;flex:1 1 200px;min-width:0">${t}</span>`;
+  const say=SERC.say?`<div class="hint" style="margin:0 0 8px">${esc(SERC.say)}</div>`:"";
+  if(SERC.busy){const mins=SERC.done>=5?Math.ceil((Date.now()-SERC.t0)/SERC.done*(SERC.of-SERC.done)/60000):0;
+    return line(`<button class="btn" data-serchk="stop"${SERC.stop?" disabled":""}>${SERC.stop?"Stopping…":"⏹ Stop"}</button><span class="prog" style="width:110px"><i style="width:${SERC.of?Math.round(SERC.done/SERC.of*100):0}%"></i></span>
+      ${hint(`${SERC.busy==="Claude"?"Claude, on the web":"Hardcover, free"}: ${SERC.done} of ${SERC.of} series checked${SERC.now?`, now ${esc(SERC.now)}`:""}.${mins?` About ${mins} minute${mins===1?"":"s"} left.`:""} Stop keeps what's checked.`)}`)+say;}
+  const need=all.filter(s=>serChkGuessed(s).length),checked=need.filter(s=>SERF.check[s.key]);
+  const no=all.reduce((n,s)=>n+s.items.filter(x=>serChkNo(serChkVerdict(s,x))).length,0);
+  let h="";
+  if(checked.length)h+=`<div class="hint" style="margin:0 0 6px">Checked ${checked.length} of the ${need.length} series Claude guessed: ${no?`${no} book${no===1?" isn't":"s aren't"} in the series suggested, and ${no===1?"starts":"start"} unticked with the reason beside ${no===1?"it":"each"}.`:"each book is in the series suggested, as far as it can tell."}</div>`;
+  if(hc&&todo.length){const mins=Math.max(1,Math.round(todo.reduce((n,s)=>n+2+serChkGuessed(s).length*.3,0)*1.1/60));
+    h+=line(`<button class="btn" data-serchk="Hardcover">🔎 Check ${checked.length?`the other ${todo.length}`:`the ${todo.length===1?"one":todo.length} Claude guessed`} with Hardcover, free</button>${hint(`Before you make them: Hardcover's own lists of series, about ${mins} minute${mins===1?"":"s"}. A book it puts in another series, or in none, starts unticked and says why. A book whose title names its series isn't a guess, and isn't checked.`)}`);}
+  if(cl&&forC.length)h+=line(`<button class="btn" data-serchk="Claude">✨ Ask Claude about ${forC.length===1?"the one":`the ${forC.length}`} ${hc&&checked.length?"Hardcover doubted or didn't know":"not checked yet"}, ${claudeUsd(serChkEst(forC.length))}</button>${hint(`${hc&&checked.length?"Hardcover's lists miss books, so its “in no series” is sometimes wrong. ":""}Claude searches the web, Sonnet with ${SERC_WEB} searches a series; a book it finds in the series gets its tick back, and its word replaces Hardcover's.`)}`);
+  else if(!hc&&!cl&&todo.length&&!checked.length)h+=`<div class="hint" style="margin:0 0 8px">Checking these needs Hardcover or Claude, set up in ⚙ Settings.</div>`;
+  return h+say;
+}
+function serChkPaint(){const el=q("#serfChk");if(el){el.innerHTML=serChkLineHtml();const box=q("#impList");if(box)serFindWire(box);}}
+/* one series redrawn where it stands, so a list being read doesn't jump */
+function serChkShow(key){
+  const box=q("#impList");if(!box)return;
+  const s=serFindSeries().find(x=>x.key===key);
+  if(s){serChkApply(s);const el=box.querySelector(`.serfrow[data-serfkey="${CSS.escape(key)}"]`);if(el)el.outerHTML=serFindRowHtml(s);}
+  serChkPaint();serFindPaint(box);
+}
+async function serChkRun(who){
+  if(SERC.busy)return;
+  const all=serFindSeries(),list=(who==="Claude"?serChkForClaude(all,hardcoverOn()):serChkTodo(all)).sort((a,c)=>(a.lone?1:0)-(c.lone?1:0));
+  if(!list.length)return;
+  Object.assign(SERC,{busy:who,stop:false,done:0,of:list.length,say:"",t0:Date.now(),now:""});serChkPaint();
+  let at=0;
+  const one=async s=>{
+    if(who==="Claude")SERF.check[s.key]=await serChkClaude(s);
+    else{const c=await serChkHc(s),prev=SERF.check[s.key];
+      /* Claude's word stands over Hardcover's for the books it was asked about */
+      SERF.check[s.key]=prev&&prev.by==="Claude"?Object.assign(prev,{b:Object.assign({},c.b,prev.b)}):c;}
+    SERC.done++;serFindSave();serChkApply(s);serChkShow(s.key);};
+  const worker=async()=>{while(at<list.length&&!SERC.stop){const s=list[at++];SERC.now=s.name;serChkPaint();
+    try{await one(s);}catch(e){SERC.say=`${who} didn't answer: ${String(e&&e.message||e).slice(0,120)}. What's checked stays; press again to go on.`;SERC.stop=true;}}};
+  await Promise.all(Array.from({length:who==="Claude"?SERC_AT_ONCE:1},worker));
+  SERC.busy="";SERC.stop=false;SERC.now="";serFindSave();serFindRedraw();
 }
 /* ┌─ ✨ FIND THEIR SERIES, FROM THE LIBRARY ──────────────────────────────────┐
    │ Ticked books in the Library, ⚙ → ✨ Find their series. lsfOpen opens a   │
