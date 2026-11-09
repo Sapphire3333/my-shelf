@@ -14626,6 +14626,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-09.12",go:["el:care:#drvTidyBox"],lines:["<b>🗂 Tidy your Drive.</b> A new card in Shelf care, under Connect your Drive files. <b>🔎 Find identical copies</b> asks Drive for each file's fingerprint of its contents, so it finds files that are the very same file byte for byte, whatever they're called. <b>🗑 Move the extras to Drive's bin</b> keeps one of each: the one a book or story is linked to, or the one without “(1)” or “Copy” in its name. Drive keeps its bin for 30 days, and <b>↶ Put them back</b> takes them out again. It's the first thing in the app that changes your Drive, so Google asks you once for permission to edit it when you press."]},
   {v:"2026-11-09.11",go:["el:care:#drvConnBox"],lines:["<b>🔗 None of these remembers the files.</b> In Connect my files, ✕ None of these used to hide a book for good, so a right file added to your Drive later was never offered. Now it leaves out the files it showed you for that book, and the book comes back to To check only when a new file turns up for it.","<b>↗ Look</b> beside every file, in To check, the sure ones and a book's ☁ From Drive, opens it in Google Drive in a new tab, so you can see whether it's the book before pressing Use it."]},
   {v:"2026-11-09.10",go:["el:care:#twinBox"],lines:["<b>🧹 One story twice in a collection.</b> 🧹 Two copies of one book in Shelf care now also finds a story that sits in its collection twice, like “Kite Days” and “Kite Days (Tom Pike, #2)”, or with the collection's name or a “[Tom Pike 2]” in front. <b>Make them one</b> keeps the one you've read or rated, gives it the other's 📌, file, pages, blurb and tags, says its quotes come from the one kept, and takes the other out of the collection. A story there three times keeps one and folds the other two at once. If both copies have a rating or readings, it opens the collection for you to choose. Once they're one, 🔗 Connect my files can be sure of their file again: a file that fits two stories was sure for neither."]},
   {v:"2026-11-09.8",go:["tab:settings"],lines:["<b>🧪 Save a copy for testing.</b> In ⚙ Settings → Export &amp; import, on your computer. It saves one small file to your Downloads: your books' words, the import list and this device's list of Drive files, with no covers or pictures. It isn't a backup. It lets a change be tried on your own shelf in a separate test copy on your computer before it reaches you, so a matching problem shows up there rather than on your shelf. Nothing in it is sent anywhere."]},
@@ -33927,6 +33928,113 @@ function refreshDrvConnect(){
   qa("[data-dcno]",box).forEach(b=>b.onclick=async()=>{const r=maybe[+b.dataset.dcno];if(!r)return;
     const seen=[...r.cands,...r.rest].slice(0,DRV_CONN_NOT_MAX).map(f=>f.id),was=(settings.drvConnNot||{})[r.key]||[];
     settings.drvConnNot=Object.assign({},settings.drvConnNot||{},{[r.key]:[...new Set([...was,...seen])]});saveSettings();await redo();});
+}
+/* ┌─ 🗂 TIDY YOUR DRIVE: ONE FILE THERE SEVERAL TIMES ───────────────────────┐
+   │ The books folder can hold one file many times over, under the same name    │
+   │ or another. drvTidyFind lists the folder again asking Drive for each       │
+   │ file's md5Checksum, which Drive keeps for a file's contents, and           │
+   │ drvTidyGroups groups the files whose checksum and size agree: the same     │
+   │ file, whatever it is called. A Google Doc has no checksum and is in none.  │
+   │ In each group the copy a book or story is linked to stays, every one if    │
+   │ several are; with none linked, the name without "(1)" or "Copy", then the  │
+   │ shorter. The rest go to Drive's own bin, which Drive keeps thirty days.    │
+   │ The app reads Drive with drive.readonly; changing it takes the drive scope,│
+   │ asked for only on that press (drvEditToken), first thing in the click so   │
+   │ the browser lets Google's window open. settings.drvTidyLast holds what the │
+   │ last press moved, and Put them back takes those out of the bin again.      │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const DRIVE_EDIT_SCOPE="https://www.googleapis.com/auth/drive";
+let drvEditTok="",drvEditExp=0,DRV_TIDY=null;
+async function drvEditToken(){
+  if(drvEditTok&&Date.now()<drvEditExp-60000)return drvEditTok;
+  if(!(window.google&&google.accounts&&google.accounts.oauth2))await drvLoadGis();
+  return new Promise((res,rej)=>{
+    const c=google.accounts.oauth2.initTokenClient({client_id:CFG.googleClientId,scope:DRIVE_EDIT_SCOPE,
+      callback:r=>{if(!r||r.error){rej(new Error((r&&(r.error_description||r.error))||"Google said no"));return;}
+        drvEditTok=r.access_token;drvEditExp=Date.now()+(+r.expires_in||3600)*1000;
+        if(!settings.driveEditAsked){settings.driveEditAsked=true;saveSettings();}res(drvEditTok);},
+      error_callback:e=>rej(new Error(e&&e.type==="popup_closed"?"the Google window was closed":e&&e.type==="popup_failed_to_open"?"the browser blocked Google's window — allow pop-ups for this page":"Google's sign-in failed"))});
+    c.requestAccessToken({prompt:settings.driveEditAsked?"":"consent"});});
+}
+async function drvSetTrashed(id,on){
+  for(let tries=0;;tries++){
+    const r=await fetch(DRV_API+"files/"+encodeURIComponent(id)+"?supportsAllDrives=true&fields=id,trashed",{method:"PATCH",
+      headers:{Authorization:"Bearer "+await drvEditToken(),"Content-Type":"application/json"},body:JSON.stringify({trashed:!!on})});
+    if(r.status===401&&tries<1){drvEditTok="";continue;}
+    if(r.ok)return true;
+    let m="";try{m=(await r.clone().json()).error.message;}catch(e){}
+    if(tries<2&&(r.status===429||r.status>=500||(r.status===403&&/rate|quota/i.test(m)))){await new Promise(res=>setTimeout(res,1000*(tries+1)));continue;}
+    throw new Error(m||("Drive answered "+r.status));
+  }
+}
+const drvLinkedIds=()=>{const s=new Set();books.forEach(b=>{if(!b)return;if(b.driveFile)s.add(b.driveFile.id);(b.entries||[]).forEach(en=>{if(en&&en.driveFile)s.add(en.driveFile.id);});});return s;};
+const drvPlainName=n=>!/(\(\d+\)|\bcopy\b)\s*$/i.test(String(n||"").replace(/\.[a-z0-9]{2,5}$/i,"").trim())&&!/^copy of\b/i.test(String(n||""));
+function drvTidyGroups(files){
+  const linked=drvLinkedIds(),by=new Map(),out=[];
+  files.forEach(f=>{if(!f||!f.md5)return;const k=f.md5+"|"+f.size;(by.get(k)||by.set(k,[]).get(k)).push(f);});
+  by.forEach(g=>{if(g.length<2)return;
+    const ln=g.filter(f=>linked.has(f.id));
+    const keep=ln.length?ln:[g.slice().sort((a,c)=>(drvPlainName(c.name)-drvPlainName(a.name))||a.name.length-c.name.length||a.name.localeCompare(c.name))[0]];
+    const extra=g.filter(f=>!keep.includes(f));if(extra.length)out.push({keep,extra,size:g[0].size||0});});
+  return out.sort((a,c)=>a.keep[0].name.localeCompare(c.keep[0].name));
+}
+async function drvTidyFind(onProg){
+  const fo=settings.drive&&settings.drive.folder;if(!fo)throw new Error("choose your Drive folder first");
+  await drvFolderFiles(false);
+  const memo=drvFilesMemo,seen=new Set([fo.id,...((memo&&memo.dirs)||[]).map(d=>d.id)]),files=[];
+  await drvList(`(${DRV_MIMES.map(m=>`mimeType='${m}'`).join(" or ")}) and trashed=false`,"id,name,mimeType,size,parents,md5Checksum",(n,page)=>{
+    page.forEach(x=>{const p=(x.parents||[]).find(y=>seen.has(y));if(!p||!x.md5Checksum)return;
+      files.push({id:x.id,name:x.name,size:+x.size||0,mime:x.mimeType,md5:x.md5Checksum,p});});
+    if(onProg)onProg(n,files.length);});
+  return files;
+}
+function refreshDrvTidy(){
+  const box=q("#drvTidyBox");if(!box)return;
+  const fo=settings.drive&&settings.drive.folder;if(!fo){box.innerHTML="";return;}
+  const T=DRV_TIDY,last=settings.drvTidyLast,paint=()=>refreshDrvTidy();
+  const intro=`<div class="hint" style="margin:0 0 8px">Finds files in ${esc(fo.name)} that are the very same file as another, byte for byte, whatever they are called, and moves the extra copies to Drive's bin, which Drive keeps for 30 days. The copy a book or story is linked to is always the one kept. Moving them needs Google's permission to change your Drive, asked when you press.</div>`;
+  const back=last&&(last.ids||[]).length&&!(T&&T.busy)?`<div class="hrow2" style="gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center"><span class="hint" style="margin:0">Last time ${last.ids.length.toLocaleString()} went to Drive's bin, ${esc(drvAgo(last.at))}.</span><button class="btn smallbtn" id="dtBack">↶ Put them back</button></div>`:"";
+  if(T&&T.busy){box.innerHTML=intro+drvBarHtml(esc(T.say||"…"),T.pct)+`<div class="hrow2" style="margin-top:6px"><button class="btn smallbtn" id="dtStop"${T.stop?" disabled":""}>${T.stop?"Stopping…":"⏹ Stop"}</button></div>`;
+    q("#dtStop",box).onclick=()=>{T.stop=true;paint();};return;}
+  if(!T){box.innerHTML=intro+`<button class="btn pri" id="dtFind">🔎 Find identical copies</button>`+back;}
+  else{
+    const g=T.groups||[],n=g.reduce((s,x)=>s+x.extra.length,0),mb=Math.round(g.reduce((s,x)=>s+x.extra.length*x.size,0)/1048576);
+    box.innerHTML=intro+(T.say?`<div class="hint" style="margin:0 0 8px">${esc(T.say)}</div>`:"")
+      +(n?`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><b style="font-size:14px">${n.toLocaleString()} extra cop${n===1?"y":"ies"} of ${g.length.toLocaleString()} file${g.length===1?"":"s"}, ${mb.toLocaleString()} MB</b>
+          <button class="btn pri" id="dtGo">🗑 Move the ${n.toLocaleString()} to Drive's bin</button><button class="btn smallbtn" id="dtFind" style="margin-left:auto">↻ Look again</button></div>
+        <details><summary style="cursor:pointer;font-size:13px">▸ See them</summary><div style="max-height:45vh;overflow:auto;margin-top:6px">${g.slice(0,300).map(x=>`<div class="snap" style="display:block;padding:5px 10px;font-size:13px;overflow-wrap:anywhere">✓ Keeps ${esc(x.keep.map(f=>f.name).join(" · "))} ${drvLookLink(x.keep[0])}${x.extra.map(f=>`<div class="meta">✕ ${esc(f.name)} ${drvLookLink(f)}</div>`).join("")}</div>`).join("")}${g.length>300?`<div class="hint">The first 300.</div>`:""}</div></details>`
+        :`<div class="hrow2" style="gap:8px;align-items:center"><span class="hint" style="margin:0">No file is in ${esc(fo.name)} twice.</span><button class="btn smallbtn" id="dtFind" style="margin-left:auto">↻ Look again</button></div>`)+back;
+  }
+  const fb=q("#dtFind",box);if(fb)fb.onclick=async()=>{
+    const S=DRV_TIDY={busy:true,say:`Looking in ${fo.name}…`,pct:null};paint();
+    try{const files=await drvTidyFind((n,k)=>{S.say=`Looked at ${n.toLocaleString()} files, ${k.toLocaleString()} in ${fo.name}…`;paint();});
+      DRV_TIDY={groups:drvTidyGroups(files)};}
+    catch(e){DRV_TIDY={groups:[],say:`Drive couldn't be read — ${e.message}.`};}
+    paint();};
+  const run=async(ids,on,say)=>{
+    const S=DRV_TIDY=Object.assign({},T||{groups:[]},{busy:true,stop:false,say,pct:0});paint();
+    const done=[];let err="";
+    for(let i=0;i<ids.length&&!S.stop;i++){
+      try{await drvSetTrashed(ids[i],on);done.push(ids[i]);}catch(e){err=e.message;break;}
+      if(i%5===4||i===ids.length-1){S.pct=(i+1)/ids.length*100;S.say=`${say} ${i+1} of ${ids.length}…`;paint();}}
+    return {done,err};};
+  const go=q("#dtGo",box);if(go)go.onclick=async()=>{
+    const ids=(T.groups||[]).flatMap(x=>x.extra.map(f=>f.id));
+    try{await drvEditToken();}catch(e){DRV_TIDY=Object.assign({},T,{say:`Google didn't give the permission: ${e.message}.`});paint();return;}
+    if(!confirm(`Move ${ids.length.toLocaleString()} extra copies to Drive's bin?\n\nThe copy each book is linked to stays. Drive keeps its bin for 30 days, and ↶ Put them back here takes them out again.`))return;
+    const {done,err}=await run(ids,true,"Moving to Drive's bin:");
+    const gone=new Set(done);
+    settings.drvTidyLast={at:Date.now(),ids:done};saveSettings();
+    if(drvFilesMemo&&drvFilesMemo.files){drvFilesMemo.files=drvFilesMemo.files.filter(f=>!gone.has(f.id));drvListSave(drvFilesMemo);}
+    DRV_TIDY={groups:(T.groups||[]).map(x=>Object.assign({},x,{extra:x.extra.filter(f=>!gone.has(f.id))})).filter(x=>x.extra.length),
+      say:`${done.length.toLocaleString()} moved to Drive's bin.${err?` Stopped: ${err}.`:""}`};paint();};
+  const bk=q("#dtBack",box);if(bk)bk.onclick=async()=>{
+    const ids=(last.ids||[]).slice();
+    try{await drvEditToken();}catch(e){DRV_TIDY=Object.assign({},T||{groups:[]},{say:`Google didn't give the permission: ${e.message}.`});paint();return;}
+    if(!confirm(`Take the ${ids.length.toLocaleString()} files back out of Drive's bin?`))return;
+    const {done,err}=await run(ids,false,"Putting back:");
+    const back=new Set(done);settings.drvTidyLast=Object.assign({},last,{ids:ids.filter(id=>!back.has(id))});if(!settings.drvTidyLast.ids.length)settings.drvTidyLast=null;saveSettings();
+    DRV_TIDY=Object.assign({},T||{groups:[]},{busy:false,say:`${done.length.toLocaleString()} put back.${err?` Stopped: ${err}.`:""} Look again to list them.`});paint();};
 }
 /* 📖 on a fic's own row, its page not needed first */
 /* ┌─ 📖 THE SIGN THAT YOU CAN READ IT HERE ──────────────────────────────────┐
@@ -55400,7 +55508,7 @@ async function renderHub(part){
     <div class="sec" id="ownClashSec" hidden><div class="heading"><h2 class="serif">⌛ Says you don't have it, but…</h2></div><div class="hcard" id="ownClashBox"></div></div>
     <div class="sec" id="volMarkSec" hidden><div class="heading"><h2 class="serif">Page trails to put right</h2></div><div class="hcard" id="volMarkBox"></div></div>
     ${claudeReady()?`<div class="sec" id="nxSec"><div class="heading"><h2 class="serif">🔎 Is the next one out?</h2></div><div class="hcard" id="nxBox"></div></div>`:""}
-    ${driveReady()?`<div class="sec"><div class="heading"><h2 class="serif">Connect your Drive files</h2></div><div class="hcard" id="drvConnBox"></div></div>`:""}
+    ${driveReady()?`<div class="sec"><div class="heading"><h2 class="serif">Connect your Drive files</h2></div><div class="hcard" id="drvConnBox"></div></div><div class="sec"><div class="heading"><h2 class="serif">Tidy your Drive</h2></div><div class="hcard" id="drvTidyBox"></div></div>`:""}
     <div class="sec" id="wikiBlurbSec">
       <div class="heading"><h2 class="serif">📖 Blurbs from a wiki</h2></div>
       <div class="hcard"><div class="hint" style="margin:0 0 6px">Your books and stories with the same title as a wiki's page, with its blurb beside yours. Free, and nothing changes until you tick it.</div>
@@ -55597,7 +55705,7 @@ async function renderHub(part){
   };
   /* the housekeeping half's wiring — every refresher looks its box up and
      returns when it is not on the page, and the two buttons are guarded here */
-  refreshDupes();refreshStoryCopies();refreshShelfTwins();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshCastTwins();refreshClaudeTidy();refreshFandomTidy();refreshScreen();refreshDrvConnect();refreshVolTrail();refreshOwnClash();nxDraw();
+  refreshDupes();refreshStoryCopies();refreshShelfTwins();refreshNameDupes();refreshKwDupes();refreshGenDupes();refreshTagDupes();refreshCapTags();refreshCastTwins();refreshClaudeTidy();refreshFandomTidy();refreshScreen();refreshDrvConnect();refreshDrvTidy();refreshVolTrail();refreshOwnClash();nxDraw();
   {const cb=q("#csvBtn");if(cb)cb.onclick=()=>q("#csvFile").click();}
   /* many books off one picture — see ONE PHOTO, THREE ANSWERS */
   {const pb=q("#impPhoto"),pf=q("#impPhotoFile"),ps=q("#impPhotoSay");
