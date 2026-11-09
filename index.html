@@ -14626,6 +14626,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-09.28",go:["el:care:#secCovf"],lines:["<b>🖼 Better covers leaves your own covers alone.</b> A cover you put there before 9 November, and any you paste or choose from a file from now on, is never offered for swapping. Books with no cover, books added from 9 November on, and covers Auto-fill finds are all looked at as before. A cover stays yours when its book moves into a collection. The card says how many of yours it left alone."]},
   {v:"2026-11-09.27",go:["el:care:#corrSec"],lines:["<b>📚 A book of another series goes where it belongs.</b> When a series file takes a book out of a collection because it belongs to a different series, it now goes into that series' collection at its number, or into a new collection for that series if you don't have one, in number order. Before this it went back on your shelf as a book of its own, so a whole run of one series came out loose, one book at a time. The row in 📥 Corrections from a file says where each one goes."]},
   {v:"2026-11-09.26",lines:["<b>✨ Would I like it?, on the book itself.</b> Every book you haven't finished has ✨ Would I like it? among its own buttons, and every unread story in a collection's Contents has a small ✨ 25¢. Press it and the same verdict as on Insights opens right there. It stays on that book or story, so you never pay for it twice: from then on it shows as its score, like Good fit · 7/10, and pressing that unfolds the whole verdict and folds it away again. Books you judged on Insights before show their score too. The ✨ with no price beside it is still More like this."]},
   {v:"2026-11-09.23",go:["el:care:#corrSec"],lines:["<b>📚 Series made whole, by file.</b> A corrections file can now set a whole series right in one row: a book that isn't that series goes back on your shelf as a book of its own, a book in it twice becomes one, your loose books of it move in, and the missing ones arrive as Want to read with their blurb and page count, everything in series order. A collection whose stories you've changed since the copy starts unticked, and a press is one ↶."]},
@@ -21121,6 +21122,8 @@ async function bookToEntry(b,collId,collStatus,collAuthor,collDnf,collKeywords){
   let coverData=null;
   const cov=await dbGet("covers",b.id);
   if(cov&&cov.data){
+    /* yours stays yours through the new date — see A COVER YOU PUT THERE YOURSELF */
+    en.covMine=covYours(b);
     en.cover=true;en.coverV=Date.now();coverData=cov.data;
     try{await dbPut("images",{key:collId+"|"+en.id,data:cov.data,v:en.coverV});
       if(SYNC.on)enqueue({kind:"img",key:collId+"|"+en.id});}catch(e){en.cover=false;coverData=null;}
@@ -21438,6 +21441,8 @@ async function entryToBook(coll,en){
      in bookToEntry, in the other direction */
   nb.progress=en.progress||"";nb.pct=en.pct||"";nb.progLog=(en.progLog||[]).slice();
   nb.summary=en.summary||"";nb.canvasText=en.notes||"";
+  /* whether its cover was yours, decided before a move re-stamps its date — see A COVER YOU PUT THERE YOURSELF */
+  if(en.cover)nb.covMine=covYours(en);
   /* ---- the lines it was keeping on the collection's list ----
      A quote lives on the shelf item and never on the story, and quotesFrom is
      the field that says which story it came out of — so the ones marked as
@@ -68334,7 +68339,7 @@ function renderEditor(){
         if(!cur||cur.id!==forId||!box.isConnected)return false;
         if(en){
           edPendImg(cur.id+"|"+en.id,curEnt[en.id]||null,data);
-          en.cover=true;en.coverV=Date.now();
+          en.cover=true;en.coverV=Date.now();en.covMine=false;
           await dbPut("images",{key:cur.id+"|"+en.id,data,v:en.coverV});
           curEnt[en.id]=data;coverCache.set(cur.id+"|"+en.id,data);bumpCovers();
           if(SYNC.on)enqueue({kind:"img",key:cur.id+"|"+en.id});
@@ -68345,7 +68350,7 @@ function renderEditor(){
           curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);bumpCovers();
           renderCover();
           if(SYNC.on)enqueue({kind:"cover",id:cur.id});
-          cur.coverV=Date.now();
+          cur.coverV=Date.now();cur.covMine=false;
         }
         scheduleSave();
         mark(covI,"worked","✓ set");
@@ -69452,6 +69457,7 @@ function renderEditor(){
     let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(err){picFail(err,"That image couldn't be read.");return;}
     const key=cur.id+"|"+en.id;
     en.coverV=Date.now();          /* version, so replacing a cover reaches other devices too */
+    en.covMine=true;               /* yours — see A COVER YOU PUT THERE YOURSELF */
     const wasE=curEnt[en.id]||null;
     try{await dbPut("images",{key,data,v:en.coverV});}catch(err){alert("That cover couldn't be saved.");return;}
     edPendImg(key,wasE,data);
@@ -71951,7 +71957,8 @@ function renderEditor(){
     coverCache.set(cur.id,curCover);SYNC.triedCover.delete(cur.id);bumpCovers();
     renderCover();
     if(SYNC.on)enqueue({kind:"cover",id:cur.id});
-    cur.coverV=Date.now();scheduleSave();
+    /* yours — see A COVER YOU PUT THERE YOURSELF */
+    cur.coverV=Date.now();cur.covMine=true;scheduleSave();
   };
 
   edSections(page);   /* AFTER every handler is on, so moving a node keeps it */
@@ -79137,12 +79144,13 @@ async function applyCoverBlob(f){
   catch(e){alert("That cover couldn't be saved — storage may be full.");return;}
   curCover=data;coverCache.set(cur.id,data);SYNC.triedCover.delete(cur.id);bumpCovers();
   if(SYNC.on)enqueue({kind:"cover",id:cur.id});
-  if(bookMode==="edit"){edPendCover(was,data);cur.coverV=Date.now();scheduleSave();
+  /* a pasted or chosen picture is yours — see A COVER YOU PUT THERE YOURSELF */
+  if(bookMode==="edit"){edPendCover(was,data);cur.coverV=Date.now();cur.covMine=true;scheduleSave();
     /* redraw without losing where you stood — a bare render put the scroll
        wherever the page fell */
     const place=bookPlace();renderBook();
     if(place)setTimeout(()=>restoreBookPlace(place),0);}
-  else await quickEdit(bk=>{bk.coverV=Date.now();},{cover:{before:was,after:data}});
+  else await quickEdit(bk=>{bk.coverV=Date.now();bk.covMine=true;},{cover:{before:was,after:data}});
 }
 /* The same button on a story's row inside a collection's editor. A story's
    cover is not a book's cover: it lives among the images under
@@ -79152,7 +79160,7 @@ async function applyEntCoverBlob(en,f){
   if(!cur)return;
   let data;try{data=await compressImage(f,COVER_MAX,.85);}catch(e){picFail(e,"That picture couldn't be read.");return;}
   const key=cur.id+"|"+en.id;
-  en.coverV=Date.now();
+  en.coverV=Date.now();en.covMine=true;
   const wasE=curEnt[en.id]||null;
   try{await dbPut("images",{key,data,v:en.coverV});}catch(e){alert("That cover couldn't be saved.");return;}
   edPendImg(key,wasE,data);
@@ -79338,6 +79346,25 @@ async function fetchCoverData(urls,maxDim){
    │ small thumbnail of yours; the full one is read again when it is swapped.│
    └──────────────────────────────────────────────────────────────────────────┘ */
 const COVF_PRESS=100,COVF_SHOW=40;
+/* ┌─ A COVER YOU PUT THERE YOURSELF ─────────────────────────────────────────┐
+   │ Better covers leaves your own covers alone. Nothing recorded who put a   │
+   │ cover there before this (a paste, an upload and every finder all end in  │
+   │ compressImage, JPEG at .85), so the day decides for the old ones: a cover│
+   │ dated before COVF_YOURS_BEFORE (or with no date) is yours, one dated on  │
+   │ or after it is a finder's. From then on the mark decides: covMine on the │
+   │ book or story, true where you paste or choose a file (applyCoverBlob,    │
+   │ applyEntCoverBlob, #coverFile, #entCoverFile), false where Auto-fill or  │
+   │ Better covers puts one in. The date alone fails twice: applyBackup      │
+   │ stamps every restored story cover with today, and bookToEntry stamps a   │
+   │ moved book's cover with today, so entryToBook and bookToEntry decide     │
+   │ covYours BEFORE the new date and carry it as covMine. A restore still   │
+   │ makes old, unmarked story covers look new. A book with no cover is never │
+   │ yours.                                                                   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const COVF_YOURS_BEFORE=new Date(2026,10,9).getTime();
+/* a book added on or after that day with an undated cover was given it by whatever added it */
+const covWhen=x=>+x.coverV||(typeof x.created==="number"?x.created:Date.parse(x.created||""))||0;
+const covYours=x=>!!x&&(x.covMine!=null?!!x.covMine:covWhen(x)<COVF_YOURS_BEFORE);
 const COVF={busy:false,stop:false,ran:false,done:0,of:0,rows:[],off:new Set(),more:0,say:"",gbusy:false,gdone:0,gof:0,gsay:""};
 function amazonCover(isbn){
   const d=isbn13Of(isbn);if(!d||!d.startsWith("978"))return "";
@@ -79396,10 +79423,13 @@ async function covfRun(){
   [...COVF.off].forEach(id=>{if(!kept.has(id))COVF.off.delete(id);});
   covfPaint();
   let i=0;
+  COVF.yours=0;
   const one=async t=>{
+    /* a cover you put there yourself is left alone, before Amazon is asked */
+    const mine=await covfMine(t.b,t.en);
+    if(mine&&covYours(t.en||t.b)){COVF.yours++;return;}
     const nw=await covfInfo(t.url,false);
     if(!nw)return;
-    const mine=await covfMine(t.b,t.en);
     const old=mine?await covfInfo(mine,true):null;
     const same=!!(old&&covfSame(old,nw));
     /* the same picture, only worth listing as a sharper copy */
@@ -79424,11 +79454,11 @@ async function covfSwap(){
     if(!before.has(b.id))before.set(b.id,JSON.parse(JSON.stringify(b)));
     const was=await covfMine(b,en);
     try{
-      if(en){const key=b.id+"|"+en.id,vb=en.coverV||0;en.coverV=Date.now();en.cover=true;
+      if(en){const key=b.id+"|"+en.id,vb=en.coverV||0;en.coverV=Date.now();en.cover=true;en.covMine=false;
         await dbPut("images",{key,data,v:en.coverV});coverCache.set(key,data);
         covs.push({store:"images",key,before:was,after:data,vb,va:en.coverV});
         if(SYNC.on)enqueue({kind:"img",key});}
-      else{await dbPut("covers",{id:b.id,data});coverCache.set(b.id,data);b.coverV=Date.now();
+      else{await dbPut("covers",{id:b.id,data});coverCache.set(b.id,data);b.coverV=Date.now();b.covMine=false;
         if(SYNC.triedCover)SYNC.triedCover.delete(b.id);
         covs.push({store:"covers",key:b.id,before:was,after:data});
         if(SYNC.on)enqueue({kind:"cover",id:b.id});}
@@ -79472,10 +79502,10 @@ function covfPaint(){
   if(C.busy)top=`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" id="covfStop"${C.stop?" disabled":""}>${C.stop?"Stopping…":"⏹ Stop"}</button>
       <span class="prog" style="width:110px"><i style="width:${C.of?Math.round(C.done/C.of*100):0}%"></i></span>
       <span class="hint" style="margin:0">Looked at ${C.done} of ${C.of} · ${amzN} to show so far</span></div>`;
-  else if(!C.ran)top=`<div class="hint" style="margin:0 0 9px">Amazon keeps the publisher's cover under each ISBN, at about the size Goodreads shows. This asks it for every book and story here that has an ISBN — ${n} of them — and lists the ones whose cover differs from yours, beside yours. Free, and no Claude. Nothing changes until you press Swap.</div>
+  else if(!C.ran)top=`<div class="hint" style="margin:0 0 9px">Covers you put there yourself are left alone: any from before ${new Date(COVF_YOURS_BEFORE).toLocaleDateString(undefined,{day:"numeric",month:"long"})}, and any you paste or choose from a file. Amazon keeps the publisher's cover under each ISBN, at about the size Goodreads shows. This asks it for every book and story here that has an ISBN — ${n} of them — and lists the ones whose cover differs from yours, beside yours. Free, and no Claude. Nothing changes until you press Swap.</div>
       <div class="hrow2" style="gap:8px;flex-wrap:wrap"><button class="btn pri" id="covfGo"${n?"":" disabled"}>🔎 Look at ${n}</button></div>`;
   else top=`<div class="hint" style="margin:0 0 8px">${amzN?`Amazon has a different cover, or a sharper copy of the same one, for ${amzN} of the ${C.of} looked at.`
-      :`Amazon has nothing better than what you have for any of the ${C.of} looked at.`}</div>
+      :`Amazon has nothing better than what you have for any of the ${C.of} looked at.`}${C.yours?` ${C.yours} cover${C.yours===1?" you put there yourself was":"s you put there yourself were"} left alone: any from before ${new Date(COVF_YOURS_BEFORE).toLocaleDateString(undefined,{day:"numeric",month:"long"})}, and any you paste or choose from a file.`:""}</div>
       <div class="hrow2" style="gap:8px;flex-wrap:wrap"><button class="btn" id="covfGo">↻ Look again</button></div>`;
   /* the list waits while either source is still reading, so it does not jump */
   let list="";
