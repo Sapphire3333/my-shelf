@@ -14626,6 +14626,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-09.23",go:["el:care:#corrSec"],lines:["<b>📚 Series made whole, by file.</b> A corrections file can now set a whole series right in one row: a book that isn't that series goes back on your shelf as a book of its own, a book in it twice becomes one, your loose books of it move in, and the missing ones arrive as Want to read with their blurb and page count, everything in series order. A collection whose stories you've changed since the copy starts unticked, and a press is one ↶."]},
   {v:"2026-11-09.22",go:["el:care:#corrSec"],lines:["<b>✓ Answers confirmed by file.</b> A corrections file can now say that one of ✨ Find the series' answers is right, checked when the file was made. Those gather in a fold of their own, ticked; once used, they count as checked, so the series check spends nothing asking about them again, and the series keeps the name your list already uses."]},
   {v:"2026-11-09.21",go:["el:care:#corrSec"],lines:["<b>📥 A file's series answers beside the finder's.</b> Where ✨ Find the series had already answered, a corrections file's answer no longer says “yours has changed”: those were Claude's guesses, not yours. Both answers stand on the row. One checked on the web starts ticked; where neither was checked it starts unticked; and the same series under a longer name counts as already so, keeping the name your other books of it use."]},
   {v:"2026-11-09.20",go:["el:care:#corrSec"],lines:["<b>📥 Corrections from a file.</b> A new card in 🧰 Shelf care. A big job over your whole shelf, like finding series, tidying blurbs or filling page counts, can now be done by Claude Code from a copy you save with 🧪 Save a copy for testing, and comes back as one file. Load it here: each change stands beside what you have, ticked, and nothing changes until ✓ Use these, which one ↶ takes back. Anything you've changed since the copy starts unticked and says so.","<b>📚 Series answers by file.</b> A file's series answers go into ✨ Suggested series on the import list and ✨ Find their series in the Library, as if Claude had answered there, and a book it says is in no series is never asked about again. Hardcover checks them for free straight away, and the ones already checked on the web count as checked."]},
@@ -79730,7 +79731,7 @@ function blbPaint(){
    └──────────────────────────────────────────────────────────────────────────┘ */
 /* 12 a kind to start: 30 stood the card 3,622 px tall in Shelf care's 570 px column */
 const CORR_VER=1,CORR_SHOW=12,CORR_FOLD=60,CORR_PRESS=200;
-const CORR_KINDS=[["series","📚 Series"],["blurb","📝 Blurbs"],["pages","📄 Page counts"],["genres","🏷 Genres"],["tags","🔖 Tags"],["setin","🗺 Set in"],
+const CORR_KINDS=[["whole","📚 Series made whole"],["series","📚 Series"],["blurb","📝 Blurbs"],["pages","📄 Page counts"],["genres","🏷 Genres"],["tags","🔖 Tags"],["setin","🗺 Set in"],
   ["rename","🧹 One name written two ways"],["author","👤 Who an author is"],["screen","🎬 On screen"],["upcoming","🔎 Coming next"]];
 let CORR=null,CORR_LOADED=false;
 const CORR_UI={off:new Set(),on:new Set(),more:{},say:""};
@@ -79747,8 +79748,84 @@ const CORR_DO={
   pages:{now:t=>String(corrX(t).pages||"").trim(),to:c=>String(c.to==null?"":c.to).replace(/\D/g,""),was:c=>String(c.was==null?"":c.was).replace(/\D/g,""),
     use:(t,c)=>{corrX(t).pages=String(c.to).replace(/\D/g,"");}},
   series:{now:t=>corrSerSay(corrSerNow(t)),to:c=>corrSerSay({s:String(c.series||"").replace(/\s+/g," ").trim(),p:String(c.num||"").replace(/^#/,"").trim()}),
-    was:c=>String(c.was||"").trim()}
+    was:c=>String(c.was||"").trim()},
+  /* a series made whole: corrWholeRow lines it up, corrWholeUse makes it */
+  whole:{now:()=>"",to:()=>"",was:()=>""}
 };
+/* ┌─ 📚 A SERIES MADE WHOLE, BY FILE ─────────────────────────────────────────┐
+   │ One change (kind "whole") is one series as it should stand: book, the    │
+   │ collection it is (none for a new one), name, author, was (the ids of its  │
+   │ stories in the copy), items in series order ({story} one of its own,     │
+   │ {book} a loose book that moves in, {add} a missing book with title, pos,  │
+   │ pages and blurb), out (stories that aren't this series: each becomes a    │
+   │ book of its own again, entryToBook) and drop (one book twice: carried     │
+   │ into the one kept, storyTwinCarry; a copy with a life of its own is left  │
+   │ alone). A story the change doesn't name keeps its place after the rest,   │
+   │ so nothing is ever lost. A collection whose stories changed since the     │
+   │ copy starts unticked. The whole press is one step of ↶ (corrUse).         │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function corrWholeRow(r){
+  const c=r.c;r.title=String(c.name||c.title||"");
+  if(c.book){const b=books.find(x=>x.id===c.book);if(!b||!isColl(b)){r.gone="not on your shelf any more";return;}r.t={b};}
+  else r.t={make:true};
+  const ents=r.t.b?(r.t.b.entries||[]):[],ids=new Set(ents.map(e=>e.id));
+  const was=Array.isArray(c.was)?c.was:null;
+  if(was&&(was.length!==ids.size||was.some(id=>!ids.has(id))))r.stale="its stories have changed since your copy";
+  const adds=(c.items||[]).filter(x=>x&&x.add).length,books2=(c.items||[]).filter(x=>x&&x.book&&books.some(b=>b.id===x.book)).length;
+  const outs=(c.out||[]).filter(o=>ids.has(o.story)).length,drops=(c.drop||[]).filter(d=>ids.has(d.story)&&ids.has(d.into)).length;
+  const order=(c.items||[]).filter(x=>x&&x.story&&ids.has(x.story)).map(x=>x.story),now=ents.map(e=>e.id).filter(id=>order.includes(id));
+  r.counts={adds,books:books2,outs,drops,moved:order.join()!==now.join()};
+  r.same=!adds&&!books2&&!outs&&!drops&&!r.counts.moved&&!!r.t.b;
+}
+function corrWholeHtml(r){
+  const c=r.c,b=r.t&&r.t.b,ents=new Map(((b&&b.entries)||[]).map(e=>[e.id,e]));
+  const box=r.gone||r.same?'<span style="width:13px;flex:none"></span>':`<input type="checkbox" data-corr="${r.i}"${corrOn(r)?" checked":""} style="flex:none;margin-top:3px">`;
+  const am=s=>`<span class="meta" style="display:block;color:var(--amber-ink,#b45309)">${s}</span>`;
+  const pos=p=>p?`#${esc(String(p))} `:"";
+  const lines=(c.items||[]).map(x=>{
+    if(x.story){const e=ents.get(x.story);return e?`<li>${pos(x.pos)}${esc(e.title||"Untitled")}<span class="meta" style="display:inline"> · yours</span></li>`:"";}
+    if(x.book){const k=books.find(y=>y.id===x.book);return k?`<li>${pos(x.pos)}${esc(k.title||"Untitled")}<span class="meta" style="display:inline"> · on your shelf, moves in</span></li>`:"";}
+    if(x.add){const a=x.add;return `<li>${pos(a.pos)}<b>${esc(a.title||"")}</b><span class="meta" style="display:inline"> · ＋ new, Want to read${a.pages?` · ${esc(String(a.pages))} pages`:""}${a.blurb?" · blurb":""}</span></li>`;}
+    return "";}).join("");
+  const outs=(c.out||[]).map(o=>{const e=ents.get(o.story);return e?`<div class="meta">↩ ${esc(e.title||"Untitled")} goes back on your shelf as a book of its own${o.why?`: ${esc(o.why)}`:""}</div>`:"";}).join("");
+  const drops=(c.drop||[]).map(d=>{const e=ents.get(d.story),k=ents.get(d.into);return e&&k?`<div class="meta">⧉ ${esc(e.title||"Untitled")} is the same book as ${esc(k.title||"Untitled")}: made one${d.why?` (${esc(d.why)})`:""}</div>`:"";}).join("");
+  const n=r.counts||{},head=[n.adds?`${n.adds} missing added`:"",n.books?`${n.books} of yours moving in`:"",n.outs?`${n.outs} taken out`:"",n.drops?`${n.drops} made one`:"",n.moved?"put in order":""].filter(Boolean).join(" · ");
+  return `<div class="snap" style="display:block;padding:7px 10px"><label style="display:flex;gap:8px;align-items:flex-start;min-width:0">${box}
+    <span style="min-width:0;flex:1;overflow-wrap:anywhere"><b>${esc(r.title||"Untitled")}</b> <span class="meta" style="display:inline">· ${esc(c.author||(b&&b.author)||"")} · ${b?`your collection${b.title!==r.title?` ${esc(b.title)}`:""}`:"a new collection"}</span>
+      <span class="meta" style="display:block">${esc(head||"already so")}</span>${r.gone?am(esc(r.gone)):r.stale?am(`${esc(r.stale)}, so it starts unticked`):""}${c.why?`<span class="meta" style="display:block">${esc(String(c.why).slice(0,240))}</span>`:""}</span></label>
+    ${r.gone||r.same?"":`<ol style="margin:4px 0 0 24px;padding-left:1.2em;font-size:13px;display:grid;gap:1px">${lines}</ol><div style="margin-left:24px">${outs}${drops}</div>`}</div>`;
+}
+async function corrWholeUse(r,items){
+  const c=r.c,clone=x=>JSON.parse(JSON.stringify(x));
+  let coll=c.book?books.find(b=>b.id===c.book):null;const before=coll?clone(coll):null;
+  if(c.book&&!coll)return false;
+  if(!coll)coll=Object.assign(blankBook(uid()),{type:"collection",title:String(c.name||"").trim()||"Untitled",series:String(c.name||"").trim(),author:String(c.author||"").trim(),status:"want",entries:[]});
+  const orig=(coll.entries||[]).slice(),byId=new Map(orig.map(e=>[e.id,e]));
+  for(const d of c.drop||[]){const k=byId.get(d.into),x=byId.get(d.story);if(!k||!x||k===x||storyTwinOwn(coll,x).length)continue;storyTwinCarry(coll,k,x,false);byId.delete(x.id);}
+  const outs=[];
+  for(const o of c.out||[]){const x=byId.get(o.story);if(!x)continue;outs.push(await entryToBook(coll,x));byId.delete(x.id);}
+  const list=[],folded=[];
+  for(const x of c.items||[]){
+    if(x&&x.story){const e=byId.get(x.story);if(e){list.push(e);byId.delete(e.id);}continue;}
+    if(x&&x.book){const b=books.find(y=>y.id===x.book);if(!b||isColl(b))continue;const w=clone(b);
+      const {en}=await bookToEntry(b,coll.id,collDefault(coll),coll.author,coll.dnf,coll.keywords);foldCarry(coll,b,en);folded.push({b,en,was:w});list.push(en);continue;}
+    if(x&&x.add&&String(x.add.title||"").trim()){const a=x.add;
+      list.push(Object.assign(blankEntry(),{title:String(a.title).trim(),pages:String(a.pages||"").replace(/\D/g,""),summary:a.blurb?cwParas(String(a.blurb)):"",status:collDefault(coll)==="want"?"":"want"}));}
+  }
+  /* a story the change doesn't name stays, after the rest, in the order it had */
+  orig.forEach(e=>{if(byId.has(e.id))list.push(e);});
+  coll.entries=list;
+  {const pg=entPagesSum(coll);if(pg!=null)coll.pages=pg;}
+  syncCollRating(coll);touchBook(coll);
+  if(!(await putOrRestore(coll,before||clone(coll))))return false;
+  if(!before)books.unshift(coll);
+  if(SYNC.on)enqueue({kind:"book",id:coll.id});
+  for(const nb of outs){await dbPut("books",nb);books.unshift(nb);items.push({id:nb.id,before:null,after:clone(nb)});if(SYNC.on)enqueue({kind:"book",id:nb.id});}
+  for(const f of folded){await retireBook(f.b);await noteFold(f.b,coll.id,f.en);items.push({id:f.b.id,before:f.was,after:null});}
+  items.push({id:coll.id,before,after:clone(coll)});
+  if(before&&cur&&cur.id===coll.id)try{await rebaseOpenBook(coll.id);}catch(e){}
+  return true;
+}
 async function corrLoad(){
   if(CORR_LOADED)return;CORR_LOADED=true;
   try{const r=await dbGet("meta","corrFile");if(r&&r.v&&Array.isArray(r.v.changes))CORR=r.v;}catch(e){}
@@ -79780,6 +79857,7 @@ function corrRows(){
     if(used.has(i))return;
     const k=c.kind,r={i,c,k,known:!!CORR_DO[k]};out.push(r);
     if(!r.known)return;
+    if(k==="whole"){corrWholeRow(r);return;}
     const t=corrTarget(c);r.t=t;
     if(t.gone){r.gone=t.gone;return;}
     const D=CORR_DO[k];r.title=String(corrX(t).title||"");r.now=D.now(t);r.to=D.to(c);
@@ -79821,7 +79899,7 @@ function corrSerPut(r){
 async function corrUse(){
   const rows=corrRows().filter(corrOn).slice(0,CORR_PRESS);if(!rows.length)return;
   const done=[],byBook=new Map(),items=[],was=histSrc;let full=false;
-  rows.filter(r=>r.k!=="series").forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
+  rows.filter(r=>r.k!=="series"&&r.k!=="whole").forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
   histSrc="📥 a corrections file";
   try{
     for(const [id,list] of byBook){
@@ -79835,6 +79913,8 @@ async function corrUse(){
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
       try{await rebaseOpenBook(b.id);}catch(e){}
     }
+    /* series made whole go into the same step of ↶ */
+    if(!full)for(const r of rows.filter(r=>r.k==="whole"))if(await corrWholeUse(r,items))done.push(r.i);
     if(items.length)pushOp({t:"bulk",items});
   }finally{histSrc=was;}
   if(SYNC.on&&items.length)flushQueue();
@@ -79851,6 +79931,7 @@ async function corrUse(){
     if(hardcoverOn()&&serChkTodo(serFindSeries()).length)serChkRun("Hardcover");}
 }
 function corrRowHtml(r){
+  if(r.k==="whole")return corrWholeHtml(r);
   const c=r.c,t=r.t||{},x=t.it||t.en||t.b||{};
   const author=x.author||(t.b&&t.b.author)||c.author||"";
   const where=t.en?` · in ${esc(t.b.title||"a collection")}`:t.it?" · on the import list":"";

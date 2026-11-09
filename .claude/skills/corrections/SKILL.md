@@ -60,6 +60,7 @@ as it stood in the copy; `why` and `src` are shown beside it.
 | kind | what it does | its fields |
 |---|---|---|
 | `series` | becomes the answer of the import list's ✨ Suggested series and the Library's ✨ Find their series; nothing is made until 📚 Make them there | `series` ("" = in no series), `num`, `sure` = checked on the web here, so the app's check counts it as done |
+| `whole` | one series as it should stand: wrong stories out (back to books of their own), one book twice made one, loose books moved in, missing ones added as Want to read with pages and blurb, all in series order; a new collection when `book` is absent | `name`, `author`, `book` + `was` (its story ids in the copy), `items` ({story}/{book}/{add}) in order, `out`, `drop` — write it with `corr.File.whole` |
 | `blurb` | replaces a book's or story's blurb | `to` (plain text, blank lines between paragraphs) |
 | `pages` | sets the page count | `to` (digits) |
 
@@ -84,5 +85,14 @@ its job, and here with its fields. A new kind never needs a new loader.
   The same series under a longer or shorter name, at the same number, counts
   as the same answer and keeps the finder's name.
 - `sure` goes on a standalone too ("" series) when the web said so.
+- For `whole`: take a story out only when it is surely another series or
+  another author's; make one only what is truly one book (a translation of the
+  same book is one; a sequel isn't). A missing book's blurb follows the Better
+  blurbs rules (only what is about its story: no praise, series talk, ages or
+  links) and its pages are a print edition's. Stories keep no year in the app.
+- What worked for checking hundreds at once: Hardcover first, free, from a
+  `?db=copy` page (`fetchHardcover` / `fetchHardcoverSeries`, about a second
+  each, results handed out through the :8768 drop box), then the web only for
+  what Hardcover doubts or doesn't know.
 - One job a file. A few hundred books a chat is a sensible size; say how far
   you got and where the next chat carries on.

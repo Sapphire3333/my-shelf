@@ -101,6 +101,36 @@ class File:
         a = (sf.get("shelf") or {}).get(t["id"])
         return (a.get("s", ""), a.get("p", "")) if a else None
 
+    def whole(self, name, author, items, coll=None, out=(), drop=(), why=""):
+        """One series as it should stand, in series order. coll: the collection (a dict from
+        shelf.books), or None for a new one. items: ("story", entry, pos) for one of its own,
+        ("book", book, pos) for a loose book that moves in, ("add", {"title", "pos", "pages",
+        "blurb"}) for a missing book, added as Want to read. out: (entry, why) pairs, stories
+        that aren't this series and go back on the shelf as books. drop: (entry, kept_entry)
+        pairs, one book twice, carried into the one kept."""
+        c = {"kind": "whole", "name": name, "author": author}
+        if coll:
+            c.update(book=coll["id"], title=coll.get("title", ""), was=[e["id"] for e in coll.get("entries") or []])
+        its = []
+        for it in items:
+            if it[0] == "story":
+                its.append({"story": it[1]["id"], "pos": str(it[2] or "")})
+            elif it[0] == "book":
+                its.append({"book": it[1]["id"], "pos": str(it[2] or ""), "title": it[1].get("title", "")})
+            elif it[0] == "add":
+                a = it[1]
+                its.append({"add": {"title": a["title"], "pos": str(a.get("pos", "") or ""),
+                                    "pages": str(a.get("pages", "") or ""), "blurb": (a.get("blurb") or "").strip()}})
+        c["items"] = its
+        if out:
+            c["out"] = [{"story": e["id"], "title": e.get("title", ""), "why": w} for e, w in out]
+        if drop:
+            c["drop"] = [{"story": d["id"], "into": k["id"], "title": d.get("title", "")} for d, k in drop]
+        if why:
+            c["why"] = why
+        self.changes.append(c)
+        return c
+
     def blurb(self, book, text, story=None, why="", src=""):
         x = story if story is not None else book
         return self._book("blurb", book, story, {"was": plain(x.get("summary")), "to": text.strip(), "why": why, "src": src})
