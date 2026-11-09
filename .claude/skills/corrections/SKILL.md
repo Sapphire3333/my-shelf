@@ -76,5 +76,13 @@ its job, and here with its fields. A new kind never needs a new loader.
   guesses went wrong exactly where memory was trusted: two standalones by one
   author taken for a series, a standalone placed beside a real #1.
 - A title that already names its series, "(Series, #2)", needs no answer.
+- The copy must carry the series finder's own answers (`copy.serFind`; copies
+  saved from build 2026-11-09.10 on do). Without them the file can't see what
+  ✨ Find the series already said, and every disagreement arrives unchecked.
+  Where your answer differs from the finder's, check it on the web and mark it
+  `sure`, or leave it out: the app starts an unchecked disagreement unticked.
+  The same series under a longer or shorter name, at the same number, counts
+  as the same answer and keeps the finder's name.
+- `sure` goes on a standalone too ("" series) when the web said so.
 - One job a file. A few hundred books a chat is a sensible size; say how far
   you got and where the next chat carries on.

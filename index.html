@@ -14626,6 +14626,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-09.21",go:["el:care:#corrSec"],lines:["<b>📥 A file's series answers beside the finder's.</b> Where ✨ Find the series had already answered, a corrections file's answer no longer says “yours has changed”: those were Claude's guesses, not yours. Both answers stand on the row. One checked on the web starts ticked; where neither was checked it starts unticked; and the same series under a longer name counts as already so, keeping the name your other books of it use."]},
   {v:"2026-11-09.20",go:["el:care:#corrSec"],lines:["<b>📥 Corrections from a file.</b> A new card in 🧰 Shelf care. A big job over your whole shelf, like finding series, tidying blurbs or filling page counts, can now be done by Claude Code from a copy you save with 🧪 Save a copy for testing, and comes back as one file. Load it here: each change stands beside what you have, ticked, and nothing changes until ✓ Use these, which one ↶ takes back. Anything you've changed since the copy starts unticked and says so.","<b>📚 Series answers by file.</b> A file's series answers go into ✨ Suggested series on the import list and ✨ Find their series in the Library, as if Claude had answered there, and a book it says is in no series is never asked about again. Hardcover checks them for free straight away, and the ones already checked on the web count as checked."]},
   {v:"2026-11-09.19",go:["el:care:#serfSec"],lines:["<b>🔎 The series finder checks its guesses.</b> On the import list, ✨ Suggested series now has <b>🔎 Check them with Hardcover</b>, free, and it runs by itself after a Find. Each book Claude put in a series is looked up in Hardcover's own series lists. A book Hardcover has on its own, or in another series, starts unticked and says why beside it; two books that only sound alike lose the series' tick altogether. A book whose title already names its series is never a guess and is never checked.","<b>✨ A second word from Claude.</b> Hardcover's lists miss books, so whatever it doubted or didn't know can go to Claude, who searches the web. The price is on the button, and a book Claude finds in the series gets its tick back. Nothing is made until you press 📚 Make them, which now asks before making a series nobody has checked."]},
   {v:"2026-11-09.18",go:["el:care:#serInBox"],lines:["<b>📚 A found book goes into its series.</b> A book Is the next one out? finds now goes into your collection of that series, at its number, marked ⌛ with its date, even when it was found through an author you starred rather than through the collection. Before, it stood on the shelf on its own.","<b>📚 A book of a series you keep as a collection.</b> A new row in 🧰 Shelf care, under Tidying up, lists books standing on their own whose series is one of your collections. <b>⤵ Move in</b> makes one a story there, placed by its number, keeping its marks, ⌛ and 📌; one ↶ puts it back. One that's already a story there under another name is only shown, so it can't go in twice."]},
@@ -79781,16 +79782,25 @@ function corrRows(){
     const t=corrTarget(c);r.t=t;
     if(t.gone){r.gone=t.gone;return;}
     const D=CORR_DO[k];r.title=String(corrX(t).title||"");r.now=D.now(t);r.to=D.to(c);
-    /* "in no series" for a row nobody has asked about is a change: the finder won't pay to ask */
+    /* "in no series" for a row nobody has asked about is a change: the finder won't pay to ask.
+       What the series finder answered is Claude's guess, not yours: a file's answer replacing it
+       is no change of yours, and one only named another way ("The Three Investigators" and
+       "Alfred Hitchcock and The Three Investigators", at the same number) is the same answer,
+       left as the finder named it so the series isn't split in two. Where they really disagree,
+       the file's word starts ticked only if it was checked on the web */
+    let own=true;
     if(k==="series"){const a=corrSerNow(t),s=String(c.series||"").trim(),p=String(c.num||"").replace(/^#/,"").trim();
-      r.none=!s;r.same=(!a&&!s&&!!SERF.asked[serFindKey(t.it||t.b)])||(!!a&&!!s&&serFindName(a.s)===serFindName(s)&&String(a.p||"")===p);}
+      own=t.it?!!serFindFree(t.it):!!seriesShown(t.b);
+      const one=!!a&&!!s&&(serFindName(a.s)===serFindName(s)||serChkNameNear(a.s,s))&&String(a.p||"")===p;
+      r.none=!s;r.same=(!a&&!s&&!!SERF.asked[serFindKey(t.it||t.b)])||one;
+      if(a&&!own&&!r.same){r.finder=corrSerSay(a);if(!c.sure)r.doubt="neither answer was checked on the web";}}
     else r.same=r.now===r.to;
     if(c.title&&titleKey(c.title)!==titleKey(r.title))r.stale=`renamed since your copy, from “${String(c.title).slice(0,60)}”`;
-    else if(c.was!=null&&D.was(c)!==r.now)r.stale="yours has changed since your copy";
+    else if(own&&c.was!=null&&D.was(c)!==r.now)r.stale="yours has changed since your copy";
   });
   return out;
 }
-const corrOn=r=>r.known&&!r.gone&&!r.same&&(r.stale?CORR_UI.on.has(r.i):!CORR_UI.off.has(r.i));
+const corrOn=r=>r.known&&!r.gone&&!r.same&&(r.stale||r.doubt?CORR_UI.on.has(r.i):!CORR_UI.off.has(r.i));
 function corrSerPut(r){
   const c=r.c,s=String(c.series||"").replace(/\s+/g," ").trim(),p=String(c.num||"").replace(/^#/,"").trim();
   const x=r.t.it||r.t.b,k=serFindKey(x);
@@ -79838,11 +79848,12 @@ function corrRowHtml(r){
   const where=t.en?` · in ${esc(t.b.title||"a collection")}`:t.it?" · on the import list":"";
   const box=r.gone||r.same?'<span style="width:13px;flex:none"></span>':`<input type="checkbox" data-corr="${r.i}"${corrOn(r)?" checked":""} style="flex:none;margin-top:3px">`;
   const am=s=>`<span class="meta" style="display:block;color:var(--amber-ink,#b45309)">${s}</span>`;
-  const note=r.gone?am(esc(r.gone)):r.same?`<span class="meta" style="display:block">already so</span>`:r.stale?am(`${esc(r.stale)}, so it starts unticked`):"";
+  const note=r.gone?am(esc(r.gone)):r.same?`<span class="meta" style="display:block">already so</span>`:r.stale?am(`${esc(r.stale)}, so it starts unticked`):r.doubt?am(`${esc(r.doubt)}, so it starts unticked`):"";
   const why=c.why?`<span class="meta" style="display:block">${esc(String(c.why).slice(0,240))}</span>`:"";
   const none=r.k==="series"?"no series":"none";
   /* a series answer where there was none yet is new, not a correction: only the answer shows */
-  const line=r.k==="blurb"||r.gone?"":r.none&&!r.now?`<span class="meta" style="display:block">in no series</span>`
+  const line=r.k==="blurb"||r.gone?"":r.finder?`<span class="meta" style="display:block">✨ Find the series said ${esc(r.finder)} → <b>${r.to?esc(r.to):none}</b>${c.sure?" · checked":""}</span>`
+    :r.none&&!r.now?`<span class="meta" style="display:block">in no series</span>`
     :r.k==="series"&&!r.now?`<span class="meta" style="display:block"><b>${esc(r.to)}</b>${c.sure?" · checked":""}</span>`
     :`<span class="meta" style="display:block">${r.now?esc(r.now):none} → <b>${r.to?esc(r.to):none}</b>${c.sure?" · checked":""}</span>`;
   const cell=(label,text,dim)=>`<div style="flex:1 1 180px;min-width:0;display:grid;gap:3px;align-content:start${dim?";opacity:.8":""}"><span class="meta">${label}</span><div style="font-size:13px;overflow-wrap:anywhere;max-height:9.5em;overflow:auto">${text?esc(text):'<span class="none">none</span>'}</div></div>`;
@@ -79898,6 +79909,7 @@ function corrPaint(){
     corrPaint();};}
   on("#corrUse",()=>corrUse());
   on("#corrAway",async()=>{if(!confirm("Put this file away? What you've already used stays; the rest goes with the file."))return;CORR=null;CORR_UI.say="";await corrSave();corrPaint();});
+  /* Tick all takes in the doubtful and the changed too: it is said beside each */
   qa("[data-corrall]",box).forEach(b=>b.onclick=()=>{const k=b.dataset.corrall,live=corrRows().filter(r=>r.k===k&&r.known&&!r.gone&&!r.same),any=live.some(corrOn);
     live.forEach(r=>{if(any){CORR_UI.off.add(r.i);CORR_UI.on.delete(r.i);}else{CORR_UI.off.delete(r.i);CORR_UI.on.add(r.i);}});corrPaint();});
   qa("[data-corrnone]",box).forEach(d=>d.ontoggle=()=>{CORR_UI.noneOpen=d.open;});
