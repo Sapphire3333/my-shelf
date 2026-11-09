@@ -654,6 +654,93 @@ const SMOKE=`
     const n=dupeMarks["A Book Nobody Has"];
     must(!n.dupe&&!n.near,"a book nobody has was marked dupe="+n.dupe+" near="+n.near);
     return "volume 2 is near, a stranger is new";});
+  /* ---- what each fix since was measured on, kept as checks ----
+     Every case below was a real file name, title or row shape that went wrong
+     once; the names are invented stand-ins of the same shape. Each runs on a
+     shelf of its own in memory and puts the real one back. */
+  const onShelf=async(list,fn)=>{const kb=books.slice(),kq=importQueue.slice();
+    try{books.length=0;books.push.apply(books,list);return await fn();}
+    finally{books.length=0;books.push.apply(books,kb);importQueue.length=0;importQueue.push.apply(importQueue,kq);}};
+  const E=(i,t,x)=>Object.assign(blankEntry(),{id:i,title:t},x||{});
+  const B=(i,t,a,x)=>Object.assign(blankBook(i),{title:t,author:a,status:"want"},x||{});
+  const F=(i,name,size)=>({id:i,name:name,size:size||1000,kind:/\\.pdf$/.test(name)?"pdf":"file",mime:""});
+  const pike=()=>B("fx-pike","Tom Pike","Ann Fixture",{type:"collection",entries:[E("p1","The Lost Kite"),E("p2","The Red Door"),E("p3","The Mystery")]});
+  await check("drive files a reader would call the book are sure",async()=>{
+    const r=await onShelf([pike(),B("fx-c2","The Kite Fairies","Bea Fixture",{type:"collection",entries:[E("k1","Ada the Singing Fairy"),E("k2","Una the Kite Fairy")]}),
+      B("fx-b1","Pike: Tom Pike and the Harbour #7","Ann Fixture"),B("fx-b2","Ember","Ann Fixture"),B("fx-b3","Rain","Ann Fixture")],
+      ()=>drvConnectFind([
+        F("f1","(Tom Pike 3) Fixture, Ann_ Roe, Sam - Tom Pike and the Lost Kite.epub"),
+        F("f2","Fixture, Ann - [Tom Pike 4] - The Red Door (2001, House, 978-1-23456-789-0,978-1-23456-78.epub"),
+        F("f3","Fixture, Bea - [Kite Fairies 1] - Ada the Voice Fairy (Singing Fairy) (2013, House).epub"),
+        F("f4","Fixture, Bea - Cass (Una) the Kite Fairy.epub"),
+        F("f5","Fixture, Ann - Tom Pike and the Harbour.epub"),
+        F("f6","Ember - Ann Fixture.epub",500),F("f7","Ember_-_Ann_Fixture.epub",900),
+        F("f8","Fixture, Ann_ Doe, Jim - Rain on the Roof.epub"),
+        F("f9","Fixture, Ann - Tom Pike and the Mystery of the Gold Coins.epub")]));
+    const sure={};r.sure.forEach(u=>{sure[u.title]=u.one.id;});
+    const want={"The Lost Kite":"f1","The Red Door":"f2","Ada the Singing Fairy":"f3","Una the Kite Fairy":"f4","Pike: Tom Pike and the Harbour #7":"f5","Ember":"f7"};
+    Object.keys(want).forEach(t=>must(sure[t]===want[t],t+" went to "+(sure[t]||"no sure file")+", not "+want[t]));
+    must(!sure["Rain"],"Rain was sure of Rain on the Roof");must(!sure["The Mystery"],"The Mystery was sure of a longer title");
+    return "series in front, credits, a second name, a cut-off name, a title's series, two copies; Rain and The Mystery wait";});
+  await check("a story is found under its collection's name",async()=>{
+    return onShelf([pike()],()=>{
+      const find=reIndex();
+      const a=find("Tom Pike... the Lost Kite","Ann Fixture"),b=find("Tom Pike and the Red Door","Fixture, Ann"),c=find("Tom Pike... The Lost Kite","Someone Else");
+      must(a&&a.en&&a.en.id==="p1","Name... Title was not the story");must(b&&b.en&&b.en.id==="p2","Name and the Title was not the story");
+      must(!c,"another author's book was taken for the story");
+      importQueue.length=0;importQueue.push({id:"q1",title:"TOM PIKE... The Lost Kite",author:"Ann Fixture",status:"want"});markDupes();
+      must(importQueue[0].dupe&&importQueue[0].hitE==="p1","the import list called it new");
+      return "ReadEra's find and the import list both land on the story";});});
+  await check("a book that is already a story is offered to fold in",async()=>{
+    return onShelf([pike(),B("fx-cp","Tom Pike... The Red Door","Ann Fixture",{prio:true,pages:"95"}),B("fx-cq","Tom Pike and the Lost Kite","Ann Fixture",{status:"finished",rating:4,dateFinished:"2025-01-02"})],()=>{
+      const rows=storyCopies(),r1=rows.find(r=>r.b.id==="fx-cp"),r2=rows.find(r=>r.b.id==="fx-cq");
+      must(r1&&r1.en.id==="p2"&&!r1.own.length,"the plain copy was not offered");
+      must(r1.moves.indexOf("📌")>=0&&r1.moves.indexOf("95 pages")>=0,"it would not carry 📌 and pages: "+r1.moves.join(", "));
+      must(r2&&r2.own.length,"a finished, rated copy would have been folded");
+      return "plain copy folds with 📌 and pages, a read one waits";});});
+  await check("one book twice, on the list and on the shelf",async()=>{
+    return onShelf([B("fx-t1","Moon Hill","Ann Fixture",{prio:true,pages:"240"}),B("fx-t2","Moon Hill (Moon, #1)","Ann Fixture",{status:"finished",rating:4}),
+      B("fx-t3","Sea Glass","Ann Fixture",{series:"Tide",seriesNum:"2",type:"series"}),B("fx-t4","Meerglas","Ann Fixture",{series:"Tide",seriesNum:"2",type:"series"}),
+      B("fx-t5","River Song","Ann Fixture"),B("fx-t6","River Song","Jim Doe")],()=>{
+      const sh=shelfTwins(),sure=sh.filter(p=>p.sure),maybe=sh.filter(p=>!p.sure);
+      must(sure.length===1&&sure[0].keep.id==="fx-t2","the shelf's sure pair: "+sure.map(p=>p.keep.id).join(","));
+      must(sure[0].moves.indexOf("240 pages")>=0&&sure[0].moves.indexOf("📌")<0,"the finished copy would take "+sure[0].moves.join(", "));
+      must(maybe.length===1,"the same number under another title: "+maybe.length+" maybe pairs");
+      importQueue.length=0;
+      importQueue.push({id:"r1",title:"Kite Days",author:"Ann Fixture",status:"want",isbn:"9780000000011",rating:null},{id:"r2",title:"Kite Days (Kite Days, #1)",author:"Ann Fixture",status:"want",rating:4,pages:"200"},
+        {id:"r3",title:"Rain",author:"Ann Fixture",status:"want"},{id:"r4",title:"Rain",author:"Jim Doe",status:"want"});
+      const it=impTwins();
+      must(it.length===1&&it[0].keep.id==="r2","the list's pairs: "+it.map(p=>p.keep.id+"/"+p.drop.id).join(","));
+      impTwinDrop(it);
+      const k=importQueue.find(x=>x.id==="r2");
+      must(importQueue.length===3&&k&&k.isbn==="9780000000011","the kept row did not take the other's ISBN");
+      return "fuller copy kept and filled, two authors never paired, a translation only offered";});});
+  await check("shift with a press ticks a run",async()=>{
+    const root=document.createElement("div");root.innerHTML=["a","b","c","d","e","f"].map(x=>'<div data-open="fx-r'+x+'"></div>').join("");
+    const el=[...root.querySelectorAll("[data-open]")],kept=new Set(libSel);
+    try{libSel.clear();libPickAnchor="";
+      libPickPress(root,el[1],false);libPickPress(root,el[4],true);
+      must([...libSel].sort().join()==="fx-rb,fx-rc,fx-rd,fx-re","ticked "+[...libSel].join());
+      libPickPress(root,el[2],true);
+      must([...libSel].sort().join()==="fx-rb","the run did not untick back: "+[...libSel].join());
+    }finally{libSel.clear();kept.forEach(x=>libSel.add(x));}
+    return "four ticked, then unticked back to the first";});
+  await check("their series: what is missing, and where it goes",async()=>{
+    return onShelf([pike()],()=>{
+      must(lsfBare("Tom Pike and the Lost Kite","Tom Pike")==="the Lost Kite","lsfBare left "+lsfBare("Tom Pike and the Lost Kite","Tom Pike"));
+      const s={name:"Tom Pike",author:"Ann Fixture",mine:[{b:{title:"Kite Two"}}],got:[{pos:"1",title:"Tom Pike and the Lost Kite"},{pos:"2",title:"Kite Two"},{pos:"3",title:"Kite Three"},{pos:"4",title:"The Red Door"}]};
+      const m=lsfMissing(s,lsfShelfIdx()).map(x=>x.title);
+      must(m.join()==="Kite Three","missing: "+m.join(", "));
+      const coll={entries:[E("o1","One"),E("o3","Three")]},pos={one:1,three:3};
+      lsfInsert(coll,E("o2","Two"),2,t=>pos[t.toLowerCase()]||null);
+      must(coll.entries.map(e=>e.title).join()==="One,Two,Three","placed as "+coll.entries.map(e=>e.title).join());
+      return "a story under the series' name is not missing, and #2 lands between #1 and #3";});});
+  await check("a copy for testing holds the words, not the pictures",async()=>{
+    const c=testCopyData(),j=JSON.stringify(c);
+    must(backupShapeOk(c)&&c.books.length===books.length,"not a shelf copy of "+books.length+" books");
+    must(!Object.keys(c.covers).length&&!Object.keys(c.images).length,"covers or pictures went in");
+    must(Array.isArray(c.copy.importQueue)&&c.copy.settings,"the import list or the settings were left out");
+    return Math.round(j.length/1024)+" KB for "+books.length+" books";});
   await check("every screen draws",async()=>{
     const drawn=[];
     for(const v of ["overview","care","library","challenges","ach","search","insights","quotes","history","settings"]){
