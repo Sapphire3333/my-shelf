@@ -60,7 +60,7 @@ as it stood in the copy; `why` and `src` are shown beside it.
 | kind | what it does | its fields |
 |---|---|---|
 | `series` | becomes the answer of the import list's ✨ Suggested series and the Library's ✨ Find their series; nothing is made until 📚 Make them there | `series` ("" = in no series), `num`, `sure` = checked on the web here, so the app's check counts it as done |
-| `whole` | one series as it should stand: wrong stories out (back to books of their own), one book twice made one, loose books moved in, missing ones added as Want to read with pages and blurb, all in series order; a new collection when `book` is absent | `name`, `author`, `book` + `was` (its story ids in the copy), `items` ({story}/{book}/{add}) in order, `out`, `drop` — write it with `corr.File.whole` |
+| `whole` | one series as it should stand: wrong stories out (back to books of their own, or, when `to` names the series they belong to, into that series' collection at its number, made if there is none), one book twice made one, loose books moved in, missing ones added as Want to read with pages and blurb, all in series order; a new collection when `book` is absent | `name`, `author`, `book` + `was` (its story ids in the copy), `items` ({story}/{book}/{add}) in order, `out` ({story, why, to?: {name, pos}}), `drop` — write it with `corr.File.whole` |
 | `blurb` | replaces a book's or story's blurb | `to` (plain text, blank lines between paragraphs) |
 | `pages` | sets the page count | `to` (digits) |
 
@@ -113,6 +113,11 @@ its job, and here with its fields. A new kind never needs a new loader.
     left out of the file and asked about.
   - Of two copies of one book, the one with readings, a rating or notes is
     kept; when both have them, neither is dropped.
+  - A story taken out because it is another series' book carries that series
+    in `to` (its name and number, from the checker's reason), so it goes into
+    that series' collection: taken out without it, a run of one series' books
+    lands on the shelf loose, one by one. Only a book of no series goes back
+    on its own.
   - `why` is shown to the owner (240 letters): which pages it was checked on,
     and anything they should know, in their words, never the checker's notes.
 - What worked for checking hundreds at once: Hardcover first, free, from a

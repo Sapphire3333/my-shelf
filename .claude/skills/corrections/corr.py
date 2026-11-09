@@ -106,8 +106,10 @@ class File:
         shelf.books), or None for a new one. items: ("story", entry, pos) for one of its own,
         ("book", book, pos) for a loose book that moves in, ("add", {"title", "pos", "pages",
         "blurb"}) for a missing book, added as Want to read. out: (entry, why) pairs, stories
-        that aren't this series and go back on the shelf as books. drop: (entry, kept_entry)
-        pairs, one book twice, carried into the one kept."""
+        that aren't this series and go back on the shelf as books; (entry, why, {"name", "pos"})
+        for a story of ANOTHER series, which goes into that series' collection at its number
+        (made if the shelf has none). drop: (entry, kept_entry) pairs, one book twice, carried
+        into the one kept."""
         c = {"kind": "whole", "name": name, "author": author}
         if coll:
             c.update(book=coll["id"], title=coll.get("title", ""), was=[e["id"] for e in coll.get("entries") or []])
@@ -123,7 +125,12 @@ class File:
                                     "pages": str(a.get("pages", "") or ""), "blurb": (a.get("blurb") or "").strip()}})
         c["items"] = its
         if out:
-            c["out"] = [{"story": e["id"], "title": e.get("title", ""), "why": w} for e, w in out]
+            c["out"] = []
+            for o in out:
+                d = {"story": o[0]["id"], "title": o[0].get("title", ""), "why": o[1]}
+                if len(o) > 2 and o[2] and str(o[2].get("name") or "").strip():
+                    d["to"] = {"name": str(o[2]["name"]).strip(), "pos": str(o[2].get("pos") or "").lstrip("#")}
+                c["out"].append(d)
         if drop:
             c["drop"] = [{"story": d["id"], "into": k["id"], "title": d.get("title", "")} for d, k in drop]
         if why:
