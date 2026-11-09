@@ -61,7 +61,7 @@ as it stood in the copy; `why` and `src` are shown beside it.
 |---|---|---|
 | `series` | becomes the answer of the import list's ✨ Suggested series and the Library's ✨ Find their series; nothing is made until 📚 Make them there | `series` ("" = in no series), `num`, `sure` = checked on the web here, so the app's check counts it as done |
 | `whole` | one series as it should stand: wrong stories out (back to books of their own, or, when `to` names the series they belong to, into that series' collection at its number, made if there is none), one book twice made one, loose books moved in, missing ones added as Want to read with pages and blurb, all in series order; a new collection when `book` is absent | `name`, `author`, `book` + `was` (its story ids in the copy), `items` ({story}/{book}/{add}) in order, `out` ({story, why, to?: {name, pos}}), `drop` — write it with `corr.File.whole` |
-| `blurb` | replaces a book's or story's blurb | `to` (plain text, blank lines between paragraphs) |
+| `blurb` | replaces a book's, story's or collection's blurb | `to` (plain text, blank lines between paragraphs) |
 | `pages` | sets the page count | `to` (digits) |
 
 Kinds named for later jobs, which this build counts and keeps but can't use
@@ -120,6 +120,27 @@ its job, and here with its fields. A new kind never needs a new loader.
     on its own.
   - `why` is shown to the owner (240 letters): which pages it was checked on,
     and anything they should know, in their words, never the checker's notes.
+  - A checker's `out` may carry `pos`, the book's number in the OTHER series:
+    read `out` before `pos`, or every move lands placed in the series it is
+    leaving.
+  - A change that makes a NEW collection goes first in the file: a story
+    another change moves there by `to` then finds it (`serInColl`) instead of
+    making a second one.
+  - A collection with no stories at all (the collection itself carries the
+    reading and the notes) is left out and asked about.
+- A collection's own blurb rides in the same file as kind `blurb` on the
+  collection's book id, written the way ✨ A blurb for the whole collection
+  writes it (`cwSeriesAsk` + `CW_BLURB` in index.html: the series as a whole,
+  about 120 to 170 words, no plot, no titles) from its books' blurbs as they
+  will stand after the file, the added books' included. Only a collection
+  with no blurb of its own, and only once at least two in three of its books
+  have one; the rest wait for the blurbs job. A collection the file makes
+  has no id yet, so its blurb comes in a later file. One press changing a
+  collection twice (its blurb and its series) needs build 2026-11-09.30's ↶,
+  which walks a press's changes back last first.
+- A publisher's description can be read word for word from the iTunes search
+  API (`itunes.apple.com/search?media=ebook&term=…`), where a fetched page
+  only comes back summarised.
 - What worked for checking hundreds at once: Hardcover first, free, from a
   `?db=copy` page (`fetchHardcover` / `fetchHardcoverSeries`, about a second
   each, results handed out through the :8768 drop box), then the web only for
