@@ -90,6 +90,31 @@ its job, and here with its fields. A new kind never needs a new loader.
   same book is one; a sequel isn't). A missing book's blurb follows the Better
   blurbs rules (only what is about its story: no praise, series talk, ages or
   links) and its pages are a print edition's. Stories keep no year in the app.
+- What `whole` needed, measured on a batch of 100 series:
+  - Hardcover's series lists skip numbers (one held 41 of 62 books; on
+    another, the four numbers it skipped were exactly the four stories it
+    couldn't place), carry
+    translations and box sets at a book's number, and sometimes answer with an
+    umbrella series of the same name. So a story Hardcover can't place is not a
+    wrong story: every series is checked on a page that lists it whole, and
+    Hardcover is the hint. Missing books by another author than the
+    collection's are an umbrella's, never this series'.
+  - Two passes keep it cheap: first the lists (which story is which number,
+    which is out, which is the same book twice, what is missing), then blurbs
+    and pages only for the books that pass adds, from Hardcover's own text
+    where it is about the right book, the publisher's page otherwise.
+  - A blurb nobody could read word for word stays empty; never one written
+    from a summary.
+  - More than 40 missing (as ✨ Find their series starts them unticked): add
+    none and say how many in `why`.
+  - A book inside an omnibus or box set already in the collection isn't
+    missing.
+  - A collection none of whose stories is the series it is named after is
+    left out of the file and asked about.
+  - Of two copies of one book, the one with readings, a rating or notes is
+    kept; when both have them, neither is dropped.
+  - `why` is shown to the owner (240 letters): which pages it was checked on,
+    and anything they should know, in their words, never the checker's notes.
 - What worked for checking hundreds at once: Hardcover first, free, from a
   `?db=copy` page (`fetchHardcover` / `fetchHardcoverSeries`, about a second
   each, results handed out through the :8768 drop box), then the web only for
