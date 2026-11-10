@@ -64,6 +64,7 @@ as it stood in the copy; `why` and `src` are shown beside it.
 | `blurb` | replaces a book's, story's or collection's blurb | `to` (plain text, blank lines between paragraphs) |
 | `pages` | sets the page count | `to` (digits) |
 | `dates` | puts a book's or story's own stage and readings back as a copy had them (build 2026-11-10.1 on); one changed since the copy starts unticked | `to` / `was`: {status ("" = a tale answering with its volume), dnf, readings [{start, end, open}]} — `corr.File.dates` |
+| `fic` | a row of the import list that is fan fiction becomes a fic there, with its fandoms, under ✍️ Fics for ＋ Add (build 2026-11-10.14 on); the list changes, not the shelf, so no ↶ | `row`, `fandoms` (the owner's own names where they have them), `link` — `corr.File.fic` |
 | `words` | a book's, collection's or story's genres, tags and Set in (build 2026-11-10.13 on): one row a book, a pill per word the owner can switch off; a row that only adds is folded, ticked; a new genre joins their genres only when used, and one ↶ takes it away | `genres` / `tags`: {add, remove, was}; `setin` (not on a story): {add, replace, was}; `was` is the item's own list in the copy — `corr.File.words` |
 
 Kinds named for later jobs, which this build counts and keeps but can't use
@@ -189,5 +190,21 @@ its job, and here with its fields. A new kind never needs a new loader.
   - A book or collection with under a line written is looked up on the web;
     its stories follow the collection.
   - `why` says where anything not in the blurb came from.
+- For books coming in from the import list (series answers for its rows):
+  - The app's own matcher (`markDupes`, title AND author) decides what is
+    already on the shelf; a title alone matched other authors' books.
+  - 📚 Make them puts a row into a collection the shelf already has at the
+    END, not at its number, and makes a collection of one for a series with
+    one book on the list. So a series-made-whole file follows the import, from
+    a copy saved after it, and covers every collection the import made or
+    filled.
+  - A series group takes in the list's Want to read rows with the same
+    answer too.
+  - A short story is answered with the book of stories it was first printed
+    in, at its place in that book's contents.
+  - Fan fiction on the list goes in as kind `fic`, never as a series answer.
+- The web search tool allows 200 searches a turn, SHARED by every subagent
+  running in it. Four checkers of about 60 books each used it all; give each
+  a cap ("at most 45 searches") and let one search cover an author's books.
 - One job a file. A few hundred books a chat is a sensible size; say how far
   you got and where the next chat carries on.

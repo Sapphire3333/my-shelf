@@ -170,6 +170,17 @@ class File:
                "readings": [{k: r[k] for k in ("start", "end", "open") if r.get(k)} for r in (x.get("readings") or []) if isinstance(r, dict)]}
         return self._book("dates", book, story, {"was": was, "to": to, "why": why, "src": src})
 
+    def fic(self, row, fandoms, link="", why=""):
+        """A row of the import list that is fan fiction (build 2026-11-10.14 on): it becomes a
+        fic there (kind "fanfic") with these fandoms, filed under ✍️ Fics for + Add. Write a
+        fandom as the owner's own name for it where they have one (shelf copy "fandoms")."""
+        c = {"kind": "fic", "row": row["id"], "title": row.get("title", ""), "author": row.get("author", ""),
+             "fandoms": [f for f in fandoms if str(f).strip()]}
+        if link: c["link"] = link
+        if why: c["why"] = why
+        self.changes.append(c)
+        return c
+
     def words(self, book, story=None, genres=(), genres_off=(), tags=(), tags_off=(), setin=(), setin_replace=False, why="", src=""):
         """Genres, tags and Set in for one book, collection or story (kind "words", build
         2026-11-10.13 on). genres / tags: words to add; genres_off / tags_off: words to take
