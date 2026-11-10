@@ -14655,6 +14655,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-10.13",go:["el:care:#corrSec"],lines:["<b>🏷 Genres, tags and Set in, by file.</b> 🧰 Shelf care → 📥 Corrections from a file now reads a file of genres, tags and where a book is set. Each book is one row with a pill per word: tap a word to leave it out, or untick the book to leave all of it. A row that takes something away (a − word, a Set in replaced, a story given genres of its own) stands open; rows that only add are folded, already ticked, for you to open and look. A genre marked <i>new</i> joins your genres only if you keep it, and one ↶ takes the whole press back, new genres too. A story given genres of its own keeps its collection's with them, and the row shows the whole list it will have."]},
   {v:"2026-11-10.12",go:["tab:library"],lines:["<b>📄 10, 25, 50 or 100 books a page.</b> In the 📚 Library, ☰ → ⇅ Sort &amp; layout now says <b>Books on a page: All · 10 · 25 · 50 · 100</b> instead of a slider: All scrolls as before, a number turns pages. While you're on pages the same sizes stand under the page numbers, above and below the books, and changing size keeps you on the page with the book you were looking at. One choice for books, fics and every kind; each device keeps its own, so the computer can scroll while the phone turns pages. The … between page numbers no longer splits them onto two lines."]},
   {v:"2026-11-10.11",go:["el:care:#corrSec"],lines:["<b>📥 Two copies of one story become one, even when both have your marks.</b> When a corrections file says two stories are the same book under two titles, its UK and US names say, and each holds a rating or a reading, they now come together in the copy with the file and blurb: it takes the other's rating where it has none, the stage that's further along, its notes after its own, and the readings as one book read, so a dated finish and an undated one count once. The row says what goes across. A pair the file doesn't ask to merge, or one with highlights in another file, stays two."]},
   {v:"2026-11-10.10",lines:["<b>🏛 Free to borrow asks again when you say.</b> Once every book had been asked about, 🔎 Ask now disappeared from the panel and the next search waited 30 days. Now it stays as <b>🔎 Ask them all again</b>: one press asks Open Library about every book now, and the panel shows how many are left and about how long."]},
@@ -80283,10 +80284,11 @@ function blbPaint(){
    └──────────────────────────────────────────────────────────────────────────┘ */
 /* 12 a kind to start: 30 stood the card 3,622 px tall in Shelf care's 570 px column */
 const CORR_VER=1,CORR_SHOW=12,CORR_FOLD=60,CORR_PRESS=200;
-const CORR_KINDS=[["whole","📚 Series made whole"],["series","📚 Series"],["blurb","📝 Blurbs"],["pages","📄 Page counts"],["dates","📅 A story's stage and dates"],["genres","🏷 Genres"],["tags","🔖 Tags"],["setin","🗺 Set in"],
+const CORR_KINDS=[["whole","📚 Series made whole"],["series","📚 Series"],["blurb","📝 Blurbs"],["pages","📄 Page counts"],["dates","📅 A story's stage and dates"],["words","🏷 Genres, 🔖 tags and 🗺 Set in"],
   ["rename","🧹 One name written two ways"],["author","👤 Who an author is"],["screen","🎬 On screen"],["upcoming","🔎 Coming next"]];
 let CORR=null,CORR_LOADED=false;
-const CORR_UI={off:new Set(),on:new Set(),more:{},say:""};
+/* wordOff: the words switched off on a "words" row, "i|part|word"; wAddOpen: its fold of rows that only add */
+const CORR_UI={off:new Set(),on:new Set(),more:{},say:"",wordOff:new Set(),wAddOpen:false};
 const corrX=t=>t.en||t.b||t.it;
 function corrSerNow(t){
   if(t.it)return SERF.series[serFindKey(t.it)]||serFindFree(t.it)||null;
@@ -80312,7 +80314,9 @@ const CORR_DO={
   series:{now:t=>corrSerSay(corrSerNow(t)),to:c=>corrSerSay({s:String(c.series||"").replace(/\s+/g," ").trim(),p:String(c.num||"").replace(/^#/,"").trim()}),
     was:c=>String(c.was||"").trim()},
   /* a series made whole: corrWholeRow lines it up, corrWholeUse makes it */
-  whole:{now:()=>"",to:()=>"",was:()=>""}
+  whole:{now:()=>"",to:()=>"",was:()=>""},
+  /* genres, tags and Set in: corrWordsRow lines it up, corrWordsUse writes it */
+  words:{now:()=>"",to:()=>"",was:()=>"",use:(t,c,r,made)=>corrWordsUse(t,c,r,made)}
 };
 /* ┌─ 📚 A SERIES MADE WHOLE, BY FILE ─────────────────────────────────────────┐
    │ One change (kind "whole") is one series as it should stand: book, the    │
@@ -80463,6 +80467,128 @@ async function corrWholeUse(r,items){
   if(before&&cur&&cur.id===coll.id)try{await rebaseOpenBook(coll.id);}catch(e){}
   return true;
 }
+/* ┌─ 🏷 GENRES, TAGS AND SET IN, BY FILE ────────────────────────────────────┐
+   │ One change (kind "words") is one book, collection or story as it was     │
+   │ read: genres {add, remove, was}, tags {add, remove, was} and, on a book  │
+   │ or a collection only, setin {add, replace, was}. A story has no Set in   │
+   │ of its own (setInOf reads b.setIn): its collection carries the places.   │
+   │ `was` is that list as it stood in the copy, the item's OWN words, so a   │
+   │ list changed since starts the row unticked. corrWordsCalc works out what │
+   │ would happen against the shelf as it is NOW, every time it is asked: a   │
+   │ word already there is left out, a remove of a word not there is dropped, │
+   │ a genre or tag spelt like one of yours takes your spelling, a tag that   │
+   │ is one of your genres is never added, and an audience is never a genre  │
+   │ or a tag (readAuds, as ✨ Claude reads the shelf). A Set in is compared  │
+   │ by the place it names (placeKey), so "England" is already there when    │
+   │ United Kingdom is.                                                       │
+   │ A STORY'S GENRES REPLACE ITS COLLECTION'S (see blankEntry): a story with │
+   │ none of its own starts from the collection's as they stand when the     │
+   │ press reaches it, and keeps the result as its own. corrUse writes a     │
+   │ book's own row before its stories', so a collection given genres in the  │
+   │ same press hands its stories the new ones; the story's row says it, and  │
+   │ shows the whole list it will carry (corrRows works that list out from   │
+   │ the collection's row when it is ticked). Tags are the opposite: a       │
+   │ story's are added to its collection's.                                   │
+   │ Every word is a pill you can switch off (CORR_UI.wordOff, "i|part|word", │
+   │ parts g/r genre add/remove, t/x tag add/remove, s Set in); a row with    │
+   │ every word off counts as unticked. A genre that isn't one of yours is    │
+   │ marked new and joins your genres only when the press writes it, riding   │
+   │ in its ↶ as a label with add:true, so one ↶ takes it away again. A new   │
+   │ tag joins your tags the way any tag does, through pushOp. A row that    │
+   │ takes something away (a − word, a Set in replaced, a story given genres  │
+   │ of its own for the first time) stands open; one that only adds is       │
+   │ folded, ticked (corrWordsSec), and drawn only once the fold is opened.   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const corrWordOn=(r,p,w)=>!CORR_UI.wordOff.has(`${r.i}|${p}|${w}`);
+const corrWordsList=a=>Array.isArray(a)?[...new Set(a.map(w=>String(w||"").replace(/\s+/g," ").trim()).filter(Boolean))]:[];
+/* what the change would do to t ({b} or {b, en}) as it is now; r, when given,
+   switches off the words its pills say. `all` keeps every word, for drawing */
+function corrWordsCalc(c,t,r){
+  const b=t.b,en=t.en||null,aud=readAuds(),on=(p,w)=>!r||corrWordOn(r,p,w);
+  const ok=w=>w.length<=40&&!aud.has(w.toLowerCase());
+  const gName=w=>Object.keys(genres).find(g=>sameWord(g,w))||w;
+  const tName=w=>{const hit=kwLowNow().get(w.toLowerCase());return (hit&&hit[0])||w;};
+  const G=c.genres||{},T=c.tags||{},S=c.setin||{};
+  const gHave=en?entGenresOf(b,en):(b.genres||[]);
+  const tOwn=(en?en.keywords:b.keywords)||[],tHave=en?entKeywordsOf(b,en):tOwn;
+  const gAdd=[...new Set(corrWordsList(G.add).filter(ok).map(gName))].filter(w=>!hasWord(gHave,w));
+  const gRem=corrWordsList(G.remove).map(w=>gHave.find(h=>sameWord(h,w))).filter(Boolean);
+  const gAll=new Set(Object.keys(genres).concat(gAdd).map(w=>w.toLowerCase()));
+  const tAdd=[...new Set(corrWordsList(T.add).filter(ok).map(tName))].filter(w=>!hasWord(tHave,w)&&!gAll.has(w.toLowerCase()));
+  const tRem=corrWordsList(T.remove).map(w=>tOwn.find(h=>sameWord(h,w))).filter(Boolean);
+  const sNow=en?[]:setInOf(b),sIn=en?[]:corrWordsList(S.add).map(w=>w.slice(0,60));
+  const sRep=!en&&!!S.replace&&sNow.length>0&&sIn.length>0;
+  const sAdd=sIn.filter(w=>sRep||!sNow.some(p=>sameWord(p,w)||(!!placeKey(w)&&placeKey(p)===placeKey(w))));
+  const w={gAdd:gAdd.filter(x=>on("g",x)),gRem:gRem.filter(x=>on("r",x)),tAdd:tAdd.filter(x=>on("t",x)),tRem:tRem.filter(x=>on("x",x)),sAdd:sAdd.filter(x=>on("s",x)),sRep:sRep&&sAdd.length>0,sNow,
+    all:{gAdd,gRem,tAdd,tRem,sAdd}};
+  w.any=!!(w.gAdd.length||w.gRem.length||w.tAdd.length||w.tRem.length||w.sAdd.length);
+  w.ownTo=en&&(w.gAdd.length||w.gRem.length)?[...new Set(gHave.filter(g=>!w.gRem.includes(g)).concat(w.gAdd))]:null;
+  return w;
+}
+function corrWordsRow(r){
+  const c=r.c,t=corrTarget(c);r.t=t;
+  if(t.gone){r.gone=t.gone;return;}
+  if(!t.b){r.gone="not a book on your shelf";return;}
+  r.title=String(corrX(t).title||"");
+  const w=r.w=corrWordsCalc(c,t,r),a=w.all,en=t.en;
+  r.same=!a.gAdd.length&&!a.gRem.length&&!a.tAdd.length&&!a.tRem.length&&!a.sAdd.length;
+  r.takes=!!(a.gRem.length||a.tRem.length||(w.sRep&&a.sAdd.length)||(en&&!entOwnGenres(en)&&(a.gAdd.length||a.gRem.length)));
+  if(c.title&&titleKey(c.title)!==titleKey(r.title)){r.stale=`renamed since your copy, from “${String(c.title).slice(0,60)}”`;return;}
+  const own={genres:(en?en.genres:t.b.genres)||[],tags:(en?en.keywords:t.b.keywords)||[],setin:en?[]:setInOf(t.b)};
+  const moved=["genres","tags","setin"].filter(k=>c[k]&&Array.isArray(c[k].was)&&!sameWordSet(c[k].was,own[k]));
+  if(moved.length)r.stale=`your ${moved.map(k=>k==="setin"?"Set in":k).join(" and ")} changed since your copy`;
+}
+function corrWordsUse(t,c,r,made){
+  const b=t.b,en=t.en||null,w=corrWordsCalc(c,t,r),x=en||b;
+  w.gAdd.forEach(g=>{unmarkMetaDel("genre:"+g);if(!genreKnown(g)){genres[g]=genreColor(g);made.push({kind:"genre",name:g,color:genres[g],add:true});}});
+  if(w.gAdd.length||w.gRem.length){
+    const base=en?entGenresOf(b,en):(b.genres||[]);
+    x.genres=[...new Set(base.filter(g=>!w.gRem.includes(g)).concat(w.gAdd))];
+    if(x.genreBreaks)x.genreBreaks=x.genreBreaks.filter(g=>!w.gRem.includes(g));
+  }
+  if(w.tAdd.length||w.tRem.length){
+    x.keywords=[...new Set([...(x.keywords||[]).filter(k=>!w.tRem.includes(k)),...w.tAdd])];
+    if(x.kwBreaks)x.kwBreaks=x.kwBreaks.filter(k=>!w.tRem.includes(k));
+  }
+  if(!en&&w.sAdd.length){if(w.sRep)delete b.setIn;w.sAdd.forEach(s=>setInAdd(b,s));}
+}
+function corrWordsHtml(r){
+  const c=r.c,t=r.t||{},b=t.b,en=t.en,w=r.w,live=!r.gone&&!r.same&&!!w;
+  const box=live?`<input type="checkbox" data-corr="${r.i}"${corrOn(r)?" checked":""} style="flex:none;margin-top:3px">`:'<span style="width:13px;flex:none"></span>';
+  const am=s=>`<span class="meta" style="display:block;color:var(--amber-ink,#b45309)">${s}</span>`;
+  const note=r.gone?am(esc(r.gone)):r.same?`<span class="meta" style="display:block">already so</span>`:r.stale?am(`${esc(r.stale)}, so it starts unticked`):"";
+  const NEW=' <i class="crnew">new</i>';
+  const pill=(p,word,label)=>{const on=corrWordOn(r,p,word);return `<button type="button" class="pill crp${on?" on":""}" data-corrw="${r.i}" data-corrp="${p}" data-corrword="${esc(word)}" aria-pressed="${on}">${label}</button>`;};
+  const part=(lab,html)=>html?`<div class="crpart"><span class="crlab">${lab}</span>${html}</div>`:"";
+  let parts="",own="";
+  if(live){const a=w.all,kl=kwLowNow();
+    parts=`<div class="crparts" style="margin:6px 0 0 21px">
+      ${part("Genres",a.gAdd.map(g=>pill("g",g,`＋ ${esc(g)}${genreKnown(g)?"":NEW}`)).join("")+a.gRem.map(g=>pill("r",g,`− ${esc(g)}`)).join(""))}
+      ${part("Tags",a.tAdd.map(k=>pill("t",k,`＋ ${esc(k)}${kl.has(k.toLowerCase())?"":NEW}`)).join("")+a.tRem.map(k=>pill("x",k,`− ${esc(k)}`)).join(""))}
+      ${part(w.sRep?`Set in, in place of ${esc(w.sNow.join("; "))}`:"Set in",a.sAdd.map(s=>pill("s",s,`📍 ${esc(s)}`)).join(""))}</div>`;
+    if(en&&!entOwnGenres(en)&&w.ownTo)own=`<div class="hint" style="margin:4px 0 0 21px">Its own genres from then on, in place of the collection's: ${esc(w.ownTo.join(", "))}.</div>`;}
+  const why=c.why&&!r.gone?`<div class="meta" style="margin:4px 0 0 21px">✨ ${esc(String(c.why).slice(0,240))}</div>`:"";
+  const where=en?` · in ${esc((b&&b.title)||"a collection")}`:b&&isColl(b)?` · a collection of ${(b.entries||[]).length}`:"";
+  const author=(en&&entAuthorOf(b,en))||(b&&b.author)||c.author||"";
+  return `<div class="snap" style="display:block;padding:7px 10px"><label style="display:flex;gap:8px;align-items:flex-start;min-width:0">${box}
+    <span style="min-width:0;flex:1;overflow-wrap:anywhere"><b>${esc(r.title||c.title||"Untitled")}</b> <span class="meta" style="display:inline">· ${esc(author||"Unknown author")}${where}</span>${note}</span></label>${parts}${own}${why}</div>`;
+}
+/* the rows that take something away stand open; the ones that only add are folded */
+function corrWordsSec(label,mine){
+  const live=mine.filter(r=>!r.gone&&!r.same),gone=mine.filter(r=>r.gone),same=mine.filter(r=>r.same),kon=live.filter(corrOn).length;
+  const open=live.filter(r=>r.takes),adds=live.filter(r=>!r.takes);
+  const shown=open.slice(0,CORR_SHOW+(CORR_UI.more.words||0)),addShown=adds.slice(0,CORR_SHOW+(CORR_UI.more.wordsAdd||0));
+  const more=(k,n)=>n>0?`<button class="btn" data-corrmore="${k}" style="margin-top:6px">Show ${Math.min(CORR_SHOW,n)} more</button>`:"";
+  return `<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:8px">
+    <div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><b>${label}</b><span class="none">${live.length.toLocaleString()}</span>
+      ${live.length?`<button class="btn smallbtn" data-corrall="words" style="margin-left:auto">${kon?"☐ Untick all":"☑ Tick all"}</button>`:""}</div>
+    ${live.length?`<div class="hint" style="margin:0 0 6px">Tap a word to leave it out, or untick a book to leave all of it. A genre or tag marked <i class="crnew">new</i> isn't one of yours yet: it joins your list only if you keep it.</div>`:""}
+    ${shown.map(corrWordsHtml).join("")}${more("words",open.length-shown.length)}
+    ${adds.length?`<details style="margin-top:6px" data-corrwadd${CORR_UI.wAddOpen?" open":""}><summary class="hint" style="cursor:pointer;margin:0">${adds.length.toLocaleString()} that only add, ${adds.filter(corrOn).length.toLocaleString()} ticked: open to look</summary>${CORR_UI.wAddOpen?addShown.map(corrWordsHtml).join("")+more("wordsAdd",adds.length-addShown.length):""}</details>`:""}
+    ${same.length?`<div class="hint" style="margin:6px 0 0">${same.length.toLocaleString()} already so, and left out.</div>`:""}
+    ${gone.length?`<details style="margin-top:6px"><summary class="hint" style="cursor:pointer;margin:0">${gone.length.toLocaleString()} for books that aren't there any more</summary>${gone.slice(0,CORR_SHOW).map(corrWordsHtml).join("")}</details>`:""}
+  </div>`;
+}
 async function corrLoad(){
   if(CORR_LOADED)return;CORR_LOADED=true;
   try{const r=await dbGet("meta","corrFile");if(r&&r.v&&Array.isArray(r.v.changes))CORR=r.v;}catch(e){}
@@ -80495,6 +80621,7 @@ function corrRows(){
     const k=c.kind,r={i,c,k,known:!!CORR_DO[k]};out.push(r);
     if(!r.known)return;
     if(k==="whole"){corrWholeRow(r);return;}
+    if(k==="words"){corrWordsRow(r);return;}
     const t=corrTarget(c);r.t=t;
     if(t.gone){r.gone=t.gone;return;}
     const D=CORR_DO[k];r.title=String(corrX(t).title||"");r.now=D.now(t);r.to=D.to(c);
@@ -80517,9 +80644,19 @@ function corrRows(){
     if(c.title&&titleKey(c.title)!==titleKey(r.title))r.stale=`renamed since your copy, from “${String(c.title).slice(0,60)}”`;
     else if(own&&c.was!=null&&D.was(c)!==r.now)r.stale="yours has changed since your copy";
   });
+  /* a story given genres of its own starts from its collection's as the same press
+     will leave them, when the collection's own row is ticked (see GENRES, TAGS AND
+     SET IN, BY FILE) */
+  const collW=new Map(out.filter(r=>r.k==="words"&&r.w&&r.t&&r.t.b&&!r.t.en).map(r=>[r.t.b.id,r]));
+  out.forEach(r=>{
+    if(r.k!=="words"||!r.w||!r.w.ownTo||entOwnGenres(r.t.en))return;
+    const cr=collW.get(r.t.b.id);if(!cr||!corrOn(cr))return;
+    const base=[...new Set((r.t.b.genres||[]).filter(g=>!cr.w.gRem.includes(g)).concat(cr.w.gAdd))];
+    r.w.ownTo=[...new Set(base.filter(g=>!r.w.gRem.some(x=>sameWord(x,g))).concat(r.w.gAdd.filter(x=>!hasWord(base,x))))];
+  });
   return out;
 }
-const corrOn=r=>r.known&&!r.gone&&!r.same&&(r.stale||r.doubt?CORR_UI.on.has(r.i):!CORR_UI.off.has(r.i));
+const corrOn=r=>r.known&&!r.gone&&!r.same&&(r.stale||r.doubt?CORR_UI.on.has(r.i):!CORR_UI.off.has(r.i))&&(r.k!=="words"||!!(r.w&&r.w.any));
 function corrSerPut(r){
   const c=r.c,s=String(c.series||"").replace(/\s+/g," ").trim(),p=String(c.num||"").replace(/^#/,"").trim();
   const x=r.t.it||r.t.b,k=serFindKey(x);
@@ -80535,14 +80672,17 @@ function corrSerPut(r){
 }
 async function corrUse(){
   const rows=corrRows().filter(corrOn).slice(0,CORR_PRESS);if(!rows.length)return;
-  const done=[],byBook=new Map(),items=[],was=histSrc;let full=false;
+  const done=[],byBook=new Map(),items=[],made=[],was=histSrc;let full=false;
   rows.filter(r=>r.k!=="series"&&r.k!=="whole").forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
   histSrc="📥 a corrections file";
   try{
     for(const [id,list] of byBook){
       const b=books.find(x=>x.id===id);if(!b)continue;
       const before=JSON.parse(JSON.stringify(b)),mine=[];
-      list.forEach(r=>{const en=r.t.en?(b.entries||[]).find(e=>e.id===r.t.en.id):null;if(r.t.en&&!en)return;CORR_DO[r.k].use({b,en},r.c);mine.push(r.i);});
+      /* the book's own rows before its stories': a story that takes its collection's
+         genres takes them as this press leaves them (the sort keeps file order otherwise) */
+      list.sort((x,y)=>(x.t.en?1:0)-(y.t.en?1:0));
+      list.forEach(r=>{const en=r.t.en?(b.entries||[]).find(e=>e.id===r.t.en.id):null;if(r.t.en&&!en)return;CORR_DO[r.k].use({b,en},r.c,r,made);mine.push(r.i);});
       touchBook(b,true);
       if(!(await putOrRestore(b,before))){full=true;break;}
       done.push(...mine);
@@ -80552,7 +80692,9 @@ async function corrUse(){
     }
     /* series made whole go into the same step of ↶ */
     if(!full)for(const r of rows.filter(r=>r.k==="whole"))if(await corrWholeUse(r,items))done.push(r.i);
-    if(items.length)pushOp({t:"bulk",items});
+    /* genres the press made ride in its ↶ (applyOp's label branch), saved without a step of their own */
+    if(made.length)saveGenresQuiet();
+    if(items.length)pushOp({t:"bulk",items,...(made.length?{label:made}:{})});
   }finally{histSrc=was;}
   if(SYNC.on&&items.length)flushQueue();
   const ser=full?[]:rows.filter(r=>r.k==="series");
@@ -80605,6 +80747,7 @@ function corrPaint(){
     CORR_KINDS.forEach(([k,label])=>{
       const mine=rows.filter(r=>r.k===k);if(!mine.length)return;
       if(!CORR_DO[k]){h+=`<div class="hint" style="margin:8px 0 0">${label}: ${mine.length.toLocaleString()} change${mine.length===1?"":"s"} this build can't use yet. They stay in the file for when it can.</div>`;return;}
+      if(k==="words"){h+=corrWordsSec(label,mine);return;}
       const live=mine.filter(r=>!r.gone&&!r.same),gone=mine.filter(r=>r.gone),same=mine.filter(r=>r.same),kon=live.filter(corrOn).length;
       /* series answers of "in no series" stand apart, folded: there can be hundreds */
       const nones=live.filter(r=>r.none),oks=live.filter(r=>r.confirm),rest=live.filter(r=>!r.none&&!r.confirm);
@@ -80631,7 +80774,7 @@ function corrPaint(){
     try{const nf=corrRead(await f.text(),f.name);
       const left=corrRows().filter(r=>r.known&&!r.gone&&!r.same).length;
       if(CORR&&left&&!confirm(`The file loaded now still has ${left} change${left===1?"":"s"} not used. Put it away and load ${f.name} instead?`))return;
-      CORR=nf;CORR_UI.off.clear();CORR_UI.on.clear();CORR_UI.more={};CORR_UI.say="";await corrSave();}
+      CORR=nf;CORR_UI.off.clear();CORR_UI.on.clear();CORR_UI.wordOff.clear();CORR_UI.wAddOpen=false;CORR_UI.more={};CORR_UI.say="";await corrSave();}
     catch(e){CORR_UI.say=`${f.name} couldn't be read: ${(e&&e.message)||e}.`;}
     corrPaint();};}
   on("#corrUse",()=>corrUse());
@@ -80641,6 +80784,11 @@ function corrPaint(){
     live.forEach(r=>{if(any){CORR_UI.off.add(r.i);CORR_UI.on.delete(r.i);}else{CORR_UI.off.delete(r.i);CORR_UI.on.add(r.i);}});corrPaint();});
   qa("[data-corrnone]",box).forEach(d=>d.ontoggle=()=>{CORR_UI.noneOpen=d.open;});
   qa("[data-corrok]",box).forEach(d=>d.ontoggle=()=>{CORR_UI.okOpen=d.open;});
+  /* the fold of rows that only add draws them only once it is opened */
+  qa("[data-corrwadd]",box).forEach(d=>d.ontoggle=()=>{if(CORR_UI.wAddOpen!==d.open){CORR_UI.wAddOpen=d.open;corrPaint();}});
+  /* a word switched off or back on: the row's tick and the Use count follow */
+  qa("[data-corrw]",box).forEach(p=>p.onclick=e=>{e.preventDefault();const key=`${p.dataset.corrw}|${p.dataset.corrp}|${p.dataset.corrword}`;
+    if(CORR_UI.wordOff.has(key))CORR_UI.wordOff.delete(key);else CORR_UI.wordOff.add(key);corrPaint();});
   qa("[data-corrmore]",box).forEach(b=>b.onclick=()=>{const k=b.dataset.corrmore;CORR_UI.more[k]=(CORR_UI.more[k]||0)+CORR_SHOW;corrPaint();});
   qa("[data-corr]",box).forEach(c=>c.onchange=()=>{const i=+c.dataset.corr;if(c.checked){CORR_UI.off.delete(i);CORR_UI.on.add(i);}else{CORR_UI.off.add(i);CORR_UI.on.delete(i);}
     const n=corrRows().filter(corrOn).length,u=q("#corrUse",box);if(u){u.disabled=!n;u.textContent=`✓ Use ${n>CORR_PRESS?`the first ${CORR_PRESS} of ${n.toLocaleString()}`:`the ${n.toLocaleString()}`} ticked`;}

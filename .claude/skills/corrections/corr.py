@@ -170,6 +170,30 @@ class File:
                "readings": [{k: r[k] for k in ("start", "end", "open") if r.get(k)} for r in (x.get("readings") or []) if isinstance(r, dict)]}
         return self._book("dates", book, story, {"was": was, "to": to, "why": why, "src": src})
 
+    def words(self, book, story=None, genres=(), genres_off=(), tags=(), tags_off=(), setin=(), setin_replace=False, why="", src=""):
+        """Genres, tags and Set in for one book, collection or story (kind "words", build
+        2026-11-10.13 on). genres / tags: words to add; genres_off / tags_off: words to take
+        off (the item's own only). setin: places to add, on a book or collection only (a story
+        has no Set in of its own); setin_replace: the places it has now are wrong and go.
+        A story's genres REPLACE its collection's: a story with none of its own that is given
+        any keeps the collection's list as the press leaves it, plus these. Write a
+        collection's change before its stories'. `was` comes from the copy. Returns None when
+        there is nothing to change."""
+        x = story if story is not None else book
+        extra = {}
+        if genres or genres_off:
+            extra["genres"] = {"add": list(genres), "remove": list(genres_off), "was": list(x.get("genres") or [])}
+        if tags or tags_off:
+            extra["tags"] = {"add": list(tags), "remove": list(tags_off), "was": list(x.get("keywords") or [])}
+        if setin and story is None:
+            extra["setin"] = {"add": list(setin), "was": list(book.get("setIn") or [])}
+            if setin_replace:
+                extra["setin"]["replace"] = True
+        if not extra:
+            return None
+        extra.update(why=why, src=src)
+        return self._book("words", book, story, extra)
+
     def write(self, folder=None):
         folder = folder or os.path.join(os.path.expanduser("~"), "Downloads")
         slug = re.sub(r"[^a-z0-9]+", "-", self.job.lower()).strip("-")[:40] or "changes"

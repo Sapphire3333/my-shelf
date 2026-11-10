@@ -64,9 +64,10 @@ as it stood in the copy; `why` and `src` are shown beside it.
 | `blurb` | replaces a book's, story's or collection's blurb | `to` (plain text, blank lines between paragraphs) |
 | `pages` | sets the page count | `to` (digits) |
 | `dates` | puts a book's or story's own stage and readings back as a copy had them (build 2026-11-10.1 on); one changed since the copy starts unticked | `to` / `was`: {status ("" = a tale answering with its volume), dnf, readings [{start, end, open}]} — `corr.File.dates` |
+| `words` | a book's, collection's or story's genres, tags and Set in (build 2026-11-10.13 on): one row a book, a pill per word the owner can switch off; a row that only adds is folded, ticked; a new genre joins their genres only when used, and one ↶ takes it away | `genres` / `tags`: {add, remove, was}; `setin` (not on a story): {add, replace, was}; `was` is the item's own list in the copy — `corr.File.words` |
 
 Kinds named for later jobs, which this build counts and keeps but can't use
-yet: `genres`, `tags`, `setin`, `rename`, `author`, `screen`, `upcoming`. Each one
+yet: `rename`, `author`, `screen`, `upcoming`. Each one
 is added to `CORR_DO` in index.html (door 📥 CORRECTIONS FROM A FILE) with
 its job, and here with its fields. A new kind never needs a new loader.
 
@@ -163,5 +164,30 @@ its job, and here with its fields. A new kind never needs a new loader.
   `?db=copy` page (`fetchHardcover` / `fetchHardcoverSeries`, about a second
   each, results handed out through the :8768 drop box), then the web only for
   what Hardcover doubts or doesn't know.
+- For `words` (genres, tags and Set in):
+  - Read what the app's ✨ Claude reads the shelf never reached: a book,
+    collection or story whose key (`book id`, or `book id|story id`) is not
+    in `copy.settings.claudeReadSeen` with the same fingerprint (`readSig`:
+    the strHash of `readWords`), or has under 80 letters written. Fics are
+    left alone: their tags are AO3's own.
+  - Genres from the owner's own list; a new one only where none of theirs
+    fits, in the list's style. A genre is taken off only when the text
+    clearly contradicts it.
+  - Tags theirs first, spelt as they spell them; a new one only where none of
+    theirs says it, and at most four new on one book. Never a word they keep
+    for their own lists or notes (the `kwCats` families of that kind), an
+    opinion of the book, an age or audience, or a genre again as a tag. A tag
+    that only names a bookshop's shelf or a reading age, the categories an
+    import brings in, is taken off.
+  - A story gets genres of its own only where it clearly isn't like the rest
+    of its collection: its own REPLACE the collection's. Tags true of the
+    whole series go on the collection, a story's own on the story.
+  - Set in as the book says, at most three places: a country, a US state, a
+    city as "City, Country", a made-up place by its own name. From the blurb,
+    else checked on the web; never guessed. A Set in that's clearly wrong is
+    replaced (`setin_replace`). A story's places go on its collection.
+  - A book or collection with under a line written is looked up on the web;
+    its stories follow the collection.
+  - `why` says where anything not in the blurb came from.
 - One job a file. A few hundred books a chat is a sensible size; say how far
   you got and where the next chat carries on.
