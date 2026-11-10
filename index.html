@@ -14650,6 +14650,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-10.11",go:["el:care:#corrSec"],lines:["<b>📥 Two copies of one story become one, even when both have your marks.</b> When a corrections file says two stories are the same book under two titles, its UK and US names say, and each holds a rating or a reading, they now come together in the copy with the file and blurb: it takes the other's rating where it has none, the stage that's further along, its notes after its own, and the readings as one book read, so a dated finish and an undated one count once. The row says what goes across. A pair the file doesn't ask to merge, or one with highlights in another file, stays two."]},
   {v:"2026-11-10.10",lines:["<b>🏛 Free to borrow asks again when you say.</b> Once every book had been asked about, 🔎 Ask now disappeared from the panel and the next search waited 30 days. Now it stays as <b>🔎 Ask them all again</b>: one press asks Open Library about every book now, and the panel shows how many are left and about how long."]},
   {v:"2026-11-10.9",lines:["<b>🏛 Borrow is a proper button on the phone.</b> On a story in a collection, the 🏛 Borrow chip was small print beside full-size buttons. On the phone it's now 🏛 alone, as big as the buttons next to it; on the computer it still says Borrow (or Read free)."]},
   {v:"2026-11-10.8",go:["el:overview:#secUpNext"],lines:["<b>🎡 The wheel keeps its books to itself until it stops.</b> In 🎡 Spin on Today's Up next, every slice shows a ? while it turns, so you can't watch for the one you hope for. When it lands, that one book's title appears on its slice and underneath, with ⏭ Up next, 📖 Start it and Open it as before."]},
@@ -58426,6 +58427,61 @@ function storyTwinCarry(c,k,d,dry){
   if(qs.length){said.push(qs.length===1?"its quote":qs.length+" quotes");if(!dry)qs.forEach(i=>{qf[i]=k.id;});}
   return said;
 }
+/* ---- TWO COPIES THAT BOTH HAVE A LIFE OF THEIR OWN, MADE ONE ----
+   Only a corrections file asks for this, with merge: true on a whole change's
+   drop, when it is sure the two are one book under two titles (a UK and a US
+   name, say), each holding something of yours: one the file, blurb and an
+   undated finish, the other the dated reading an import brought. Without
+   merge such a pair is left as two, as it always was. The kept copy takes,
+   where it has none, the other's rating, ♥ and the page it is at; the stage
+   further along, with its ✕ and ⏸; and the other's notes after its own. Two
+   different ratings: the kept copy's stays, and the row says so.
+   Readings are one book read, not two copies read once each: every dated
+   reading of either, once, then undated ones only until the count reaches
+   the most either copy had, so a dated finish and an undated "finished" are
+   one read and the times read never double. The lists are read without
+   readsOf, which would write a made-up list onto a copy while only asking.
+   Highlights tied to a different file than the kept copy's can't come
+   across, so that pair stays two (storyTwinMergeBlock). */
+function storyTwinMergeBlock(c,k,d){
+  const f=x=>x&&x.driveFile&&x.driveFile.id;
+  return hlListOf(d).length&&f(d)&&f(k)&&f(k)!==f(d)?"its highlights are in another file":"";
+}
+function storyTwinMerge(c,k,d,dry){
+  const said=[],rank=x=>{const s=entStatusOf(c,x);return s==="finished"?3:s==="reading"?2:1;};
+  const has=v=>v!=null&&v!=="";
+  if(has(d.rating)){if(!has(k.rating)){said.push("its rating");if(!dry)k.rating=d.rating;}
+    else if(+d.rating!==+k.rating)said.push(`its ${d.rating} (the ${k.rating} stays)`);}
+  if(d.favorite&&!k.favorite){said.push("its ♥");if(!dry)k.favorite=true;}
+  const up=rank(d)>rank(k);
+  if(up){said.push("its stage");if(!dry){k.status=entStatusOf(c,d);k.dnf=!!d.dnf;k.hold=!!d.hold;}}
+  if((String(d.progress||"").trim()||(d.progLog||[]).length)&&!String(k.progress||"").trim()&&!(k.progLog||[]).length){said.push("the page it's at");
+    if(!dry){k.progress=d.progress;if((d.progLog||[]).length)k.progLog=JSON.parse(JSON.stringify(d.progLog));}}
+  const list=x=>Array.isArray(x.readings)?x.readings:initialReadings(x),done=x=>list(x).filter(r=>r&&!r.open),dated=r=>!!(r.start||r.end);
+  const kd=done(k),dd=done(d),seen=new Set(),out=[],loose=[];
+  [...kd,...dd].filter(dated).forEach(r=>{const key=(r.start||"")+"|"+(r.end||"");if(!seen.has(key)){seen.add(key);out.push(r);}});
+  const most=Math.max(kd.length,dd.length,out.length);
+  [...kd,...dd].filter(r=>!dated(r)).forEach(r=>{if(out.length+loose.length<most)loose.push(r);});
+  out.sort((a,b)=>String(a.start||a.end).localeCompare(String(b.start||b.end)));
+  const all=[...loose,...out],gained=all.filter(r=>!kd.includes(r)).length;
+  if(gained)said.push(gained===1?"its reading":`${gained} readings`);
+  if(!dry&&(gained||up)){
+    const open=list(up?d:k).find(r=>r&&r.open);
+    k.readings=all.map(r=>Object.assign({},r));
+    if(open&&entStatusOf(c,k)==="reading")k.readings.push(Object.assign({},open));
+    syncReads(k);}
+  const plain=t=>stripHtml(t||"").trim();
+  if(plain(d.notes)){said.push("its notes");
+    if(!dry){const sep=/<[a-z]/i.test(String(k.notes||"")+String(d.notes))?"<br><br>":"\n\n";k.notes=plain(k.notes)?String(k.notes)+sep+String(d.notes):d.notes;}}
+  return said;
+}
+/* whether a whole change's drop happens: a copy with nothing of its own always
+   goes; one with a life of its own only when the file says merge */
+function corrDropGoes(coll,d){
+  const es=(coll&&coll.entries)||[],k=es.find(e=>e.id===d.into),x=es.find(e=>e.id===d.story);
+  if(!k||!x||k===x)return false;
+  return !storyTwinOwn(coll,x).length||(!!d.merge&&!storyTwinMergeBlock(coll,k,x));
+}
 /* what the kept book is missing that the other has; with dry, only says it */
 function twinCarry(k,d,dry){
   const said=[];
@@ -80269,7 +80325,7 @@ function corrWholeRow(r){
   const was=Array.isArray(c.was)?c.was:null;
   if(was&&(was.length!==ids.size||was.some(id=>!ids.has(id))))r.stale="its stories have changed since your copy";
   const adds=(c.items||[]).filter(x=>x&&x.add).length,books2=(c.items||[]).filter(x=>x&&x.book&&books.some(b=>b.id===x.book)).length;
-  const outs=(c.out||[]).filter(o=>ids.has(o.story)).length,drops=(c.drop||[]).filter(d=>ids.has(d.story)&&ids.has(d.into)).length;
+  const outs=(c.out||[]).filter(o=>ids.has(o.story)).length,drops=(c.drop||[]).filter(d=>ids.has(d.story)&&ids.has(d.into)&&corrDropGoes(r.t.b,d)).length;
   const order=(c.items||[]).filter(x=>x&&x.story&&ids.has(x.story)).map(x=>x.story),now=ents.map(e=>e.id).filter(id=>order.includes(id));
   const self=!!r.t.b&&!ents.length&&(c.items||[]).some(x=>x&&x.self);
   const nm=String(c.name||"").trim(),au=String(c.author||"").trim();
@@ -80293,7 +80349,12 @@ function corrWholeHtml(r){
     if(o.to&&String(o.to.name||"").trim()){const t=serInColl(o.to.name,entAuthorOf(b,e)||(b&&b.author)||""),at=o.to.pos?` at #${esc(String(o.to.pos).replace(/^#/,""))}`:"";
       return `<div class="meta">↪ ${esc(e.title||"Untitled")} goes into ${t&&t.id!==(b&&b.id)?`your collection ${esc(t.title||"")}`:`a new collection, ${esc(o.to.name)}`}${at}${why}</div>`;}
     return `<div class="meta">↩ ${esc(e.title||"Untitled")} goes back on your shelf as a book of its own${why}</div>`;}).join("");
-  const drops=(c.drop||[]).map(d=>{const e=ents.get(d.story),k=ents.get(d.into);return e&&k?`<div class="meta">⧉ ${esc(e.title||"Untitled")} is the same book as ${esc(k.title||"Untitled")}: made one${d.why?` (${esc(d.why)})`:""}</div>`:"";}).join("");
+  const drops=(c.drop||[]).map(d=>{const e=ents.get(d.story),k=ents.get(d.into);if(!e||!k)return "";
+    const why=d.why?` (${esc(d.why)})`:"",own=storyTwinOwn(b,e);
+    if(!corrDropGoes(b,d)){const blk=d.merge?storyTwinMergeBlock(b,k,e):"";
+      return `<div class="meta">⧉ ${esc(e.title||"Untitled")} is the same book as ${esc(k.title||"Untitled")}, but both have something of their own (${esc((blk||own.join(", ")))}): left as two${why}</div>`;}
+    const goes=own.length?storyTwinMerge(b,k,e,true):[];
+    return `<div class="meta">⧉ ${esc(e.title||"Untitled")} is the same book as ${esc(k.title||"Untitled")}: made one${goes.length?`, ${esc(goes.join(", "))} going with it`:""}${why}</div>`;}).join("");
   const nmNew=n=>n.renamed&&b&&b.title!==String(c.name||"").trim(),auNew=String(c.author||"").trim()&&b&&String(c.author).trim()!==String(b.author||"").trim()?String(c.author).trim():"";
   const n=r.counts||{},head=[n.renamed?(nmNew(n)?`renamed ${String(c.name||"").trim()}${auNew?`, by ${auNew}`:""}`:auNew?`now by ${auNew}`:""):"",n.self?"the book you read becomes its story":"",n.adds?`${n.adds} missing added`:"",n.books?`${n.books} of yours moving in`:"",n.outs?`${n.outs} taken out`:"",n.drops?`${n.drops} made one`:"",n.moved?"put in order":""].filter(Boolean).join(" · ");
   return `<div class="snap" style="display:block;padding:7px 10px"><label style="display:flex;gap:8px;align-items:flex-start;min-width:0">${box}
@@ -80321,7 +80382,10 @@ async function corrWholeUse(r,items){
   if(c.book&&!coll)return false;
   if(!coll)coll=Object.assign(blankBook(uid()),{type:"collection",title:String(c.name||"").trim()||"Untitled",series:String(c.name||"").trim(),author:String(c.author||"").trim(),status:"want",entries:[]});
   const orig=(coll.entries||[]).slice(),byId=new Map(orig.map(e=>[e.id,e]));
-  for(const d of c.drop||[]){const k=byId.get(d.into),x=byId.get(d.story);if(!k||!x||k===x||storyTwinOwn(coll,x).length)continue;storyTwinCarry(coll,k,x,false);byId.delete(x.id);}
+  for(const d of c.drop||[]){const k=byId.get(d.into),x=byId.get(d.story);if(!k||!x||k===x)continue;
+    /* a copy with a life of its own goes only when the file says merge (storyTwinMerge) */
+    if(storyTwinOwn(coll,x).length){if(!d.merge||storyTwinMergeBlock(coll,k,x))continue;storyTwinMerge(coll,k,x,false);}
+    storyTwinCarry(coll,k,x,false);byId.delete(x.id);}
   /* a story of ANOTHER series (o.to = {name, pos}) goes into that series' collection
      at its number, made if there isn't one; any other goes back as a book of its own */
   const outs=[],moves=[];

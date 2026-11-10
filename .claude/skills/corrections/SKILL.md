@@ -60,7 +60,7 @@ as it stood in the copy; `why` and `src` are shown beside it.
 | kind | what it does | its fields |
 |---|---|---|
 | `series` | becomes the answer of the import list's ✨ Suggested series and the Library's ✨ Find their series; nothing is made until 📚 Make them there | `series` ("" = in no series), `num`, `sure` = checked on the web here, so the app's check counts it as done |
-| `whole` | one series as it should stand: wrong stories out (back to books of their own, or, when `to` names the series they belong to, into that series' collection at its number, made if there is none), one book twice made one, loose books moved in, missing ones added as Want to read with pages and blurb, all in series order; a new collection when `book` is absent; `rename` gives an existing collection the series' name and author; `{self}` turns a collection that holds no stories, because it is the one book read, into that book's story at its number, its rating, dates, stage and notes going with it | `name`, `author`, `book` + `was` (its story ids in the copy), `items` ({story}/{book}/{add}/{self}) in order, `out` ({story, why, to?: {name, pos}}), `drop`, `rename` — write it with `corr.File.whole` |
+| `whole` | one series as it should stand: wrong stories out (back to books of their own, or, when `to` names the series they belong to, into that series' collection at its number, made if there is none), one book twice made one, loose books moved in, missing ones added as Want to read with pages and blurb, all in series order; a new collection when `book` is absent; `rename` gives an existing collection the series' name and author; `{self}` turns a collection that holds no stories, because it is the one book read, into that book's story at its number, its rating, dates, stage and notes going with it | `name`, `author`, `book` + `was` (its story ids in the copy), `items` ({story}/{book}/{add}/{self}) in order, `out` ({story, why, to?: {name, pos}}), `drop` ({story, into, merge?}), `rename` — write it with `corr.File.whole` |
 | `blurb` | replaces a book's, story's or collection's blurb | `to` (plain text, blank lines between paragraphs) |
 | `pages` | sets the page count | `to` (digits) |
 | `dates` | puts a book's or story's own stage and readings back as a copy had them (build 2026-11-10.1 on); one changed since the copy starts unticked | `to` / `was`: {status ("" = a tale answering with its volume), dnf, readings [{start, end, open}]} — `corr.File.dates` |
@@ -113,7 +113,16 @@ its job, and here with its fields. A new kind never needs a new loader.
   - A collection none of whose stories is the series it is named after is
     left out of the file and asked about.
   - Of two copies of one book, the one with readings, a rating or notes is
-    kept; when both have them, neither is dropped.
+    kept; when both have them, neither is dropped, unless the drop says
+    `merge: true` (build 2026-11-10.11 on; `corr.File.whole` takes a third
+    `True` in the pair). Then the kept copy takes the other's rating, ♥,
+    stage and notes where it has none, and its readings as one book read:
+    every dated reading once, undated ones only up to the most either copy
+    had, so a dated finish and an undated "finished" count once. Keep the
+    copy that carries the file, blurb and cover; the row says what goes with
+    it. A copy with highlights on another file than the kept one's stays two.
+    When the two are in a collection whose numbers aren't all known, list
+    every story in its present order as the items, so nothing moves.
   - A story taken out because it is another series' book carries that series
     in `to` (its name and number, from the checker's reason), so it goes into
     that series' collection: taken out without it, a run of one series' books

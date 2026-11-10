@@ -111,7 +111,8 @@ class File:
         out: (entry, why) pairs, stories that aren't this series and go back on the shelf as
         books; (entry, why, {"name", "pos"}) for a story of ANOTHER series, which goes into that
         series' collection at its number (made if the shelf has none). drop: (entry, kept_entry)
-        pairs, one book twice, carried into the one kept. rename: an existing collection takes
+        pairs, one book twice, carried into the one kept; (entry, kept_entry, True) merges a copy
+        that has a life of its own too (its readings, rating, stage and notes go with it). rename: an existing collection takes
         `name` and `author` (build 2026-11-09.31 on); without it they name only a new one."""
         c = {"kind": "whole", "name": name, "author": author}
         if coll:
@@ -140,7 +141,13 @@ class File:
                     d["to"] = {"name": str(o[2]["name"]).strip(), "pos": str(o[2].get("pos") or "").lstrip("#")}
                 c["out"].append(d)
         if drop:
-            c["drop"] = [{"story": d["id"], "into": k["id"], "title": d.get("title", "")} for d, k in drop]
+            c["drop"] = []
+            for dd in drop:
+                d, k = dd[0], dd[1]
+                x = {"story": d["id"], "into": k["id"], "title": d.get("title", "")}
+                if len(dd) > 2 and dd[2]:
+                    x["merge"] = True  # both copies have a life of their own: made one all the same (build 2026-11-10.11 on)
+                c["drop"].append(x)
         if why:
             c["why"] = why
         self.changes.append(c)
