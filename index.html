@@ -8927,11 +8927,21 @@ function volState(coll,en){
    first tale alone and a volume read whole before it was split stays read. */
 function pinTales(coll,en){
   const ts=volTales(coll,en);if(ts.length<2||ts[0]!==en)return;
+  /* ...and the read that comes with "finished": a silent tale has no readings of its
+     own, so pinned on its stage alone, a reread (volReadAgain) sent it back to Want
+     to read with no sign it had ever been read, and ✓ on it later restored a blank
+     reading. It keeps a copy of the first tale's finished readings, its notes left
+     with the first tale. readUnits counts a pass by the first tale's reading ended on
+     the later tales' finish, so the same dates count the same passes. */
+  const reads=doneReads(en);
   ts.slice(1).forEach(t=>{
     if(String(t.status||"").trim()||t.dnf||t.hold)return;
     if(entDnfOf(coll,t))t.dnf=true;
     else if(entHoldOf(coll,t))t.hold=true;
-    else t.status=entStatusOf(coll,t);
+    else{t.status=entStatusOf(coll,t);
+      if(t.status==="finished"&&reads.length&&!readsOf(t).length&&!String(t.dateFinished||"").trim()){
+        t.readings=reads.map(r=>Object.assign({},r,{id:uid(),notes:[]}));syncReads(t);
+        t.dateFinished=lastEnd(t)||String(en.dateFinished||"");}}
   });
 }
 /* ┌─ ONE BOOK, ONE BOOKMARK ─────────────────────────────────────────────────┐
@@ -14626,6 +14636,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-10.1",go:["el:care:#corrSec"],lines:["<b>📖 A split book read again keeps every part's dates.</b> Starting a reread on the first part sends the parts after it back to Want to read, and now each keeps the dates you read it the first time; ✓ on one brings that finish back. Before, the later parts lost their dates, because they had been showing the first part's.","<b>📅 A corrections file can put a story's stage and dates back</b> as a copy of your shelf had them. A story you have changed since the copy starts unticked, so nothing moves until you tick it."]},
   {v:"2026-11-09.31",go:["el:care:#corrSec"],lines:["<b>📚 A series file can fill a collection that was one book.</b> A collection holding no stories, because it was the one book you read, can now become its whole series from a corrections file: that book turns into its story at its number, taking your rating, dates, stage and notes with it, and the rest arrive as Want to read. A file can also give a collection its series' proper name and author. Each row says so before you press ✓ Use, and ↶ puts it all back."]},
   {v:"2026-11-09.30",go:["el:care:#corrSec"],lines:["<b>↶ One press of a corrections file comes back whole.</b> When one ✓ Use changed a collection twice, say its blurb and its series, or made a collection and then moved a book into it, ↶ put most of it back but kept the middle step: the new blurb stayed, or the new collection came back with a book that was also loose again. Now ↶ puts every bit of the press back, and ↷ does all of it again."]},
   {v:"2026-11-09.29",lines:["<b>🔮 Would I like it? has a mark of its own.</b> On a story's row it is 🔮 25¢, on a book's page 🔮 Would I like it?, and the Insights card wears 🔮 too. The ✨ beside it on a story's row is still More like this."]},
@@ -79869,7 +79880,7 @@ function blbPaint(){
    └──────────────────────────────────────────────────────────────────────────┘ */
 /* 12 a kind to start: 30 stood the card 3,622 px tall in Shelf care's 570 px column */
 const CORR_VER=1,CORR_SHOW=12,CORR_FOLD=60,CORR_PRESS=200;
-const CORR_KINDS=[["whole","📚 Series made whole"],["series","📚 Series"],["blurb","📝 Blurbs"],["pages","📄 Page counts"],["genres","🏷 Genres"],["tags","🔖 Tags"],["setin","🗺 Set in"],
+const CORR_KINDS=[["whole","📚 Series made whole"],["series","📚 Series"],["blurb","📝 Blurbs"],["pages","📄 Page counts"],["dates","📅 A story's stage and dates"],["genres","🏷 Genres"],["tags","🔖 Tags"],["setin","🗺 Set in"],
   ["rename","🧹 One name written two ways"],["author","👤 Who an author is"],["screen","🎬 On screen"],["upcoming","🔎 Coming next"]];
 let CORR=null,CORR_LOADED=false;
 const CORR_UI={off:new Set(),on:new Set(),more:{},say:""};
@@ -79880,11 +79891,21 @@ function corrSerNow(t){
   return SERF.shelf[t.b.id]||null;
 }
 const corrSerSay=a=>a&&a.s?a.s+(a.p?` #${a.p}`:""):"";
+const corrDatesSay=x=>{const st=String((x&&x.status)||"").trim(),rs=((x&&x.readings)||[]).filter(r=>r&&(r.start||r.end||r.open));
+  return (x&&x.dnf?"given up":st?((STATUSES.find(s=>s[0]===st)||[0,st])[1]):"same as its volume")
+    +(rs.length?" · read "+rs.map(r=>`${r.start||"?"} → ${r.open?"now":r.end||"?"}`).join(", "):" · no dates");};
 const CORR_DO={
   blurb:{now:t=>blbPlain(corrX(t).summary||""),to:c=>blbPlain(String(c.to||"")),was:c=>blbPlain(String(c.was||"")),
     use:(t,c)=>{corrX(t).summary=cwParas(String(c.to||""));}},
   pages:{now:t=>String(corrX(t).pages||"").trim(),to:c=>String(c.to==null?"":c.to).replace(/\D/g,""),was:c=>String(c.was==null?"":c.was).replace(/\D/g,""),
     use:(t,c)=>{corrX(t).pages=String(c.to).replace(/\D/g,"");}},
+  /* a book's or story's own stage and readings put back as a copy had them: `to` and
+     `was` are {status, dnf, readings:[{start, end, open}]}; "" status is a tale that
+     answers with its volume's ("same") */
+  dates:{now:t=>corrDatesSay(corrX(t)),to:c=>corrDatesSay(c.to||{}),was:c=>corrDatesSay(c.was||{}),
+    use:(t,c)=>{const x=corrX(t),a=c.to||{};x.status=String(a.status||"").trim();x.dnf=!!a.dnf;
+      x.readings=(a.readings||[]).filter(r=>r&&(r.start||r.end||r.open)).map(r=>Object.assign({id:uid(),start:String(r.start||""),end:r.open?"":String(r.end||"")},r.open?{open:true}:{}));
+      syncReads(x);x.dateFinished=lastEnd(x)||"";}},
   series:{now:t=>corrSerSay(corrSerNow(t)),to:c=>corrSerSay({s:String(c.series||"").replace(/\s+/g," ").trim(),p:String(c.num||"").replace(/^#/,"").trim()}),
     was:c=>String(c.was||"").trim()},
   /* a series made whole: corrWholeRow lines it up, corrWholeUse makes it */

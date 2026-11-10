@@ -154,6 +154,15 @@ class File:
         x = story if story is not None else book
         return self._book("pages", book, story, {"was": str(x.get("pages") or ""), "to": str(int(n)), "why": why, "src": src})
 
+    def dates(self, book, to, story=None, why="", src=""):
+        """A book's or story's own stage and readings, put back as `to` says:
+        {"status": "finished"|"reading"|"want"|"" (a tale that answers with its volume),
+         "dnf": bool, "readings": [{"start", "end", "open"}]}. `was` is taken from the copy."""
+        x = story if story is not None else book
+        was = {"status": str(x.get("status") or ""), "dnf": bool(x.get("dnf")),
+               "readings": [{k: r[k] for k in ("start", "end", "open") if r.get(k)} for r in (x.get("readings") or []) if isinstance(r, dict)]}
+        return self._book("dates", book, story, {"was": was, "to": to, "why": why, "src": src})
+
     def write(self, folder=None):
         folder = folder or os.path.join(os.path.expanduser("~"), "Downloads")
         slug = re.sub(r"[^a-z0-9]+", "-", self.job.lower()).strip("-")[:40] or "changes"

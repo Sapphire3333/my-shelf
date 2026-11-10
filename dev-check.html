@@ -1063,6 +1063,40 @@ const SMOKE=`
     finally{CORR=keepC;Object.assign(CORR_UI,keepU);await corrSave();
       for(const b of books.filter(b=>/^fx-u/.test(b.id)||(isColl(b)&&b.title==="Owl Hill")))await dbDel("books",b.id);
       for(const id of ["fx-u","fx-ul"]){await dbDel("books",id);await dbDel("trash",id);}}});
+  /* a volume split in three, read once: Reading now on the first tale left the two
+     after it at Want to read with no dates, since theirs were the first tale's */
+  await check("a split volume read again keeps every tale's old read, and a file puts a tale's stage and dates back",async()=>{
+    const keepC=CORR,keepU={off:new Set(CORR_UI.off),on:new Set(CORR_UI.on),say:CORR_UI.say};
+    const list=[B("fx-sv","Night Tales","Ann Fixture",{type:"collection",status:"finished",entries:[
+      E("sv1","Tale One",{status:"finished",readings:[{id:"svr1",start:"2026-09-14",end:"2026-09-25"}],dateFinished:"2026-09-25"}),
+      E("sv2","Tale Two",{partOf:"sv1"}),E("sv3","Tale Three",{partOf:"sv1"})]})];
+    try{return await onShelf(list,async()=>{
+      const c=books.find(b=>b.id==="fx-sv"),[t1,t2,t3]=c.entries;
+      must(entStatusOf(c,t2)==="finished"&&!doneReads(t2).length,"the fixture: a later tale should answer finished with no readings of its own");
+      markEntStatus(c,t1,"reading");
+      must(entStatusOf(c,t1)==="reading","the first tale isn't reading");
+      for(const t of [t2,t3]){
+        must(entStatusOf(c,t)==="want","a later tale didn't go back to Want to read: "+entStatusOf(c,t));
+        const r=doneReads(t);
+        must(r.length===1&&r[0].start==="2026-09-14"&&r[0].end==="2026-09-25","a later tale lost its old read: "+JSON.stringify(r));
+      }
+      must(doneReads(t1).length===1,"the first tale's old read went");
+      await dbPut("books",c);
+      const file={myShelfCorrections:1,made:"2026-11-10T09:00:00",copy:"2026-11-09",job:"Fixture dates",changes:[
+        {kind:"dates",book:"fx-sv",story:"sv2",title:"Tale Two",author:"Ann Fixture",was:{status:"want",readings:[{start:"2026-09-14",end:"2026-09-25"}]},to:{status:"",readings:[]}},
+        {kind:"dates",book:"fx-sv",story:"sv3",title:"Tale Three",author:"Ann Fixture",was:{status:"finished",readings:[]},to:{status:"",readings:[]}}]};
+      CORR=corrRead(JSON.stringify(file),"fixture.json");CORR_UI.off.clear();CORR_UI.on.clear();
+      const rows=corrRows();
+      must(corrOn(rows[0])&&!rows[0].stale,"a tale as the copy had it didn't start ticked: "+(rows[0].stale||""));
+      must(rows[1].stale&&!corrOn(rows[1]),"a tale changed since the copy started ticked");
+      await corrUse();
+      const c2=books.find(b=>b.id==="fx-sv"),u2=c2.entries.find(e=>e.id==="sv2");
+      must(u2.status===""&&!(u2.readings||[]).length,"the file didn't put Tale Two back: "+u2.status+" "+JSON.stringify(u2.readings));
+      await doUndo();
+      const u3=books.find(b=>b.id==="fx-sv").entries.find(e=>e.id==="sv2");
+      must(u3.status==="want"&&doneReads(u3).length===1,"↶ didn't give Tale Two its reread state back");
+      return "Reading now on the first of three tales: the two after it Want to read, each keeping the 14–25 September read; a dates change puts one back, one changed since the copy starts unticked, one ↶";});}
+    finally{CORR=keepC;Object.assign(CORR_UI,keepU);await corrSave();await dbDel("books","fx-sv");await dbDel("trash","fx-sv");}});
   /* collections with no stories: each was the one book read, its rating and dates on
      the collection; and a collection of a spin-off's books under the parent series' name */
   await check("a collection that is the one book you read becomes its series, and a collection takes its series' name",async()=>{
