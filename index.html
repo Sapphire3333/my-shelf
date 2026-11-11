@@ -14655,6 +14655,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-11.1",go:["tab:history"],lines:["<b>🧾 A big press no longer wipes out what you did.</b> What changed keeps the last 200 changes, shared by your phone and computer, and the daily tasks tick from it. A press that changes hundreds of books at once, like a corrections file, ⌛ marking what you don't have, or an import, wrote one line a book and pushed every line of yours off the end, on both devices. Now the app's own presses keep at most 100 of the places, so your newest 100 stay however much it writes."]},
   {v:"2026-11-10.14",go:["el:care:#serfSec"],lines:["<b>📖 Your read books into their series first.</b> On the import list's ✨ Suggested series, <b>☑ Tick the … with a book you've read</b> ticks only the series holding a book you've read or given up on, one-book series too, so 📚 Make them can bring those in before the long Want to read list. The fold of series with one book on your list has a Tick all of its own. And a corrections file can now mark a row of your import list as a fic, with its fandom: it moves to ✍️ Fics there, ready to add as a fic."]},
   {v:"2026-11-10.13",go:["el:care:#corrSec"],lines:["<b>🏷 Genres, tags and Set in, by file.</b> 🧰 Shelf care → 📥 Corrections from a file now reads a file of genres, tags and where a book is set. Each book is one row with a pill per word: tap a word to leave it out, or untick the book to leave all of it. A row that takes something away (a − word, a Set in replaced, a story given genres of its own) stands open; rows that only add are folded, already ticked, for you to open and look. A genre marked <i>new</i> joins your genres only if you keep it, and one ↶ takes the whole press back, new genres too. A story given genres of its own keeps its collection's with them, and the row shows the whole list it will have."]},
   {v:"2026-11-10.12",go:["tab:library"],lines:["<b>📄 10, 25, 50 or 100 books a page.</b> In the 📚 Library, ☰ → ⇅ Sort &amp; layout now says <b>Books on a page: All · 10 · 25 · 50 · 100</b> instead of a slider: All scrolls as before, a number turns pages. While you're on pages the same sizes stand under the page numbers, above and below the books, and changing size keeps you on the page with the book you were looking at. One choice for books, fics and every kind; each device keeps its own, so the computer can scroll while the phone turns pages. The … between page numbers no longer splits them onto two lines."]},
@@ -17877,14 +17878,42 @@ const HISTLOG_MAX=200;
 const HIST_WORDS_MAX=20;
 const histDev=()=>document.documentElement.dataset.phone==="1"?"phone":"computer";
 const histKey=e=>String(e.t)+"|"+String(e.id||"");
+/* ┌─ YOUR RECEIPTS STAY, HOWEVER MUCH THE APP WRITES ─────────────────────────┐
+   │ A press that changes hundreds of books writes a receipt for each — a     │
+   │ corrections file, ⌛ by itself marking what it can't find, an import —    │
+   │ and under one newest-first cap of HISTLOG_MAX, one such press pushed out │
+   │ every receipt you had written, on both devices, since the list is        │
+   │ shared. Measured on a saved copy: the two hundred covered 26 minutes,    │
+   │ 195 of them one file's, and the day's own edits, which the daily tasks   │
+   │ tick from and What changed shows, were gone. So the app's own receipts   │
+   │ (any histSrc) may keep at most HISTLOG_APP of the places: over the cap,  │
+   │ the oldest of theirs goes while they hold more than that, else the       │
+   │ oldest of all. A flood keeps its newest hundred, and your newest hundred │
+   │ stay. Both devices trim the same joined list the same way, so they still │
+   │ end up holding the same one.                                             │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const HISTLOG_APP=100;
+function histByApp(e){return !!(e&&e.src&&e.src!=="you");}
+function histTrim(){
+  if(histLog.length<=HISTLOG_MAX)return;
+  let app=0;histLog.forEach(e=>{if(histByApp(e))app++;});
+  while(histLog.length>HISTLOG_MAX){
+    let i=histLog.length-1;
+    if(app>HISTLOG_APP)while(i>0&&!histByApp(histLog[i]))i--;
+    if(histByApp(histLog[i]))app--;
+    histLog.splice(i,1);
+  }
+}
 function mergeHistLog(rv){
   if(!Array.isArray(rv))return false;
-  const have=new Set(histLog.map(histKey));
-  let added=0;
-  rv.forEach(e=>{if(e&&e.t&&!have.has(histKey(e))){histLog.push(e);have.add(histKey(e));added++;}});
-  if(!added)return false;
+  const have=new Set(histLog.map(histKey)),fresh=new Set();
+  rv.forEach(e=>{if(e&&e.t&&!have.has(histKey(e))){histLog.push(e);have.add(histKey(e));fresh.add(histKey(e));}});
+  if(!fresh.size)return false;
   histLog.sort((a,b)=>(b.t||0)-(a.t||0));
-  if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;
+  histTrim();
+  /* the other device's list can still hold what the trim takes off here: it
+     comes back on every pull and goes again, and that is no change */
+  if(!histLog.some(e=>fresh.has(histKey(e))))return false;
   dbPut("meta",{k:"histLog",v:histLog}).catch(()=>{});
   return true;
 }
@@ -18159,7 +18188,7 @@ const readToday=(before,after)=>{const was=todayMarks(before);
    these receipts, pass it by, and pressing it opens nothing. */
 function listNote(what){
   try{histLog.unshift({t:Date.now(),id:"",list:true,title:"Your lists",what:[what],add:[],src:histSrc||"you",dev:histDev()});
-    if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;saveHistLog();}catch(e){}
+    histTrim();saveHistLog();}catch(e){}
 }
 function histNote(id,before,after,forced){
   const what=forced||diffWords(before,after);
@@ -18183,7 +18212,7 @@ function histNote(id,before,after,forced){
   const add=forced?[]:gainedWords(before,after).slice(0,HIST_WORDS_MAX);
   histLog.unshift(Object.assign({t:Date.now(),id,title:src.title||"Untitled",what:what.slice(0,HIST_WORDS_MAX),add,src:histSrc||"you",dev:histDev()},
     readish?{rd}:{}));
-  if(histLog.length>HISTLOG_MAX)histLog.length=HISTLOG_MAX;
+  histTrim();
   saveHistLog();
   /* a real change is a day touched; moving through a book keeps its own
      streak. And any change might have earned a medal — checked shortly,
