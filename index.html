@@ -14683,6 +14683,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-13.8",go:["tab:library"],lines:["<b>📓 A tale's notes are its own.</b> In a book of several tales in one file, the notebook used to cut the file every 15 pages from its first page, so one part could hold the end of one tale and the start of the next. Now it finds where each tale begins (its title page) and cuts there, then by the tale's chapters or every 15 pages from its own start. The notebook shows the tale you're in, with the file's other tales folded under it. Parts read before under the old cut wait for <b>↻ Read them again by tale</b>, which says what it costs; the old notes stay folded at the foot until then."]},
   {v:"2026-11-13.7",go:["el:overview:#secReading"],lines:["<b>📖 Read on every book you're reading.</b> On Today, only the book in your hands had 📖 Read; the ones under Also reading had to be opened from their own pages first. Each of them with a file now has its own 📖 Read, a story in a collection opening at that story. In the Library's spines, a spine's 📖 opens the reader too."]},
   {v:"2026-11-13.6",go:["tab:library"],lines:["<b>🔎 Finding is stricter about typos.</b> Every find box forgave a typo anywhere in what you typed, so a short word could stand for another (“Thea” for “the”) and typing more letters could bring in more books, not fewer. Now each word you type has to be there, and only a word of five letters or more may carry a typo (two from nine). A title typed without its spaces is still found, and the closest matches still come first."]},
   {v:"2026-11-13.5",go:["tab:library"],lines:["<b>🔎 The Library's find box keeps what you type.</b> On a phone, a short pause in the middle of a word could double letters (“st” typed, a pause, then “i”, came out “ststi”): the shelf redrew under the keyboard and handed it a new box. While you're typing, the box now stays the same one and only the books under it change."]},
@@ -36224,15 +36225,86 @@ async function nbPdfText(s,a,z){
     out.push(P.findT[i].t);}
   return out.join("\n");
 }
+/* ┌─ A TALE'S NOTES ARE ITS OWN ─────────────────────────────────────────────┐
+   │ One file, several tales (a split volume) or several books (one file for │
+   │ several books): the notebook cut a PDF every NB_PDF_PAGES pages from the │
+   │ file's first page, so "Pages 121 to 135" held the end of one tale and   │
+   │ the start of the next, and a tale opening on page 128 had the tale       │
+   │ before it under Ahead of you. Now each tale's first page is found once,  │
+   │ from the file's own words (nbTaleFind): its title near the top of a      │
+   │ page, after the tale before it, with its author's surname close by where │
+   │ the tale has an author (a title page reads "IT'S IN THE ATTIC by …"),    │
+   │ else the title alone at the very top. What was found is kept with the    │
+   │ notebook (nb.cut {src, ids, at}, page indexes), so it is looked for once │
+   │ and follows you to the other device; nothing found is kept too (at:null)│
+   │ and the file is cut as before. A text file's tales are found among its  │
+   │ chapter heads (sharedStarts), which the cut already follows.            │
+   │ nbParts then cuts at every tale's start, and inside a tale by the PDF's  │
+   │ outline or every NB_PDF_PAGES pages from the tale's own first page; each │
+   │ part knows its tale (p.tale). A part whose pages are exactly one of the  │
+   │ old whole-file blocks keeps that block's key, so its note stays and is   │
+   │ not paid for again. nbHtml shows the tale you are in (where the bookmark │
+   │ is), the file's other tales folded under it. While the search runs no    │
+   │ part is read (nbWant), so nothing is read under the old cut and again.  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+/* the entries sharing the open file, in the file's order: a volume's tales, or the books of one file */
+function nbTaleList(s){
+  const b=books.find(y=>y.id===s.id),x=nbHolder(s);if(!b||!x||!s.en)return [];
+  if(s.shared&&(s.shared.ids||[]).length>1)return s.shared.ids.map(id=>(b.entries||[]).find(e=>e.id===id)).filter(Boolean);
+  const t=volTales(b,x);return t.length>1?t:[];
+}
+/* the tales' first pages in a PDF, as kept: [{id, title, p}], null for none found, undefined while unknown */
+function nbTaleCut(s){
+  const tales=nbTaleList(s);if(tales.length<2||!s.pdf)return null;
+  const ids=tales.map(t=>t.id).join(),nb=nbOf(nbHolder(s)),src=nbSrc(s);
+  const c=[s.nbCut,nb&&nb.cut].find(c=>c&&c.src===src&&(c.ids||[]).join()===ids);
+  if(!c){nbTaleFind(s);return undefined;}
+  return Array.isArray(c.at)&&c.at.length===tales.length?tales.map((t,i)=>({id:t.id,title:t.title||"Untitled",p:c.at[i]})):null;
+}
+async function nbTaleFind(s){
+  if(s.nbCutBusy||!s.pdf)return;s.nbCutBusy=true;
+  try{
+    const b=books.find(y=>y.id===s.id),tales=nbTaleList(s),P=s.pdf,n=P.n,at=[0];let from=1;
+    const head=async p=>softFold(String(await nbPdfText(s,p,p+1)).slice(0,240));
+    for(let i=1;i<tales.length;i++){
+      const want=softFold(tales[i].title),sur=softFold(surnameOf(authorParts(entAuthorOf(b,tales[i])||"")[0]||""));
+      if(want.length<4){at.length=0;break;}
+      let hit=-1;
+      /* its title page: the title near the top and the author close after it */
+      for(let p=from;p<n&&hit<0;p++){const h=await head(p);if(rdState!==s)return;const k=h.slice(0,120).indexOf(want);
+        if(k>=0&&(!sur||sur.length<3||h.slice(k,k+want.length+60).includes(sur)))hit=p;}
+      /* failing that, the title opening the page, read loosely where the scan read it badly */
+      if(hit<0)for(let p=from;p<n&&hit<0;p++){const h=(await head(p)).slice(0,want.length+24);if(rdState!==s)return;if(h.includes(want)||softNear(h,want))hit=p;}
+      if(hit<0){at.length=0;break;}
+      at.push(hit);from=hit+1;}
+    const cut={src:nbSrc(s),ids:tales.map(t=>t.id),at:at.length===tales.length?at:null,on:Date.now()};
+    s.nbCut=cut;
+    if(nbOf(nbHolder(s)))await nbSet(s,x=>{if(nbOf(x))x.nb.cut=cut;});
+    if(rdState===s){nbPaint(s);setTimeout(()=>nbTick(s),250);}
+  }catch(e){}finally{s.nbCutBusy=false;}
+}
 function nbParts(s){
   if(s.pdf){
     const P=s.pdf,n=P.n;if(P.comic||!n)return [];
+    const T=nbTaleCut(s);
     let cut=[];
     (P.outline||[]).filter(o=>o.d===0&&o.p>=0&&o.p<n).forEach((o,i)=>{if(!cut.length||o.p>cut[cut.length-1].p)cut.push({k:"o"+i,t:String(o.t||"").slice(0,80),p:o.p});});
-    if(cut.length<2){cut=[];for(let p=0,i=0;p<n;p+=NB_PDF_PAGES,i++)cut.push({k:"p"+i,t:`Pages ${p+1} to ${Math.min(n,p+NB_PDF_PAGES)}`,p});}
-    else if(cut[0].p>0)cut.unshift({k:"o-",t:"Before the first chapter",p:0});
+    if(cut.length<2&&T){
+      /* every NB_PDF_PAGES pages from each tale's own first page; a block that is one of
+         the old whole-file blocks keeps its key, and so its note */
+      cut=[];
+      T.forEach((t,ti)=>{const z=ti+1<T.length?T[ti+1].p:n;
+        for(let p=t.p,j=0;p<z;p+=NB_PDF_PAGES,j++){const e=Math.min(z,p+NB_PDF_PAGES),old=p%NB_PDF_PAGES===0&&e===Math.min(n,p+NB_PDF_PAGES);
+          cut.push({k:old?"p"+(p/NB_PDF_PAGES):t.id+":p"+j,t:`Pages ${p+1} to ${e}`,p,tale:t.id});}});
+    }else if(cut.length<2){cut=[];for(let p=0,i=0;p<n;p+=NB_PDF_PAGES,i++)cut.push({k:"p"+i,t:`Pages ${p+1} to ${Math.min(n,p+NB_PDF_PAGES)}`,p});}
+    else{
+      if(T)T.forEach(t=>{if(!cut.some(c=>c.p===t.p))cut.push({k:t.id+":s",t:String(t.title).slice(0,80),p:t.p});});
+      cut.sort((a,c)=>a.p-c.p);
+      if(cut[0].p>0)cut.unshift({k:"o-",t:"Before the first chapter",p:0});
+      if(T)cut.forEach(c=>{const t=T.filter(t=>t.p<=c.p).pop();c.tale=(t||T[0]).id;});
+    }
     return cut.map((c,i)=>{const z=i+1<cut.length?cut[i+1].p:n;
-      return {k:c.k,t:c.t,f0:n>1?c.p/(n-1):0,f1:i+1<cut.length&&n>1?z/(n-1):1,len:(z-c.p)*1800,text:()=>nbPdfText(s,c.p,z)};});
+      return {k:c.k,t:c.t,tale:c.tale||"",pa:c.p,pz:z,f0:n>1?c.p/(n-1):0,f1:i+1<cut.length&&n>1?z/(n-1):1,len:(z-c.p)*1800,text:()=>nbPdfText(s,c.p,z)};});
   }
   const B=rdBlocks(s).list,v=rdView();if(!B.length||!v)return [];
   if(s.nbIdxFor!==s.blocks||!s.nbIdx){s.nbIdx=new Map(B.map((b,i)=>[b.el,i]));s.nbIdxFor=s.blocks;}
@@ -36245,8 +36317,13 @@ function nbParts(s){
     B.forEach((b,i)=>{if(i&&run>=NB_FREE_PART){cut.push({k:"c"+n,t:"Part "+(n+1),at:i0});n++;i0=i;run=0;}run+=b.len;});
     cut.push({k:"c"+n,t:"Part "+(n+1),at:i0});
   }else if(cut[0].at>0&&chars(0,cut[0].at)>=NB_MIN_CHARS)cut.unshift({k:"h-",t:"Before the first chapter",at:0});
+  /* a text file's tales start at chapter heads: each part is the tale whose head it follows */
+  const tales=nbTaleList(s),ob=books.find(y=>y.id===s.id);
+  const st=tales.length>1&&ob?sharedStarts(s.map,ob,tales.slice(1).map(t=>t.id)):null;
+  const starts=st?[{id:tales[0].id,at:0},...tales.slice(1).map(t=>({id:t.id,at:s.nbIdx.get(st[t.id].h)}))].filter(x=>x.at!=null):null;
+  const taleAt=at=>{if(!starts||starts.length!==tales.length)return "";const t=starts.filter(x=>x.at<=at).pop();return (t||starts[0]).id;};
   return cut.map((c,i)=>{const z=i+1<cut.length?cut[i+1].at:B.length;
-    return {k:c.k,t:c.t,f0:fOf(B[c.at].el),f1:i+1<cut.length?fOf(B[z].el):1,len:Math.round(chars(c.at,z)*1.2),
+    return {k:c.k,t:c.t,tale:taleAt(c.at),f0:fOf(B[c.at].el),f1:i+1<cut.length?fOf(B[z].el):1,len:Math.round(chars(c.at,z)*1.2),
       text:async()=>B.slice(c.at,z).map(b=>rdBlockText(b).t.replace(/\s+/g," ").trim()).filter(Boolean).join("\n")};});
 }
 const nbBehind=(p,pos)=>pos>=p.f1-0.0005;
@@ -36290,10 +36367,34 @@ async function nbRead(s,part,model){
   return {k:part.k,t:part.t,sum:got.map(g=>g.sum).filter(Boolean).join(" "),who:who.slice(0,30),where:[...new Set(got.flatMap(g=>g.where))].slice(0,8),ties:got.flatMap(g=>g.ties||[]).slice(0,12),keep:[...sure,...less],keepN:sure.length,m:model===CLAUDE_OPUS?"o":model===CLAUDE_SONNET?"s":"h",at:todayStr()};
 }
 /* the parts due and not yet noted: behind the bookmark, or all of them when reading ahead */
+/* ---- WHAT WAS READ BEFORE THE TALES WERE CUT APART ----
+   A notebook that read a volume under the old whole-file blocks has notes ("p3")
+   that no part carries any more. Reading their pages again under the new cut costs
+   what the first reading did (about 4¢ a part with Opus), so it never starts by
+   itself: those parts wait (nbHeld) for ↻ Read them again by tale (nb.recut), and
+   the old notes stay readable in a fold meanwhile. Pages never read go on as ever. */
+function nbOld(s,parts){
+  const nb=nbOf(nbHolder(s));if(!nb||!s.pdf)return [];
+  const have=new Set(parts.map(p=>p.k));
+  return (nb.ch||[]).filter(c=>c&&/^p\d+$/.test(c.k)&&!have.has(c.k)&&!c.gone);
+}
+function nbHeld(s,parts,notes){
+  const nb=nbOf(nbHolder(s));if(!nb||nb.recut||!s.pdf)return [];
+  const old=nbOld(s,parts);if(!old.length)return [];
+  const read=new Set();old.forEach(c=>{const i=+c.k.slice(1);for(let q=i*NB_PDF_PAGES;q<(i+1)*NB_PDF_PAGES;q++)read.add(q);});
+  return parts.filter(p=>p.pa!=null&&!notes.has(p.k)&&p.pz>p.pa&&(()=>{for(let q=p.pa;q<p.pz;q++)if(!read.has(q))return false;return true;})());
+}
 function nbWant(s){
   const nb=nbOf(nbHolder(s));if(!nb||!nb.on||(nb.src&&nb.src!==nbSrc(s)))return [];
+  /* not while the tales' first pages are being looked for: see A TALE'S NOTES ARE ITS OWN */
+  if(s.pdf&&nbTaleCut(s)===undefined)return [];
+  {const parts=nbParts(s),held=new Set(nbHeld(s,parts,nbNotes(s)).map(p=>p.k));
+   if(held.size)return nbWantOf(s,nb,parts.filter(p=>!held.has(p.k)));}
+  return nbWantOf(s,nb,nbParts(s));
+}
+function nbWantOf(s,nb,parts){
   const notes=nbNotes(s),pos=nbPos(s),held=(s.nbCmp&&s.nbCmp.keys)||[];
-  return nbParts(s).filter(p=>!notes.has(p.k)&&!held.includes(p.k)&&(nb.ahead||nbBehind(p,pos))&&(((s.nbFail||{})[p.k])||0)<NB_FAILS);
+  return parts.filter(p=>!notes.has(p.k)&&!held.includes(p.k)&&(nb.ahead||nbBehind(p,pos))&&(((s.nbFail||{})[p.k])||0)<NB_FAILS);
 }
 async function nbTick(s){
   if(s&&!s.loose&&!s.nbGot){s.nbGot=true;try{await nbGather(s);}catch(e){}}
@@ -36329,9 +36430,19 @@ function nbHtml(s){
   const x=nbHolder(s),nb=nbOf(x),parts=nbParts(s),live=parts.filter(p=>p.len>=NB_MIN_CHARS);
   if(!live.length)return `<div class="hint" style="margin:6px">There are no words in this file for a notebook to read. A comic or a scanned PDF is pictures of pages.</div>`;
   const pos=nbPos(s),notes=nbNotes(s),behind=parts.filter(p=>nbBehind(p,pos)),model=nbModel(),mKey=nbModelKey(),mName=NB_MODELS[mKey][1];
-  /* one notebook for a whole volume: see A SPLIT VOLUME HAS ONE NOTEBOOK */
-  const owner=books.find(y=>y.id===s.id),tales=s.en&&owner?volTales(owner,x):[],onTale=tales.length>1?(tales.find(t=>t.id===s.tale)||volState(owner,x).on):null;
-  const talesSay=tales.length>1?`<div class="hint" style="margin:0">One notebook for this whole file: ${esc(andList(tales.map(t=>t.title||"Untitled")))}.${onTale?` You're on ${esc(onTale.title||"Untitled")}.`:""}</div>`:"";
+  /* one notebook for a whole volume: see A SPLIT VOLUME HAS ONE NOTEBOOK. Its parts
+     are each a tale's (A TALE'S NOTES ARE ITS OWN): the tale the bookmark is in shows,
+     the file's other tales fold under it */
+  const owner=books.find(y=>y.id===s.id),tales=nbTaleList(s),onTale=tales.length>1?(tales.find(t=>t.id===s.tale)||(s.shared?null:volState(owner,x).on)):null;
+  const byTale=tales.length>1&&parts.some(p=>p.tale);
+  const here=byTale?(parts.find(p=>pos>=p.f0-0.0005&&pos<p.f1-0.0005)||parts.filter(p=>nbBehind(p,pos)).pop()):null;
+  const curTale=byTale?((here&&here.tale)||(onTale&&onTale.id)||parts[0].tale):"";
+  const tName=id=>{const t=tales.find(t=>t.id===id);return (t&&t.title)||"Untitled";};
+  const cutSay=s.pdf&&tales.length>1&&!byTale?(nbTaleCut(s)===undefined?" Finding where each tale starts in the file…":" Where each tale starts couldn't be found in this file's words, so its parts run across them."):"";
+  const talesSay=tales.length<2?"":byTale
+    ?`<div class="hint" style="margin:0">These notes follow the tale you're in: <b>${esc(tName(curTale))}</b>. The file's other ${tales.length===2?"tale is":tales.length-1+" tales are"} folded underneath, each with its own.</div>`
+    :`<div class="hint" style="margin:0">One notebook for this whole file: ${esc(andList(tales.map(t=>t.title||"Untitled")))}.${onTale?` You're on ${esc(onTale.title||"Untitled")}.`:""}${esc(cutSay)}</div>`;
+  const mine=byTale?parts.filter(p=>p.tale===curTale):parts;
   const say=`<div class="hint" style="margin:0">Each part's words go to Claude through your own key, as a photo does. Nothing is kept there by the app.</div>`;
   if(!nb||!nb.on){
     const had=nb&&(nb.ch||[]).length;
@@ -36341,20 +36452,23 @@ function nbHtml(s){
   }
   if(nb.src&&nb.src!==nbSrc(s))return `<div class="rdl"><div>These notes were taken from another file of this book, so they may not match this one.</div>
     <div class="rdlc"><button class="btn pri" data-nb="fresh">Start a notebook for this file</button><button class="btn" data-nb="off">Leave it off</button></div></div>`;
-  const done=parts.filter(p=>notes.has(p.k)).length,due=nbWant(s).length,cmp=s.nbCmp;
+  const done=mine.filter(p=>notes.has(p.k)).length,due=nbWant(s).length,cmp=s.nbCmp;
+  const heldL=nbHeld(s,parts,notes),heldK=new Set(heldL.map(p=>p.k)),oldN=heldL.length?nbOld(s,parts):[];
   const row=p=>{const c=notes.get(p.k),open=(s.nbOpen||new Set()).has(p.k);
-    if(!c)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">${cmp&&cmp.keys.includes(p.k)?"waiting on ⚖ Compare":nbBehind(p,pos)||nb.ahead?"not read yet":"when you get there"}</span></div>`;
+    if(!c)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">${cmp&&cmp.keys.includes(p.k)?"waiting on ⚖ Compare":heldK.has(p.k)?"read before, under the old cut":nbBehind(p,pos)||nb.ahead?"not read yet":"when you get there"}</span></div>`;
     if(c.skip)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">too short to need notes</span></div>`;
     if(c.gone)return `<div class="nbch nbwait"><span>${esc(p.t)}</span><span class="hint" style="margin:0">struck out <button class="btn smallbtn" data-nbre="${esc(p.k)}">↻ Read it again</button></span></div>`;
     return `<details class="nbch" data-nbk="${esc(p.k)}"${open?" open":""}><summary>${esc(p.t)}</summary>${nbNoteHtml(c)}${nbKeepHtml(c)}
       <div class="rdlc" style="margin-top:6px"><button class="btn smallbtn" data-nbx="${esc(p.k)}">✕ Strike these out</button><button class="btn smallbtn" data-nbre="${esc(p.k)}">↻ Read it again</button></div></details>`;};
-  const back=parts.filter(p=>nbBehind(p,pos)),fwd=parts.filter(p=>!nbBehind(p,pos));
+  const back=mine.filter(p=>nbBehind(p,pos)),fwd=mine.filter(p=>!nbBehind(p,pos));
+  const others=byTale?tales.filter(t=>t.id!==curTale).map(t=>({t,ps:parts.filter(p=>p.tale===t.id)})).filter(g=>g.ps.length):[];
   const cmpParts=parts.filter(p=>p.len>=NB_MIN_CHARS&&(nb.ahead||nbBehind(p,pos))).slice(0,3);
   const cmpName=cmp?NB_MODELS[cmp.key][1]:"";
   return `<div class="rdl">
     ${talesSay}
-    <div><b>${done} of ${parts.length}</b> part${parts.length===1?"":"s"} in the notebook${s.nbPause?" · comparing, then it reads on":s.nbBusy?` · reading “${esc(String(s.nbBusy).slice(0,40))}”…`:due&&!s.nbErr?" · reading on…":""}</div>
+    <div><b>${done} of ${mine.length}</b> part${mine.length===1?"":"s"}${byTale?` of ${esc(tName(curTale))}`:""} in the notebook${s.nbPause?" · comparing, then it reads on":s.nbBusy?` · reading “${esc(String(s.nbBusy).slice(0,40))}”…`:due&&!s.nbErr?" · reading on…":""}</div>
     ${s.nbErr?`<div class="hint" style="margin:0">Claude couldn't read a part: ${esc(s.nbErr)}. <button class="btn smallbtn" data-nb="retry">↻ Try again</button></div>`:""}
+    ${heldL.length?`<div class="hint" style="margin:0">The notes are cut by tale now. ${heldL.length===1?"One part was":heldL.length+" parts were"} read before under the old cut, which ran across the tales, and wait${heldL.length===1?"s":""} for you; the old notes are folded at the foot meanwhile. <button class="btn smallbtn" data-nb="recut">↻ Read ${heldL.length===1?"it":"them"} again by tale · ${nbMoney(nbCost(heldL,model))}</button></div>`:""}
     ${nbAskHtml(s)}
     <label style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="nbAhead"${nb.ahead?" checked":""} style="width:18px;height:18px;margin:2px 0 0;flex:none"><span>Read ahead: the whole book now, spoilers and all <span class="hint" style="margin:0">(${nbMoney(nbCost(parts.filter(p=>!notes.has(p.k)),model))} for what's left)</span></span></label>
     <label class="rdlf">Who reads<select class="field" id="nbModel">${Object.keys(NB_MODELS).map(k=>`<option value="${k}"${k===mKey?" selected":""}>${NB_MODELS[k][1]}: ${nbMoney(nbCost(parts,NB_MODELS[k][0]))} for this book</option>`).join("")}</select></label>
@@ -36365,6 +36479,8 @@ function nbHtml(s){
     ${nbEndHtml(s)}
     <div>${back.map(row).join("")}</div>
     ${fwd.length?`<details class="nbfwd"${(s.nbOpen||new Set()).has("fwd")?" open":""} data-nbk="fwd"><summary>Ahead of you · ${fwd.length}</summary>${fwd.map(row).join("")}</details>`:""}
+    ${others.length?`<details class="nbfwd"${(s.nbOpen||new Set()).has("tales")?" open":""} data-nbk="tales"><summary>The file's other tales · ${others.length}</summary>${others.map(g=>`<div class="lbl" style="margin:8px 0 2px">${esc(g.t.title||"Untitled")}</div>${g.ps.map(row).join("")}`).join("")}</details>`:""}
+    ${oldN.length?`<details class="nbfwd"${(s.nbOpen||new Set()).has("old")?" open":""} data-nbk="old"><summary>Notes from before the tales were cut apart · ${oldN.length}</summary>${oldN.sort((a,c)=>+a.k.slice(1)-+c.k.slice(1)).map(c=>`<details class="nbch"><summary>${esc(c.t||"")}</summary>${nbNoteHtml(c)}</details>`).join("")}</details>`:""}
     <div class="rdlc"><button class="btn smallbtn" data-nb="off">Stop keeping it</button><button class="btn smallbtn" data-nb="del">✕ Delete the notes</button></div>${say}</div>`;
 }
 function nbPaint(s,force){
@@ -36411,6 +36527,7 @@ function nbWire(s,box,goFrom){
     else if(a==="off"){await nbSet(s,x=>{if(x.nb)x.nb.on=false;});s.nbCmp=null;s.nbPause=false;nbPaint(s);}
     else if(a==="del"){if(!confirm("Delete this book's notes? Reading them again costs the same as the first time."))return;s.nbAdd={};s.nbCmp=null;s.nbPause=false;await nbSet(s,x=>{delete x.nb;});nbPaint(s);}
     else if(a==="retry")again();
+    else if(a==="recut"){await nbSet(s,x=>{if(x.nb)x.nb.recut=true;});again();}
     else if(a==="cmp-sonnet"||a==="cmp-opus")nbCompare(s,a.slice(4));
     else if(a==="cmp-x"){s.nbCmp=null;s.nbPause=false;again();}
     else if(a==="use-h"||a==="use-o"){const o=a==="use-o",cmp=s.nbCmp;if(!cmp)return;
