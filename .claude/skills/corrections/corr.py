@@ -209,13 +209,16 @@ class File:
         self.changes.append(c)
         return c
 
-    def blurb(self, book, text, story=None, why="", src=""):
+    def blurb(self, book, text, story=None, why="", src="", doubt=""):
+        """doubt: why the row should start unticked, shown beside it (build 2026-11-13.10 on)."""
         x = story if story is not None else book
-        return self._book("blurb", book, story, {"was": plain(x.get("summary")), "to": text.strip(), "why": why, "src": src})
+        return self._book("blurb", book, story, {"was": plain(x.get("summary")), "to": text.strip(), "why": why, "src": src, "doubt": doubt})
 
-    def pages(self, book, n, story=None, why="", src=""):
+    def pages(self, book, n, story=None, why="", src="", doubt=""):
+        """doubt: why the row should start unticked (build 2026-11-13.10 on), e.g. a count more
+        than 30% from the one there now, where which edition the owner has is theirs to say."""
         x = story if story is not None else book
-        return self._book("pages", book, story, {"was": str(x.get("pages") or ""), "to": str(int(n)), "why": why, "src": src})
+        return self._book("pages", book, story, {"was": str(x.get("pages") or ""), "to": str(int(n)), "why": why, "src": src, "doubt": doubt})
 
     def dates(self, book, to, story=None, why="", src=""):
         """A book's or story's own stage and readings, put back as `to` says:
