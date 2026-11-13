@@ -135,6 +135,16 @@ its job, and here with its fields. A new kind never needs a new loader.
   - A checker's `out` may carry `pos`, the book's number in the OTHER series:
     read `out` before `pos`, or every move lands placed in the series it is
     leaving.
+  - A series the shelf already keeps as a collection by the same hand is
+    filled, never made a second time: `corr.File.whole` refuses `coll=None`
+    for it and names the one there (`File.existing(name, author)` asks
+    first). A file planned from a copy older than an earlier file's load
+    passes that file as `File(job, shelf, pending=[path])`, so its new
+    collections count too. Two parts of one job once made a second
+    collection for 5 series (the app's 🧹 Make them one, in Tidying up,
+    joins such a pair). A loose book that is already one of the
+    collection's stories is left out of the items: 📚 A book that's
+    already a story folds it in with its file.
   - A change that makes a NEW collection goes first in the file: a story
     another change moves there by `to` then finds it (`serInColl`) instead of
     making a second one.

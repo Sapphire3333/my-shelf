@@ -1611,6 +1611,74 @@ const SMOKE=`
       must(histLog[0].id==="fx-auto"&&histLog.length===HISTLOG_MAX&&mine()===100,"a press here took one of yours: yours "+mine());
       return "150 of yours + 195 from a file on the other device + 1 by itself: yours 100, the app's 100, newest of each first";}
     finally{histSrc=was;histLog.length=0;histLog.push.apply(histLog,keep);saveHistLog();}});
+  /* a corrections file moved 191 loose books into collections and 170 had a Drive file:
+     every file stayed with the old page in Recently deleted. A fold carries it now, a story
+     stepping out carries it back, and one folded before gets it from the bin, once */
+  await check("a book folded into a collection keeps its Drive file, and one folded before gets it back",async()=>{
+    const F=(id)=>({id,name:id+".epub",size:1,mime:"application/epub+zip"});
+    const coll=B("fx-ff1","Kite Stories","Ann Fixture",{type:"collection",entries:[E("ka","Kite A"),E("kc","Kite C")]});
+    const bk=B("fx-ffb","Kite B","Ann Fixture",{driveFile:F("fkb"),readPos:{f:0.4},marks:[{id:"m1",text:"a line"}]});
+    const old=B("fx-ffc","Kite C","Ann Fixture",{driveFile:F("fkc")});
+    try{return await onShelf([coll,bk],async()=>{
+      await foldIntoCollection(["fx-ffb"],coll);
+      const kb=coll.entries.find(e=>e.title==="Kite B");
+      must(kb&&kb.driveFile&&kb.driveFile.id==="fkb"&&kb.readPos&&kb.readPos.f===0.4&&hlListOf(kb).length===1,"the fold dropped the file: "+JSON.stringify(kb&&{f:kb.driveFile,p:kb.readPos}));
+      const nb=await entryToBook(coll,kb);
+      must(nb.driveFile&&nb.driveFile.id==="fkb"&&nb.readPos&&hlListOf(nb).length===1,"stepping out dropped the file");
+      await dbPut("trash",{id:"fx-ffc",at:Date.now(),book:JSON.parse(JSON.stringify(old)),cover:null,images:{},foldedInto:{coll:"fx-ff1",en:{id:"kc",title:"Kite C"}}});
+      await foldFileBack();
+      const kc=coll.entries.find(e=>e.id==="kc"),t=await dbGet("trash","fx-ffc");
+      must(kc.driveFile&&kc.driveFile.id==="fkc"&&t&&t.fileBack,"the bin's file didn't come back: "+JSON.stringify({f:kc.driveFile,done:t&&t.fileBack}));
+      kc.driveFile=null;await foldFileBack();
+      must(!kc.driveFile,"a file taken off came back a second time");
+      return "a fold keeps the file, its place and highlights; a story stepping out takes them; the bin gives an old fold its file once";});}
+    finally{for(const id of ["fx-ff1","fx-ffb","fx-ffc"]){await dbDel("books",id);await dbDel("trash",id);}}});
+  /* a corrections file made a collection for a series the shelf already kept as one:
+     its moved-in book was a story there already under a longer title, its list held the
+     rest in order with no numbers. A third collection of the same name by someone else
+     is another series. Under a Finished collection, a story saying nothing is a finish */
+  await check("two collections of one series are made one, in order, with nothing of yours lost",async()=>{
+    const PNG="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const F=(id)=>({id,name:id+".epub",size:1,mime:"application/epub+zip"});
+    const ids=["fx-co1","fx-co2","fx-co3","fx-cf1","fx-cf2"];
+    const list=[
+      B("fx-co1","Wren Street Mysteries","Ann Fixture",{type:"collection",created:1000,entries:[
+        E("o1","The Lost Kite (Wren Street Mysteries, #1)"),
+        E("o2","The Red Door",{status:"finished",rating:7,readings:[{id:"or2",start:"",end:"2022-05-01"}],dateFinished:"2022-05-01"}),
+        E("o3","The Gold Coin: Wren Street Mysteries, Book 4")]}),
+      B("fx-co2","Wren Street Mysteries","Ann Fixture, Bo Helper",{type:"collection",created:2000,summary:"A street of mysteries.",entries:[
+        E("n1","The Lost Kite",{driveFile:F("fk1"),pages:"120"}),E("n2","The Red Door",{pages:"140"}),
+        E("n3","The Third Bell",{pages:"150"}),E("n4","The Gold Coin",{pages:"160"}),
+        E("n5","The Last Lamp",{status:"finished",rating:8,cover:true,coverV:5})]}),
+      B("fx-co3","Wren Street Mysteries","Cy Other",{type:"collection",created:500,entries:[E("x1","Wren Street")]}),
+      B("fx-cf1","Harbour Tales","Ann Fixture",{type:"collection",created:1000,entries:[E("h1","Harbour One")]}),
+      B("fx-cf2","Harbour Tales","Ann Fixture",{type:"collection",created:3000,status:"finished",entries:[E("h1b","Harbour One",{pages:"90"}),E("h2","Harbour Two")]})];
+    try{return await onShelf(list,async()=>{
+      await dbPut("images",{key:"fx-co2|n5",data:PNG,v:5});
+      const rows=collTwins(),pair=rows.map(r=>r.keep.id+">"+r.drop.id).sort().join(" ");
+      must(pair==="fx-cf1>fx-cf2 fx-co1>fx-co2","paired: "+pair);
+      const r=rows.find(x=>x.keep.id==="fx-co1"),h=collTwinHtml(rows);
+      must(r.plan.pairs.map(p=>p.o.id+"="+p.k.id+":"+p.how).join(" ")==="n1=o1:fold n2=o2:fold n4=o3:fold","pairs: "+r.plan.pairs.map(p=>p.o.id+"="+p.k.id+":"+p.how).join(" "));
+      must(h.includes("the older")&&h.includes("2 of its stories move in")&&h.includes("3 stories are in both and made one")&&h.includes("its file"),"the row says: "+h.replace(/<[^>]+>/g," ").replace(/\s+/g," ").slice(0,400));
+      must(collTwins().length===2&&books.length===5,"asking changed something");
+      await collTwinMerge(rows);
+      const c=books.find(b=>b.id==="fx-co1"),f=books.find(b=>b.id==="fx-cf1");
+      must(!books.some(b=>b.id==="fx-co2"||b.id==="fx-cf2")&&books.some(b=>b.id==="fx-co3"),"the emptied ones stayed, or another author's went");
+      must(c.entries.map(e=>e.id).join(",")==="o1,o2,n3,o3,n5","the order: "+c.entries.map(e=>e.id).join(","));
+      const o1=c.entries[0],o2=c.entries[1],n5=c.entries[4];
+      must(o1.driveFile&&o1.driveFile.id==="fk1"&&String(o1.pages)==="120"&&String(o2.pages)==="140","the file or pages didn't come across");
+      must(entStatusOf(c,o2)==="finished"&&o2.rating===7&&o2.readings.length===1,"the finished one lost its reading");
+      must(entStatusOf(c,n5)==="finished"&&n5.rating===8&&n5.author==="Ann Fixture, Bo Helper","the moved one: "+JSON.stringify({s:entStatusOf(c,n5),a:n5.author}));
+      must(c.summary==="A street of mysteries.","the blurb didn't come");
+      const im=await dbGet("images","fx-co1|n5");must(im&&im.data===PNG,"the moved story's picture stayed behind");
+      must(f.entries.map(e=>e.id).join(",")==="h1b,h2"&&entStatusOf(f,f.entries[0])==="finished"&&entStatusOf(f,f.entries[1])==="finished"&&String(f.entries[0].pages)==="90",
+        "under a Finished collection: "+f.entries.map(e=>e.id+":"+entStatusOf(f,e)).join(","));
+      await doUndo();
+      const c2=books.find(b=>b.id==="fx-co1"),d2=books.find(b=>b.id==="fx-co2"),f2=books.find(b=>b.id==="fx-cf2");
+      must(c2&&d2&&f2&&c2.entries.length===3&&d2.entries.length===5&&!c2.entries[0].driveFile&&f2.entries.length===2,"↶ didn't give both back");
+      return "the older kept, 3 in both made one (file and pages carried), 2 moved in after the one each followed, picture copied; another author's left; a finish under a Finished collection kept; one ↶";});}
+    finally{for(const id of ids){await dbDel("books",id);await dbDel("trash",id);}
+      for(const k of ["fx-co2|n5","fx-co1|n5"])await dbDel("images",k);}});
   await check("every screen draws",async()=>{
     const drawn=[];
     for(const v of ["overview","care","library","challenges","ach","search","insights","quotes","history","settings"]){

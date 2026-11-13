@@ -60,9 +60,57 @@ def load(path):
         return Shelf(json.load(f), path)
 
 
+SER_SKIP = {"the", "a", "an", "of", "series", "books", "book", "collection", "set"}
+
+
+def series_key(name):
+    """the app's serFindName: a series' words, little ones off, in any order"""
+    s = unicodedata.normalize("NFKD", str(name or "").lower())
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    w = [x for x in re.sub(r"[^\w]+|_", " ", s).split() if x not in SER_SKIP]
+    return " ".join(sorted(w)) if w else fold(name)
+
+
+def surnames(author):
+    """the app's authorsSameHand: each person's last word, a one-word name whole"""
+    out = set()
+    for p in re.split(r"[,;&·・]|\band\b", str(author or "").lower()):
+        w = [x for x in re.sub(r"[^\w]+|_", " ", unicodedata.normalize("NFKD", p)).split() if x]
+        if w:
+            out.add(w[-1])
+    return out
+
+
 class File:
-    def __init__(self, job, shelf):
+    def __init__(self, job, shelf, pending=()):
+        """pending: earlier corrections files written from an older copy and loaded since, or not
+        loaded yet. Their new collections are not in this copy, so whole() checks them too."""
         self.job, self.shelf, self.changes = job, shelf, []
+        self.pending = []
+        for p in pending:
+            with open(os.path.expanduser(p), encoding="utf-8") as f:
+                for c in json.load(f).get("changes", []):
+                    if c.get("kind") == "whole" and not c.get("book"):
+                        self.pending.append({"name": c.get("name", ""), "author": c.get("author", ""), "file": os.path.basename(p)})
+
+    def existing(self, name, author):
+        """The collection already kept for this series by the same hand: a dict from the copy,
+        or {"pending": file} when an earlier file makes it, or None. Two parts of one job once
+        made a second collection for 5 series the shelf already had, and a third part would
+        have made more; a series found again goes INTO the one there."""
+        k, a = series_key(name), surnames(author)
+        def same(n, au):
+            return series_key(n) == k and (not a or not surnames(au) or bool(a & surnames(au)))
+        for b in self.shelf.collections():
+            if same(b.get("title"), b.get("author") or next((e.get("author") for e in b.get("entries") or [] if e.get("author")), "")):
+                return b
+        for c in self.changes:
+            if c.get("kind") == "whole" and not c.get("book") and same(c.get("name"), c.get("author")):
+                return {"pending": "this file"}
+        for p in self.pending:
+            if same(p["name"], p["author"]):
+                return {"pending": p["file"]}
+        return None
 
     def _book(self, kind, book, story, extra):
         c = {"kind": kind, "book": book["id"]}
@@ -113,7 +161,15 @@ class File:
         series' collection at its number (made if the shelf has none). drop: (entry, kept_entry)
         pairs, one book twice, carried into the one kept; (entry, kept_entry, True) merges a copy
         that has a life of its own too (its readings, rating, stage and notes go with it). rename: an existing collection takes
-        `name` and `author` (build 2026-11-09.31 on); without it they name only a new one."""
+        `name` and `author` (build 2026-11-09.31 on); without it they name only a new one.
+        A new collection (coll=None) for a series the shelf, this file or a pending file already
+        keeps is refused: pass that collection as coll, its stories as ("story", …) items in their
+        order, and leave out a loose book that is already one of its stories."""
+        if not coll:
+            hit = self.existing(name, author)
+            if hit:
+                where = hit.get("pending") or f'"{hit.get("title", "")}" ({hit.get("id", "")})'
+                raise ValueError(f"{name}: the shelf already keeps this series as a collection, in {where}. Fill that one instead of making a second.")
         c = {"kind": "whole", "name": name, "author": author}
         if coll:
             c.update(book=coll["id"], title=coll.get("title", ""), was=[e["id"] for e in coll.get("entries") or []])
