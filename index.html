@@ -9877,16 +9877,33 @@ const storySurfaces=(en,coll)=>{
    softFold squashes both sides the way the import's titleKey does — lower
    case, accents off, only letters and digits kept — and softHit asks whether
    the folded query sits inside the folded text, then, failing that, whether
-   it sits there within one typo (two from eight letters on), by the sliding
-   edit distance in softNear. softTier says which it was — 0 the letters as
+   each of its words sits there, a long word within a typo (see A TYPO IS A
+   WORD'S), by the sliding edit distance in softNear. softTier says which it was — 0 the letters as
    typed, 1 folded, 2 within a typo — so a list can keep the exact hits in
-   front. A query under four letters is never fuzzed: three letters within one
-   edit of anything is everything. Callers fold the query once (softFold) and
-   hand the folded form in as `fq`, so a shelf of thousands of rows folds
-   only its own side per keystroke. */
+   front. Callers fold the query once (softQ) and hand the folded form in as
+   `fq`, so a shelf of thousands of rows folds only its own side per keystroke.
+   ┌─ A TYPO IS A WORD'S, NOT THE WHOLE QUERY'S ──────────────────────────────┐
+   │ The query was folded into one string, spaces gone, and its typos counted │
+   │ over all of it: "Thea stil" was "theastil", eight letters, two typos     │
+   │ anywhere. So "Thea" lost its a and stood for "the", "stil" sat inside    │
+   │ "Hostile", and typing more found MORE: 28 books for "Thea sti", 78 for   │
+   │ "Thea stil", every "The …" with an s and an i in it. Now softQ keeps the │
+   │ query's own words (softQW, by its folded form), and a near match is one  │
+   │ where EVERY word is in the text, as typed or, for a word of SOFT_MIN     │
+   │ letters or more, within one typo (two from nine letters on). A shorter   │
+   │ word must be there as typed: four letters within one edit of anything is │
+   │ "the". The whole query, folded, sitting in the text still comes first    │
+   │ (a title typed without its spaces). A caller that folds its query with   │
+   │ softFold alone gets it treated as one word.                              │
+   └──────────────────────────────────────────────────────────────────────────┘ */
 const softFold=s=>String(s||"").toLowerCase().normalize("NFKD").replace(/\p{M}+/gu,"").replace(/[^\p{L}\p{N}]+/gu,"");
+const SOFT_MIN=5,softQW=new Map();
+const softQ=raw=>{const fq=softFold(raw);
+  if(fq&&!softQW.has(fq)){if(softQW.size>200)softQW.clear();softQW.set(fq,String(raw||"").split(/\s+/).map(softFold).filter(Boolean));}
+  return fq;};
+const softWords=(h,fq)=>(softQW.get(fq)||[fq]).every(w=>h.includes(w)||softNear(h,w));
 function softNear(hay,fq){
-  const n=fq.length,slack=n>=8?2:n>=4?1:0,m=hay.length;
+  const n=fq.length,slack=n>=9?2:n>=SOFT_MIN?1:0,m=hay.length;
   /* a blurb or a page of notes is too long to walk this way per keystroke,
      and the folded-includes test above has already had its go at it */
   if(!slack||!m||m>600)return false;
@@ -9905,13 +9922,13 @@ function softNear(hay,fq){
   }
   return false;
 }
-const softHit=(text,fq)=>{if(!fq)return true;const h=softFold(text);return h.includes(fq)||softNear(h,fq);};
+const softHit=(text,fq)=>{if(!fq)return true;const h=softFold(text);return h.includes(fq)||softWords(h,fq);};
 const softTier=(text,qlc,fq)=>{
   if(!fq)return 0;
   const t=String(text||"").toLowerCase();
   if(t.includes(qlc))return 0;
   const h=softFold(text);
-  return h.includes(fq)?1:softNear(h,fq)?2:-1;
+  return h.includes(fq)?1:softWords(h,fq)?2:-1;
 };
 /* the best tier across a book's name, author and series — the order a find
    box's results stand in once it has something typed in it */
@@ -9923,7 +9940,7 @@ const softBookTier=(b,qlc,fq)=>{
 const findMatchesStory=en=>{
   const f=(libFind||"").trim().toLowerCase();
   if(!f)return false;
-  const fq=softFold(f);
+  const fq=softQ(f);
   return softHit(en.title,fq)||softHit(en.author,fq)
     ||(en.keywords||[]).some(k=>softHit(k,fq))
     ||(!!en.prio&&fq.length>=4&&"priority".startsWith(fq));
@@ -10355,7 +10372,7 @@ document.addEventListener("keydown",e=>{
 function jumpHits(raw,booksOnly){
   const qlc=String(raw||"").trim().toLowerCase();
   if(!qlc)return [];
-  const fq=softFold(qlc);
+  const fq=softQ(qlc);
   const out=[];
   const tier=t=>softTier(t,qlc,fq);
   const push=(k,rank,item)=>{if(rank>=0)out.push(Object.assign({kind:k,rank},item));};
@@ -14662,6 +14679,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-13.6",go:["tab:library"],lines:["<b>🔎 Finding is stricter about typos.</b> Every find box forgave a typo anywhere in what you typed, so a short word could stand for another (“Thea” for “the”) and typing more letters could bring in more books, not fewer. Now each word you type has to be there, and only a word of five letters or more may carry a typo (two from nine). A title typed without its spaces is still found, and the closest matches still come first."]},
   {v:"2026-11-13.5",go:["tab:library"],lines:["<b>🔎 The Library's find box keeps what you type.</b> On a phone, a short pause in the middle of a word could double letters (“st” typed, a pause, then “i”, came out “ststi”): the shelf redrew under the keyboard and handed it a new box. While you're typing, the box now stays the same one and only the books under it change."]},
   {v:"2026-11-13.4",go:["el:care:#dupBox"],lines:["<b>☁ A book put inside a collection keeps its Drive file.</b> Putting a book inside a collection, by hand, with ⤵ Move in or from a corrections file, left its Drive file, the place you'd got to and its highlights behind with the old page in Recently deleted, so the story said it had no file. It keeps them now, and a story taken back out takes them too. Books put inside before get their file back by themselves a few seconds after the app opens, from Recently deleted, for as long as it still holds them (30 days).","<b>🧹 One series kept as two collections becomes one.</b> In 🧰 Shelf care → Tidying up, two collections of one series by the same author now have <b>🧹 Make them one</b>: the older stays, the other's stories go into it after the ones they followed, a story that is in both is made one (its file and pages kept), and the emptied collection goes to Recently deleted. One ↶ puts it all back. Two series that only share a name, by different authors, are left alone. A book that is already one of a collection's stories no longer stands there as a second copy: 📚 A book that's already a story folds it in."]},
   {v:"2026-11-13.3",go:["el:care:#drvConnBox"],lines:["<b>📚 One Drive file for the several books it holds.</b> An omnibus or a box set, books 1 to 6 in one file, can now go to all of them at once. In 🧰 Shelf care → Connect your Drive files, a file whose name holds several books of that collection has <b>Use it for several…</b> beside Use it, with the books its numbers name already ticked; one already given to just one book is listed in its own fold, <b>Give it to them…</b>; and ☁ From Drive on a book's page offers the same. The books then share the file: one place in it, kept on the device once, and the page count that moves is the book you're in, found by its title in the file's own contents. Where a title can't be found there, your place is kept and you mark each book Finished yourself."]},
@@ -23801,7 +23819,7 @@ function renderLibrary(){
      waved through for being a story at all, and stories surface for several
      reasons besides matching — being part-read is one — so every story you had on
      the go turned up under Reading now no matter what you had typed. */
-  const ffq=softFold(flc);
+  const ffq=softQ(flc);
   /* the box finds a tag or a genre as well as a name. An import brings the
      shelf it came from in as a tag, so typing that word is what gathers the
      books it added — and the sort keeps title, author and series hits in
@@ -62057,7 +62075,7 @@ let srchOpenColl=new Set();
 function renderSearchBody(){
   const m=q("#sbody");
   shelfRowPaint();   /* see SHELVES THAT FILL THEMSELVES */
-  const qlc=S.q.trim().toLowerCase(),fq=softFold(qlc);   /* see softHit */
+  const qlc=S.q.trim().toLowerCase(),fq=softQ(qlc);   /* see softHit */
   /* the kind switch, offered only where there is something to switch between */
   const kCount={};KINDS.forEach(([k])=>kCount[k]=books.filter(b=>kindOf(b)===k).length);
   const sKindRow=(kCount.fanfic||kCount.ai)
@@ -62679,7 +62697,7 @@ function renderSearchBody(){
   const aq=q("#aq",m);
   if(aq){
     const renderAuth=()=>{const box=q("#authChips",m);
-      const afq=softFold(S.authorQ);
+      const afq=softQ(S.authorQ);
       const fl=S.authorQ?authorList.filter(([a])=>softHit(a,afq)):authorList;
       box.innerHTML=fl.map(([a,n])=>`<button class="aut" data-au="${esc(a)}">${esc(a)} <b>${n}</b></button>`).join("")||'<span class="none">No authors yet.</span>';
       qa("[data-au]",box).forEach(b=>b.onclick=()=>pick({type:"author",value:b.dataset.au,label:"Books by "+b.dataset.au}));};
@@ -62888,7 +62906,7 @@ function renderQuotes(){
   /* the same date-keyed pick Overview greets you with, nudge and all, so
      asking for another in either place changes both */
   const qod=dayPickBy(all.filter(x=>!x.b.apart),"qodSkip",quoteKey);
-  const f=QT.q.trim().toLowerCase(),fq=softFold(f);   /* see softHit */
+  const f=QT.q.trim().toLowerCase(),fq=softQ(f);   /* see softHit */
   const hits=QT.hand||all.filter(x=>!f
     ||softHit(stripHtml(x.t),fq)
     ||softHit(x.b.title,fq)
