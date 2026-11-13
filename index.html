@@ -14683,6 +14683,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-13.9",go:["tab:library"],lines:["<b>🏛 Free to borrow looks further.</b> Besides Open Library, it now asks archive.org itself, and only takes a copy that is the same title by the same author, so its search's near misses stay out. A copy someone uploaded says so, since it can be taken down. A book out of copyright now links its clean ebook on Standard Ebooks or Project Gutenberg where there is one, instead of a scan. Every book is asked again once over the next while, by itself."]},
   {v:"2026-11-13.8",go:["tab:library"],lines:["<b>📓 A tale's notes are its own.</b> In a book of several tales in one file, the notebook used to cut the file every 15 pages from its first page, so one part could hold the end of one tale and the start of the next. Now it finds where each tale begins (its title page) and cuts there, then by the tale's chapters or every 15 pages from its own start. The notebook shows the tale you're in, with the file's other tales folded under it. Parts read before under the old cut wait for <b>↻ Read them again by tale</b>, which says what it costs; the old notes stay folded at the foot until then."]},
   {v:"2026-11-13.7",go:["el:overview:#secReading"],lines:["<b>📖 Read on every book you're reading.</b> On Today, only the book in your hands had 📖 Read; the ones under Also reading had to be opened from their own pages first. Each of them with a file now has its own 📖 Read, a story in a collection opening at that story. In the Library's spines, a spine's 📖 opens the reader too."]},
   {v:"2026-11-13.6",go:["tab:library"],lines:["<b>🔎 Finding is stricter about typos.</b> Every find box forgave a typo anywhere in what you typed, so a short word could stand for another (“Thea” for “the”) and typing more letters could bring in more books, not fewer. Now each word you type has to be there, and only a word of five letters or more may carry a typo (two from nine). A title typed without its spaces is still found, and the closest matches still come first."]},
@@ -53463,7 +53464,7 @@ const PICK_MEDAL={
 };
 function pickDef(key){
   const i=key.indexOf(":"),k=key.slice(0,i),v=key.slice(i+1);
-  if(k==="free")return {label:v==="p"?"🏛 Free to read":"🏛 Free to borrow",note:v==="p"?"Out of copyright on Open Library: anyone can read these, with no borrowing.":"On your shelf, and Open Library lets anyone borrow them for 14 days with a free account.",rows:()=>freePickRows(v)};
+  if(k==="free")return {label:v==="p"?"🏛 Free to read":"🏛 Free to borrow",note:v==="p"?"Free to read, with no borrowing: out of copyright on Open Library, Standard Ebooks or Project Gutenberg, or open to all on archive.org.":"On your shelf, and Open Library or archive.org lets anyone borrow them for 14 days with a free account.",rows:()=>freePickRows(v)};
   if(k==="bingo"){const sq=bgSquare(v),d=pickBingo(v);return {label:"Bingo — "+((sq&&sq.label)||v),note:d.note,rows:d.rows};}
   if(k==="rainbow"){const c=RAINBOW.find(r=>r[0]===v)||["",v],every=!!S.rbAll;
     return {label:"The rainbow — "+c[1].toLowerCase()+" covers",
@@ -79240,7 +79241,8 @@ const freeStage=u=>u.en?entStatusOf(u.b,u.en):statusOf(u.b);
 const freeRank=s=>s==="want"?0:s==="reading"?1:2;
 function freeDue(){
   const at=freeLook.at,lim=freeAll?Infinity:freeDay()-FREE_AGAIN;
-  return freeUnits().filter(u=>!(at[u.key]>lim)).sort((a,c)=>(at[a.key]||0)-(at[c.key]||0)||freeRank(freeStage(a))-freeRank(freeStage(c)));
+  const hit=freeLook.hit,again=k=>at[k]<FREE_SRC_DAY&&(!hit[k]||(hit[k].k==="p"&&!hit[k].src));
+  return freeUnits().filter(u=>!(at[u.key]>lim)||again(u.key)).sort((a,c)=>(at[a.key]||0)-(at[c.key]||0)||freeRank(freeStage(a))-freeRank(freeStage(c)));
 }
 const freeLangOf=(x,b)=>FREE_LANGS[String(langOf(x)||langOf(b)||"").trim().toLowerCase()]||"eng";
 const freeUrl=(ask,n)=>"https://openlibrary.org/search.json?limit="+n+"&fields=key,title,author_name,first_publish_year,ebook_access,editions,editions.key,editions.title,editions.language,editions.ebook_access,editions.ia&q="+encodeURIComponent(ask);
@@ -79267,10 +79269,69 @@ async function freeAsk(u){
   for(const w of t===long?[t]:[t,long]){
     if(w!==t)await freeWait();
     for(const d of await freeSearch(`title:"${w}"${sur?` author:"${sur}"`:""}`,L,5)){const e=freeEd(d,L);
-      if(e&&(called(d.title)||called(e.title))&&(!first||authorNear(first,(d.author_name||[]).join(" "))))return freeHitOf(e,L);}
+      if(e&&(called(d.title)||called(e.title))&&(!first||authorNear(first,(d.author_name||[]).join(" ")))){
+        const h=freeHitOf(e,L);
+        /* out of copyright: the clean edition, where Standard Ebooks or Gutenberg has it */
+        if(h.k==="p"){let c=null;try{c=await freeClassic(raw,author,first);}catch(er){}if(c)Object.assign(h,c);}
+        return h;}}
+  }
+  await freeWait();
+  return await freeArchive(raw,author,first,L);
+}
+/* ┌─ 🏛 BEYOND OPEN LIBRARY ─────────────────────────────────────────────────┐
+   │ archive.org's own search finds what Open Library has no edition for:     │
+   │ books in its lending library that no Open Library record points at, and │
+   │ scans people have uploaded (some as pictures, mediatype image). Its     │
+   │ search is loose, and most of what it answers is another book, so only a │
+   │ strict match counts: the title the same once its little words, its     │
+   │ punctuation and a bracket at the end are set aside (freeIaKey), the     │
+   │ whole title or a part of the item's either side of a colon, and the     │
+   │ author named, as the item's creator or in its own title (a pen name:    │
+   │ an upload by the writer behind it, titled with the name on the cover).  │
+   │ In the lending library it is borrowed (k "b"); open to all it is read  │
+   │ (k "p"); restricted to the print-disabled it is no use here and passed. │
+   │ An upload can be taken down, so its row says it was put there by       │
+   │ someone. A book Open Library has as out of copyright is also asked of   │
+   │ Standard Ebooks (its search page; its catalogue feed is for members)    │
+   │ and then Project Gutenberg (Gutendex, about 9 s an answer, so never     │
+   │ for the whole shelf), and the clean edition found is the one linked     │
+   │ (h.src, h.url). Books last asked before these were here are asked again │
+   │ once (FREE_SRC_DAY).                                                     │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const FREE_SRC_DAY=Math.floor(Date.UTC(2026,10,13)/864e5);
+const freeIaKey=t=>serWords(String(t||"").replace(/\s[([].*$/,"")).filter(w=>!["and","the","a","an","of","to"].includes(w)).join(" ");
+async function freeArchive(raw,author,first,L){
+  const key=freeIaKey(raw),words=key.split(" ").filter(w=>w.length>1).slice(0,8);if(!words.length||!first)return null;
+  const q=`title:(${words.join(" ")}) AND mediatype:(texts OR image)`;
+  const j=await fetchJson("https://archive.org/advancedsearch.php?q="+encodeURIComponent(q)+"&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=collection&fl[]=mediatype&fl[]=access-restricted-item&fl[]=language&rows=25&output=json",1,12000);
+  const name=softFold(author);
+  for(const d of (j&&j.response&&j.response.docs)||[]){
+    const t=String(d.title||""),cr=[].concat(d.creator||[]).join(" ");
+    if(freeIaKey(t)!==key&&!t.split(/\s*[:—–]\s*/).some(c=>freeIaKey(c)===key))continue;
+    if(!(authorNear(first,cr)||(name.length>=6&&softFold(t).includes(name))))continue;
+    const lang=[].concat(d.language||[]).join(" ").toLowerCase();
+    if(lang&&!lang.startsWith(L.slice(0,2))&&!lang.includes(L))continue;
+    const col=[].concat(d.collection||[]),lend=col.includes("inlibrary")||col.includes("lendinglibrary");
+    const shut=d["access-restricted-item"]===true||String(d["access-restricted-item"])==="true";
+    if(shut&&!lend)continue;
+    return {k:lend?"b":"p",ia:String(d.identifier||""),ed:"",l:L,src:"ia",up:!lend&&!col.some(c=>/^(americana|toronto|cdl|universallibrary|gutenberg|opensource_textbooks)$/.test(c))};
   }
   return null;
 }
+async function freeText(url,ms){const ac=new AbortController(),t=setTimeout(()=>ac.abort(),ms||12000);
+  try{const r=await fetch(url,{signal:ac.signal});if(!r.ok)throw new Error("HTTP "+r.status);return await r.text();}finally{clearTimeout(t);}}
+async function freeClassic(raw,author,first){
+  const key=freeIaKey(raw),sur=surnameOf(first);if(!key)return null;
+  try{const d=new DOMParser().parseFromString(await freeText("https://standardebooks.org/ebooks?query="+encodeURIComponent(raw+" "+sur)),"text/html");
+    for(const li of d.querySelectorAll('li[typeof="schema:Book"]')){const nm=[...li.querySelectorAll('[property="schema:name"]')].map(x=>x.textContent.trim()),at=li.getAttribute("about")||"";
+      if(nm[0]&&freeIaKey(nm[0])===key&&authorNear(first,nm.slice(1).join(" "))&&/^\/ebooks\//.test(at))return {src:"se",url:"https://standardebooks.org"+at};}}catch(e){}
+  try{const j=JSON.parse(await freeText("https://gutendex.com/books/?search="+encodeURIComponent(raw+" "+sur),20000));
+    for(const b of (j&&j.results)||[]){const who=(b.authors||[]).map(a=>String(a.name||"").split(",").reverse().join(" ")).join(" ");
+      if(freeIaKey(b.title)===key||String(b.title||"").split(/\s*[:;]\s*/).some(c=>freeIaKey(c)===key))if(authorNear(first,who))return {src:"pg",url:"https://www.gutenberg.org/ebooks/"+(+b.id)};}}catch(e){}
+  return null;
+}
+const FREE_WHERE={ia:"archive.org",se:"Standard Ebooks",pg:"Project Gutenberg"};
+const freeWhere=h=>FREE_WHERE[h&&h.src]||"Open Library";
 function freeNote(key,h){
   const had=!!freeLook.hit[key],asked=key in freeLook.at;
   freeLook.at[key]=freeDay();
@@ -79328,10 +79389,12 @@ function freeSay(h){
   if(s==="borrow_unavailable")return "all out just now"+(v.n?`, ${v.n} waiting`:"");
   return h.k==="p"?"free to read, no borrowing":"";
 }
-const freeGone=h=>{const v=freeLive.get(h.ia);return !!v&&(v.s==="private"||v.s==="error");};
-const freeLink=h=>/^\/books\//.test(h.ed||"")||!h.ia?"https://openlibrary.org"+(h.ed||""):"https://archive.org/details/"+encodeURIComponent(h.ia);
+/* Open Library's word on a copy is for its own lending; an upload open to all, or a
+   clean edition, is not one of its loans */
+const freeGone=h=>{if(h.src==="se"||h.src==="pg"||(h.src==="ia"&&h.k==="p"))return false;const v=freeLive.get(h.ia);return !!v&&(v.s==="private"||v.s==="error");};
+const freeLink=h=>h.url?h.url:/^\/books\//.test(h.ed||"")||!h.ia?"https://openlibrary.org"+(h.ed||""):"https://archive.org/details/"+encodeURIComponent(h.ia);
 const freeLangSay=h=>{const n=Object.keys(FREE_LANGS).find(k=>FREE_LANGS[k]===h.l);return n&&n!=="english"?` In ${n.charAt(0).toUpperCase()+n.slice(1)}.`:"";};
-const freeMark=h=>{const say=h.k==="p"?"Free to read on Open Library":"Anyone can borrow this free from Open Library";return `<span class="bst free" title="${say}" aria-label="${say}">🏛</span>`;};
+const freeMark=h=>{const say=h.k==="p"?`Free to read on ${freeWhere(h)}`:`Anyone can borrow this free from ${freeWhere(h)}`;return `<span class="bst free" title="${say}" aria-label="${say}">🏛</span>`;};
 const freeCollCount=b=>rdFileOf(b)||b.driveFile?0:collWholes(b).filter(en=>freeLook.hit[freeKey(b,en)]&&!entFileHolder(b,en)).length;
 function freeSignRow(b){
   if(!b||isFic(b))return "";
@@ -79339,7 +79402,7 @@ function freeSignRow(b){
     const c=books.find(x=>x.id===b.id),en=c&&(c.entries||[]).find(e=>e.id===b._story);
     return c&&en&&!freeHasFile(c,en)?freeMark(h):"";}
   if(isColl(b)&&collWholes(b).length){const n=freeCollCount(b);
-    return n?`<span class="bst free" title="${n} of the books inside can be borrowed or read free from Open Library">🏛 ${n}</span>`:"";}
+    return n?`<span class="bst free" title="${n} of the books inside can be borrowed or read free: Open Library, archive.org, Standard Ebooks or Project Gutenberg">🏛 ${n}</span>`:"";}
   const h=freeLook.hit[b.id];
   return h&&!freeHasFile(b)?freeMark(h):"";
 }
@@ -79349,10 +79412,10 @@ const freeEntSign=(b,en)=>{const h=freeEntHit(b,en);return h?freeMark(h):"";};
 const freeEntLink=(b,en)=>{const h=freeEntHit(b,en);
   /* on a phone 🏛 alone, as big as the buttons beside it (.entfree) — the
      word stays on the computer */
-  return h?`<a class="bst free entfree" href="${esc(freeLink(h))}" target="_blank" rel="noopener" title="${h.k==="p"?"Read it free on Open Library":"Borrow it free from Open Library, 14 days"}" aria-label="${h.k==="p"?"Read it free on Open Library":"Borrow it free from Open Library"}">🏛<span class="bstw"> ${h.k==="p"?"Read free":"Borrow"}</span></a>`:"";};
+  return h?`<a class="bst free entfree" href="${esc(freeLink(h))}" target="_blank" rel="noopener" title="${h.k==="p"?"Read it free on "+freeWhere(h):"Borrow it free from "+freeWhere(h)+", 14 days"}" aria-label="${h.k==="p"?"Read it free on "+freeWhere(h):"Borrow it free from "+freeWhere(h)}">🏛<span class="bstw"> ${h.k==="p"?"Read free":"Borrow"}</span></a>`:"";};
 function freeLineInner(h){
   const live=freeSay(h);
-  return `<div class="vline2">🏛 ${h.k==="p"?"Free to read on Open Library, out of copyright.":"You can borrow this free from Open Library for 14 days, with a free account."}${live&&h.k!=="p"?` ${live.charAt(0).toUpperCase()+live.slice(1)}.`:""}${freeLangSay(h)} <a class="btn smallbtn" href="${esc(freeLink(h))}" target="_blank" rel="noopener">Open it there</a></div>`;
+  return `<div class="vline2">🏛 ${h.k==="p"?(h.src==="ia"?`Free to read on archive.org${h.up?", put there by someone who uploaded it, so it may be taken down":""}.`:`Free to read on ${freeWhere(h)}, out of copyright.`):`You can borrow this free from ${freeWhere(h)} for 14 days, with a free account.`}${live&&h.k!=="p"?` ${live.charAt(0).toUpperCase()+live.slice(1)}.`:""}${freeLangSay(h)} <a class="btn smallbtn" href="${esc(freeLink(h))}" target="_blank" rel="noopener">Open it there</a></div>`;
 }
 function freeLinePaint(key,h){
   const s=q("#freeLine");if(!s||s.dataset.freekey!==key)return;
