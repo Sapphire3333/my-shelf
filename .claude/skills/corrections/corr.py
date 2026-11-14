@@ -27,11 +27,22 @@ def fold(s):
     return re.sub(r"[^\w]|_", "", s)
 
 
+# JavaScript's \s, which the app squeezes and trims: Python's \s also takes \x1c-\x1f and \x85,
+# and leaves out
+_JS_WS = "\t\n\v\f\r   " + "".join(map(chr, range(0x2000, 0x200b))) + "    　﻿"
+_JS_WS_RUN = re.compile("[" + _JS_WS + "]+")
+_ENTITIES = (("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'"), ("&amp;", "&"))
+
+
 def plain(html):
-    """a blurb as the app compares it: tags off, spaces squeezed"""
-    s = re.sub(r"<[^>]+>", " ", str(html or ""))
-    s = s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'")
-    return re.sub(r"\s+", " ", s).strip()
+    """a blurb as the app compares it: stripHtml in index.html, step for step. Every tag becomes a
+    space, then &nbsp; &lt; &gt; &quot; &#39; and &amp; are decoded in that order and in any case,
+    &amp; LAST, so an escaped entity ("&amp;nbsp;") comes out as "&nbsp;" and is not read twice;
+    then whitespace is squeezed to one space and trimmed."""
+    s = re.sub(r"<[^>]*>", " ", str(html or ""))
+    for ent, ch in _ENTITIES:
+        s = re.sub(re.escape(ent), lambda m, ch=ch: ch, s, flags=re.I)
+    return _JS_WS_RUN.sub(" ", s).strip(_JS_WS)
 
 
 class Shelf:
@@ -112,14 +123,17 @@ class File:
                 return {"pending": p["file"]}
         return None
 
-    def _book(self, kind, book, story, extra):
+    def _book(self, kind, book, story, extra, keep=()):
+        """keep: fields written even when empty ("was" of a blurb or page count the copy didn't
+        have: the app only checks a row against the shelf when `was` is there, and a blurb typed
+        in after the copy must make the row stale rather than be written over)."""
         c = {"kind": kind, "book": book["id"]}
         x = book
         if story is not None:
             c["story"], x = story["id"], story
         c["title"] = x.get("title", "")
         c["author"] = (story or {}).get("author") or book.get("author", "")
-        c.update({k: v for k, v in extra.items() if v not in (None, "")})
+        c.update({k: v for k, v in extra.items() if v is not None and (v != "" or k in keep)})
         self.changes.append(c)
         return c
 
@@ -210,15 +224,20 @@ class File:
         return c
 
     def blurb(self, book, text, story=None, why="", src="", doubt=""):
-        """doubt: why the row should start unticked, shown beside it (build 2026-11-13.10 on)."""
+        """`was` is the summary exactly as the copy stores it, HTML and all: the app's CORR_DO.blurb
+        runs blbPlain on it itself, and text already made plain, read a second time, is not the same
+        text where a blurb holds an escaped entity ("&amp;nbsp;"), so the row looked changed since
+        the copy. Written when empty too (see _book). doubt: why the row should start unticked,
+        shown beside it (build 2026-11-13.10 on)."""
         x = story if story is not None else book
-        return self._book("blurb", book, story, {"was": plain(x.get("summary")), "to": text.strip(), "why": why, "src": src, "doubt": doubt})
+        return self._book("blurb", book, story, {"was": str(x.get("summary") or ""), "to": text.strip(), "why": why, "src": src, "doubt": doubt}, keep=("was",))
 
     def pages(self, book, n, story=None, why="", src="", doubt=""):
-        """doubt: why the row should start unticked (build 2026-11-13.10 on), e.g. a count more
-        than 30% from the one there now, where which edition the owner has is theirs to say."""
+        """`was` is written when empty too (see _book). doubt: why the row should start unticked
+        (build 2026-11-13.10 on), e.g. a count more than 30% from the one there now, where which
+        edition the owner has is theirs to say."""
         x = story if story is not None else book
-        return self._book("pages", book, story, {"was": str(x.get("pages") or ""), "to": str(int(n)), "why": why, "src": src, "doubt": doubt})
+        return self._book("pages", book, story, {"was": str(x.get("pages") or ""), "to": str(int(n)), "why": why, "src": src, "doubt": doubt}, keep=("was",))
 
     def dates(self, book, to, story=None, why="", src=""):
         """A book's or story's own stage and readings, put back as `to` says:

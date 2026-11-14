@@ -55,7 +55,11 @@ Every change has a `kind`, its target, and `title` / `author` as they were in th
 copy. The target is `"book": "<id>"` (with `"story": "<entry id>"` for a story in
 a collection) or, for the import list, `"row": "<id>"` (found again by title and
 author if the list was loaded afresh). `was` is the value the change replaces,
-as it stood in the copy; `why` and `src` are shown beside it.
+as it stood in the copy: for a blurb the stored text as it is, HTML and all
+(the app makes it plain itself, and plain text made plain again differs where
+a blurb holds an escaped entity), and `""` where the copy had no blurb or page
+count, still written, since without `was` the app can't see one typed in
+after the copy and writes over it. `why` and `src` are shown beside it.
 
 | kind | what it does | its fields |
 |---|---|---|
