@@ -11608,6 +11608,66 @@ let lastFileBk=0,lastFileSig="",fileBkCount=0;
 
 /* =============== sync (Supabase — optional, offline-first) =============== */
 const CFG=window.SHELF_CONFIG||{};
+/* ┌─ WHAT THE CLOUD SENDS ───────────────────────────────────────────────────┐
+   │ Supabase's free plan allows 5 GB a month of traffic out of the cloud    │
+   │ (egress), and one month of corrections files reached 4.92 of it. To see │
+   │ where it goes, every answer from the Supabase address is counted on     │
+   │ this device: window.fetch is wrapped once, here, before the sync client  │
+   │ is made, so the client and the direct calls to the functions (claude,   │
+   │ hardcover, mangadex, goodreads, nudge) all pass through it. An answer's │
+   │ content-length is what was sent, compressed — a Hardcover lookup         │
+   │ measured 10,041 bytes sent for 34,358 unpacked; one with no length is    │
+   │ read and counted unpacked (netAdd's `u`), and the readout says so.      │
+   │ netCat sorts by path: the shared lists (rest/v1/meta), books, other     │
+   │ tables, pictures (storage), each function by name, sign-in. pullAll      │
+   │ adds a pull and each shared list's unpacked size (netPull), which says   │
+   │ which list weighs most. Kept per day, NET_DAYS days, in localStorage     │
+   │ (NET_KEY): this device's own, never synced. The Storage card shows it   │
+   │ (netHtml).                                                               │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const NET_KEY="myShelf.netUse",NET_DAYS=14;
+let NET=null,netT=0,netOpen=false;
+const netBase=()=>{try{return String(CFG.url||"").replace(/\/+$/,"");}catch(e){return "";}};
+const netToday=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
+function netLoad(){if(NET)return NET;try{NET=JSON.parse(localStorage.getItem(NET_KEY)||"null");}catch(e){}
+  if(!NET||typeof NET!=="object"||!NET.days||typeof NET.days!=="object")NET={days:{}};return NET;}
+function netSave(){clearTimeout(netT);netT=setTimeout(()=>{try{const d=netLoad().days,ks=Object.keys(d).sort();
+  ks.slice(0,Math.max(0,ks.length-NET_DAYS)).forEach(k=>delete d[k]);localStorage.setItem(NET_KEY,JSON.stringify(NET));}catch(e){}},1500);}
+function netDay(){const d=netLoad().days,k=netToday();return d[k]||(d[k]={b:{},n:{},u:{},pulls:0,keys:{}});}
+const netCat=u=>{const m=/\/(rest|storage|functions|auth)\/v1\/([\w-]+)/.exec(String(u||""))||[];
+  return m[1]==="rest"?(m[2]==="meta"?"lists":m[2]==="books"?"books":"tables"):m[1]==="storage"?"pictures":m[1]==="functions"?"fn:"+m[2]:m[1]==="auth"?"signin":"other";};
+function netAdd(u,bytes,unpacked){try{const d=netDay(),c=netCat(u);d.n[c]=(d.n[c]||0)+1;d.b[c]=(d.b[c]||0)+(+bytes||0);
+  if(unpacked)d.u[c]=(d.u[c]||0)+(+bytes||0);netSave();}catch(e){}}
+function netPull(rows){try{const d=netDay();d.pulls++;
+  (rows||[]).forEach(r=>{let n=0;try{n=JSON.stringify(r.value).length;}catch(e){}d.keys[r.key]=(d.keys[r.key]||0)+n;});netSave();}catch(e){}}
+(function(){const f0=window.fetch;if(typeof f0!=="function"||f0.__net)return;
+  const w=function(input,init){const p=f0.call(window,input,init);
+    try{const u=typeof input==="string"?input:(input&&input.url)||String(input||""),base=netBase();
+      if(base&&u.startsWith(base))p.then(r=>{try{const cl=r.headers.get("content-length");
+        if(cl!=null&&cl!=="")netAdd(u,+cl||0,false);
+        else r.clone().arrayBuffer().then(b=>netAdd(u,b.byteLength,true),()=>{});}catch(e){}},()=>{});}catch(e){}
+    return p;};
+  w.__net=true;window.fetch=w;})();
+const NET_NAMES={lists:"shared lists",books:"books",tables:"other tables",pictures:"covers and pictures",signin:"sign-in",other:"other",
+  "fn:claude":"Claude","fn:hardcover":"Hardcover","fn:mangadex":"MangaDex","fn:nudge":"reminders"};
+const NET_LISTS={prefs:"settings",shopPics:"shop pictures",kwList:"tag list",quests:"quests and games",trashCloud:"the bin",petPics:"pet pictures",
+  histLog:"history",fandoms:"fandoms",kwCats:"tag families",genres:"genres",metaTimes:"list times",deletions:"deletions",metaDel:"removals",metaAlive:"additions",
+  achSeen:"medals seen",tidyKeep:"tidying answers",streaks:"streaks",ownIcons:"your icons",groupArt:"heading pictures",libArt:"Library pictures",pzPics:"puzzle pictures"};
+function netHtml(){
+  const days=netLoad().days,ks=Object.keys(days).sort().reverse();
+  const tot=d=>Object.values(d.b||{}).reduce((s,x)=>s+x,0);
+  const t=days[netToday()]||{b:{},n:{},u:{},pulls:0,keys:{}};
+  const head=`<div class="hrow2" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><span class="none">☁ From the cloud today, to this device: <b>${fmtBytes(tot(t))}</b>${t.pulls?` in ${t.pulls} pull${t.pulls===1?"":"s"}`:""}</span>
+    <button class="rdtog" id="netTog" aria-expanded="${netOpen}">${netOpen?"▾ What it was":"▸ What it was"}</button></div>`;
+  if(!netOpen)return head;
+  const kinds=Object.keys(t.b||{}).sort((a,c)=>t.b[c]-t.b[a]).map(k=>`${esc(NET_NAMES[k]||k.replace(/^fn:/,""))} ${fmtBytes(t.b[k])}${t.n[k]?` (${t.n[k]}×)`:""}${t.u&&t.u[k]?" unpacked":""}`);
+  const lists=t.pulls?Object.keys(t.keys||{}).sort((a,c)=>t.keys[c]-t.keys[a]).slice(0,8).map(k=>`${esc(NET_LISTS[k]||k)} ${fmtBytes(t.keys[k]/t.pulls)}`):[];
+  const past=ks.slice(0,7).map(k=>{const d=days[k];return `${esc(printDay(k))} ${fmtBytes(tot(d))}${d.pulls?` · ${d.pulls} pulls`:""}`;});
+  return head+`<div class="hint" style="margin:6px 0 0;line-height:1.6">${kinds.length?`<b>Today, by kind:</b> ${kinds.join(" · ")}`:"Nothing from the cloud yet today."}
+    ${lists.length?`<br><b>Each pull brings every shared list whole, unpacked:</b> ${lists.join(" · ")}`:""}
+    ${past.length>1?`<br><b>Day by day:</b> ${past.join(" · ")}`:""}
+    <br>Only this device; your other one keeps its own count. Sizes are as sent, except where it says unpacked, which is bigger than what was sent.</div>`;
+}
 const SYNC={supa:null,user:null,on:false,queue:[],
   /* What we have FINISHED uploading: the kind-and-id of the op against the moment
      it was queued. The waiting list is shared with the other tab through the
@@ -12209,6 +12269,8 @@ async function pullAll(){
     // meta first (additive merge, local edits win)
     try{
       const {data:metaRows,error:me}=await s.from("meta").select("key,value").eq("user_id",uid);
+      /* every list comes whole on every pull — counted, see WHAT THE CLOUD SENDS */
+      if(!me&&metaRows)netPull(metaRows);
       if(!me&&metaRows){
         /* ---- A PULL WRITES THE LISTS THAT MOVED ----
            Every pull wrote some eighteen lists back to the database whether
@@ -14772,6 +14834,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-15.13",go:["el:overview:#stoCard"],lines:["<b>☁ What the cloud sends, counted.</b> The Storage card, at the foot of 🏠 Today and in ⚙ Settings, now says how much this device downloaded from your cloud today, and in how many pulls. ▸ What it was splits it by kind (your shared lists, books, covers and pictures, Claude, Hardcover, MangaDex), names the shared lists every pull brings and how big each is, heaviest first, and lists the days before. Your free plan allows 5 GB a month of this; the card shows where it goes. Each device counts its own."]},
   {v:"2026-11-15.12",go:["tab:library"],lines:["<b>↗ See it on stays on the screen with big text.</b> On a phone set to its biggest text, a story's ↗ See it on button in a collection's What's inside ran past the story's box, its ▾ off the edge of the screen. It now takes two lines there instead."]},
   {v:"2026-11-15.11",go:["el:care:#corrSec"],lines:["<b>🎬 Collections and their stories on screen.</b> A collection's page has its own 🎬 On screen now: a television series made of the whole series goes on the collection, and a film of one book goes on that story, which wears a 🎬 on its row in What's inside and a small 🎬 in Contents. Pressing a story's 🎬 opens the collection's panel at that story, where you tick each one seen, take one off, or add one by hand for the whole series or for one story; ✨ Ask Claude there looks at the series and every book in it at once. Read before you watch, in 🧰 Shelf care, lists stories too, and 📥 Corrections from a file can fill all of this in. A remake that shares an older film's title stays a film of its own."]},
   {v:"2026-11-15.10",go:["el:care:#corrSec"],lines:["<b>👤 Who an author is, from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now fill authors' panels with the few lines ✨ Who they are writes: who they are, where they're from, what they write, and the books they're best known for. Each row shows the lines first; an author whose panel already has lines starts unticked. ✓ Use puts them in, and pressing an author's name on one of their books shows them. ↻ Ask again in a panel still writes one anew."]},
@@ -61602,11 +61665,14 @@ async function refreshStorage(){
       <div class="hrow2"><span class="bignum">${fmtBytes(si.usage)}</span><span class="none">used of ${fmtBytes(si.quota)} available on this device</span></div>
       <div class="bar"><i class="${pct>90?"full":pct>70?"warn":""}" style="width:${Math.max(1,Math.min(100,pct))}%"></i></div>
       <div class="none">${counts}</div>
+      ${SYNC.on?netHtml():""}
       ${breakBtn}
       ${pct>90?'<div class="hint" style="color:var(--rose);margin-top:7px">Nearly full — export a backup, then delete some pictures or old backups.</div>':""}${bkWarn}${dirWarn}`;
   }else{
-    q("#stoCard").innerHTML=`<div class="none">${counts}</div>${breakBtn}<div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}`;
+    q("#stoCard").innerHTML=`<div class="none">${counts}</div>${SYNC.on?netHtml():""}${breakBtn}<div class="hint" style="margin-top:7px">This browser won't tell the app how much room is left.</div>${bkWarn}${dirWarn}`;
   }
+  /* what the cloud sent this device — see WHAT THE CLOUD SENDS */
+  {const nt=q("#netTog");if(nt)nt.onclick=e=>{e.preventDefault();e.stopPropagation();netOpen=!netOpen;refreshStorage();};}
   wireBreakdown();
   /* the files' own list, on ⚙ Settings — see YOUR BOOK FILES, IN ONE PLACE */
   try{refreshBookFiles();}catch(e){}
