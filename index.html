@@ -14765,6 +14765,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-15.8",go:["el:care:#corrSec"],lines:["<b>🧹 Names written two ways, from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now make one name of an author, a series, a tag, a genre, a fandom, a character or a pairing that your shelf has written two or more ways. Each row shows every spelling as a pill with how many of your books carry it; the lit one is kept. Tap another to keep that one instead, or untick the row to leave them apart. A pair you once told Tidying up to leave starts unticked and says so. ✓ Use makes them all one in a single press, and one ↶ puts every name back."]},
   {v:"2026-11-15.7",go:["tab:overview"],lines:["<b>🏠 Also reading's covers are book-shaped again.</b> On Today, each book under Also reading stretched its cover to the full height of its row, so a row with a pace line under it had a tall, narrow cover with its sides cut off. Each one keeps a book's proportions now, whatever is written beside it."]},
   {v:"2026-11-15.6",lines:["<b>📖 Back leaves a MangaDex chapter.</b> The browser's Back and the phone's Back now close the chapter you're reading, the way ‹ Back does, and you stay on the book's page. ☰ Chapters opens over the chapter, so Back closes the list first. In a large text size, the ‹ ☰ › at the top of a chapter no longer stand off the right edge of the screen."]},
   {v:"2026-11-15.5",lines:["<b>📖 Where to read it, in one card.</b> Under a book's blurb, the lines that say where else you can read it stood one under another in three different styles. They are one card now, <b>Where to read it</b>, a row each with its name on the left: <b>🏛 Borrow free</b> (Open Library), <b>🛒 Officially</b> (the publishers) and <b>✍️ Fan translation</b> (MangaDex). A book with none of them has no card. What J-Novel Club's own ebooks can do is in the help (?), under <i>Bring a book from elsewhere into the reader</i>."]},
@@ -18630,6 +18631,15 @@ function pushOp(op){
     }
   }catch(e){/* a receipt must never sink the write it describes */}
 }
+/* A merge called from inside a bigger press hands its step to that press
+   instead of pushing one of its own, so the press stays ONE op (see ONE NAME
+   WRITTEN TWO WAYS, BY FILE). With OP_COLLECT unset it is pushOp exactly. */
+let OP_COLLECT=null;
+function pushOrCollect(op){
+  if(!OP_COLLECT){pushOp(op);return;}
+  OP_COLLECT.items.push(...(op.items||[]));
+  const lb=op.label;if(lb)OP_COLLECT.labels.push(...(Array.isArray(lb)?lb:[lb]));
+}
 function refreshHistBtns(){
   const u=q("#uBtn"),r=q("#rBtn");
   if(u)u.disabled=!HIST.undo.length;
@@ -18898,7 +18908,11 @@ async function applyOp(op,inv,quiet){
        pushes an undo step of its own, so one press of Fill in became four
        presses of ↶ Undo, with the new names still sitting in your genre list
        after the first. They ride here instead, and go back together. */
-    const lbs=Array.isArray(op.label)?op.label:(op.label?[op.label]:[]);
+    /* Undone last first, like the items: a press that joins several merges into
+       one step (OP_COLLECT) can label one fandom's cast twice, once for the
+       fandoms made one and once for the characters, and only the reverse walk
+       ends on the cast as it was before the first */
+    const lbs0=Array.isArray(op.label)?op.label:(op.label?[op.label]:[]),lbs=inv?lbs0.slice().reverse():lbs0;
     /* a bulk merge's thousands of words: their lists are saved once, below */
     const lbMany=lbs.length>20;
     kwForgetQuiet=lbMany;
@@ -59781,7 +59795,7 @@ async function mergeFandomsMany(groups,onProg){
     const now=[...new Set([...(was||[]),...cast])];
     if(was)labels.push({kind:"cast",name:k,before:was,after:now});else labels.push({kind:"fandom",name:k,add:true,cast:now});
     addFandom(k);fandoms[k]=now;});
-  if(items.length||labels.length)pushOp({t:"bulk",items,label:labels});
+  if(items.length||labels.length)pushOrCollect({t:"bulk",items,label:labels});
   saveFandoms();
   if(SYNC.on)flushQueue();
   return items.length;
@@ -59979,7 +59993,7 @@ async function castRename(plan,onProg){
     was.filter(c=>!now.includes(c)).forEach(c=>markMetaDel("char:"+f+"|"+c));
     fandoms[f]=now;labels.push({kind:"cast",name:f,before:[...was],after:now});}
   if(labels.length){saveFandoms();touchMeta("fandoms");}
-  if(items.length||labels.length)pushOp(Object.assign({t:"bulk",items},labels.length?{label:labels}:{}));
+  if(items.length||labels.length)pushOrCollect(Object.assign({t:"bulk",items},labels.length?{label:labels}:{}));
   if(SYNC.on)flushQueue();
   return items.length;
 }
@@ -60574,7 +60588,7 @@ async function mergeTagsMany(moves,onProg){
     markMetaDel("kw:"+m.from);unmarkMetaDel("kw:"+m.to);
   }
   kwForgetQuiet=false;
-  if(items.length)pushOp({t:"bulk",items,label:labels});
+  if(items.length)pushOrCollect({t:"bulk",items,label:labels});
   saveKwList();saveKwColors();saveKwCats();
   if(SYNC.on)flushQueue();
   return items.length;
@@ -61205,7 +61219,7 @@ async function mergeGenre(from,to){
      walked into first. The vocabulary rides the bulk op's `label` instead,
      which applyOp already knows how to put back, colour and marks and all, and
      the list is written down quietly. */
-  if(items.length)pushOp({t:"bulk",items,label:{kind:"genre",name:from,color:fromColor}});
+  if(items.length)pushOrCollect({t:"bulk",items,label:{kind:"genre",name:from,color:fromColor}});
   saveGenresQuiet();
   if(SYNC.on)flushQueue();
   return items.length;
@@ -81694,7 +81708,7 @@ const CORR_KINDS=[["whole","📚 Series made whole"],["series","📚 Series"],["
   ["rename","🧹 One name written two ways"],["author","👤 Who an author is"],["screen","🎬 On screen"],["upcoming","🔎 Coming next"]];
 let CORR=null,CORR_LOADED=false;
 /* wordOff: the words switched off on a "words" row, "i|part|word"; wAddOpen: its fold of rows that only add */
-const CORR_UI={off:new Set(),on:new Set(),more:{},say:"",wordOff:new Set(),wAddOpen:false};
+const CORR_UI={off:new Set(),on:new Set(),more:{},say:"",wordOff:new Set(),wAddOpen:false,keep:{}};
 const corrX=t=>t.en||t.b||t.it;
 function corrSerNow(t){
   if(t.it)return SERF.series[serFindKey(t.it)]||serFindFree(t.it)||null;
@@ -81723,6 +81737,8 @@ const CORR_DO={
   whole:{now:()=>"",to:()=>"",was:()=>""},
   /* genres, tags and Set in: corrWordsRow lines it up, corrWordsUse writes it */
   words:{now:()=>"",to:()=>"",was:()=>"",use:(t,c,r,made)=>corrWordsUse(t,c,r,made)},
+  /* one name written two ways: corrRenameRow lines it up, corrRenameUse makes it one */
+  rename:{now:()=>"",to:()=>"",was:()=>""},
   /* ┌─ A ROW OF THE IMPORT LIST THAT IS A FIC ──────────────────────────────┐
      │ A Goodreads list holds fan fiction read on other sites as if it were   │
      │ books. Kind "fic" (row, fandoms, link) marks such a row kind "fanfic"  │
@@ -82014,6 +82030,91 @@ function corrWordsSec(label,mine){
     ${gone.length?`<details style="margin-top:6px"><summary class="hint" style="cursor:pointer;margin:0">${gone.length.toLocaleString()} for books that aren't there any more</summary>${gone.slice(0,CORR_SHOW).map(corrWordsHtml).join("")}</details>`:""}
   </div>`;
 }
+/* ┌─ 🧹 ONE NAME WRITTEN TWO WAYS, BY FILE ──────────────────────────────────┐
+   │ Kind "rename" {what, names, keep, why, doubt?}: one author, series, tag, │
+   │ genre, fandom, character or pairing written two or more ways, made one. │
+   │ corrRenameRow counts each name as the shelf has it NOW (corrRenameCounts:│
+   │ the exact spelling, books and stories), drops the names gone since the   │
+   │ copy, and lights the file's keep, else the most carried; a pill keeps    │
+   │ another (CORR_UI.keep). A pair once left as it was in Claude's look      │
+   │ (settings.claudeTidyLeave) or the tag pairs (tagLeft) starts unticked    │
+   │ and says so, as a doubt does. corrRenameUse hands the ticked rows to the │
+   │ merges Tidying up already trusts (mergeTagsMany, mergeGenre,             │
+   │ mergeFandomsMany, castRename; authors and series are fields, written as  │
+   │ claudeTidyApply writes them) with OP_COLLECT set, so their steps join    │
+   │ the press's own: one ↶ for every name the press made one.               │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const CORR_RN_KIND={author:"an author",series:"a series",tag:"a tag",genre:"a genre",fandom:"a fandom",character:"a character",ship:"a pairing"};
+function corrRenameCounts(){
+  const m={};Object.keys(CORR_RN_KIND).forEach(k=>{m[k]=new Map();});
+  const bump=(k,v)=>{v=String(v||"");if(v.trim())m[k].set(v,(m[k].get(v)||0)+1);};
+  books.forEach(b=>{if(!b)return;
+    bump("author",b.author);bump("series",b.series);
+    (b.keywords||[]).forEach(x=>bump("tag",x));(b.genres||[]).forEach(x=>bump("genre",x));
+    (b.fandoms||[]).forEach(x=>bump("fandom",x));(b.characters||[]).forEach(x=>bump("character",x));(b.ships||[]).forEach(x=>bump("ship",x));
+    (b.entries||[]).forEach(en=>{if(!en)return;if(en.author&&en.author!==b.author)bump("author",en.author);
+      (en.keywords||[]).forEach(x=>bump("tag",x));(en.genres||[]).forEach(x=>bump("genre",x));});});
+  return m;
+}
+function corrRenameRow(r,V){
+  const c=r.c,what=CORR_RN_KIND[c.what]?c.what:"";r.what=what;
+  if(!what){r.gone="a kind of name this build doesn't know";return;}
+  /* the name to keep may be on no book yet (the fuller form of an author, a genre on your list
+     alone): it still counts as a name to keep, with nothing under it */
+  const cnt=V[what],keep0=String(c.keep||""),all=[...new Set([keep0,...(Array.isArray(c.names)?c.names:[])].map(x=>String(x||"")).filter(x=>x.trim()))];
+  r.names=all.filter(n=>cnt.get(n)>0||n===keep0).map(n=>[n,cnt.get(n)||0]);r.title=keep0||all[0]||"";
+  if(!r.names.some(([,k])=>k>0)){r.gone="none of these names is on your shelf any more";return;}
+  if(r.names.length<2){r.same=true;r.title=r.names[0][0];return;}
+  const pick=CORR_UI.keep[r.i],has=n=>r.names.some(([x])=>x===n);
+  r.keep=has(pick)?pick:has(keep0)?keep0:r.names.slice().sort((a,b)=>b[1]-a[1])[0][0];r.title=r.keep;
+  /* a pair you once said to leave stays your call: any two of these names in one of your leaves */
+  const lc=s=>String(s).trim().toLowerCase(),now=new Set(r.names.map(([n])=>lc(n)));
+  const both=parts=>parts.filter(x=>x&&now.has(lc(x))).length>=2;
+  const left=(settings.claudeTidyLeave||[]).some(k=>k.startsWith(what+":")&&both(k.slice(what.length+1).split("|")))
+    ||(what==="tag"&&[...tagLeft()].some(k=>both(k.split(" | "))));
+  if(left)r.doubt="you once left these as they were";
+  else if(c.doubt)r.doubt=String(c.doubt).replace(/\s+/g," ").trim().slice(0,160);
+}
+function corrRenameHtml(r){
+  const c=r.c,live=!r.gone&&!r.same;
+  const box=live?`<input type="checkbox" data-corr="${r.i}"${corrOn(r)?" checked":""} style="flex:none;margin-top:3px">`:'<span style="width:13px;flex:none"></span>';
+  const am=s=>`<span class="meta" style="display:block;color:var(--amber-ink,#b45309)">${s}</span>`;
+  const n=(r.names||[]).reduce((s,x)=>s+x[1],0);
+  const note=r.gone?am(esc(r.gone)):r.same?`<span class="meta" style="display:block">already one name</span>`:r.doubt?am(`${esc(r.doubt)}, so it starts unticked`):"";
+  const pills=live?`<div class="crparts" style="margin:6px 0 0 21px"><div class="crpart"><span class="crlab">Keep</span>${r.names.map(([nm,k])=>`<button type="button" class="pill crp${nm===r.keep?" on":""}" data-corrkeep="${r.i}" data-corrname="${esc(nm)}" aria-pressed="${nm===r.keep}">${esc(nm)}${k?` <b>${k}</b>`:""}</button>`).join("")}</div></div>`:"";
+  const why=c.why&&!r.gone?`<div class="meta" style="margin:4px 0 0 21px">✨ ${esc(String(c.why).slice(0,240))}</div>`:"";
+  return `<div class="snap" style="display:block;padding:7px 10px"><label style="display:flex;gap:8px;align-items:flex-start;min-width:0">${box}
+    <span style="min-width:0;flex:1;overflow-wrap:anywhere"><b>${esc(r.title||"")}</b> <span class="meta" style="display:inline">· ${CORR_RN_KIND[r.what]||"a name"}${live?`, ${n} book${n===1?"":"s"}`:""}</span>${note}</span></label>${pills}${why}</div>`;
+}
+async function corrRenameUse(rows){
+  const by=w=>rows.filter(r=>r.what===w&&r.names).map(r=>({keep:r.keep,others:r.names.map(([n])=>n).filter(n=>n!==r.keep)})).filter(g=>g.keep&&g.others.length);
+  const tags=by("tag").flatMap(g=>g.others.map(o=>({from:o,to:g.keep})));
+  if(tags.length)await mergeTagsMany(tags);
+  for(const g of by("genre"))for(const o of g.others)await mergeGenre(o,g.keep);
+  const fd=by("fandom");if(fd.length)await mergeFandomsMany(fd);
+  const plan={characters:{to:new Map(),drop:new Set()},ships:{to:new Map(),drop:new Set()}};
+  by("character").forEach(g=>g.others.forEach(o=>plan.characters.to.set(o,g.keep)));
+  by("ship").forEach(g=>g.others.forEach(o=>plan.ships.to.set(o,g.keep)));
+  if(plan.characters.to.size||plan.ships.to.size)await castRename(plan);
+  const au=new Map(),se=new Map();
+  by("author").forEach(g=>g.others.forEach(o=>au.set(o,g.keep)));by("series").forEach(g=>g.others.forEach(o=>se.set(o,g.keep)));
+  if(!au.size&&!se.size)return;
+  const items=[];
+  for(const b of books){if(!b)continue;
+    const inA=x=>!!x&&au.has(x.author||""),hitS=se.has(b.series||"");
+    if(!inA(b)&&!(b.entries||[]).some(inA)&&!hitS)continue;
+    const before=JSON.parse(JSON.stringify(b));
+    if(inA(b))b.author=au.get(b.author);
+    (b.entries||[]).forEach(en=>{if(inA(en))en.author=au.get(en.author);});
+    if(hitS)b.series=se.get(b.series);
+    touchBook(b,true);
+    if(!(await putOrRestore(b,before)))break;
+    if(SYNC.on)enqueue({kind:"book",id:b.id});
+    items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
+    try{await rebaseOpenBook(b.id);}catch(e){}}
+  if(items.length)pushOrCollect({t:"bulk",items});
+  if(SYNC.on)flushQueue();
+}
 async function corrLoad(){
   if(CORR_LOADED)return;CORR_LOADED=true;
   try{const r=await dbGet("meta","corrFile");if(r&&r.v&&Array.isArray(r.v.changes))CORR=r.v;}catch(e){}
@@ -82040,13 +82141,14 @@ function corrTarget(c){
 }
 function corrRows(){
   if(!CORR)return [];
-  const used=new Set(CORR.used||[]),out=[];
+  const used=new Set(CORR.used||[]),out=[];let RN=null;
   CORR.changes.forEach((c,i)=>{
     if(used.has(i))return;
     const k=c.kind,r={i,c,k,known:!!CORR_DO[k]};out.push(r);
     if(!r.known)return;
     if(k==="whole"){corrWholeRow(r);return;}
     if(k==="words"){corrWordsRow(r);return;}
+    if(k==="rename"){corrRenameRow(r,RN||(RN=corrRenameCounts()));return;}
     const t=corrTarget(c);r.t=t;
     if(t.gone){r.gone=t.gone;return;}
     const D=CORR_DO[k];r.title=String(corrX(t).title||"");r.now=D.now(t);r.to=D.to(c);
@@ -82100,7 +82202,7 @@ function corrSerPut(r){
 async function corrUse(){
   const rows=corrRows().filter(corrOn).slice(0,CORR_PRESS);if(!rows.length)return;
   const done=[],byBook=new Map(),items=[],made=[],was=histSrc;let full=false;
-  rows.filter(r=>r.k!=="series"&&r.k!=="whole"&&r.k!=="fic").forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
+  rows.filter(r=>r.k!=="series"&&r.k!=="whole"&&r.k!=="fic"&&r.k!=="rename").forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
   histSrc="📥 a corrections file";
   try{
     for(const [id,list] of byBook){
@@ -82119,6 +82221,12 @@ async function corrUse(){
     }
     /* series made whole go into the same step of ↶ */
     if(!full)for(const r of rows.filter(r=>r.k==="whole"))if(await corrWholeUse(r,items))done.push(r.i);
+    /* names made one join the same step: their merges collect instead of pushing */
+    const ren=full?[]:rows.filter(r=>r.k==="rename");
+    if(ren.length){OP_COLLECT={items:[],labels:[]};
+      try{await corrRenameUse(ren);}
+      finally{const got=OP_COLLECT;OP_COLLECT=null;items.push(...got.items);made.push(...got.labels);}
+      done.push(...ren.map(r=>r.i));}
     /* genres the press made ride in its ↶ (applyOp's label branch), saved without a step of their own */
     if(made.length)saveGenresQuiet();
     if(items.length)pushOp({t:"bulk",items,...(made.length?{label:made}:{})});
@@ -82143,6 +82251,7 @@ async function corrUse(){
 }
 function corrRowHtml(r){
   if(r.k==="whole")return corrWholeHtml(r);
+  if(r.k==="rename")return corrRenameHtml(r);
   const c=r.c,t=r.t||{},x=t.it||t.en||t.b||{};
   const author=x.author||(t.b&&t.b.author)||c.author||"";
   const where=t.en?` · in ${esc(t.b.title||"a collection")}`:t.it?" · on the import list":"";
@@ -82188,6 +82297,7 @@ function corrPaint(){
         <div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><b>${label}</b><span class="none">${live.length.toLocaleString()}</span>
           ${live.length?`<button class="btn smallbtn" data-corrall="${k}" style="margin-left:auto">${kon?"☐ Untick all":"☑ Tick all"}</button>`:""}</div>
         ${k==="series"&&live.length?`<div class="hint" style="margin:0 0 6px">These become the answers of ✨ Suggested series on the import list and of ✨ Find their series in the Library. Nothing on your shelf changes until 📚 Make them there.</div>`:""}
+        ${k==="rename"&&live.length?`<div class="hint" style="margin:0 0 6px">The lit name is the one kept: every book and story under the others takes it, and the others leave your lists. Tap another to keep that one instead, or untick the row to leave them as they are.</div>`:""}
         ${k==="fic"&&live.length?`<div class="hint" style="margin:0 0 6px">Your import list has these as books. Each becomes a fic there, with its fandom, under ✍️ Fics: nothing on your shelf changes until you add them.</div>`:""}
         ${shown.map(corrRowHtml).join("")}
         ${rest.length>shown.length?`<button class="btn" data-corrmore="${k}" style="margin-top:6px">Show ${Math.min(CORR_SHOW,rest.length-shown.length)} more</button>`:""}
@@ -82207,7 +82317,7 @@ function corrPaint(){
     try{const nf=corrRead(await f.text(),f.name);
       const left=corrRows().filter(r=>r.known&&!r.gone&&!r.same).length;
       if(CORR&&left&&!confirm(`The file loaded now still has ${left} change${left===1?"":"s"} not used. Put it away and load ${f.name} instead?`))return;
-      CORR=nf;CORR_UI.off.clear();CORR_UI.on.clear();CORR_UI.wordOff.clear();CORR_UI.wAddOpen=false;CORR_UI.more={};CORR_UI.say="";await corrSave();}
+      CORR=nf;CORR_UI.off.clear();CORR_UI.on.clear();CORR_UI.wordOff.clear();CORR_UI.wAddOpen=false;CORR_UI.more={};CORR_UI.keep={};CORR_UI.say="";await corrSave();}
     catch(e){CORR_UI.say=`${f.name} couldn't be read: ${(e&&e.message)||e}.`;}
     corrPaint();};}
   on("#corrUse",()=>corrUse());
@@ -82215,6 +82325,8 @@ function corrPaint(){
   /* Tick all takes in the doubtful and the changed too: it is said beside each */
   qa("[data-corrall]",box).forEach(b=>b.onclick=()=>{const k=b.dataset.corrall,live=corrRows().filter(r=>r.k===k&&r.known&&!r.gone&&!r.same),any=live.some(corrOn);
     live.forEach(r=>{if(any){CORR_UI.off.add(r.i);CORR_UI.on.delete(r.i);}else{CORR_UI.off.delete(r.i);CORR_UI.on.add(r.i);}});corrPaint();});
+  /* a name's pill keeps that name instead of the lit one */
+  qa("[data-corrkeep]",box).forEach(b=>b.onclick=e=>{e.preventDefault();CORR_UI.keep[b.dataset.corrkeep]=b.dataset.corrname;corrPaint();});
   qa("[data-corrnone]",box).forEach(d=>d.ontoggle=()=>{CORR_UI.noneOpen=d.open;});
   qa("[data-corrok]",box).forEach(d=>d.ontoggle=()=>{CORR_UI.okOpen=d.open;});
   /* the fold of rows that only add draws them only once it is opened */

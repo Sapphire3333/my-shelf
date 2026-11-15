@@ -283,6 +283,26 @@ class File:
         extra.update(why=why, src=src)
         return self._book("words", book, story, extra)
 
+    RENAME_WHAT = ("author", "series", "tag", "genre", "fandom", "character", "ship")
+
+    def rename(self, what, names, keep, why="", doubt=""):
+        """One name written two or more ways, made one (kind "rename", build 2026-11-15.8 on).
+        what: author, series, tag, genre, fandom, character or ship (a fic's pairing). names:
+        every spelling exactly as the copy writes it; keep: the one that stays (it may be on
+        no book yet). The app counts each name on the shelf as it is when the file is loaded,
+        drops the ones gone since, and starts the row unticked when `doubt` says why, or when
+        the owner once left two of these names as they were in Tidying up."""
+        if what not in self.RENAME_WHAT:
+            raise ValueError("rename: what must be one of " + ", ".join(self.RENAME_WHAT))
+        names = [n for n in dict.fromkeys([keep, *names]) if str(n).strip()]
+        if len(names) < 2:
+            return None
+        c = {"kind": "rename", "what": what, "keep": keep, "names": names}
+        if why: c["why"] = why
+        if doubt: c["doubt"] = doubt
+        self.changes.append(c)
+        return c
+
     def write(self, folder=None):
         folder = folder or os.path.join(os.path.expanduser("~"), "Downloads")
         slug = re.sub(r"[^a-z0-9]+", "-", self.job.lower()).strip("-")[:40] or "changes"
