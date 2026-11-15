@@ -14768,6 +14768,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-15.10",go:["el:care:#corrSec"],lines:["<b>👤 Who an author is, from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now fill authors' panels with the few lines ✨ Who they are writes: who they are, where they're from, what they write, and the books they're best known for. Each row shows the lines first; an author whose panel already has lines starts unticked. ✓ Use puts them in, and pressing an author's name on one of their books shows them. ↻ Ask again in a panel still writes one anew."]},
   {v:"2026-11-15.9",go:["el:care:#corrSec"],lines:["<b>🧹 A name is crossed out only when it will go.</b> In a row of names written two ways, the spellings that give way to the lit one are crossed out only while the row is ticked. An unticked row changes nothing, so its names now stand as they are; tick it and the others cross out at once."]},
   {v:"2026-11-15.8",go:["el:care:#corrSec"],lines:["<b>🧹 Names written two ways, from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now make one name of an author, a series, a tag, a genre, a fandom, a character or a pairing that your shelf has written two or more ways. Each row shows every spelling as a pill with how many of your books carry it; the lit one is kept. Tap another to keep that one instead, or untick the row to leave them apart. A pair you once told Tidying up to leave starts unticked and says so. ✓ Use makes them all one in a single press, and one ↶ puts every name back."]},
   {v:"2026-11-15.7",go:["tab:overview"],lines:["<b>🏠 Also reading's covers are book-shaped again.</b> On Today, each book under Also reading stretched its cover to the full height of its row, so a row with a pace line under it had a tall, narrow cover with its sides cut off. Each one keeps a book's proportions now, whatever is written beside it."]},
@@ -81743,6 +81744,8 @@ const CORR_DO={
   words:{now:()=>"",to:()=>"",was:()=>"",use:(t,c,r,made)=>corrWordsUse(t,c,r,made)},
   /* one name written two ways: corrRenameRow lines it up, corrRenameUse makes it one */
   rename:{now:()=>"",to:()=>"",was:()=>""},
+  /* who an author is: corrAuthorRow lines it up, corrAuthorPut writes the panel's lines */
+  author:{now:()=>"",to:()=>"",was:()=>""},
   /* ┌─ A ROW OF THE IMPORT LIST THAT IS A FIC ──────────────────────────────┐
      │ A Goodreads list holds fan fiction read on other sites as if it were   │
      │ books. Kind "fic" (row, fandoms, link) marks such a row kind "fanfic"  │
@@ -82119,6 +82122,51 @@ async function corrRenameUse(rows){
   if(items.length)pushOrCollect({t:"bulk",items});
   if(SYNC.on)flushQueue();
 }
+/* ┌─ 👤 WHO AN AUTHOR IS, BY FILE ───────────────────────────────────────────┐
+   │ Kind "author" {name, text, known, was, src?}: the lines ✨ Who they are   │
+   │ writes in an author's panel (WHO THE AUTHOR IS), looked up by Claude Code │
+   │ instead. corrAuthorRow finds the author on the shelf by the folded name   │
+   │ (softFold, as the panel keys settings.authorBios), says how many books    │
+   │ carry it, and starts a row unticked when the panel already has lines      │
+   │ that differ from the file's `was` (written since the copy) or that the    │
+   │ file would replace. corrAuthorPut writes them as the panel does, with     │
+   │ by "Claude Code", in one saveSettings. authorBios is a setting that       │
+   │ follows you and stays out of the settings list (SET_HIST_SKIP), like the  │
+   │ panel's own answers: no ↶, and ↻ Ask again rewrites one.                 │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function corrAuthorCounts(){
+  const m=new Map(),bump=n=>{const k=softFold(String(n||""));if(k)m.set(k,(m.get(k)||0)+1);};
+  books.forEach(b=>{if(!b||isFic(b))return;bump(b.author);(b.entries||[]).forEach(en=>{if(en&&en.author&&en.author!==b.author)bump(en.author);});});
+  return m;
+}
+function corrAuthorRow(r,A){
+  const c=r.c,name=String(c.name||"").trim(),k=softFold(name);
+  r.title=name;r.key=k;r.n=A.get(k)||0;
+  if(!k||!r.n){r.gone="no book of theirs on your shelf any more";return;}
+  const kept=(settings.authorBios||{})[k],now=kept?String(kept.text||""):"",to=String(c.text||"").trim();
+  r.now=now;r.to=to;r.same=!!to&&now===to;
+  if(!to){r.gone="nothing found about them";return;}
+  if(c.was!=null&&now!==String(c.was))r.stale="the panel's lines changed since your copy";
+  else if(now)r.doubt="their panel has lines already";
+}
+function corrAuthorHtml(r){
+  const c=r.c,live=!r.gone&&!r.same;
+  const box=live?`<input type="checkbox" data-corr="${r.i}"${corrOn(r)?" checked":""} style="flex:none;margin-top:3px">`:'<span style="width:13px;flex:none"></span>';
+  const am=s=>`<span class="meta" style="display:block;color:var(--amber-ink,#b45309)">${s}</span>`;
+  const note=r.gone?am(esc(r.gone)):r.same?`<span class="meta" style="display:block">already so</span>`:(r.stale||r.doubt)?am(`${esc(r.stale||r.doubt)}, so it starts unticked`):"";
+  const known=(Array.isArray(c.known)?c.known:[]).map(x=>String(x||"").trim()).filter(Boolean).slice(0,6);
+  const body=live?`<div style="margin:6px 0 0 21px;font-size:13.5px;line-height:1.5;overflow-wrap:anywhere">${esc(r.to)}</div>
+    ${known.length?`<div class="meta" style="margin:3px 0 0 21px">Best known for: ${known.map(t=>`<i>${esc(t)}</i>`).join(", ")}</div>`:""}
+    ${r.now?`<div class="meta" style="margin:4px 0 0 21px;opacity:.85">The panel has now: ${esc(r.now.slice(0,240))}</div>`:""}`:"";
+  return `<div class="snap" style="display:block;padding:7px 10px"><label style="display:flex;gap:8px;align-items:flex-start;min-width:0">${box}
+    <span style="min-width:0;flex:1;overflow-wrap:anywhere"><b>${esc(r.title||"")}</b> <span class="meta" style="display:inline">· ${r.n} book${r.n===1?"":"s"} on your shelf</span>${note}</span></label>${body}</div>`;
+}
+function corrAuthorPut(rows){
+  const add={},at=todayStr();
+  rows.forEach(r=>{const known=(Array.isArray(r.c.known)?r.c.known:[]).map(x=>String(x||"").trim()).filter(Boolean).slice(0,6);
+    add[r.key]={text:r.to,known,at,by:"Claude Code"};});
+  settings.authorBios=Object.assign({},settings.authorBios||{},add);saveSettings();
+}
 async function corrLoad(){
   if(CORR_LOADED)return;CORR_LOADED=true;
   try{const r=await dbGet("meta","corrFile");if(r&&r.v&&Array.isArray(r.v.changes))CORR=r.v;}catch(e){}
@@ -82145,7 +82193,7 @@ function corrTarget(c){
 }
 function corrRows(){
   if(!CORR)return [];
-  const used=new Set(CORR.used||[]),out=[];let RN=null;
+  const used=new Set(CORR.used||[]),out=[];let RN=null,AU=null;
   CORR.changes.forEach((c,i)=>{
     if(used.has(i))return;
     const k=c.kind,r={i,c,k,known:!!CORR_DO[k]};out.push(r);
@@ -82153,6 +82201,7 @@ function corrRows(){
     if(k==="whole"){corrWholeRow(r);return;}
     if(k==="words"){corrWordsRow(r);return;}
     if(k==="rename"){corrRenameRow(r,RN||(RN=corrRenameCounts()));return;}
+    if(k==="author"){corrAuthorRow(r,AU||(AU=corrAuthorCounts()));return;}
     const t=corrTarget(c);r.t=t;
     if(t.gone){r.gone=t.gone;return;}
     const D=CORR_DO[k];r.title=String(corrX(t).title||"");r.now=D.now(t);r.to=D.to(c);
@@ -82206,7 +82255,7 @@ function corrSerPut(r){
 async function corrUse(){
   const rows=corrRows().filter(corrOn).slice(0,CORR_PRESS);if(!rows.length)return;
   const done=[],byBook=new Map(),items=[],made=[],was=histSrc;let full=false;
-  rows.filter(r=>r.k!=="series"&&r.k!=="whole"&&r.k!=="fic"&&r.k!=="rename").forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
+  rows.filter(r=>r.k!=="series"&&r.k!=="whole"&&r.k!=="fic"&&r.k!=="rename"&&r.k!=="author").forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
   histSrc="📥 a corrections file";
   try{
     for(const [id,list] of byBook){
@@ -82237,14 +82286,18 @@ async function corrUse(){
   }finally{histSrc=was;}
   if(SYNC.on&&items.length)flushQueue();
   const ser=full?[]:rows.filter(r=>r.k==="series"),fic=full?[]:rows.filter(r=>r.k==="fic");
+  /* who an author is: the panels' lines, a setting that follows you, so no ↶ (see WHO AN AUTHOR IS, BY FILE) */
+  const au=full?[]:rows.filter(r=>r.k==="author");
+  if(au.length){corrAuthorPut(au);done.push(...au.map(r=>r.i));}
   ser.forEach(r=>{corrSerPut(r);done.push(r.i);});
   if(ser.length){serFindFreeFill();serFindSave();serFindFresh();}
   /* fics on the import list: the list changes, the shelf doesn't (see A ROW OF THE IMPORT LIST THAT IS A FIC) */
   fic.forEach(r=>{corrFicPut(r);done.push(r.i);});
   if(fic.length)saveImportQueue();
   CORR.used=[...new Set([...(CORR.used||[]),...done])];await corrSave();
-  const nb=done.length-ser.length-fic.length;
-  CORR_UI.say=[nb?`${nb} change${nb===1?"":"s"} written: one ↶ takes ${nb===1?"it":"them"} back.`:"",ser.length?`${ser.length} series answer${ser.length===1?"":"s"} handed to the series finders: look under ✨ Suggested series on the import list, or ✨ Find their series in the Library. Nothing on your shelf changes until 📚 Make them there.`:"",
+  const nb=done.length-ser.length-fic.length-au.length;
+  CORR_UI.say=[nb?`${nb} change${nb===1?"":"s"} written: one ↶ takes ${nb===1?"it":"them"} back.`:"",
+    au.length?`${au.length} author${au.length===1?"'s":"s'"} lines are in ${au.length===1?"their panel":"their panels"}: press an author's name on one of their books.`:"",ser.length?`${ser.length} series answer${ser.length===1?"":"s"} handed to the series finders: look under ✨ Suggested series on the import list, or ✨ Find their series in the Library. Nothing on your shelf changes until 📚 Make them there.`:"",
     fic.length?`${fic.length} row${fic.length===1?"":"s"} of the import list marked as fics: ${fic.length===1?"it waits":"they wait"} under ✍️ Fics there, to add.`:""].filter(Boolean).join(" ");
   if(full)alert(done.length+" done. "+STORE_FULL_STOP);
   corrPaint();
@@ -82256,6 +82309,7 @@ async function corrUse(){
 function corrRowHtml(r){
   if(r.k==="whole")return corrWholeHtml(r);
   if(r.k==="rename")return corrRenameHtml(r);
+  if(r.k==="author")return corrAuthorHtml(r);
   const c=r.c,t=r.t||{},x=t.it||t.en||t.b||{};
   const author=x.author||(t.b&&t.b.author)||c.author||"";
   const where=t.en?` · in ${esc(t.b.title||"a collection")}`:t.it?" · on the import list":"";
@@ -82301,6 +82355,7 @@ function corrPaint(){
         <div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><b>${label}</b><span class="none">${live.length.toLocaleString()}</span>
           ${live.length?`<button class="btn smallbtn" data-corrall="${k}" style="margin-left:auto">${kon?"☐ Untick all":"☑ Tick all"}</button>`:""}</div>
         ${k==="series"&&live.length?`<div class="hint" style="margin:0 0 6px">These become the answers of ✨ Suggested series on the import list and of ✨ Find their series in the Library. Nothing on your shelf changes until 📚 Make them there.</div>`:""}
+        ${k==="author"&&live.length?`<div class="hint" style="margin:0 0 6px">Each goes into that author's panel (press their name on a book), where ✨ Who they are puts its lines. Nothing on your books changes: ↻ Ask again in a panel writes one anew. An author who already has lines starts unticked.</div>`:""}
         ${k==="rename"&&live.length?`<div class="hint" style="margin:0 0 6px">The lit name is the one kept: every book and story under the others takes it, and the others leave your lists. Tap another to keep that one instead, or untick the row to leave them as they are.</div>`:""}
         ${k==="fic"&&live.length?`<div class="hint" style="margin:0 0 6px">Your import list has these as books. Each becomes a fic there, with its fandom, under ✍️ Fics: nothing on your shelf changes until you add them.</div>`:""}
         ${shown.map(corrRowHtml).join("")}

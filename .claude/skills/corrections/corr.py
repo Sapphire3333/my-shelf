@@ -283,6 +283,24 @@ class File:
         extra.update(why=why, src=src)
         return self._book("words", book, story, extra)
 
+    def author(self, name, text, known=(), was="", why="", src=""):
+        """Who an author is (kind "author", build 2026-11-15.10 on): the lines the author
+        panel's ✨ Who they are writes, for one author named as the shelf writes them. text:
+        three short lines (who they are, where they are from, what they write, anything
+        notable), to the reader as "you" where it matters; known: up to six titles they are
+        best known for (the panel leaves out the ones on the shelf). was: the panel's lines in
+        the copy (copy settings.authorBios under the app's softFold of the name), "" for none.
+        A row whose panel already has lines starts unticked. No ↶: it is a setting."""
+        text = str(text or "").strip()
+        if not name or not text:
+            return None
+        c = {"kind": "author", "name": name, "text": text,
+             "known": [str(k).strip() for k in known if str(k).strip()][:6], "was": was or ""}
+        if why: c["why"] = why
+        if src: c["src"] = src
+        self.changes.append(c)
+        return c
+
     RENAME_WHAT = ("author", "series", "tag", "genre", "fandom", "character", "ship")
 
     def rename(self, what, names, keep, why="", doubt=""):

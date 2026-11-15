@@ -71,9 +71,10 @@ after the copy and writes over it. `why` and `src` are shown beside it.
 | `fic` | a row of the import list that is fan fiction becomes a fic there, with its fandoms, under ✍️ Fics for ＋ Add (build 2026-11-10.14 on); the list changes, not the shelf, so no ↶ | `row`, `fandoms` (the owner's own names where they have them), `link` — `corr.File.fic` |
 | `words` | a book's, collection's or story's genres, tags and Set in (build 2026-11-10.13 on): one row a book, a pill per word the owner can switch off; a row that only adds is folded, ticked; a new genre joins their genres only when used, and one ↶ takes it away | `genres` / `tags`: {add, remove, was}; `setin` (not on a story): {add, replace, was}; `was` is the item's own list in the copy — `corr.File.words` |
 | `rename` | one author, series, tag, genre, fandom, character or pairing written two or more ways, made one (build 2026-11-15.8 on): a pill per spelling with how many books carry it now, the lit one kept; the press hands them to Tidying up's own merges, one ↶ for all | `what`, `names` (every spelling as the copy writes it), `keep`, `doubt` starts it unticked; a pair the owner once left in Tidying up starts unticked by itself — `corr.File.rename` |
+| `author` | the lines of an author's panel, as ✨ Who they are writes them (build 2026-11-15.10 on): into `settings.authorBios` under the folded name; a setting, so no ↶; a panel that already has lines starts unticked | `name` (as the shelf writes it), `text` (three short lines, to the reader as "you"), `known` (up to six titles), `was` (the panel's lines in the copy, "" for none) — `corr.File.author` |
 
 Kinds named for later jobs, which this build counts and keeps but can't use
-yet: `author`, `screen`, `upcoming`. Each one
+yet: `screen`, `upcoming`. Each one
 is added to `CORR_DO` in index.html (door 📥 CORRECTIONS FROM A FILE) with
 its job, and here with its fields. A new kind never needs a new loader.
 
