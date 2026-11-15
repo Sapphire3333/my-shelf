@@ -1652,6 +1652,46 @@ const SMOKE=`
       return "two panels filled (a story's own author too), lines of yours left unticked and untouched, a gone author gone, no step of ↶";});}
     finally{CORR=keepC;Object.assign(CORR_UI,keepU);settings.authorBios=JSON.parse(keepB);saveSettings();await corrSave();
       for(const id of ["fx-a1","fx-a2"])await dbDel("books",id);}});
+  await check("on screen by file: a series' show on its collection, a film on its story, nothing marks it asked, a list changed since unticked, one step of undo",async()=>{
+    const keepC=CORR,keepU={off:new Set(CORR_UI.off),on:new Set(CORR_UI.on),say:CORR_UI.say};
+    const list=[B("fx-s1","The Lantern Saga","Ann Fixture",{type:"collection",entries:[E("s1a","The Lost Kite"),E("s1b","The Red Door"),E("s1c","The Grey Heron",{status:"finished"})]}),
+      B("fx-s2","Moon Hill","Bea Fixture"),
+      B("fx-s3","Tide","Cy Fixture",{screen:[{id:"x1",kind:"film",title:"Tide",year:"1999",seen:false}]}),
+      B("fx-s4","Lanterns at Noon","QuillFox",{kind:"fanfic"})];
+    try{return await onShelf(list,async()=>{
+      must(screenCan(list[0])&&!screenCan(list[3]),"a collection can't hold 🎬, or a fic can");
+      const mk=x=>Object.assign({kind:"screen"},x);
+      const file={myShelfCorrections:1,made:"2026-11-15T10:00:00",copy:"2026-11-15",job:"Fixture on screen",changes:[
+        mk({book:"fx-s1",title:"The Lantern Saga",author:"Ann Fixture",to:[{kind:"series",title:"The Lantern Saga",year:"2023"}],was:[]}),
+        mk({book:"fx-s1",story:"s1a",title:"The Lost Kite",to:[{kind:"film",title:"The Lost Kite",year:"2010"},{kind:"film",title:"The Lost Kite",year:"2010"},{kind:"film",title:"The Lost Kite",year:"1985"}],was:[]}),
+        mk({book:"fx-s1",story:"s1c",title:"The Grey Heron",to:[{kind:"film",title:"Grey Heron",year:"2015"}],was:[]}),
+        mk({book:"fx-s2",title:"Moon Hill",to:[],was:[]}),
+        mk({book:"fx-s3",title:"Tide",to:[{kind:"series",title:"Tide",year:"2020"}],was:[]}),
+        mk({book:"fx-gone",title:"Gone",to:[],was:[]})]};
+      CORR=corrRead(JSON.stringify(file),"fixture.json");CORR_UI.off.clear();CORR_UI.on.clear();
+      const rows=corrRows();
+      must([0,1,2,3].every(i=>corrOn(rows[i]))&&!corrOn(rows[4])&&rows[4].stale&&rows[5].gone,"ticks: "+rows.map(corrOn).join()+" / stale: "+rows[4].stale+" / gone: "+rows[5].gone);
+      must(rows[3].none&&rows[1].add.length===2,"nothing, a film named twice, and its remake: "+rows[3].none+" / "+rows[1].add.length);
+      must(corrScreenHtml(rows[0]).includes("the series as a whole")&&corrScreenHtml(rows[1]).includes("in The Lantern Saga"),"the rows don't say where they go");
+      const n0=HIST.undo.length;await corrUse();
+      const s1=books.find(b=>b.id==="fx-s1"),s2=books.find(b=>b.id==="fx-s2"),s3=books.find(b=>b.id==="fx-s3");
+      must(screenOf(s1).map(x=>x.kind+":"+x.title).join()==="series:The Lantern Saga"&&screenOf(s1.entries[0]).map(x=>x.year).join()==="2010,1985"&&!screenOf(s1.entries[1]).length&&s1.screenAsked&&!s1.entries[0].screenAsked,
+        "the collection and its stories: "+JSON.stringify([s1.screen,s1.entries[0].screen,s1.screenAsked,s1.entries[0].screenAsked]));
+      must(s2.screenAsked&&!screenOf(s2).length&&screenOf(s3).length===1&&HIST.undo.length===n0+1,"nothing / changed since / steps: "+JSON.stringify([s2.screenAsked,s3.screen,HIST.undo.length-n0]));
+      must(screenCount(s1)===4&&screenLineHtml(s1).includes("Series The Lantern Saga (2023) · 3 films of its books"),"the collection's line: "+screenLineHtml(s1));
+      must(screenEnBtn(s1,s1.entries[0]).includes('data-scstory="s1a"')&&screenEnBtn(s1,s1.entries[0]).includes("2 films")&&screenEnBtn(s1,s1.entries[2]).includes(" Film<")&&!screenEnBtn(s1,s1.entries[1])&&screenEnSign(s1,s1.entries[0]).includes("🎬")&&!screenEnSign(s1,s1.entries[1]),
+        "a story's 🎬 on its row and in Contents: "+screenEnBtn(s1,s1.entries[0])+" / "+screenEnBtn(s1,s1.entries[1]));
+      const w=screenWaiting().map(x=>x.en?x.en.title:x.b.title).join("|");
+      must(w==="The Lantern Saga|The Lost Kite|Tide","Read before you watch, a finished story left out: "+w);
+      must(!screenQueue().some(b=>b.id==="fx-s1"||b.id==="fx-s2")&&screenQueue().some(b=>b.id==="fx-s3")&&!screenQueue().some(b=>b.id==="fx-s4"),"what ✨ would still ask: "+screenQueue().map(b=>b.id).join());
+      const t=JSON.parse(JSON.stringify(s1)),n=screenPut(t,[{kind:"film",title:"The Red Door",year:"2012",book:2},{kind:"series",title:"Lantern Tales",year:"",book:0},{kind:"film",title:"Lantern Night",year:"",book:9}],SCREEN_EN_ASK);
+      must(n===3&&screenOf(t.entries[1]).map(x=>x.title).join()==="The Red Door"&&screenOf(t).length===3,"Claude's answers by the book's number: "+n+" "+JSON.stringify([t.screen,t.entries[1].screen]));
+      await doUndo();
+      const u1=books.find(b=>b.id==="fx-s1"),u2=books.find(b=>b.id==="fx-s2");
+      must(!screenOf(u1).length&&!screenOf(u1.entries[0]).length&&!screenOf(u1.entries[2]).length&&!u1.screenAsked&&!u2.screenAsked,"↶ left: "+JSON.stringify([u1.screen,u1.entries[0].screen,u1.screenAsked,u2.screenAsked]));
+      return "a series' show on its collection, films on two stories (a finished one kept out of Read before you watch), a film named twice once and its remake kept, nothing marks a book asked, a list changed since unticked, a gone book gone, answers placed by the book's number, one ↶";});}
+    finally{CORR=keepC;Object.assign(CORR_UI,keepU);await corrSave();
+      for(const id of ["fx-s1","fx-s2","fx-s3","fx-s4"])await dbDel("books",id);}});
   await check("a corrections file makes import rows fics; one-book series have a Tick all of their own",async()=>{
     const keepC=CORR,keepU={off:new Set(CORR_UI.off),on:new Set(CORR_UI.on),say:CORR_UI.say},keepS=JSON.stringify(SERF),N=SERF_NOW,
       keepN={on:new Set(N.on),off:new Set(N.off),one:N.oneOpen},keepF=JSON.stringify(fandoms);

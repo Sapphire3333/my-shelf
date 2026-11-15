@@ -72,9 +72,10 @@ after the copy and writes over it. `why` and `src` are shown beside it.
 | `words` | a book's, collection's or story's genres, tags and Set in (build 2026-11-10.13 on): one row a book, a pill per word the owner can switch off; a row that only adds is folded, ticked; a new genre joins their genres only when used, and one ↶ takes it away | `genres` / `tags`: {add, remove, was}; `setin` (not on a story): {add, replace, was}; `was` is the item's own list in the copy — `corr.File.words` |
 | `rename` | one author, series, tag, genre, fandom, character or pairing written two or more ways, made one (build 2026-11-15.8 on): a pill per spelling with how many books carry it now, the lit one kept; the press hands them to Tidying up's own merges, one ↶ for all | `what`, `names` (every spelling as the copy writes it), `keep`, `doubt` starts it unticked; a pair the owner once left in Tidying up starts unticked by itself — `corr.File.rename` |
 | `author` | the lines of an author's panel, as ✨ Who they are writes them (build 2026-11-15.10 on): into `settings.authorBios` under the folded name; a setting, so no ↶; a panel that already has lines starts unticked | `name` (as the shelf writes it), `text` (three short lines, to the reader as "you"), `known` (up to six titles), `was` (the panel's lines in the copy, "" for none) — `corr.File.author` |
+| `screen` | films and series made of a book (build 2026-11-15.11 on): on a collection what was made of the series as a whole or of several of its books (a television series), on a story a film of that one book; only what the item doesn't have yet is added, not seen; an empty `to` only marks a book or collection asked about, so the app's ✨ never asks again, and those rows stand folded; a story is asked about with its collection, so a story row only adds; one ↶ | `to` ([{kind film/series, title, year}]), `was` (the item's list in the copy; a list changed since starts the row unticked) — `corr.File.screen` |
 
 Kinds named for later jobs, which this build counts and keeps but can't use
-yet: `screen`, `upcoming`. Each one
+yet: `upcoming`. Each one
 is added to `CORR_DO` in index.html (door 📥 CORRECTIONS FROM A FILE) with
 its job, and here with its fields. A new kind never needs a new loader.
 

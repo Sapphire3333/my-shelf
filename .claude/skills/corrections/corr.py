@@ -301,6 +301,35 @@ class File:
         self.changes.append(c)
         return c
 
+    def screen(self, book, found, story=None, why="", src="", doubt=""):
+        """Films and series made of a book (kind "screen", build 2026-11-15.11 on). found:
+        [{"kind": "film"|"series", "title", "year"}]. On a collection, what was made of the
+        series as a whole or of several of its books (a television series usually is); on a
+        story (an entry of the collection), a film of that one book. [] = nothing made of it:
+        the app then only marks the book or collection asked about, so its own ✨ never asks
+        again. A story is asked about with its collection, so a story with nothing is left out
+        (returns None). `was` is the item's list in the copy: a row whose list changed since
+        starts unticked, so a film taken off by hand never comes back."""
+        x = story if story is not None else book
+        to, seen = [], set()
+        for f in found or []:
+            t = str((f or {}).get("title") or "").strip()
+            if not t:
+                continue
+            k = "series" if f.get("kind") == "series" else "film"
+            y = str(f.get("year") or "").strip()
+            y = y if re.fullmatch(r"\d{4}", y) else ""
+            # a remake under the same title, with another year, is a film of its own (the app's screenSame)
+            if any(t.casefold() == a and k == b and (not y or not c or y == c) for a, b, c in seen):
+                continue
+            seen.add((t.casefold(), k, y))
+            to.append({"kind": k, "title": t[:120], "year": y})
+        if story is not None and not to:
+            return None
+        was = [{"kind": s.get("kind") or "film", "title": s.get("title", ""), "year": str(s.get("year") or "")}
+               for s in (x.get("screen") or []) if isinstance(s, dict) and s.get("title")]
+        return self._book("screen", book, story, {"to": to, "was": was, "why": why, "src": src, "doubt": doubt}, keep=("to", "was"))
+
     RENAME_WHAT = ("author", "series", "tag", "genre", "fandom", "character", "ship")
 
     def rename(self, what, names, keep, why="", doubt=""):
