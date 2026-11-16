@@ -14835,6 +14835,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-16.8",go:["el:care:#corrSec"],lines:["<b>🔎 Coming next, from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now bring the books of your series that come after the last one you have, out already or announced. Each row says when, and where it goes: ✓ Use files it as ⌛ Don't have it yet, Want to read, with its date, as a story at its number inside your collection or as a book of its own in its series, just as 🔎 Is the next one out? does. They show on 📅 Coming out. A title you already have is left out, and one whose number you already hold under another title starts unticked. One ↶ takes a press back."]},
   {v:"2026-11-16.7",go:["el:care:#corrSec"],lines:["<b>🖼 A collection's covers, big enough to choose from.</b> In 📥 Corrections from a file, a collection's row under 🖼 Covers now shows yours and each one found 160 px tall instead of a thumbnail, so two editions can be told apart before you tap. On a phone with big text they shrink to two side by side."]},
   {v:"2026-11-16.5",go:["el:care:#corrSec"],lines:["<b>🖼 Old small or grey covers are offered too.</b> Until 9 November the app didn't note who put a cover there, so every cover from before then counted as one you chose, and a covers file left it alone. A small or grey one among them now gets a row too, unticked and saying why: tick it to swap it. Ones you pasted or chose from a file, and good ones from before then, are still never offered."]},
   {v:"2026-11-16.4",go:["el:care:#corrSec"],lines:["<b>🖼 Covers from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now bring covers for your books, your collections and the stories inside them. It first looks at each cover you have, and a row stands only where yours is missing, small (under 400 px tall) or a grey scan, with yours beside the new one, ticked. A cover you put there yourself is never offered a swap. A collection's row shows yours and up to four found, like the series' own art or a box set and its first books' covers; nothing changes until you tap the one you want. Each new cover is kept at 800 px on the long side, and ✓ Use takes 100 a press, each press one step of ↶."]},
@@ -81957,6 +81958,8 @@ const CORR_DO={
   /* a cover: corrCoverRow lines it up, corrUse downloads it and corrCovPut keeps the picture
      before this stamps its book or story as a finder's cover (see COVERS, BY FILE) */
   cover:{now:()=>"",to:()=>"",was:()=>"",use:(t,c,r)=>{const x=corrX(t);x.coverV=r.va||Date.now();x.covMine=false;if(t.en)t.en.cover=true;}},
+  /* a book still to come: corrUpcomingRow lines it up, corrUpcomingUse files it (see COMING NEXT, BY FILE) */
+  upcoming:{now:()=>"",to:()=>"",was:()=>""},
   /* ┌─ A ROW OF THE IMPORT LIST THAT IS A FIC ──────────────────────────────┐
      │ A Goodreads list holds fan fiction read on other sites as if it were   │
      │ books. Kind "fic" (row, fandoms, link) marks such a row kind "fanfic"  │
@@ -82589,6 +82592,80 @@ async function corrCovBack(put){
   for(const p of put){try{if(p.before)await dbPut(p.store,p.store==="covers"?{id:p.key,data:p.before}:{key:p.key,data:p.before,v:p.vb||Date.now()});else await dbDel(p.store,p.key);}catch(e){}
     coverCache.set(p.key,p.before||null);}
 }
+/* ┌─ 🔎 COMING NEXT, BY FILE ────────────────────────────────────────────────┐
+   │ One change (kind "upcoming") is one book of a series the shelf has, after │
+   │ the last one it holds, out already or announced: {book: the collection it │
+   │ goes into (none for a series of separate books), series, author, title,   │
+   │ pos, date (YYYY-MM-DD, YYYY-MM or YYYY), out, url, src ("Hardcover" or     │
+   │ the web), why, doubt}. ✓ Use files it the way 🔎 Is the next one out?     │
+   │ files a find (nxAdd): ⌛ Don't have it yet, Want to read, with the date in │
+   │ nextOut, a story at its number inside the collection (serInPlace), else a │
+   │ book of its own in the series. nextOut.by is "Claude" for a web find, so  │
+   │ nextOutLine says 🔎; a Hardcover find reads as Hardcover's own. A title   │
+   │ the shelf holds already, or one ✕'d for good on the 🔎 card, is left out; │
+   │ a number the collection holds under another title starts unticked. The   │
+   │ press is one step of ↶ with the rest of the file (corrUse).              │
+   └───────────────────────────────────────────────────────────────────────────┘ */
+function corrUpcomingRow(r){
+  const c=r.c,author=String(c.author||"").trim(),series=String(c.series||"").trim();
+  r.title=String(c.title||"").replace(/\s+/g," ").trim().slice(0,200);
+  if(!r.title){r.gone="names no book";return;}
+  let into=null;
+  if(c.book){into=books.find(b=>b.id===c.book);if(!into||!isColl(into)){r.gone="not on your shelf any more";return;}}
+  else if(series)into=serInColl(series,author);
+  r.t={b:into||null};
+  r.pos=String(c.pos==null?"":c.pos).replace(/^#/,"").trim().slice(0,12);
+  const k=titleKey(r.title)+"|"+softFold(authorParts(author)[0]||author);
+  if(nxTitleHeld(r.title,author||(into&&into.author)||"")||nxS().gone.includes(k)){r.same=true;return;}
+  if(into&&r.pos&&isFinite(parseFloat(r.pos))){const n=parseFloat(r.pos),nums=entNumbers(into);
+    const at=entWholes(into).find(en=>parseFloat(nums[en.id])===n);
+    if(at)r.doubt=`you already have a #${r.pos} there, “${String(at.title||"Untitled").slice(0,60)}”`;}
+  if(!r.doubt&&c.doubt)r.doubt=String(c.doubt).replace(/\s+/g," ").trim().slice(0,160);
+}
+/* when it comes, in words: Hardcover writes a year with no day as 1 January (nxDateOk) */
+function corrUpcomingWhen(c){
+  const d=String(c.date||"").trim(),today=todayStr(),long=s=>new Date(s+"T12:00");
+  if(/^\d{4}-\d{2}-\d{2}$/.test(d)&&!/-01-01$/.test(d)){const s=long(d).toLocaleDateString(undefined,{day:"numeric",month:"long",year:"numeric"});return d>today?`comes out ${s}`:`out since ${s}`;}
+  if(/^\d{4}-\d{2}$/.test(d)&&!/-01$/.test(d)){const s=long(d+"-15").toLocaleDateString(undefined,{month:"long",year:"numeric"});return d>today.slice(0,7)?`comes out in ${s}`:`out since ${s}`;}
+  const y=/^\d{4}/.test(d)?d.slice(0,4):"",ty=today.slice(0,4);
+  if(y)return y>ty?`expected in ${y}`:y===ty?(c.out?"out this year":"due this year, no day yet"):`out since ${y}`;
+  return c.out?"already out":"announced, no date yet";
+}
+function corrUpcomingHtml(r){
+  const c=r.c,b=r.t&&r.t.b,live=!r.gone&&!r.same;
+  const box=live?`<input type="checkbox" data-corr="${r.i}"${corrOn(r)?" checked":""} style="flex:none;margin-top:3px">`:'<span style="width:13px;flex:none"></span>';
+  const am=s=>`<span class="meta" style="display:block;color:var(--amber-ink,#b45309)">${s}</span>`;
+  const series=String(c.series||"").trim();
+  const where=b?`into your collection ${esc(b.title||"")}`:series?`a book of its own in ${esc(series)}`:"a book of its own";
+  const link=c.url&&/^https?:\/\//i.test(c.url)?` · <a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(nxHost(c.url))}</a>`:"";
+  const note=r.gone?am(esc(r.gone)):r.same?`<span class="meta" style="display:block">already on your shelf</span>`:r.doubt?am(`${esc(r.doubt)}, so it starts unticked`):"";
+  return `<label class="snap" style="display:block;padding:7px 10px"><span style="display:flex;gap:8px;align-items:flex-start;min-width:0">${box}
+    <span style="min-width:0;flex:1;overflow-wrap:anywhere">${r.pos?`<span class="meta" style="display:inline">#${esc(r.pos)} </span>`:""}<b>${esc(r.title||"Untitled")}</b> <span class="meta" style="display:inline">· ${esc(c.author||(b&&b.author)||"")} · ${where}</span>
+      <span class="meta" style="display:block">⌛ ${esc(corrUpcomingWhen(c))}${c.src?` · ${esc(String(c.src).slice(0,30))}`:""}${link}</span>${note}${c.why?`<span class="meta" style="display:block">${esc(String(c.why).slice(0,240))}</span>`:""}</span></span></label>`;
+}
+/* files the ticked ones; returns the rows done, and full when the device's storage refused */
+async function corrUpcomingUse(rows,items){
+  const clone=x=>JSON.parse(JSON.stringify(x)),touched=new Map(),done=[],today=todayStr();
+  for(const r of rows){
+    const c=r.c,author=String(c.author||"").trim(),series=String(c.series||"").trim();
+    const date=(String(c.date||"").trim().match(/^\d{4}(-\d{2}(-\d{2})?)?$/)||[""])[0];
+    const into=r.t.b?books.find(b=>b.id===r.t.b.id):series?serInColl(series,author):null;
+    const nextOut=Object.assign({at:today,pos:r.pos,title:r.title,date,out:date.length===10?date<=today:!!c.out,series:series||(into?String(into.title||""):"")},c.src==="Hardcover"?{}:{by:"Claude"});
+    if(into){const t=touched.get(into.id)||touched.set(into.id,{c:into,before:clone(into),rows:[]}).get(into.id);
+      const en=blankEntry();en.title=r.title;en.status="want";en.unowned=true;en.nextOut=nextOut;
+      serInPlace(into,en,parseFloat(r.pos));t.rows.push(r.i);continue;}
+    const nb=blankBook(uid());
+    Object.assign(nb,{title:r.title,author,series,seriesNum:r.pos,status:"want",unowned:true,nextOut,modified:Date.now()});
+    if(date)nb.pubYear=date.slice(0,4);
+    try{await dbPut("books",nb);}catch(e){return {done,full:true};}
+    books.unshift(nb);items.push({id:nb.id,before:null,after:clone(nb)});if(SYNC.on)enqueue({kind:"book",id:nb.id});done.push(r.i);
+  }
+  for(const t of touched.values()){touchBook(t.c);
+    if(!(await putOrRestore(t.c,t.before)))return {done,full:true};
+    if(SYNC.on)enqueue({kind:"book",id:t.c.id});items.push({id:t.c.id,before:t.before,after:clone(t.c)});done.push(...t.rows);}
+  nxIdx=null;
+  return {done,full:false};
+}
 async function corrLoad(){
   if(CORR_LOADED)return;CORR_LOADED=true;
   try{const r=await dbGet("meta","corrFile");if(r&&r.v&&Array.isArray(r.v.changes))CORR=r.v;}catch(e){}
@@ -82626,6 +82703,7 @@ function corrRows(){
     if(k==="author"){corrAuthorRow(r,AU||(AU=corrAuthorCounts()));return;}
     if(k==="screen"){corrScreenRow(r);return;}
     if(k==="cover"){corrCoverRow(r);return;}
+    if(k==="upcoming"){corrUpcomingRow(r);return;}
     const t=corrTarget(c);r.t=t;
     if(t.gone){r.gone=t.gone;return;}
     const D=CORR_DO[k];r.title=String(corrX(t).title||"");r.now=D.now(t);r.to=D.to(c);
@@ -82699,7 +82777,7 @@ async function corrUse(){
     await Promise.all([worker(),worker(),worker(),worker()]);
   }
   const done=[],byBook=new Map(),items=[],made=[],covs=[],was=histSrc;let full=false;
-  rows.filter(r=>r.k!=="series"&&r.k!=="whole"&&r.k!=="fic"&&r.k!=="rename"&&r.k!=="author"&&(r.k!=="cover"||r.data)).forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
+  rows.filter(r=>r.k!=="series"&&r.k!=="whole"&&r.k!=="fic"&&r.k!=="rename"&&r.k!=="author"&&r.k!=="upcoming"&&(r.k!=="cover"||r.data)).forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
   histSrc="📥 a corrections file";
   try{
     for(const [id,list] of byBook){
@@ -82722,6 +82800,9 @@ async function corrUse(){
     }
     /* series made whole go into the same step of ↶ */
     if(!full)for(const r of rows.filter(r=>r.k==="whole"))if(await corrWholeUse(r,items))done.push(r.i);
+    /* books still to come, filed as ⌛ in the same step (see COMING NEXT, BY FILE) */
+    const up=full?[]:rows.filter(r=>r.k==="upcoming");
+    if(up.length){const u=await corrUpcomingUse(up,items);done.push(...u.done);if(u.full)full=true;try{refreshShelfSub();}catch(e){}}
     /* names made one join the same step: their merges collect instead of pushing */
     const ren=full?[]:rows.filter(r=>r.k==="rename");
     if(ren.length){OP_COLLECT={items:[],labels:[]};
@@ -82763,6 +82844,7 @@ function corrRowHtml(r){
   if(r.k==="author")return corrAuthorHtml(r);
   if(r.k==="screen")return corrScreenHtml(r);
   if(r.k==="cover")return corrCoverHtml(r);
+  if(r.k==="upcoming")return corrUpcomingHtml(r);
   const c=r.c,t=r.t||{},x=t.it||t.en||t.b||{};
   const author=x.author||(t.b&&t.b.author)||c.author||"";
   const where=t.en?` · in ${esc(t.b.title||"a collection")}`:t.it?" · on the import list":"";
@@ -82814,6 +82896,7 @@ function corrPaint(){
         ${k==="screen"&&live.length?`<div class="hint" style="margin:0 0 6px">Each film or series goes on its book, collection or story, not seen yet: tick it seen under 🎬 On screen on the page. A collection's row is what was made of the series as a whole, a story's a film of that one book. One ↶ takes a press back.</div>`:""}
         ${k==="author"&&live.length?`<div class="hint" style="margin:0 0 6px">Each goes into that author's panel (press their name on a book), where ✨ Who they are puts its lines. Nothing on your books changes: ↻ Ask again in a panel writes one anew. An author who already has lines starts unticked.</div>`:""}
         ${k==="rename"&&live.length?`<div class="hint" style="margin:0 0 6px">The lit name is the one kept: every book and story under the others takes it, and the others leave your lists. Tap another to keep that one instead, or untick the row to leave them as they are.</div>`:""}
+        ${k==="upcoming"&&live.length?`<div class="hint" style="margin:0 0 6px">Each goes in as ⌛ Don't have it yet, Want to read, with its date: a story at its number inside your collection, or a book of its own in its series. It shows on 📅 Coming out and on its page. One ↶ takes a press back.</div>`:""}
         ${k==="fic"&&live.length?`<div class="hint" style="margin:0 0 6px">Your import list has these as books. Each becomes a fic there, with its fandom, under ✍️ Fics: nothing on your shelf changes until you add them.</div>`:""}
         ${shown.map(corrRowHtml).join("")}
         ${rest.length>shown.length?`<button class="btn" data-corrmore="${k}" style="margin-top:6px">Show ${Math.min(CORR_SHOW,rest.length-shown.length)} more</button>`:""}

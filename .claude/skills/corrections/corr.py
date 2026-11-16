@@ -373,6 +373,34 @@ class File:
         coll = story is None and book.get("type") == "collection"
         return self._book("cover", book, story, {"urls": keep[:4 if coll else 3], "why": why})
 
+    def upcoming(self, book, title, pos="", date="", out=False, url="", src="", series="", author="", why="", doubt=""):
+        """A book of a series after the last one the shelf holds, out already or announced (kind
+        "upcoming", build 2026-11-16.8 on). book: the collection it goes into, or a loose book of a
+        series of separate books, which gives no `book` and names the series instead (the app puts
+        it into a collection kept under that name, else makes it a book of its own). date:
+        YYYY-MM-DD, YYYY-MM or YYYY, "" when only announced; out: already out; src: "Hardcover" or
+        "the web" (a web find reads as 🔎 on the book, a Hardcover one as Hardcover's). The app
+        leaves out a title the shelf holds and starts unticked a number the collection already
+        holds under another title, or a row with `doubt`. A find with no real title ("Untitled",
+        "TBA", "Book 10") is left out here: returns None."""
+        t = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not t or re.fullmatch(r"(?i)(untitled|tba|tbd|title tba|book \d+|volume \d+|vol\.? ?\d+)\b.*", t):
+            return None
+        d = str(date or "").strip()
+        d = d if re.fullmatch(r"\d{4}(-\d{2}(-\d{2})?)?", d) else ""
+        coll = book.get("type") == "collection"
+        c = {"kind": "upcoming",
+             "series": series or (book.get("title", "") if coll else book.get("series", "")),
+             "author": author or book.get("author", ""), "title": t[:200],
+             "pos": str(pos or "").lstrip("#"), "date": d, "out": bool(out)}
+        if coll:
+            c["book"] = book["id"]
+        for k, v in (("url", url), ("src", src), ("why", why), ("doubt", doubt)):
+            if v:
+                c[k] = str(v)
+        self.changes.append(c)
+        return c
+
     RENAME_WHAT = ("author", "series", "tag", "genre", "fandom", "character", "ship")
 
     def rename(self, what, names, keep, why="", doubt=""):
