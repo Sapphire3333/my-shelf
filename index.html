@@ -14835,6 +14835,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-16.10",go:["tab:library"],lines:["<b>🔎 Do I have it?</b> The Library's find box answers for more than the shelf now. With three letters or more typed, a line under it says how many books by that name wait on your import list, and another how many files your Drive folder has and how many of them no book holds yet. A tap on a line takes your words to that list's own search. When the shelf itself has nothing by that name, the books and files are listed right there, each file with ↗ Look; and when nothing anywhere has it, one line says so. The Drive side reads the list this device kept from your last ↻ Look again and asks Google nothing. Files that books on the shelf already hold are not mentioned beside those books. The import list's own search finds by title and author together too, and forgives a typo as the other find boxes do."]},
   {v:"2026-11-16.9",go:["el:care:#drvConnBox"],lines:["<b>📚 A bumper book that names its stories.</b> In Connect your Drive files, a file holding several stories of a collection got <b>Use it for several…</b> only when its name gave their numbers or called it an omnibus or a box set. A file whose name lists the stories by title, like a bumper book of four, now gets it too, with the stories it names already ticked; one you gave to a single story already shows under <b>Give it to them…</b>. A name that only mentions another book as its series (“… a Deep Blue Novel”) doesn't count."]},
   {v:"2026-11-16.8",go:["el:care:#corrSec"],lines:["<b>🔎 Coming next, from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now bring the books of your series that come after the last one you have, out already or announced. Each row says when, and where it goes: ✓ Use files it as ⌛ Don't have it yet, Want to read, with its date, as a story at its number inside your collection or as a book of its own in its series, just as 🔎 Is the next one out? does. They show on 📅 Coming out. A title you already have is left out, and one whose number you already hold under another title starts unticked. One ↶ takes a press back."]},
   {v:"2026-11-16.7",go:["el:care:#corrSec"],lines:["<b>🖼 A collection's covers, big enough to choose from.</b> In 📥 Corrections from a file, a collection's row under 🖼 Covers now shows yours and each one found 160 px tall instead of a thumbnail, so two editions can be told apart before you tap. On a phone with big text they shrink to two side by side."]},
@@ -23922,6 +23923,102 @@ document.addEventListener("mousedown",e=>{if(e.shiftKey&&libTicking()&&e.target.
 /* every book the Library's list holds as last drawn, before it is cut into
    pages — what 🖨 prints (see PRINTING), whatever is drawn so far */
 let libLastList=[];
+/* ┌─ 🔎 DO I HAVE IT? ───────────────────────────────────────────────────────┐
+   │ The Library's find box answered for the shelf alone, so "do I have it"   │
+   │ took three searches: here, the import list in Shelf care, and the ☁      │
+   │ Drive tab. With HAVE_MIN letters or more typed, the Library draws what   │
+   │ the other two hold under its find row (haveHtml, #haveBox). Each place   │
+   │ is one line, and the line is the way there (.haveline, data-havego:      │
+   │ "imp" hands the words to the import list's own search, "drv" to the      │
+   │ Drive tab's): how many books wait on the import list by that name, how   │
+   │ many files the Drive has and how many of them no book holds.             │
+   │ Nothing is asked of Google: the Drive side reads the list this device    │
+   │ kept from the last ↻ Look again (haveDriveList) and says how old it is.  │
+   │ The names are folded once a list (haveFolds); folding every name again   │
+   │ on each letter typed was the whole cost, and with it a folder of         │
+   │ thousands is one includes a word. The words are matched as drvHits       │
+   │ matches them (every word that decides a match, the phrase first), and    │
+   │ an import row on its title and author together (impFindHit, which the    │
+   │ import list's own search uses too), so the count here and the rows       │
+   │ there are the same rows.                                                 │
+   │ Under a line stand its rows, HAVE_ROWS of them, only when the shelf's    │
+   │ own list is empty, which is when the question is being asked: drawn      │
+   │ always, three files stood 301 px of a 900 px screen above the very book  │
+   │ that was typed for. And only for HAVE_FEW or fewer: three rows out of    │
+   │ the thousands of files with "the" in their name say nothing. A file a    │
+   │ book or story holds says whose it is; any other gets ↗ Look.             │
+   │ Beside rows of the shelf, files those books already hold are not news:   │
+   │ the Drive's line is drawn only if a file by that name is held by         │
+   │ nobody. When nothing anywhere has it, one line says so, since that is    │
+   │ an answer too.                                                           │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const HAVE_MIN=3,HAVE_ROWS=3,HAVE_FEW=10;
+let haveFolds=null;
+const impFindHit=(it,fq)=>softHit((it.title||"")+" "+(it.author||""),fq);
+function haveDriveList(){
+  if(!driveReady())return null;
+  const fo=settings.drive&&settings.drive.folder;if(!fo)return null;
+  if(!(drvFilesMemo&&drvFilesMemo.id===fo.id)){const kept=drvListLoad();if(!kept||kept.id!==fo.id)return null;drvFilesMemo=kept;}
+  return drvFilesMemo;
+}
+/* {imp: the import rows, drvN: how many files, drvLoose: how many of them no book
+   or story holds, drv: the first HAVE_ROWS of a few, memo} — null under HAVE_MIN letters */
+function haveFind(text){
+  const fq=softQ(text);if(fq.length<HAVE_MIN)return null;
+  const imp=importQueue.filter(it=>impFindHit(it,fq));
+  const memo=haveDriveList();let drvN=0,drvLoose=0,few=[];
+  if(memo){
+    if(!haveFolds||haveFolds.files!==memo.files)haveFolds={files:memo.files,folds:memo.files.map(f=>drvNorm(f.name))};
+    const qw=drvNorm(text).split(" ").filter(Boolean),big=qw.filter(w=>w.length>2||/^\d+$/.test(w)),need=big.length?big:qw,phrase=qw.join(" ");
+    const held=new Set();books.forEach(b=>{if(!b)return;if(b.driveFile)held.add(b.driveFile.id);(b.entries||[]).forEach(en=>{if(en&&en.driveFile)held.add(en.driveFile.id);});});
+    if(need.length)haveFolds.folds.forEach((n,i)=>{
+      for(const w of need)if(!n.includes(w))return;
+      const f=memo.files[i];drvN++;if(!held.has(f.id))drvLoose++;
+      if(few.length<=HAVE_FEW)few.push({f,ph:n.includes(phrase)?1:0,lead:n.startsWith(qw[0])||n.includes(" "+qw[0])?1:0});
+    });
+    /* only a few are ever drawn, so only a few are ever put in order: the order
+       drvHits gives files that have every word (the phrase, a PDF last, a word
+       that leads, the name). Ordering every hit for a word like "the", thousands
+       in a large folder, cost 88 ms a letter typed and showed none of them. */
+    few=drvN>HAVE_FEW?[]:few.sort((a,c)=>c.ph-a.ph||(a.f.kind==="pdf")-(c.f.kind==="pdf")||c.lead-a.lead||a.f.name.localeCompare(c.f.name,undefined,{numeric:true})).slice(0,HAVE_ROWS);
+  }
+  return {imp,drvN,drvLoose,drv:few.map(x=>x.f),memo};
+}
+/* shelfN: how many rows the shelf's own list has for these words */
+function haveHtml(text,shelfN){
+  const r=haveFind(text);if(!r)return "";
+  const {imp,drvN,drvLoose,drv,memo}=r;
+  if(!imp.length&&!drvN){
+    const says=[importQueue.length?"📥 not on your import list":"",memo?`☁ no file by that name in your Drive (list from ${esc(drvAgo(memo.at))})`:""].filter(Boolean);
+    return shelfN||!says.length?"":`<div class="hint" id="haveBox" style="margin:0 0 9px">Elsewhere: ${says.join(", ")}.</div>`;
+  }
+  const st={want:"Want to read",reading:"Reading now",finished:"Finished"};
+  /* a place is one line, and the line is the way there */
+  const line=(go,label,say)=>`<div class="snap haveline" data-havego="${go}" role="button" tabindex="0" style="padding:6px 10px;cursor:pointer;flex-wrap:nowrap"><div style="min-width:0;flex:1;font-size:14px;overflow-wrap:anywhere"><b>${label}</b> <span class="meta" style="display:inline">${say}</span></div><span class="hint" style="margin:0" aria-hidden="true">›</span></div>`;
+  const rowOf=inner=>`<div class="snap" style="padding:6px 10px;margin-left:14px">${inner}</div>`;
+  let html="";
+  if(imp.length)html+=line("imp","📥 On your import list",imp.length===1?"1 book":imp.length.toLocaleString()+" books")
+    +(shelfN||imp.length>HAVE_FEW?[]:imp.slice(0,HAVE_ROWS)).map(it=>rowOf(`<div style="min-width:0;flex:1"><div style="font-size:14px;overflow-wrap:anywhere">${esc(it.title||"Untitled")}</div><div class="meta">${esc([it.author,st[it.status],it.dupe?"already on your shelf":it.near?"may already be on your shelf":""].filter(Boolean).join(" · "))}</div></div>`)).join("");
+  /* beside the shelf's own rows, files their books already hold are those rows' own files: nothing new to say */
+  if(drvN&&(!shelfN||drvLoose)){
+    const name={};(memo.dirs||[]).forEach(d=>{name[d.id]=d.name;});
+    const holder=id=>{for(const b of books){if(!b)continue;if(b.driveFile&&b.driveFile.id===id)return {b};for(const en of (b.entries||[]))if(en&&en.driveFile&&en.driveFile.id===id)return {b,en};}return null;};
+    html+=line("drv","☁ In your Drive",`${drvN===1?"1 file":drvN.toLocaleString()+" files"} · ${drvN===1?(drvLoose?"not linked to a book":"linked to a book"):drvLoose?drvLoose.toLocaleString()+" not linked to a book":"all linked to your books"}${shelfN?"":` · list from ${esc(drvAgo(memo.at))}`}`)
+      +(shelfN?[]:drv).map(f=>{const h=holder(f.id);
+        return rowOf(`<div style="min-width:0;flex:1"><div style="font-size:14px;overflow-wrap:anywhere">${esc(f.name)}</div><div class="meta">${f.kind==="doc"?"Google Doc":fmtBytes(f.size)}${name[f.p]?" · 📁 "+esc(name[f.p]):""}${h?" · ✓ on your shelf"+(h.en?" in "+esc(h.b.title||"Untitled"):""):" · not linked to a book"}</div></div>${h?"":drvLookLink(f)}`);}).join("");
+  }
+  return html?`<div id="haveBox" style="margin-bottom:9px">${html}</div>`:"";
+}
+function haveWire(m){
+  const box=q("#haveBox",m);if(!box)return;
+  const go=k=>{
+    const t=libFind.trim();
+    if(k==="imp"){impQ=t;impOnlyFlagged=false;impMore={};goTo("el:care:#impList");}
+    else{drvFind=t;drvPath="";libDriveMode=true;libFandomMode=false;libSeriesMode=false;renderLibrary();window.scrollTo(0,0);}
+  };
+  qa("[data-havego]",box).forEach(b=>{b.onclick=()=>go(b.dataset.havego);
+    b.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go(b.dataset.havego);}};});
+}
 /* ┌─ THE FIND BOX STAYS THE BOX YOU ARE TYPING IN ───────────────────────────┐
    │ 160 ms after a letter the shelf redraws, and m.innerHTML put a new find  │
    │ box where the old one stood. A computer's keyboard never noticed (the    │
@@ -24409,6 +24506,8 @@ function renderLibrary(){
   /* a page's own place in the run: past the pages before it and not yet full */
   const onThisPage=()=>skip<=0&&budget>0;
   const cont=()=>take.cut?` <span class="lbl" style="color:var(--teal)">continued</span>`:"";
+  /* what the import list and the Drive hold by the words typed — see DO I HAVE IT? */
+  if(flc)html+=haveHtml(libFind,list.length);
   /* Most people arriving at a book tracker already keep their books somewhere
      else, and the importer is one of the best things here — but an empty shelf
      used to mention only the long way round, one book typed in at a time. */
@@ -24841,6 +24940,7 @@ function renderLibrary(){
     saveSettings();renderLibrary();
     if(settings.libTools)libDrawerSeen();
   };
+  haveWire(m);
   const lf=q("#libFind",m);
   if(lf){
     lf.oninput=()=>{
@@ -57327,7 +57427,7 @@ function refreshImport(light){
   if(n)n.textContent=importQueue.length?`(${pend.length} to add)`:"";
   if(clr)clr.hidden=!importQueue.length;
   if(!importQueue.length){box.innerHTML="";return;}
-  const ql=impQ.trim().toLowerCase();
+  const ql=impQ.trim().toLowerCase(),ifq=softQ(ql);
   const dupeN=importQueue.filter(it=>it.dupe).length;
   const nearN=importQueue.filter(it=>it.near).length;
   const flagN=dupeN+nearN;
@@ -57340,7 +57440,7 @@ function refreshImport(light){
      the possible ones the moment they existed: "12 may already be there" above
      a list of thousands is a fact you cannot act on. */
   const match=it=>(!impOnlyFlagged||it.dupe||it.near)
-    &&(!ql||(it.title||"").toLowerCase().includes(ql)||(it.author||"").toLowerCase().includes(ql));
+    &&(!ql||impFindHit(it,ifq));
   const flagLabel=dupeN&&nearN?`Show only the ${flagN} already on your shelf or possibly there`
     :dupeN?`Show only the ${dupeN} already on your shelf`
     :`Show only the ${nearN} that may already be there`;
