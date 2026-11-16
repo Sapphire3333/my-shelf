@@ -230,8 +230,24 @@ its job, and here with its fields. A new kind never needs a new loader.
   - Apple: `itunes.apple.com/lookup?isbn=` or `/search?media=ebook&term=`; its `artworkUrl100`
     with `100x100bb` changed to `1400x1400bb` is the full picture (one measured 915 × 1400).
     Amazon sends a 43-byte blank where it has none, Open Library a 404 with `default=false`.
+  - Apple's search, and matching its batch lookup back by title, needs more than the words
+    of the title: one run gave a bilingual Spanish edition for every book of a series
+    ("<Spanish title> / <English title>") and Volume 1's cover for later volumes of light
+    novels, since "<series>: Volume 14" shares three words in four with "Volume 1".
+    Turn down an answer in another language (two words like de, una, der, les, Band that
+    the title lacks; a "/" alone is no sign, since a box set lists its books with one) or
+    with another volume number ("Vol.", "Volume", "Part", or a number ending the book's own
+    title). A series place on one side only ("Book 3: The Glass Owl", "#5", "<title>:
+    <series> 4" at the end of Apple's title) is the same book. Match the title without its
+    brackets: "<title> (<series>, #2)" shares its series words with every book of the
+    series, which let a German edition through. And match the author by surname: a shared
+    first name alone once gave a cover of another writer's book.
   - Download every candidate here and keep only what `corr.cover_look` measures: its real
     size, and never a grey one. Under 400 px tall is no better than a small cover.
+  - Order the file with ticked rows first: the app shows twelve rows at a time and ✓ Use
+    takes ticked rows in file order, so rows below the fold would otherwise go in unseen.
+    Books and stories with no cover first, then those with one, then collections (each
+    waits for a tap).
   - Pace it: one request at a time to each site, a second or two apart. Eight parallel
     helpers once got this computer refused by iTunes and Open Library for a while.
   - Leave out only a story or book whose `covMine` is true: the app never offers it. A cover
