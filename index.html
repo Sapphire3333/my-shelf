@@ -11610,9 +11610,10 @@ let lastFileBk=0,lastFileSig="",fileBkCount=0;
 const CFG=window.SHELF_CONFIG||{};
 /* ┌─ WHAT THE CLOUD SENDS ───────────────────────────────────────────────────┐
    │ Supabase's free plan allows 5 GB a month of traffic out of the cloud    │
-   │ (egress), and one month of corrections files reached 4.92 of it. To see │
-   │ where it goes, every answer from the Supabase address is counted on     │
-   │ this device: window.fetch is wrapped once, here, before the sync client  │
+   │ (egress), and a month of whole-shelf corrections can come close to it.  │
+   │ To see where it goes, every answer from the Supabase address is counted │
+   │ on this device: window.fetch is wrapped once, here, before the sync     │
+   │ client                                                                   │
    │ is made, so the client and the direct calls to the functions (claude,   │
    │ hardcover, mangadex, goodreads, nudge) all pass through it. An answer's │
    │ content-length is what was sent, compressed — a Hardcover lookup         │
@@ -14834,6 +14835,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-16.1",go:["tab:library"],lines:["<b>🎬 Read before you watch is a shelf of its own.</b> In the 📚 Library's filters, beside ♥ Favourites, 🎬 Read before you watch lists the books and stories you haven't finished that were made into a film or a series you haven't seen, each with its cover, under its genre's heading, a story as its own row. Each says what's on screen and has ✓ Seen, which takes it off the list (↶ puts it back). Leaving it gives the Library its own headings back. 🧰 Shelf care keeps a button that opens it, and the ✨ finder."]},
   {v:"2026-11-15.13",go:["el:overview:#stoCard"],lines:["<b>☁ What the cloud sends, counted.</b> The Storage card, at the foot of 🏠 Today and in ⚙ Settings, now says how much this device downloaded from your cloud today, and in how many pulls. ▸ What it was splits it by kind (your shared lists, books, covers and pictures, Claude, Hardcover, MangaDex), names the shared lists every pull brings and how big each is, heaviest first, and lists the days before. Your free plan allows 5 GB a month of this; the card shows where it goes. Each device counts its own."]},
   {v:"2026-11-15.12",go:["tab:library"],lines:["<b>↗ See it on stays on the screen with big text.</b> On a phone set to its biggest text, a story's ↗ See it on button in a collection's What's inside ran past the story's box, its ▾ off the edge of the screen. It now takes two lines there instead."]},
   {v:"2026-11-15.11",go:["el:care:#corrSec"],lines:["<b>🎬 Collections and their stories on screen.</b> A collection's page has its own 🎬 On screen now: a television series made of the whole series goes on the collection, and a film of one book goes on that story, which wears a 🎬 on its row in What's inside and a small 🎬 in Contents. Pressing a story's 🎬 opens the collection's panel at that story, where you tick each one seen, take one off, or add one by hand for the whole series or for one story; ✨ Ask Claude there looks at the series and every book in it at once. Read before you watch, in 🧰 Shelf care, lists stories too, and 📥 Corrections from a file can fill all of this in. A remake that shares an older film's title stays a film of its own."]},
@@ -20711,6 +20713,8 @@ function rowHtml(b,withDel,note){
        inside them and how much. The button under the row is what opens them. */
     (b._hits&&b._hits.length)?`<span class="bst hitsin" title="${b._hits.length===1?"One story":b._hits.length+" stories"} inside this one answered — the button under the row shows ${b._hits.length===1?"it":"them"}">📚 ${b._hits.length} inside ${b._hits.length===1?"matches":"match"}</span>`:"",
     b._gapNote?`<span class="bst morehits" title="Why this row is in the list — open it and fill them in">${esc(b._gapNote)}</span>`:"",
+    /* under 🎬 Read before you watch: what's on screen, and ✓ Seen */
+    statusFilter==="screen"&&view==="library"?screenRowHtml(b):"",
     /* out of the house, or in it on loan — see LOANS */
     (()=>{const l=!b._story&&loanOf(b);return l?`<span class="bst loan" title="${esc(loanSay(l))} ${loanAge(l)} — the book's page has ✓ It's back">🤝 ${l.kind==="lent"?"lent to":"from"} ${esc(l.who)}</span>`:"";})(),
     b.dnf?'<span class="bdnf">✕ Did not finish</span>':holdOf(b)?'<span class="bdnf hold" title="Set down for now, not given up on">⏸ On hold</span>':""
@@ -21339,6 +21343,10 @@ function wireOpen(root,withDel){
     /* the ! sits inside the row, so it has to answer before the row does */
     const stray=e.target.closest("[data-stray]");
     if(stray){e.stopPropagation();openStrayPanel(stray.dataset.stray);return;}
+    /* ✓ Seen under 🎬 Read before you watch — see READ BEFORE YOU WATCH, A SHELF OF ITS OWN */
+    const scr=e.target.closest("[data-scrow]");
+    if(scr){e.stopPropagation();const i=scr.dataset.scrow.indexOf("|");
+      scr.disabled=true;screenSeenAll(scr.dataset.scrow.slice(0,i),scr.dataset.scrow.slice(i+1)).then(()=>{if(view==="library")renderLibrary();});return;}
     const op=e.target.closest("[data-open]");
     /* While books are being ticked, the whole row is the tick. Aiming at a
        17-pixel box and landing inside the book instead was the commonest thing
@@ -22532,8 +22540,28 @@ function libKeep(){
   const sig=libArrSig();
   if(sig===libKept)return;
   libKept=sig;
-  settings.lib={sortBy,sortRev:!!sortRev,groupBy,layout,statusFilter,fmt:fmtFilter};
+  /* the 🎬 lens is never kept: a reload is back on your own shelf, grouped your way */
+  const lens=statusFilter==="screen";
+  settings.lib={sortBy,sortRev:!!sortRev,groupBy:lens&&libGbBefore!=null?libGbBefore:groupBy,layout,statusFilter:lens?"all":statusFilter,fmt:fmtFilter};
   saveSettings();
+}
+/* ┌─ 🎬 READ BEFORE YOU WATCH, A SHELF OF ITS OWN ──────────────────────────┐
+   │ The books and stories screenWaiting finds (not finished, with a film or │
+   │ series not seen) are a lens of the Library's, a pill beside ♥          │
+   │ Favourites (statusFilter "screen"): a story stands as its own row        │
+   │ (storyProxy), as ♥ shows them, so the Library's covers, sort, paging and │
+   │ headings all serve it. Pressing it groups the shelf by genre (libSetFilter│
+   │ keeps the grouping it had in libGbBefore and gives it back on leaving, │
+   │ unless you chose another heading meanwhile); libKeep never keeps the     │
+   │ lens. Each row says what's on screen and carries ✓ Seen (screenRowHtml, │
+   │ data-scrow), which ticks all of its unseen ones as one step of ↶         │
+   │ (screenSeenAll). Shelf care keeps a door to it and the ✨ finder.        │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+let libGbBefore=null;
+function libSetFilter(sf){
+  if(sf==="screen"&&statusFilter!=="screen"){libGbBefore=groupBy;groupBy="genre";}
+  else if(sf!=="screen"&&statusFilter==="screen"){if(libGbBefore!=null&&groupBy==="genre")groupBy=libGbBefore;libGbBefore=null;}
+  statusFilter=sf;
 }
 function sortCmp(a,b){const r=sortCmpBase(a,b);return sortRev&&sortBy!=="published"?-r:r;}
 function sortCmpBase(a,b){
@@ -22603,7 +22631,10 @@ function groupsFor(list){
   const out=[];
   if(groupBy==="genre"){
     const map={},none=[];
-    list.forEach(b=>{const gs=ownGenres(b);if(!gs.length)none.push(b);gs.forEach(g=>(map[g]=map[g]||[]).push(b));});
+    /* under 🎬 Read before you watch a book stands once, under its leading genre: under every
+       genre it has, a book with three genres stood three times — see READ BEFORE YOU WATCH, A SHELF OF ITS OWN */
+    const lead=statusFilter==="screen"&&view==="library";
+    list.forEach(b=>{const gs=lead?ownGenres(b).slice(0,1):ownGenres(b);if(!gs.length)none.push(b);gs.forEach(g=>(map[g]=map[g]||[]).push(b));});
     Object.keys(map).sort((a,b)=>a.localeCompare(b)).forEach(k=>out.push({label:k,color:genres[k]||"#78716c",items:map[k]}));
     if(none.length)out.push({label:"No genre yet",color:"#a8a29e",items:none});
   }else if(groupBy==="author"){
@@ -23978,6 +24009,9 @@ function renderLibrary(){
      which is what Search's ♥ has always opened. */
   const favRows=[...books.filter(b=>b.favorite&&kindFilter.includes(kindOf(b))),...countShelf.filter(r=>r._story&&r.favorite)];
   counts.fav=favRows.length;
+  /* 🎬 a lens the same way: a book, or a story as its own row — see READ BEFORE YOU WATCH, A SHELF OF ITS OWN */
+  const scRows=screenWaiting().filter(x=>kindFilter.includes(kindOf(x.b))).map(({b,en})=>en?storyProxy(b,en):b);
+  counts.screen=scRows.length;
   const kc={};KINDS.forEach(([k])=>kc[k]=books.filter(b=>kindOf(b)===k).length);
   repairGroupArt();
   const rawN=books.filter(isRaw).length;
@@ -24026,9 +24060,10 @@ function renderLibrary(){
     :statusFilter==="unowned"?(unownedOf(b)&&!b.dnf)
     :statusFilter==="prio"?prioRow(b)
     :statusFilter==="fav"?true
+    :statusFilter==="screen"?true
     :(statusOf(b)===statusFilter&&!b.dnf&&!holdOf(b));
   const readIds=onlyRead&&statusFilter==="fav"?new Set(readRows.map(b=>b.id+"|"+(b._story||""))):null;
-  const list=(statusFilter==="fav"?favRows:onlyRead?readRows:(statusFilter!=="all"||groupBy==="status")?countShelf:shelf).filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
+  const list=(statusFilter==="fav"?favRows:statusFilter==="screen"?scRows:onlyRead?readRows:(statusFilter!=="all"||groupBy==="status")?countShelf:shelf).filter(b=>stFilterOk(b)&&kindFilter.includes(kindOf(b))
     &&(!fmtFilter||fmtOf(b)===fmtFilter)&&(!onlyRaw||isRaw(b))&&(!readIds||readIds.has(b.id+"|"+(b._story||"")))&&findHit(b)).sort(sortCmp);
   /* with something typed, the rows that carry the letters as typed stand
      first, folded matches next, typo matches last — each set in the sort's
@@ -24081,7 +24116,7 @@ function renderLibrary(){
        fold's state is REMEMBERED per device (leave it open and it stays
        open), and an active filter is always readable on the closed pill,
        with one press putting everything back to All. */
-    const stLabels={all:"All",finished:"Finished",reading:"Reading now",want:"Want to read",hold:"⏸ On hold",dnf:"✕ Did not finish",unowned:"⌛ Don't have it yet",prio:"📌 Priority",fav:"♥ Favourites"};
+    const stLabels={all:"All",finished:"Finished",reading:"Reading now",want:"Want to read",hold:"⏸ On hold",dnf:"✕ Did not finish",unowned:"⌛ Don't have it yet",prio:"📌 Priority",fav:"♥ Favourites",screen:"🎬 Read before you watch"};
     const filtOpen=!!settings.libFilt;
     /* ---- what you TYPE on top, what you PRESS under it
        ----
@@ -24163,7 +24198,7 @@ function renderLibrary(){
         <div class="pills">${[["all","All"],["finished","Finished"],["reading","Reading now"],["want","Want to read"],
           ...(counts.unowned?[["unowned","⌛ Don't have it yet"]]:[]),
           ...(counts.prio?[["prio","📌 Priority"]]:[]),
-          ...(counts.hold?[["hold","⏸ On hold"]]:[]),...(counts.dnf?[["dnf","✕ Did not finish"]]:[]),...(counts.fav?[["fav","♥ Favourites"]]:[])]
+          ...(counts.hold?[["hold","⏸ On hold"]]:[]),...(counts.dnf?[["dnf","✕ Did not finish"]]:[]),...(counts.fav?[["fav","♥ Favourites"]]:[]),...(counts.screen?[["screen","🎬 Read before you watch"]]:[])]
         .map(([id,l])=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}"${id==="unowned"?' title="The ones you want and haven\'t got — they are counted under Want to read too, because wanting them is still true"':""}>${l} <b>${counts[id]}</b></button>`).join("")}</div>
         ${kindRow}${seriesRow}${(()=>{
           /* one format, once any book says which it is — see THE FORMAT LINE */
@@ -24290,7 +24325,7 @@ function renderLibrary(){
       if(!libOneRow&&!selSlim){
         const stPill=(id,l)=>`<button class="pill ${statusFilter===id?"on":""}" data-sf="${id}">${l} <b>${id==="all"?counts.all:(counts[id]||0)}</b></button>`;
         const fOf=[["find","🔎 The find box",findHtml],["filters","☰ Filters",filtHtml],
-          ...[["all","All"],["finished","Finished"],["reading","Reading now"],["want","Want to read"],["unowned","⌛ Don't have it yet"],["prio","📌 Priority"],["hold","⏸ On hold"],["dnf","✕ Did not finish"],["fav","♥ Favourites"]]
+          ...[["all","All"],["finished","Finished"],["reading","Reading now"],["want","Want to read"],["unowned","⌛ Don't have it yet"],["prio","📌 Priority"],["hold","⏸ On hold"],["dnf","✕ Did not finish"],["fav","♥ Favourites"],["screen","🎬 Read before you watch"]]
             .filter(([id])=>id==="all"||counts[id]).map(([id,l])=>["st:"+id,l,stPill(id,l)]),
           ["sort","⇅ Sort",sortHtml],["grid","▦ Grid",layHtml],["raw","⭱ Straight from an import",rawHtml],["read","📖 Readable here",readHtml],
           ["select","☑ Select books",selTogHtml],["place","🐉 Place",placeHtml],["pics","🖼 Pictures",artHtml],["switch","👁/📖 How a book opens",segHtml]].filter(i=>i[2]);
@@ -24599,11 +24634,11 @@ function renderLibrary(){
   /* no scroll-to-top on these: the controls live at the head of the page, so
      the hand is already there — the snap was a jerk that gained nothing. The
      group-label pick below keeps its jump: it replaces the whole list. */
-  qa("[data-sf]",m).forEach(b=>b.onclick=()=>{statusFilter=b.dataset.sf;renderLibrary();});
+  qa("[data-sf]",m).forEach(b=>b.onclick=()=>{libSetFilter(b.dataset.sf);renderLibrary();});
   qa("[data-ff]",m).forEach(b=>b.onclick=()=>{fmtFilter=b.dataset.ff||"";renderLibrary();});
   {const sn=q("#stNow",m);
    if(sn)sn.onclick=()=>{
-     if(statusFilter!=="all"){statusFilter="all";renderLibrary();}
+     if(statusFilter!=="all"){libSetFilter("all");renderLibrary();}
      else{settings.libFilt=!settings.libFilt;saveSettings();renderLibrary();if(settings.libFilt)libDrawerSeen();}
    };
    const ftg=q("#filtTog",m);
@@ -50386,10 +50421,12 @@ const quizCan=b=>!!b&&!b._story&&((!isColl(b)&&statusOf(b)==="finished"&&!b.dnf)
    │ seen and ✕ to take it off; one is added by hand (on a collection, for   │
    │ the whole series or for one story), or Claude is asked about this one  │
    │ book or series with a web search (screenAsk; for a series it names its │
-   │ books and says which one each film is of, screenPut). In Shelf care,   │
-   │ the 🎬 box (refreshScreen) lists Read before you watch — books and      │
-   │ stories not yet finished with something on screen you haven't seen —  │
-   │ and ✨ looks SCREEN_N books and series at a time (screenFind): ones not │
+   │ books and says which one each film is of, screenPut). Read before you  │
+   │ watch, books and stories not yet finished with something on screen you │
+   │ haven't seen (screenWaiting), is a shelf of the Library's (see READ     │
+   │ BEFORE YOU WATCH, A SHELF OF ITS OWN); Shelf care's 🎬 box              │
+   │ (refreshScreen) keeps a door to it, and ✨ looks SCREEN_N books and     │
+   │ series at a time (screenFind): ones not                                 │
    │ yet asked about (b.screenAsked; a story is asked with its collection),  │
    │ Want to read first, then the ones being read, then the finished. What  │
    │ it finds goes on them as one step, so ↶ takes it all back. A corrections│
@@ -50501,6 +50538,29 @@ function screenPanel(lit){
   const close=dismissable(d,()=>{if(view==="book")renderBookView();});d.__close=close;
   paint();
 }
+/* a Library row under 🎬 Read before you watch: a book, or a story's row (storyProxy: the
+   collection's id, the story's in _story) — what it has on screen not seen yet, and ✓ Seen */
+function screenRowHtml(b){
+  const coll=b._story?books.find(x=>x.id===b.id):b;if(!coll)return "";
+  const x=b._story?(coll.entries||[]).find(e=>e.id===b._story):coll;if(!x)return "";
+  const l=screenOf(x).filter(y=>!y.seen);if(!l.length)return "";
+  /* a line of its own under the row's other badges, so what's on screen reads as one line
+     rather than wrapping between them */
+  return `<span class="bst free" style="flex:1 1 100%;min-width:0;overflow-wrap:anywhere" title="${esc(l.map(screenSay).join(" · "))}">${esc(l.slice(0,2).map(screenSay).join(" · "))}${l.length>2?` +${l.length-2}`:""}</span>`
+    +`<button class="bst rowread" data-scrow="${esc(coll.id+"|"+(b._story||""))}" title="You've seen it: it leaves this list. ↶ puts it back">✓ Seen</button>`;
+}
+/* ✓ Seen on a Library row: every unseen one of that book or story, seen, as one step of ↶ */
+async function screenSeenAll(id,enId){
+  const b=books.find(x=>x.id===id);if(!b)return;
+  const x=enId?(b.entries||[]).find(e=>e.id===enId):b;if(!x)return;
+  const l=screenOf(x).filter(y=>!y.seen);if(!l.length)return;
+  const before=JSON.parse(JSON.stringify(b));
+  l.forEach(y=>{y.seen=true;});touchBook(b,true);
+  if(!(await putOrRestore(b,before)))return;
+  if(SYNC.on){enqueue({kind:"book",id:b.id});flushQueue();}
+  pushOp({t:"bulk",items:[{id:b.id,before,after:JSON.parse(JSON.stringify(b))}]});
+  try{await rebaseOpenBook(b.id);}catch(e){}
+}
 /* Shelf care's box: Read before you watch, and Claude looking SCREEN_N at a time */
 let screenBusy=false,screenSaid="";
 /* [{b, en}]: a book or collection not finished, or a story of one, with something on screen not seen */
@@ -50540,14 +50600,16 @@ function refreshScreen(){
   const box=q("#screenBox");if(!box)return;
   const wait=screenWaiting(),left=screenQueue().length,ready=claudeReady();
   if(!wait.length&&!ready){box.innerHTML="";return;}
+  /* the list itself is a shelf in the Library now — see READ BEFORE YOU WATCH, A SHELF OF ITS OWN */
+  const nSt=wait.filter(x=>x.en).length;
   box.innerHTML=`<div class="lbl" style="display:block;margin:14px 0 4px">🎬 Read before you watch${wait.length?` <b>${wait.length}</b>`:""}</div>
-    <div class="hint" style="margin:0 0 7px">Books and stories you haven't finished that were made into a film or a series you haven't seen. Tick one seen under 🎬 On screen, on the book's or the collection's page.</div>
-    ${wait.slice(0,40).map(({b,en})=>`<div class="snap" style="gap:7px;align-items:flex-start;flex-wrap:wrap"><button class="linkbtn" data-scopen="${esc(b.id)}"${en?` data-scen="${esc(en.id)}"`:""} style="flex:1;min-width:0;text-align:left"><b>${esc((en||b).title||"Untitled")}</b>${en?` — in ${esc(b.title||"a collection")}`:b.author?` — ${esc(b.author)}`:""}</button>
-      <span class="hint" style="margin:0;flex:1 1 100%">${esc(screenOf(en||b).filter(x=>!x.seen).map(screenSay).join(" · "))}</span></div>`).join("")||`<div class="hint" style="margin:0">Nothing waiting.</div>`}
+    ${wait.length?`<div class="hrow2" style="gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 4px"><button class="btn smallbtn" id="scLib">📚 Open them in the Library</button>
+      <span class="hint" style="margin:0;flex:1 1 200px;min-width:0">Books${nSt?` and stories (${nSt})`:""} you haven't finished, made into a film or a series you haven't seen: a shelf of their own, by genre, with ✓ Seen on each.</span></div>`
+      :`<div class="hint" style="margin:0">Nothing waiting.</div>`}
     ${ready?`<div class="hrow2" style="margin-top:8px;gap:6px;align-items:center;flex-wrap:wrap">${screenBusy?`<span class="hint" style="margin:0">✨ Claude is looking…</span>`
       :left?`<button class="btn" id="scFind">✨ Which of my books are films or series? · ${Math.min(SCREEN_N,left)}</button>`:""}
       <span class="hint" style="margin:0">${screenSaid?esc(screenSaid)+" · ":""}${left?`${left} not looked at yet, Want to read first · about 10¢ for ${SCREEN_N}`:"Every book and series has been looked at."}</span></div>`:""}`;
-  qa("[data-scopen]",box).forEach(b=>b.onclick=()=>openBook(b.dataset.scopen,false,false,b.dataset.scen||""));
+  {const lb=q("#scLib",box);if(lb)lb.onclick=()=>{libSetFilter("screen");view="library";render();try{window.scrollTo(0,0);}catch(e){}};}
   const f=q("#scFind",box);if(f)f.onclick=async()=>{screenBusy=true;screenSaid="";refreshScreen();
     try{const r=await screenFind();screenSaid=`Looked at ${r.looked}: ${r.found} ${r.found===1?"has":"have"} a film or a series — ↶ takes it back`;}
     catch(e){screenSaid="Claude couldn't — "+((e&&e.message)||"no answer");}
