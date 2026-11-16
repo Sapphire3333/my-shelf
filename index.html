@@ -14835,6 +14835,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-16.11",go:["tab:library"],lines:["<b>🚫 Leave a folder out of your Drive list.</b> A folder inside your Drive folder that isn't books, a reading program's own parts or your papers, no longer has to fill the list. In 📚 Library → ☁ Drive, step into the folder and press <b>🚫 Leave this folder out</b>: its files, and those of any folder inside it, stop showing in the tab, in its search, in Connect your Drive files and in 🔎 Do I have it?. A line over the list names each folder left out with how many files it holds, and <b>↩ Bring back</b> returns them at once, with no new look at Drive. Nothing in your Drive is touched, a file a book already holds stays that book's, and the choice follows you to your other devices."]},
   {v:"2026-11-16.10",go:["tab:library"],lines:["<b>🔎 Do I have it?</b> The Library's find box answers for more than the shelf now. With three letters or more typed, a line under it says how many books by that name wait on your import list, and another how many files your Drive folder has and how many of them no book holds yet. A tap on a line takes your words to that list's own search. When the shelf itself has nothing by that name, the books and files are listed right there, each file with ↗ Look; and when nothing anywhere has it, one line says so. The Drive side reads the list this device kept from your last ↻ Look again and asks Google nothing. Files that books on the shelf already hold are not mentioned beside those books. The import list's own search finds by title and author together too, and forgives a typo as the other find boxes do."]},
   {v:"2026-11-16.9",go:["el:care:#drvConnBox"],lines:["<b>📚 A bumper book that names its stories.</b> In Connect your Drive files, a file holding several stories of a collection got <b>Use it for several…</b> only when its name gave their numbers or called it an omnibus or a box set. A file whose name lists the stories by title, like a bumper book of four, now gets it too, with the stories it names already ticked; one you gave to a single story already shows under <b>Give it to them…</b>. A name that only mentions another book as its series (“… a Deep Blue Novel”) doesn't count."]},
   {v:"2026-11-16.8",go:["el:care:#corrSec"],lines:["<b>🔎 Coming next, from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now bring the books of your series that come after the last one you have, out already or announced. Each row says when, and where it goes: ✓ Use files it as ⌛ Don't have it yet, Want to read, with its date, as a story at its number inside your collection or as a book of its own in its series, just as 🔎 Is the next one out? does. They show on 📅 Coming out. A title you already have is left out, and one whose number you already hold under another title starts unticked. One ↶ takes a press back."]},
@@ -23959,7 +23960,7 @@ function haveDriveList(){
   if(!driveReady())return null;
   const fo=settings.drive&&settings.drive.folder;if(!fo)return null;
   if(!(drvFilesMemo&&drvFilesMemo.id===fo.id)){const kept=drvListLoad();if(!kept||kept.id!==fo.id)return null;drvFilesMemo=kept;}
-  return drvFilesMemo;
+  return drvLeaveApply(drvFilesMemo);
 }
 /* {imp: the import rows, drvN: how many files, drvLoose: how many of them no book
    or story holds, drv: the first HAVE_ROWS of a few, memo} — null under HAVE_MIN letters */
@@ -33975,16 +33976,71 @@ const DRV_MIMES=["application/epub+zip","text/html","application/xhtml+xml","tex
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/x-fictionbook+xml","application/x-fictionbook","text/xml","application/xml","application/x-cbz","application/vnd.comicbook+zip"];
 const drvKind=x=>x.mimeType===DRV_DOC?"doc":(x.mimeType==="application/pdf"||/\.pdf$/i.test(x.name))?"pdf"
   :(DRV_TYPES.test(x.name)||/epub|text\/html|text\/plain|wordprocessingml|fictionbook|comicbook|x-cbz/.test(x.mimeType||""))?"file":"";
-const DRV_LIST_KEY=COPY_DB?"shelfDriveList-copy":"shelfDriveList";
-function drvListSave(m){try{localStorage.setItem(DRV_LIST_KEY,JSON.stringify({id:m.id,at:m.at,looked:m.looked,dirs:m.dirs,files:m.files.map(f=>[f.id,f.name,f.size,f.mime,f.kind,f.p])}));}catch(e){}}
-function drvListLoad(){
-  try{const o=JSON.parse(localStorage.getItem(DRV_LIST_KEY)||"null");if(!o||!Array.isArray(o.files)||!Array.isArray(o.dirs))return null;
-    return {id:o.id,at:o.at,looked:o.looked||0,dirs:o.dirs,files:o.files.map(([id,name,size,mime,kind,p])=>({id,name,size,mime,kind,p}))};}catch(e){return null;}
+/* ┌─ 🚫 A FOLDER LEFT OUT ───────────────────────────────────────────────────┐
+   │ The chosen folder can hold folders that are not books at all (a reading  │
+   │ program's own parts, a folder of papers), and every file in them stood   │
+   │ in the Drive tab, its search, Connect's lists and DO I HAVE IT?'s count. │
+   │ settings.drvLeave names the folders to leave out ({id: name}, shared     │
+   │ between devices). drvLeaveApply moves their files, and those of every    │
+   │ folder under them (drvLeaveInside), from the list's `files` to its       │
+   │ `out`. So every reader of `files` sees the list without them and none    │
+   │ had to change: the tab, drvHits, drvConnectFind, Sort, the fic reader,   │
+   │ ⌛ by itself, DO I HAVE IT?. Tidy lists Drive afresh, so drvTidyFind      │
+   │ leaves those folders out of what it looks in.                            │
+   │ `out` is kept beside `files` (drvListPack / drvListUnpack), so bringing  │
+   │ a folder back needs no fresh listing and no sign-in. Nothing in Drive    │
+   │ is touched, and a file a book holds stays that book's file: it is found  │
+   │ by its id, not by the list.                                              │
+   │ m.leaveSig says which choice a list was last cut by, so asking again is  │
+   │ free, and a choice changed on another device is applied the next time    │
+   │ the list is asked for. The chosen folder itself is never left out.       │
+   │ The switch is in the ☁ Drive tab: 🚫 on the folder you are standing in,  │
+   │ and over the list a line for each folder left out, with how many files   │
+   │ it holds and ↩ Bring back (drvLeaveHtml, drvLeaveSet).                   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const drvLeaveSig=()=>Object.keys(settings.drvLeave||{}).sort().join("|");
+/* the folders left out and every folder under them */
+function drvLeaveInside(m){
+  const inside=new Set(Object.keys(settings.drvLeave||{}));inside.delete(m.id);
+  if(!inside.size)return inside;
+  const kids=new Map();(m.dirs||[]).forEach(d=>{if(!kids.has(d.p))kids.set(d.p,[]);kids.get(d.p).push(d.id);});
+  const todo=[...inside];for(let i=0;i<todo.length;i++)(kids.get(todo[i])||[]).forEach(c=>{if(!inside.has(c)){inside.add(c);todo.push(c);}});
+  return inside;
 }
+function drvLeaveApply(m){
+  if(!m||!Array.isArray(m.files))return m;
+  const sig=drvLeaveSig();if(m.leaveSig===sig)return m;
+  const all=m.out&&m.out.length?m.files.concat(m.out):m.files,inside=drvLeaveInside(m);
+  m.files=inside.size?all.filter(f=>!inside.has(f.p)):all;
+  m.out=inside.size?all.filter(f=>inside.has(f.p)):[];
+  m.leaveSig=sig;return m;
+}
+function drvLeaveSet(id,name,on){
+  const fo=settings.drive&&settings.drive.folder;if(!id||(fo&&id===fo.id))return;
+  const lv=Object.assign({},settings.drvLeave||{});
+  if(on)lv[id]=name||"";else delete lv[id];
+  settings.drvLeave=lv;saveSettings();
+  if(drvFilesMemo){drvLeaveApply(drvFilesMemo);drvListSave(drvFilesMemo);}
+}
+/* over the Drive tab's list, where a folder of thousands can't bury it: each folder left out, how many files it holds, and the way back */
+function drvLeaveHtml(m){
+  const lv=settings.drvLeave||{},ids=Object.keys(lv);if(!ids.length)return "";
+  const up={};(m.dirs||[]).forEach(d=>{up[d.id]=d.p;});const n={};
+  (m.out||[]).forEach(f=>{let p=f.p,g=0;while(p&&g++<40){if(lv[p]!=null){n[p]=(n[p]||0)+1;break;}p=up[p];}});
+  return `<div class="hrow2" id="dsLeft" style="gap:6px 12px;flex-wrap:wrap;align-items:baseline;margin:0 0 8px"><span class="hint" style="margin:0">🚫 Left out of this list:</span>${ids.map(id=>
+    `<span class="hrow2" style="gap:6px;align-items:baseline;flex-wrap:wrap;min-width:0"><b style="font-size:13px;min-width:0;overflow-wrap:anywhere">${esc(lv[id]||"a folder")}</b><span class="lbl">${(n[id]||0).toLocaleString()} file${n[id]===1?"":"s"}</span><button class="btn smallbtn" data-dsunleave="${esc(id)}" title="Its files show in the list again">↩ Bring back</button></span>`).join("")}</div>`;
+}
+const DRV_LIST_KEY=COPY_DB?"shelfDriveList-copy":"shelfDriveList";
+const drvListRow=f=>[f.id,f.name,f.size,f.mime,f.kind,f.p],drvListFile=([id,name,size,mime,kind,p])=>({id,name,size,mime,kind,p});
+const drvListPack=m=>Object.assign({id:m.id,at:m.at,looked:m.looked,dirs:m.dirs,files:m.files.map(drvListRow)},m.out&&m.out.length?{out:m.out.map(drvListRow)}:{});
+const drvListUnpack=o=>(!o||!Array.isArray(o.files)||!Array.isArray(o.dirs))?null
+  :drvLeaveApply({id:o.id,at:o.at,looked:o.looked||0,dirs:o.dirs,files:o.files.map(drvListFile),out:(Array.isArray(o.out)?o.out:[]).map(drvListFile)});
+function drvListSave(m){try{localStorage.setItem(DRV_LIST_KEY,JSON.stringify(drvListPack(m)));}catch(e){}}
+function drvListLoad(){try{return drvListUnpack(JSON.parse(localStorage.getItem(DRV_LIST_KEY)||"null"));}catch(e){return null;}}
 async function drvFolderFiles(again,onProg){
   const f=settings.drive&&settings.drive.folder;if(!f)throw new Error("choose your Drive folder first, in ⚙ Settings → Devices and Drive");
   if(!again){
-    if(drvFilesMemo&&drvFilesMemo.id===f.id)return drvFilesMemo.files;
+    if(drvFilesMemo&&drvFilesMemo.id===f.id)return drvLeaveApply(drvFilesMemo).files;
     const kept=drvListLoad();if(kept&&kept.id===f.id){drvFilesMemo=kept;return kept.files;}
   }
   const was=drvListLoad(),est=was&&was.looked||0;
@@ -33999,9 +34055,9 @@ async function drvFolderFiles(again,onProg){
     if(onProg)onProg({stage:"files",n,found:files.length,est});});
   /* the folders under the chosen one, with their names, for the ☁ Drive tab */
   const named=dirs.filter(d=>seen.has(d.id)&&d.id!==f.id).map(d=>({id:d.id,name:d.name,p:(d.parents||[]).find(y=>seen.has(y))||f.id}));
-  drvFilesMemo={id:f.id,at:Date.now(),looked:looked.length,dirs:named,files};drvListSave(drvFilesMemo);
+  drvFilesMemo=drvLeaveApply({id:f.id,at:Date.now(),looked:looked.length,dirs:named,files});drvListSave(drvFilesMemo);
   ownAutoSoon();   /* see ⌛ KEEPS ITSELF RIGHT */
-  return files;
+  return drvFilesMemo.files;
 }
 const drvListSay=(p,fname)=>p.stage==="folders"
   ?drvBarHtml(`Finding your folders on Drive… ${p.n.toLocaleString()} so far`,null)
@@ -34259,10 +34315,13 @@ function drvShelfDraw(box){
       const chain=[];for(let p=at,g=0;p&&g<40;g++){chain.unshift(p);if(p===fo.id)break;p=up[p];}
       const subs=dirs.filter(d=>d.p===at&&count[d.id]).sort((a,c)=>a.name.localeCompare(c.name,undefined,{numeric:true}));
       const here=files.filter(f=>f.p===at).sort((a,c)=>a.name.localeCompare(c.name,undefined,{numeric:true}));
-      body.innerHTML=`<div class="hint" style="margin:0 0 6px">${chain.map((p,i)=>i<chain.length-1?`<button class="linkbtn" data-dsdir="${esc(p)}">${esc(name[p]||"")}</button> › `:`<b>${esc(name[p]||"")}</b>`).join("")}</div>`
+      /* 🚫 on the folder you are standing in, never the chosen one — see A FOLDER LEFT OUT */
+      body.innerHTML=`<div class="hrow2" style="gap:6px 10px;align-items:baseline;flex-wrap:wrap;margin:0 0 6px"><div class="hint" style="margin:0;min-width:0;overflow-wrap:anywhere">${chain.map((p,i)=>i<chain.length-1?`<button class="linkbtn" data-dsdir="${esc(p)}">${esc(name[p]||"")}</button> › `:`<b>${esc(name[p]||"")}</b>`).join("")}</div>${at!==fo.id?`<button class="btn smallbtn" id="dsLeave" data-dsleave="${esc(at)}" style="margin-left:auto" title="Not books? Its files stop showing here, in searches and in Connect your Drive files. Nothing in your Drive is touched, and ↩ Bring back undoes it">🚫 Leave this folder out</button>`:""}</div>`+drvLeaveHtml(memo)
         +subs.map(d=>`<div class="snap" data-dsdir="${esc(d.id)}" role="button" tabindex="0" style="padding:7px 10px;gap:10px;align-items:center;cursor:pointer"><span style="font-size:20px" aria-hidden="true">📁</span><div style="min-width:0;flex:1"><b style="font-size:14px;overflow-wrap:anywhere">${esc(d.name)}</b><div class="meta">${(count[d.id]||0).toLocaleString()} file${count[d.id]===1?"":"s"}</div></div><span class="hint" style="margin:0" aria-hidden="true">›</span></div>`).join("")
         +here.slice(0,shown).map(f=>row(f,false)).join("")+more(here.length)
         +(subs.length||here.length?"":`<div class="none">No readable files in this folder.</div>`);}
+    {const lv=q("#dsLeave",body);if(lv)lv.onclick=()=>{const id=lv.dataset.dsleave;drvLeaveSet(id,name[id]||"",true);drvPath=up[id]||fo.id;shown=DRV_PAGE;load(false);window.scrollTo(0,0);};}
+    qa("[data-dsunleave]",body).forEach(b=>b.onclick=()=>{drvLeaveSet(b.dataset.dsunleave,"",false);load(false);});
     qa("[data-dsdir]",body).forEach(el=>el.onclick=()=>{drvPath=el.dataset.dsdir;shown=DRV_PAGE;paint();window.scrollTo(0,0);});
     {const mo=q("#dsMore",body);if(mo)mo.onclick=()=>{shown+=DRV_PAGE;paint();};}
     qa("[data-dsread]",body).forEach(bt=>bt.onclick=()=>{const f=files.find(x=>x.id===bt.dataset.dsread);if(!f)return;const h=held.get(f.id);
@@ -34837,7 +34896,8 @@ function drvTidyGroups(files){
 async function drvTidyFind(onProg){
   const fo=settings.drive&&settings.drive.folder;if(!fo)throw new Error("choose your Drive folder first");
   await drvFolderFiles(false);
-  const memo=drvFilesMemo,seen=new Set([fo.id,...((memo&&memo.dirs)||[]).map(d=>d.id)]),files=[];
+  /* not in a folder left out — see A FOLDER LEFT OUT */
+  const memo=drvFilesMemo,left=memo?drvLeaveInside(memo):new Set(),seen=new Set([fo.id,...((memo&&memo.dirs)||[]).map(d=>d.id).filter(id=>!left.has(id))]),files=[];
   await drvList(`(${DRV_MIMES.map(m=>`mimeType='${m}'`).join(" or ")}) and trashed=false`,"id,name,mimeType,size,parents,md5Checksum",(n,page)=>{
     page.forEach(x=>{const p=(x.parents||[]).find(y=>seen.has(y));if(!p||!x.md5Checksum)return;
       files.push({id:x.id,name:x.name,size:+x.size||0,mime:x.mimeType,md5:x.md5Checksum,p});});
@@ -74893,7 +74953,7 @@ async function storageHunt(){
    │ differ keep their own until one of them is changed, rather than the     │
    │ second to load quietly overruling the first.                            │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SHARED_PREFS=["serInLeave","drvSortMove","blurbModel","healthLeave","drvConnNot","twinLeave","storyCopyLeave","castTwinLeave","castKeep","ownClashLeave","rdUsual","freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover","devCopyPhone","devCopyComputer","setHistPhone","setHistComputer"];
+const SHARED_PREFS=["serInLeave","drvSortMove","blurbModel","healthLeave","drvConnNot","twinLeave","storyCopyLeave","castTwinLeave","castKeep","ownClashLeave","rdUsual","freeOff","nextLook","authorStars","savedShelves","nbModel","nbAhead","nudge","nudgeReady","shares","shareReady","quietUntil","seasonsOff","plateName","owlRecall","castStars","rdSound","fics","ficCards","drvConnLeave","claudeFandoms","claudeFandomLeave","owl","drive","drvLeave","drvPos","drvMarks","hlIn","claudeRead","claudeReadSeen","achNot","achNote","guessLv","pzGrid","pzCut","pzSrc","pzCloth","sfxSet","finFx","petWear","qpPaper","accent","bandNames","inkSet","pagesGoal","serBlurbs","serPrev","authorBios","recapWords","taste","tastePrev","meUse","verdicts","claudeTidyLeave","claudeFitSeen","albumCover","devCopyPhone","devCopyComputer","setHistPhone","setHistComputer"];
 /* `var` with no value on purpose: init starts at line ~9600, long before this
    line runs, and a saveSettings reaching prefsNote that early must find it
    merely unloaded — a `let` read there is a ReferenceError that stops the
