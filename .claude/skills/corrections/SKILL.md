@@ -1,6 +1,6 @@
 ---
 name: corrections
-description: Do a whole-shelf job for My Shelf here, in Claude Code, from a copy of the shelf, and hand the app one corrections file to load in Shelf care → 📥 Corrections from a file, instead of the app paying for Claude per press. Use for series, blurbs, page counts, and the later kinds (genres, tags, Set in, names written two ways, who an author is, on screen, coming next).
+description: Do a whole-shelf job for My Shelf here, in Claude Code, from a copy of the shelf, and hand the app one corrections file to load in Shelf care → 📥 Corrections from a file, instead of the app paying for Claude per press. Use for series, blurbs, page counts, and the later kinds (genres, tags, Set in, names written two ways, who an author is, on screen, covers, coming next).
 ---
 
 # A corrections file
@@ -73,6 +73,7 @@ after the copy and writes over it. `why` and `src` are shown beside it.
 | `rename` | one author, series, tag, genre, fandom, character or pairing written two or more ways, made one (build 2026-11-15.8 on): a pill per spelling with how many books carry it now, the lit one kept; the press hands them to Tidying up's own merges, one ↶ for all | `what`, `names` (every spelling as the copy writes it), `keep`, `doubt` starts it unticked; a pair the owner once left in Tidying up starts unticked by itself — `corr.File.rename` |
 | `author` | the lines of an author's panel, as ✨ Who they are writes them (build 2026-11-15.10 on): into `settings.authorBios` under the folded name; a setting, so no ↶; a panel that already has lines starts unticked | `name` (as the shelf writes it), `text` (three short lines, to the reader as "you"), `known` (up to six titles), `was` (the panel's lines in the copy, "" for none) — `corr.File.author` |
 | `screen` | films and series made of a book (build 2026-11-15.11 on): on a collection what was made of the series as a whole or of several of its books (a television series), on a story a film of that one book; only what the item doesn't have yet is added, not seen; an empty `to` only marks a book or collection asked about, so the app's ✨ never asks again, and those rows stand folded; a story is asked about with its collection, so a story row only adds; one ↶ | `to` ([{kind film/series, title, year}]), `was` (the item's list in the copy; a list changed since starts the row unticked) — `corr.File.screen` |
+| `cover` | a cover for a book, collection or story (build 2026-11-16.2 on). The copy has no pictures, so the app reads the owner's own first and gives a row only where it is missing, under 400 px tall or a grey scan, never where they put it there themselves (`covYours`); a book's or story's row takes the first url better than theirs, ticked; a collection's shows theirs and up to four, and changes nothing until one is tapped; kept at 800 px on the long side, 100 a press, one ↶ each | `urls` ([{url, src, w, h, label}], best first; w × h measured here with `corr.cover_look`, never a grey one; `label` names a collection's choices: "series art", "box set", "#1") — `corr.File.cover` |
 
 Kinds named for later jobs, which this build counts and keeps but can't use
 yet: `upcoming`. Each one
@@ -220,6 +221,24 @@ its job, and here with its fields. A new kind never needs a new loader.
   - A short story is answered with the book of stories it was first printed
     in, at its place in that book's contents.
   - Fan fiction on the list goes in as kind `fic`, never as a series answer.
+- For `cover`:
+  - The page may download from Amazon (`m.media-amazon.com/images/P/<ISBN-10>.01.LZZZZZZZ.jpg`),
+    Open Library (`covers.openlibrary.org/b/isbn/<ISBN>-L.jpg?default=false`, which redirects to
+    archive.org) and Apple (`*.mzstatic.com`): all three answer with Access-Control-Allow-Origin
+    (measured 2026-11-16). Hardcover's covers go through the owner's Supabase function, whose
+    downloads count against their cloud allowance: never for a whole-shelf job.
+  - Apple: `itunes.apple.com/lookup?isbn=` or `/search?media=ebook&term=`; its `artworkUrl100`
+    with `100x100bb` changed to `1400x1400bb` is the full picture (one measured 915 × 1400).
+    Amazon sends a 43-byte blank where it has none, Open Library a 404 with `default=false`.
+  - Download every candidate here and keep only what `corr.cover_look` measures: its real
+    size, and never a grey one. Under 400 px tall is no better than a small cover.
+  - Pace it: one request at a time to each site, a second or two apart. Eight parallel
+    helpers once got this computer refused by iTunes and Open Library for a while.
+  - Leave out what can't be better: a story or book whose `covMine` is true, and a story with
+    `cover: true` dated before 9 November 2026 (no `coverV`), which the app counts as the owner's.
+  - A collection's choices: the series' own art or a box set where one exists (an Apple
+    search for "<series> box set" by the same author), then its first books' covers, each
+    labelled.
 - The web search tool allows 200 searches a turn, SHARED by every subagent
   running in it. Four checkers of about 60 books each used it all; give each
   a cap ("at most 45 searches") and let one search cover an author's books.

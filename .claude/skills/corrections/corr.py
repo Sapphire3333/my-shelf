@@ -66,6 +66,22 @@ class Shelf:
                     yield b, en
 
 
+GREY_SHARE, GREY_STEP = 0.04, 40
+
+
+def cover_look(data):
+    """(w, h, grey) of a picture's bytes, judged as the app's covGreyAt judges a cover: shrunk to
+    24 × 24, grey when fewer than 4% of the squares have 40 or more between their highest and
+    lowest of red, green and blue. Needs Pillow."""
+    import io
+    from PIL import Image
+    im = Image.open(io.BytesIO(data))
+    w, h = im.size
+    px = im.convert("RGB").resize((24, 24), Image.BOX).tobytes()
+    n = sum(1 for i in range(0, len(px), 3) if max(px[i:i + 3]) - min(px[i:i + 3]) >= GREY_STEP)
+    return w, h, n / 576 < GREY_SHARE
+
+
 def load(path):
     with open(os.path.expanduser(path), encoding="utf-8") as f:
         return Shelf(json.load(f), path)
@@ -329,6 +345,32 @@ class File:
         was = [{"kind": s.get("kind") or "film", "title": s.get("title", ""), "year": str(s.get("year") or "")}
                for s in (x.get("screen") or []) if isinstance(s, dict) and s.get("title")]
         return self._book("screen", book, story, {"to": to, "was": was, "why": why, "src": src, "doubt": doubt}, keep=("to", "was"))
+
+    def cover(self, book, urls, story=None, why=""):
+        """Covers found for a book, a collection or a story (kind "cover", build 2026-11-16.2 on).
+        urls: [{"url", "src", "w", "h", "label"}], best first; url is https (or a data:image URL),
+        w × h the picture's own size as downloaded here (cover_look), and none of them grey. The
+        copy holds no pictures, so the app reads the owner's own cover and gives a row only where
+        it is missing, under 400 px tall or a grey scan, and never where they put it there
+        themselves. A book or story takes the first one better than theirs; a collection shows
+        up to four, each with its `label` ("series art", "box set", "#1"), for them to choose.
+        Returns None when no url is usable."""
+        keep = []
+        for u in urls or []:
+            url = str((u or {}).get("url") or "")
+            if not (url.startswith("https://") or url.startswith("data:image/")):
+                continue
+            if u.get("grey"):
+                continue
+            c = {"url": url, "src": str(u.get("src") or "")[:30], "w": int(u.get("w") or 0), "h": int(u.get("h") or 0)}
+            if u.get("label"):
+                c["label"] = str(u["label"])[:24]
+            if all(k["url"] != url for k in keep):
+                keep.append(c)
+        if not keep:
+            return None
+        coll = story is None and book.get("type") == "collection"
+        return self._book("cover", book, story, {"urls": keep[:4 if coll else 3], "why": why})
 
     RENAME_WHAT = ("author", "series", "tag", "genre", "fandom", "character", "ship")
 

@@ -1692,6 +1692,77 @@ const SMOKE=`
       return "a series' show on its collection, films on two stories (a finished one kept out of Read before you watch), a film named twice once and its remake kept, nothing marks a book asked, a list changed since unticked, a gone book gone, answers placed by the book's number, one ↶";});}
     finally{CORR=keepC;Object.assign(CORR_UI,keepU);await corrSave();
       for(const id of ["fx-s1","fx-s2","fx-s3","fx-s4"])await dbDel("books",id);}});
+  await check("covers by file: only a missing, small or grey cover gets a row, never yours, a collection's waits for a tap, one step of undo",async()=>{
+    const keepC=CORR,keepU={off:new Set(CORR_UI.off),on:new Set(CORR_UI.on),say:CORR_UI.say,covPick:CORR_UI.covPick},keepS={on:SYNC.on,user:SYNC.user,onHold:SYNC.onHold};
+    /* stand-in covers: a coloured one, or a grey scan, at a given size, with enough in it to weigh over a blank */
+    const pic=(w,h,grey)=>{const c=document.createElement("canvas");c.width=w;c.height=h;const x=c.getContext("2d"),g=x.createLinearGradient(0,0,w,h);
+      g.addColorStop(0,grey?"#555":"#b91c1c");g.addColorStop(1,grey?"#ddd":"#1d4ed8");x.fillStyle=g;x.fillRect(0,0,w,h);
+      for(let i=0;i<40;i++){const v=90+i*3;x.fillStyle=grey?"rgb("+v+","+v+","+v+")":"hsl("+(i*9)+",70%,50%)";x.fillRect((i*37)%w,(i*53)%h,w/7,h/11);}
+      return c.toDataURL("image/jpeg",.92);};
+    const P={small:pic(200,300),grey:pic(600,900,true),good:pic(600,900),mineGrey:pic(200,300,true),smallish:pic(260,390),
+      n1:pic(600,900),n2:pic(500,750),n3:pic(900,1350),c1:pic(640,960),c2:pic(480,720)};
+    const old=Date.parse("2026-11-12");
+    const list=[B("fx-v1","The Paper Lantern","Ann Fixture",{coverV:old,covMine:false}),
+      B("fx-v2","Moon Hill","Bea Fixture",{coverV:old,covMine:false}),
+      B("fx-v3","Tide","Cy Fixture",{coverV:old,covMine:false}),
+      B("fx-v4","The Glass Owl","Dee Fixture",{coverV:old,covMine:true}),
+      B("fx-v5","The Lantern Saga","Ann Fixture",{type:"collection",entries:[E("v5a","The Lost Kite"),E("v5b","The Red Door",{cover:true,coverV:old,covMine:true})]}),
+      B("fx-v6","Small Again","Eve Fixture",{coverV:old,covMine:false})];
+    const pics=[["covers","fx-v1",P.small],["covers","fx-v2",P.grey],["covers","fx-v3",P.good],["covers","fx-v4",P.mineGrey],["images","fx-v5|v5b",P.mineGrey],["covers","fx-v6",P.smallish]];
+    const keys=["fx-v1","fx-v2","fx-v3","fx-v4","fx-v5","fx-v6","fx-v5|v5a","fx-v5|v5b"];
+    try{
+      for(const [st,k,d] of pics)await dbPut(st,st==="covers"?{id:k,data:d}:{key:k,data:d,v:old});
+      keys.forEach(k=>coverCache.delete(k));
+      return await onShelf(list,async()=>{
+      const mk=x=>Object.assign({kind:"cover"},x),U=(url,w,h,label)=>({url,src:"Fixture",w,h,label:label||""});
+      const file={myShelfCorrections:1,made:"2026-11-16T10:00:00",copy:"2026-11-16",job:"Fixture covers",changes:[
+        mk({book:"fx-v5",title:"The Lantern Saga",author:"Ann Fixture",urls:[U(P.c1,640,960,"series art"),U(P.c2,480,720,"box set"),U(P.n1,600,900,"#1"),U(P.n2,500,750,"#2"),U(P.n3,900,1350,"#3")]}),
+        mk({book:"fx-v1",title:"The Paper Lantern",urls:[U("http://example.invalid/a.jpg",600,900),U(P.n1,600,900)]}),
+        mk({book:"fx-v2",title:"Moon Hill",urls:[U(P.n2,330,500)]}),
+        mk({book:"fx-v3",title:"Tide",urls:[U(P.n1,600,900)]}),
+        mk({book:"fx-v4",title:"The Glass Owl",urls:[U(P.n1,600,900)]}),
+        mk({book:"fx-v5",story:"v5a",title:"The Lost Kite",urls:[U(P.n3,900,1350)]}),
+        mk({book:"fx-v5",story:"v5b",title:"The Red Door",urls:[U(P.n1,600,900)]}),
+        mk({book:"fx-v6",title:"Small Again",urls:[U(P.n2,300,450)]}),
+        mk({book:"fx-gone",title:"Gone",urls:[U(P.n1,600,900)]})]};
+      CORR=corrRead(JSON.stringify(file),"fixture.json");CORR_UI.off.clear();CORR_UI.on.clear();CORR_UI.covPick={};CORR_COV.clear();
+      let rows=corrRows();
+      must(rows.slice(0,8).every(r=>r.wait&&!corrOn(r))&&rows[8].gone,"before yours are read, rows wait: "+rows.map(r=>r.wait?"w":r.gone?"g":"?").join(""));
+      /* signed in to the cloud but not yet arrived: a cover only the cloud holds can't be told from none */
+      Object.assign(SYNC,{on:true,user:null,onHold:false});
+      await corrCovLook();rows=corrRows();
+      must(CORR_COV.get("fx-v5").st==="away"&&rows[0].same&&corrCovSame(rows.filter(r=>r.same)).includes("1 couldn't be read"),"a coverless collection with the cloud not arrived: "+JSON.stringify(CORR_COV.get("fx-v5")));
+      SYNC.on=false;CORR_COV.delete("fx-v5");
+      await corrCovLook();rows=corrRows();
+      const st=rows.map(r=>r.gone?"gone":r.same?(r.nobetter?"nobetter":r.m.st):corrOn(r)?"on":"off").join();
+      must(st==="off,on,on,fine,yours,on,yours,nobetter,gone","which stand and which are ticked: "+st);
+      must(CORR_COV.get("fx-v1").small&&CORR_COV.get("fx-v2").grey&&!CORR_COV.get("fx-v3").grey&&CORR_COV.get("fx-v5|v5a").st==="none","what yours were read as: "+JSON.stringify([...CORR_COV].map(([k,v])=>k+":"+v.st+(v.small?"/small":"")+(v.grey?"/grey":""))));
+      must(rows[1].cands.length===1&&rows[1].cands[0].url===P.n1&&rows[0].cands.length===4,"a plain address left out, four for a collection: "+rows[1].cands.length+" / "+rows[0].cands.length);
+      const h1=corrCoverHtml(rows[1]),h2=corrCoverHtml(rows[2]),h0=corrCoverHtml(rows[0]),hs=corrCovSame(rows.filter(r=>r.same));
+      must(h1.includes("Yours · 200 × 300, small")&&h1.includes("kept at 533 × 800")&&h2.includes("a grey scan")&&corrCoverHtml(rows[5]).includes("Yours · none"),"the rows don't say it: "+h1.slice(-400));
+      must(h0.includes('data-corrcovn="3"')&&!h0.includes('data-corrcovn="4"')&&h0.includes("Tap the one you want")&&h0.includes("series art"),"the collection's row: "+h0.slice(-500));
+      must(hs.includes("1 already has a good cover")&&hs.includes("2 covers you put there yourself are left alone")&&hs.includes("2 of them small or grey")&&hs.includes("For 1, nothing in the file"),"what was left out: "+hs);
+      CORR_UI.covPick[0]=1;rows=corrRows();
+      must(corrOn(rows[0])&&corrCoverHtml(rows[0]).includes('aria-pressed="true"'),"a tapped cover didn't tick its collection");
+      must(corrPick(rows).length===4,"a press takes "+corrPick(rows).length);
+      const before={v1:(await dbGet("covers","fx-v1")).data};
+      const n0=HIST.undo.length;await corrUse();
+      const v1=books.find(b=>b.id==="fx-v1"),v5=books.find(b=>b.id==="fx-v5");
+      const got=async(st,k)=>{const r=await dbGet(st,k);return r&&r.data?await covGreyAt(r.data):null;};
+      const g1=await got("covers","fx-v1"),g5=await got("covers","fx-v5"),ga=await got("images","fx-v5|v5a");
+      must(g1&&g1.h===800&&g1.w===533&&g5&&g5.h===720&&ga&&ga.h===800&&ga.w===533,"what went in, at 800 on the long side: "+JSON.stringify([g1,g5,ga].map(g=>g&&g.w+"×"+g.h)));
+      must(v5.entries[0].cover&&v5.entries[0].covMine===false&&v1.covMine===false&&v1.coverV>old&&HIST.undo.length===n0+1&&(HIST.undo[HIST.undo.length-1].covs||[]).length===4,
+        "stamps and one step: "+JSON.stringify([v5.entries[0].cover,v5.entries[0].covMine,v1.covMine,HIST.undo.length-n0]));
+      must(/4 changes written/.test(CORR_UI.say)&&(await dbGet("covers","fx-v4")).data===P.mineGrey&&(await dbGet("covers","fx-v3")).data===P.good,"yours or a good one touched, or the press didn't say it: "+CORR_UI.say);
+      await doUndo();
+      const u5=books.find(b=>b.id==="fx-v5");
+      must((await dbGet("covers","fx-v1")).data===before.v1&&!(await dbGet("covers","fx-v5"))&&!(await dbGet("images","fx-v5|v5a"))&&!u5.entries[0].cover&&books.find(b=>b.id==="fx-v1").covMine===false&&books.find(b=>b.id==="fx-v1").coverV===old,
+        "↶ left the covers: "+JSON.stringify([!!(await dbGet("covers","fx-v5")),!!(await dbGet("images","fx-v5|v5a")),u5.entries[0].cover]));
+      return "a small, a grey and a missing cover stand ticked; a good one, two of yours (both small or grey) and one with nothing better left out and counted; a collection's four wait for a tap; three downloads at 800 px and the tapped one in one ↶, and back";});}
+    finally{CORR=keepC;Object.assign(CORR_UI,keepU);Object.assign(SYNC,keepS);CORR_COV.clear();await corrSave();
+      for(const id of ["fx-v1","fx-v2","fx-v3","fx-v4","fx-v5","fx-v6"]){await dbDel("books",id);await dbDel("covers",id);}
+      for(const k of ["fx-v5|v5a","fx-v5|v5b"])await dbDel("images",k);
+      keys.forEach(k=>coverCache.delete(k));}});
   await check("at a phone's biggest text a story's ↗ See it on wraps inside its column",async()=>{
     /* measured on a 132 px layout: the story's column 201 screen px, the chip's one line 299 */
     const de=document.documentElement,vw=de.getAttribute("data-vw"),box=document.createElement("div");

@@ -14835,6 +14835,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-16.4",go:["el:care:#corrSec"],lines:["<b>🖼 Covers from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now bring covers for your books, your collections and the stories inside them. It first looks at each cover you have, and a row stands only where yours is missing, small (under 400 px tall) or a grey scan, with yours beside the new one, ticked. A cover you put there yourself is never offered a swap. A collection's row shows yours and up to four found, like the series' own art or a box set and its first books' covers; nothing changes until you tap the one you want. Each new cover is kept at 800 px on the long side, and ✓ Use takes 100 a press, each press one step of ↶."]},
   {v:"2026-11-16.1",go:["tab:library"],lines:["<b>🎬 Read before you watch is a shelf of its own.</b> In the 📚 Library's filters, beside ♥ Favourites, 🎬 Read before you watch lists the books and stories you haven't finished that were made into a film or a series you haven't seen, each with its cover, under its genre's heading, a story as its own row. Each says what's on screen and has ✓ Seen, which takes it off the list (↶ puts it back). Leaving it gives the Library its own headings back. 🧰 Shelf care keeps a button that opens it, and the ✨ finder."]},
   {v:"2026-11-15.13",go:["el:overview:#stoCard"],lines:["<b>☁ What the cloud sends, counted.</b> The Storage card, at the foot of 🏠 Today and in ⚙ Settings, now says how much this device downloaded from your cloud today, and in how many pulls. ▸ What it was splits it by kind (your shared lists, books, covers and pictures, Claude, Hardcover, MangaDex), names the shared lists every pull brings and how big each is, heaviest first, and lists the days before. Your free plan allows 5 GB a month of this; the card shows where it goes. Each device counts its own."]},
   {v:"2026-11-15.12",go:["tab:library"],lines:["<b>↗ See it on stays on the screen with big text.</b> On a phone set to its biggest text, a story's ↗ See it on button in a collection's What's inside ran past the story's box, its ▾ off the edge of the screen. It now takes two lines there instead."]},
@@ -81912,10 +81913,11 @@ function blbPaint(){
 /* 12 a kind to start: 30 stood the card 3,622 px tall in Shelf care's 570 px column */
 const CORR_VER=1,CORR_SHOW=12,CORR_FOLD=60,CORR_PRESS=200;
 const CORR_KINDS=[["whole","📚 Series made whole"],["series","📚 Series"],["fic","✍️ Fics on your import list"],["blurb","📝 Blurbs"],["pages","📄 Page counts"],["dates","📅 A story's stage and dates"],["words","🏷 Genres, 🔖 tags and 🗺 Set in"],
-  ["rename","🧹 One name written two ways"],["author","👤 Who an author is"],["screen","🎬 On screen"],["upcoming","🔎 Coming next"]];
+  ["rename","🧹 One name written two ways"],["author","👤 Who an author is"],["screen","🎬 On screen"],["cover","🖼 Covers"],["upcoming","🔎 Coming next"]];
 let CORR=null,CORR_LOADED=false;
-/* wordOff: the words switched off on a "words" row, "i|part|word"; wAddOpen: its fold of rows that only add */
-const CORR_UI={off:new Set(),on:new Set(),more:{},say:"",wordOff:new Set(),wAddOpen:false,keep:{}};
+/* wordOff: the words switched off on a "words" row, "i|part|word"; wAddOpen: its fold of rows that only add;
+   covPick: the cover tapped on a collection's row, by row (see COVERS, BY FILE) */
+const CORR_UI={off:new Set(),on:new Set(),more:{},say:"",wordOff:new Set(),wAddOpen:false,keep:{},covPick:{}};
 const corrX=t=>t.en||t.b||t.it;
 function corrSerNow(t){
   if(t.it)return SERF.series[serFindKey(t.it)]||serFindFree(t.it)||null;
@@ -81950,6 +81952,9 @@ const CORR_DO={
   author:{now:()=>"",to:()=>"",was:()=>""},
   /* films and series: corrScreenRow lines it up; a story is asked about with its collection (see ON SCREEN, BY FILE) */
   screen:{now:()=>"",to:()=>"",was:()=>"",use:(t,c)=>{const x=corrX(t);screenJoin(x,(Array.isArray(c.to)?c.to:[]).map(corrScreenFix).filter(f=>f.title));if(!t.en)x.screenAsked=todayStr();}},
+  /* a cover: corrCoverRow lines it up, corrUse downloads it and corrCovPut keeps the picture
+     before this stamps its book or story as a finder's cover (see COVERS, BY FILE) */
+  cover:{now:()=>"",to:()=>"",was:()=>"",use:(t,c,r)=>{const x=corrX(t);x.coverV=r.va||Date.now();x.covMine=false;if(t.en)t.en.cover=true;}},
   /* ┌─ A ROW OF THE IMPORT LIST THAT IS A FIC ──────────────────────────────┐
      │ A Goodreads list holds fan fiction read on other sites as if it were   │
      │ books. Kind "fic" (row, fandoms, link) marks such a row kind "fanfic"  │
@@ -82416,6 +82421,157 @@ function corrScreenHtml(r){
   return `<label class="snap" style="display:block;padding:7px 10px"><span style="display:flex;gap:8px;align-items:flex-start;min-width:0">${box}
     <span style="min-width:0;flex:1;overflow-wrap:anywhere"><b>${esc(r.title||c.title||"Untitled")}</b> <span class="meta" style="display:inline">· ${esc(author||"Unknown author")}${where}</span>${line}${note}${why}</span></span></label>`;
 }
+/* ┌─ 🖼 COVERS, BY FILE ──────────────────────────────────────────────────────┐
+   │ Kind "cover" {book, story?, title, author, urls:[{url, src, w, h, label}]}│
+   │ is the covers Claude Code found for a book, a story or a collection,     │
+   │ best first, each measured where it was found (w × h of the picture       │
+   │ itself) and never a grey one. A copy of the shelf carries no pictures,   │
+   │ so only the app can see which of yours are poor: corrCovLook reads every │
+   │ cover the file is for, four at a time, from this device (the cloud only  │
+   │ for one this device hasn't got yet, as the shelf's own drawing does), and│
+   │ keeps in CORR_COV what it is: none; yours (covYours, see A COVER YOU PUT │
+   │ THERE YOURSELF), left alone and only counted; fine; or poor, under       │
+   │ CORR_COV_SMALL px tall or a grey scan (covGreyAt: under CORR_COV_GREY of │
+   │ its 24 × 24 squares hold any colour). Until all are read the rows wait,  │
+   │ so the list doesn't jump. A row stands only where yours is missing or    │
+   │ poor and the file has a better one: a fifth taller where yours is small, │
+   │ any not small where yours is grey. A book's or story's row is ticked.    │
+   │ A collection's cover is chosen, never given: its row shows yours and up  │
+   │ to CORR_COV_COLL found (the series' art or a box set, its first books'   │
+   │ covers), and counts as ticked only once one is tapped (CORR_UI.covPick). │
+   │ ✓ Use downloads them first, CORR_COVER_PX on the long side, at most      │
+   │ COVF_PRESS a press (corrPick), because the step of ↶ carries both        │
+   │ pictures (op.covs, as Better covers' Swap does); one that won't download │
+   │ stays for the next press, and one you put there yourself since the file │
+   │ was read is left alone.                                                  │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const CORR_COVER_PX=800,CORR_COV_SMALL=400,CORR_COV_GREY=.04,CORR_COV_COLL=4;
+const CORR_COV=new Map(),CORR_COVN={busy:false,done:0,of:0};
+const corrCovKey=t=>t.en?t.b.id+"|"+t.en.id:t.b.id;
+/* a file's picture: on the web, or written into the file itself */
+const corrCovUrl=u=>/^https:\/\//i.test(u)||/^data:image\//i.test(u);
+/* how big, whether grey, and (for one that may be listed) a thumbnail small enough to keep */
+async function covGreyAt(src,thumb){
+  try{
+    const bm=await createImageBitmap(await (await fetch(src)).blob());
+    const c=document.createElement("canvas");c.width=24;c.height=24;
+    const x=c.getContext("2d",{willReadFrequently:true});x.imageSmoothingQuality="high";x.drawImage(bm,0,0,24,24);
+    const d=x.getImageData(0,0,24,24).data;let n=0;
+    for(let i=0;i<d.length;i+=4)if(Math.max(d[i],d[i+1],d[i+2])-Math.min(d[i],d[i+1],d[i+2])>=40)n++;
+    const out={w:bm.width,h:bm.height,grey:n/576<CORR_COV_GREY,th:""};
+    if(thumb&&(out.grey||out.h<CORR_COV_SMALL)){const t=document.createElement("canvas");t.width=60;t.height=Math.max(1,Math.round(60*bm.height/bm.width));
+      t.getContext("2d").drawImage(bm,0,0,t.width,t.height);out.th=t.toDataURL("image/jpeg",.7);}
+    if(bm.close)bm.close();
+    return out;
+  }catch(e){return null;}
+}
+/* the cover a book, collection or story wears now: this device first, then the cloud.
+   undefined when the cloud holds it but can't be asked yet (offline, or not signed in
+   yet): read as none, a cover kept only in the cloud would be written over */
+async function corrCovMine(t){
+  const key=corrCovKey(t);
+  if(t.en&&!t.en.cover)return null;
+  const c=coverCache.get(key);if(typeof c==="string")return c;
+  const away=()=>coversStillComing()||(SYNC.on&&!navigator.onLine)?undefined:null;
+  if(t.en)return (await loadImgData(key))||away();
+  try{const r=await dbGet("covers",key);if(r&&r.data)return r.data;}catch(e){}
+  if(away()===undefined)return undefined;
+  if(SYNC.on&&SYNC.user&&navigator.onLine&&!SYNC.triedCover.has(key)){SYNC.triedCover.add(key);
+    try{const {data,error}=await SYNC.supa.storage.from("shelf").download(coverPath(key));
+      if(!error&&data){const s=await blobToDataURL(data);await dbPut("covers",{id:key,data:s});coverCache.set(key,s);return s;}}catch(e){}}
+  return null;
+}
+async function corrCovLook(){
+  if(CORR_COVN.busy||!CORR)return;
+  const used=new Set(CORR.used||[]),todo=new Map();
+  CORR.changes.forEach((c,i)=>{if(used.has(i)||c.kind!=="cover")return;const t=corrTarget(c);if(t.gone||!t.b)return;
+    const k=corrCovKey(t);if(!CORR_COV.has(k))todo.set(k,t);});
+  if(!todo.size)return;
+  const T=[...todo];let i=0;Object.assign(CORR_COVN,{busy:true,done:0,of:T.length});
+  const one=async([k,t])=>{
+    const x=corrX(t),mine=await corrCovMine(t);
+    if(mine===undefined){CORR_COV.set(k,{st:"away"});return;}
+    if(!mine){CORR_COV.set(k,{st:"none"});return;}
+    const yours=covYours(x),L=await covGreyAt(mine,!yours);
+    /* a picture this browser can't open is left as it is */
+    if(!L){CORR_COV.set(k,{st:"fine"});return;}
+    const small=L.h<CORR_COV_SMALL;
+    CORR_COV.set(k,{st:yours?"yours":small||L.grey?"poor":"fine",w:L.w,h:L.h,small,grey:L.grey,th:L.th});
+  };
+  const worker=async()=>{while(i<T.length&&CORR){const j=T[i++];try{await one(j);}catch(e){}CORR_COVN.done++;
+    if(CORR_COVN.done%20===0){const p=q("#corrCovProg");if(p)p.textContent=corrCovSay();}}};
+  try{await Promise.all([worker(),worker(),worker(),worker()]);}finally{CORR_COVN.busy=false;}
+  corrPaint();
+}
+const corrCovSay=()=>CORR_COVN.busy?`Looking at your covers: ${CORR_COVN.done.toLocaleString()} of ${CORR_COVN.of.toLocaleString()}… The list stands once they're all read.`:"Looking at your covers…";
+function corrCoverRow(r){
+  const c=r.c,t=corrTarget(c);r.t=t;
+  if(t.gone){r.gone=t.gone;return;}
+  if(!t.b){r.gone="not a book on your shelf";return;}
+  const x=corrX(t);r.title=String(x.title||"");r.coll=!t.en&&isColl(t.b);
+  if(c.title&&titleKey(c.title)!==titleKey(r.title))r.stale=`renamed since your copy, from “${String(c.title).slice(0,60)}”`;
+  const m=CORR_COV.get(corrCovKey(t));
+  if(!m){r.wait=true;return;}
+  r.m=m;
+  if(m.st==="yours"||m.st==="fine"||m.st==="away"){r.same=true;return;}
+  const ok=u=>m.st==="none"||(m.small?u.h>=m.h*1.2:u.h>=CORR_COV_SMALL);
+  r.cands=(Array.isArray(c.urls)?c.urls:[]).filter(u=>u&&corrCovUrl(String(u.url||"")))
+    .map(u=>({url:String(u.url),src:String(u.src||"").slice(0,30)||"the web",w:+u.w||0,h:+u.h||0,label:String(u.label||"").slice(0,24)}))
+    .filter(ok).slice(0,r.coll?CORR_COV_COLL:1);
+  if(!r.cands.length){r.same=true;r.nobetter=true;}
+}
+function corrCoverHtml(r){
+  const c=r.c,t=r.t||{},x=t.en||t.b||{},m=r.m||{},live=!r.gone&&!r.same&&!r.wait;
+  const am=s=>`<span class="meta" style="display:block;color:var(--amber-ink,#b45309)">${s}</span>`;
+  const author=x.author||(t.b&&t.b.author)||c.author||"";
+  const where=t.en?` · in ${esc(t.b.title||"a collection")}`:r.coll?" · a collection":"";
+  const note=r.gone?am(esc(r.gone)):r.stale&&!r.coll?am(`${esc(r.stale)}, so it starts unticked`):r.stale?am(esc(r.stale)):"";
+  const why=c.why?`<span class="meta" style="display:block">${esc(String(c.why).slice(0,240))}</span>`:"";
+  const pic=(src,w)=>`<img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" style="width:${w}px;height:auto;max-height:${Math.round(w*1.6)}px;object-fit:contain;border-radius:3px;border:1px solid var(--line);display:block">`;
+  const none=w=>`<span class="meta" style="display:flex;align-items:center;justify-content:center;width:${w}px;height:${Math.round(w*1.5)}px;border:1px dashed var(--line);border-radius:3px">none</span>`;
+  const yours=w=>m.th?pic(m.th,w):none(w);
+  const ySay=m.st==="none"||!m.w?"none":`${m.w} × ${m.h}${m.grey?", a grey scan":m.small?", small":""}`;
+  const kept=u=>{if(!u.w||!u.h)return `up to ${CORR_COVER_PX} px`;const s=Math.min(1,CORR_COVER_PX/Math.max(u.w,u.h));return `${Math.round(u.w*s)} × ${Math.round(u.h*s)}`;};
+  const head=(box,line)=>`<span style="display:flex;gap:8px;align-items:flex-start;min-width:0">${box}
+    <span style="min-width:0;flex:1;overflow-wrap:anywhere"><b>${esc(r.title||c.title||"Untitled")}</b> <span class="meta" style="display:inline">· ${esc(author||"Unknown author")}${where}</span>${line}${note}${why}</span></span>`;
+  /* a collection's: yours and the ones found, nothing lit until one is tapped */
+  if(r.coll&&live){
+    const p=CORR_UI.covPick[r.i];
+    const opt=(n,inner,say)=>{const lit=n<0?p==null:p===n;
+      return `<button type="button" data-corrcov="${r.i}" data-corrcovn="${n}" aria-pressed="${lit}" style="display:grid;gap:3px;justify-items:center;align-content:end;background:none;border:2px solid ${lit?"var(--teal)":"transparent"};border-radius:6px;padding:3px;min-width:0;max-width:100px">${inner}<span class="meta" style="font-size:11px;text-align:center;overflow-wrap:anywhere">${say}</span></button>`;};
+    return `<div class="snap" style="display:block;padding:7px 10px">${head('<span style="width:13px;flex:none"></span>',`<span class="meta" style="display:block">${p==null?"Tap the one you want; nothing changes until you do.":`Its cover becomes the lit one, kept at ${esc(kept(r.cands[p]||{}))}.`}</span>`)}
+      <span style="display:flex;gap:6px;align-items:flex-end;margin:6px 0 0 18px;flex-wrap:wrap">${opt(-1,yours(46),`keep yours · ${ySay}`)}${r.cands.map((u,n)=>opt(n,pic(u.url,46),esc(u.label||u.src))).join("")}</span></div>`;
+  }
+  const box=live?`<input type="checkbox" data-corr="${r.i}"${corrOn(r)?" checked":""} style="flex:none;margin-top:3px">`:'<span style="width:13px;flex:none"></span>';
+  const u=live?r.cands[0]:null;
+  const two=u?`<span style="display:flex;gap:12px;align-items:flex-end;margin:6px 0 0 21px;flex-wrap:wrap">
+      <span style="display:grid;gap:3px;justify-items:start">${yours(40)}<span class="meta" style="font-size:11px">Yours · ${ySay}</span></span>
+      <span class="meta" style="align-self:center">→</span>
+      <span style="display:grid;gap:3px;justify-items:start">${pic(u.url,60)}<span class="meta" style="font-size:11px">${esc(u.src)} · kept at ${kept(u)}</span></span></span>`:"";
+  return `<label class="snap" style="display:block;padding:7px 10px">${head(box,"")}${two}</label>`;
+}
+/* what was left out, and why, in one line under the rows */
+function corrCovSame(same){
+  const n=f=>same.filter(f).length,fine=n(r=>r.m&&r.m.st==="fine"),yours=same.filter(r=>r.m&&r.m.st==="yours"),nob=n(r=>r.nobetter),away=n(r=>r.m&&r.m.st==="away");
+  const poor=yours.filter(r=>r.m.small||r.m.grey).length,day=new Date(COVF_YOURS_BEFORE).toLocaleDateString(undefined,{day:"numeric",month:"long"});
+  return `<div class="hint" style="margin:6px 0 0">${[fine?`${fine.toLocaleString()} already ${fine===1?"has":"have"} a good cover.`:"",
+    yours.length?`${yours.length.toLocaleString()} cover${yours.length===1?"":"s"} you put there yourself ${yours.length===1?"is":"are"} left alone (any from before ${day}, and any you paste or choose)${poor?`, ${poor.toLocaleString()} of them small or grey`:""}.`:"",
+    nob?`For ${nob.toLocaleString()}, nothing in the file is better than yours.`:"",
+    away?`${away.toLocaleString()} couldn't be read: their covers are in your cloud, and this device isn't signed in to it just now. Reload once it is.`:""].filter(Boolean).join(" ")}</div>`;
+}
+/* the picture first, then the stamp: one that won't save leaves its book or story as it was */
+async function corrCovPut(b,en,r,put){
+  const key=en?b.id+"|"+en.id:b.id,x=en||b,vb=x.coverV||0,va=Date.now();
+  try{if(en)await dbPut("images",{key,data:r.data,v:va});else await dbPut("covers",{id:key,data:r.data});}catch(e){return false;}
+  coverCache.set(key,r.data);if(!en&&SYNC.triedCover)SYNC.triedCover.delete(key);
+  r.va=va;put.push(en?{store:"images",key,before:r.was||null,after:r.data,vb,va}:{store:"covers",key,before:r.was||null,after:r.data});
+  CORR_COV.delete(key);return true;
+}
+/* a book that couldn't be saved takes its pictures back */
+async function corrCovBack(put){
+  for(const p of put){try{if(p.before)await dbPut(p.store,p.store==="covers"?{id:p.key,data:p.before}:{key:p.key,data:p.before,v:p.vb||Date.now()});else await dbDel(p.store,p.key);}catch(e){}
+    coverCache.set(p.key,p.before||null);}
+}
 async function corrLoad(){
   if(CORR_LOADED)return;CORR_LOADED=true;
   try{const r=await dbGet("meta","corrFile");if(r&&r.v&&Array.isArray(r.v.changes))CORR=r.v;}catch(e){}
@@ -82452,6 +82608,7 @@ function corrRows(){
     if(k==="rename"){corrRenameRow(r,RN||(RN=corrRenameCounts()));return;}
     if(k==="author"){corrAuthorRow(r,AU||(AU=corrAuthorCounts()));return;}
     if(k==="screen"){corrScreenRow(r);return;}
+    if(k==="cover"){corrCoverRow(r);return;}
     const t=corrTarget(c);r.t=t;
     if(t.gone){r.gone=t.gone;return;}
     const D=CORR_DO[k];r.title=String(corrX(t).title||"");r.now=D.now(t);r.to=D.to(c);
@@ -82488,7 +82645,13 @@ function corrRows(){
   });
   return out;
 }
-const corrOn=r=>r.known&&!r.gone&&!r.same&&(r.stale||r.doubt?CORR_UI.on.has(r.i):!CORR_UI.off.has(r.i))&&(r.k!=="words"||!!(r.w&&r.w.any));
+/* a collection's cover counts as ticked only once one is tapped (see COVERS, BY FILE) */
+const corrOn=r=>r.known&&!r.gone&&!r.same&&!r.wait&&(r.coll&&r.k==="cover"?CORR_UI.covPick[r.i]!=null:(r.stale||r.doubt?CORR_UI.on.has(r.i):!CORR_UI.off.has(r.i)))&&(r.k!=="words"||!!(r.w&&r.w.any));
+/* what one press takes: CORR_PRESS changes, of which at most COVF_PRESS covers, since its step
+   of ↶ carries the pictures */
+function corrPick(rows){let n=0;return rows.filter(r=>corrOn(r)&&(r.k!=="cover"||n++<COVF_PRESS)).slice(0,CORR_PRESS);}
+const corrUseSay=rows=>{const on=rows.filter(corrOn).length,go=corrPick(rows).length;
+  return `✓ Use ${go<on?`the first ${go.toLocaleString()} of ${on.toLocaleString()}`:`the ${on.toLocaleString()}`} ticked`;};
 function corrSerPut(r){
   const c=r.c,s=String(c.series||"").replace(/\s+/g," ").trim(),p=String(c.num||"").replace(/^#/,"").trim();
   const x=r.t.it||r.t.b,k=serFindKey(x);
@@ -82503,22 +82666,40 @@ function corrSerPut(r){
     ck.b[k]={v:"in",p,by:"Claude Code"};}
 }
 async function corrUse(){
-  const rows=corrRows().filter(corrOn).slice(0,CORR_PRESS);if(!rows.length)return;
-  const done=[],byBook=new Map(),items=[],made=[],was=histSrc;let full=false;
-  rows.filter(r=>r.k!=="series"&&r.k!=="whole"&&r.k!=="fic"&&r.k!=="rename"&&r.k!=="author").forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
+  const rows=corrPick(corrRows());if(!rows.length)return;
+  /* covers are downloaded before anything is written (see COVERS, BY FILE) */
+  const cov=rows.filter(r=>r.k==="cover");let covFail=0,covKept=0;
+  if(cov.length){
+    const btn=q("#corrUse");let got=0,j=0;
+    const say=()=>{if(btn){btn.disabled=true;btn.textContent=`Downloading covers… ${got} of ${cov.length}`;}};say();
+    const worker=async()=>{while(j<cov.length){const r=cov[j++];r.data=null;
+      try{const u=r.coll?r.cands[CORR_UI.covPick[r.i]]:r.cands[0];if(!u)throw new Error("no cover");
+        r.was=await corrCovMine(r.t);
+        /* one you put there yourself since the file was read stays */
+        if(r.was&&covYours(corrX(r.t))){covKept++;CORR_COV.delete(corrCovKey(r.t));}
+        else r.data=await urlToDataURL(u.url,CORR_COVER_PX);}catch(e){covFail++;}
+      got++;say();}};
+    await Promise.all([worker(),worker(),worker(),worker()]);
+  }
+  const done=[],byBook=new Map(),items=[],made=[],covs=[],was=histSrc;let full=false;
+  rows.filter(r=>r.k!=="series"&&r.k!=="whole"&&r.k!=="fic"&&r.k!=="rename"&&r.k!=="author"&&(r.k!=="cover"||r.data)).forEach(r=>{const id=r.t.b.id;(byBook.get(id)||byBook.set(id,[]).get(id)).push(r);});
   histSrc="📥 a corrections file";
   try{
     for(const [id,list] of byBook){
       const b=books.find(x=>x.id===id);if(!b)continue;
-      const before=JSON.parse(JSON.stringify(b)),mine=[];
+      const before=JSON.parse(JSON.stringify(b)),mine=[],put=[];
       /* the book's own rows before its stories': a story that takes its collection's
          genres takes them as this press leaves them (the sort keeps file order otherwise) */
       list.sort((x,y)=>(x.t.en?1:0)-(y.t.en?1:0));
-      list.forEach(r=>{const en=r.t.en?(b.entries||[]).find(e=>e.id===r.t.en.id):null;if(r.t.en&&!en)return;CORR_DO[r.k].use({b,en},r.c,r,made);mine.push(r.i);});
+      for(const r of list){const en=r.t.en?(b.entries||[]).find(e=>e.id===r.t.en.id):null;if(r.t.en&&!en)continue;
+        if(r.k==="cover"&&!(await corrCovPut(b,en,r,put))){covFail++;continue;}
+        CORR_DO[r.k].use({b,en},r.c,r,made);mine.push(r.i);}
+      if(!mine.length)continue;
       touchBook(b,true);
-      if(!(await putOrRestore(b,before))){full=true;break;}
-      done.push(...mine);
-      if(SYNC.on)enqueue({kind:"book",id:b.id});
+      if(!(await putOrRestore(b,before))){await corrCovBack(put);full=true;break;}
+      done.push(...mine);covs.push(...put);
+      /* the pictures go up before the book that says they are there */
+      if(SYNC.on){put.forEach(p=>enqueue(p.store==="covers"?{kind:"cover",id:p.key}:{kind:"img",key:p.key}));enqueue({kind:"book",id:b.id});}
       items.push({id:b.id,before,after:JSON.parse(JSON.stringify(b))});
       try{await rebaseOpenBook(b.id);}catch(e){}
     }
@@ -82532,7 +82713,8 @@ async function corrUse(){
       done.push(...ren.map(r=>r.i));}
     /* genres the press made ride in its ↶ (applyOp's label branch), saved without a step of their own */
     if(made.length)saveGenresQuiet();
-    if(items.length)pushOp({t:"bulk",items,...(made.length?{label:made}:{})});
+    if(items.length)pushOp({t:"bulk",items,...(covs.length?{covs}:{}),...(made.length?{label:made}:{})});
+    if(covs.length)bumpCovers();
   }finally{histSrc=was;}
   if(SYNC.on&&items.length)flushQueue();
   const ser=full?[]:rows.filter(r=>r.k==="series"),fic=full?[]:rows.filter(r=>r.k==="fic");
@@ -82548,7 +82730,9 @@ async function corrUse(){
   const nb=done.length-ser.length-fic.length-au.length;
   CORR_UI.say=[nb?`${nb} change${nb===1?"":"s"} written: one ↶ takes ${nb===1?"it":"them"} back.`:"",
     au.length?`${au.length} author${au.length===1?"'s":"s'"} lines are in ${au.length===1?"their panel":"their panels"}: press an author's name on one of their books.`:"",ser.length?`${ser.length} series answer${ser.length===1?"":"s"} handed to the series finders: look under ✨ Suggested series on the import list, or ✨ Find their series in the Library. Nothing on your shelf changes until 📚 Make them there.`:"",
-    fic.length?`${fic.length} row${fic.length===1?"":"s"} of the import list marked as fics: ${fic.length===1?"it waits":"they wait"} under ✍️ Fics there, to add.`:""].filter(Boolean).join(" ");
+    fic.length?`${fic.length} row${fic.length===1?"":"s"} of the import list marked as fics: ${fic.length===1?"it waits":"they wait"} under ✍️ Fics there, to add.`:"",
+    covFail?`${covFail} cover${covFail===1?"":"s"} wouldn't download just now and ${covFail===1?"stays":"stay"} as ${covFail===1?"it was":"they were"}: press ✓ Use again to try.`:"",
+    covKept?`${covKept} cover${covKept===1?"":"s"} you put there yourself since the file was read ${covKept===1?"was":"were"} left alone.`:""].filter(Boolean).join(" ");
   if(full)alert(done.length+" done. "+STORE_FULL_STOP);
   corrPaint();
   if(fic.length&&!ser.length){try{refreshImport();}catch(e){}}
@@ -82561,6 +82745,7 @@ function corrRowHtml(r){
   if(r.k==="rename")return corrRenameHtml(r);
   if(r.k==="author")return corrAuthorHtml(r);
   if(r.k==="screen")return corrScreenHtml(r);
+  if(r.k==="cover")return corrCoverHtml(r);
   const c=r.c,t=r.t||{},x=t.it||t.en||t.b||{};
   const author=x.author||(t.b&&t.b.author)||c.author||"";
   const where=t.en?` · in ${esc(t.b.title||"a collection")}`:t.it?" · on the import list":"";
@@ -82593,18 +82778,21 @@ function corrPaint(){
     let h=`<div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><b style="min-width:0;overflow-wrap:anywhere">${esc(CORR.job||CORR.name||"A corrections file")}</b>
       <span class="hint" style="margin:0;flex:1 1 200px;min-width:0">${[CORR.made?`made ${esc(day(CORR.made))}`:"",CORR.copy?`from your copy of ${esc(day(CORR.copy))}`:"",`${CORR.changes.length.toLocaleString()} change${CORR.changes.length===1?"":"s"}`,(CORR.used||[]).length?`${CORR.used.length.toLocaleString()} used`:""].filter(Boolean).join(" · ")}</span>
       <button class="btn smallbtn" id="corrAway" title="Take this file off the device; what you've used stays">✕ Put it away</button></div>`;
-    h+=`<div class="hrow2" style="gap:8px;flex-wrap:wrap;margin:0 0 8px"><button class="btn pri" id="corrUse"${on?"":" disabled"}>✓ Use ${on>CORR_PRESS?`the first ${CORR_PRESS} of ${on.toLocaleString()}`:`the ${on.toLocaleString()}`} ticked</button><button class="btn" id="corrPick">📥 Load another</button></div>`;
+    h+=`<div class="hrow2" style="gap:8px;flex-wrap:wrap;margin:0 0 8px"><button class="btn pri" id="corrUse"${on?"":" disabled"}>${corrUseSay(rows)}</button><button class="btn" id="corrPick">📥 Load another</button></div>`;
     CORR_KINDS.forEach(([k,label])=>{
       const mine=rows.filter(r=>r.k===k);if(!mine.length)return;
       if(!CORR_DO[k]){h+=`<div class="hint" style="margin:8px 0 0">${label}: ${mine.length.toLocaleString()} change${mine.length===1?"":"s"} this build can't use yet. They stay in the file for when it can.</div>`;return;}
       if(k==="words"){h+=corrWordsSec(label,mine);return;}
-      const live=mine.filter(r=>!r.gone&&!r.same),gone=mine.filter(r=>r.gone),same=mine.filter(r=>r.same),kon=live.filter(corrOn).length;
-      /* series answers of "in no series" stand apart, folded: there can be hundreds */
-      const nones=live.filter(r=>r.none),oks=live.filter(r=>r.confirm),rest=live.filter(r=>!r.none&&!r.confirm);
+      const wait=mine.filter(r=>r.wait),live=mine.filter(r=>!r.gone&&!r.same&&!r.wait),gone=mine.filter(r=>r.gone),same=mine.filter(r=>r.same),kon=live.filter(corrOn).length;
+      /* series answers of "in no series" stand apart, folded: there can be hundreds;
+         covers stand only once every one of yours is read, so the list doesn't jump */
+      const nones=live.filter(r=>r.none),oks=live.filter(r=>r.confirm),rest=wait.length?[]:live.filter(r=>!r.none&&!r.confirm);
       const shown=rest.slice(0,CORR_SHOW+(CORR_UI.more[k]||0));
       h+=`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:8px">
         <div class="hrow2" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px"><b>${label}</b><span class="none">${live.length.toLocaleString()}</span>
-          ${live.length?`<button class="btn smallbtn" data-corrall="${k}" style="margin-left:auto">${kon?"☐ Untick all":"☑ Tick all"}</button>`:""}</div>
+          ${kon||live.some(r=>!r.coll)?`<button class="btn smallbtn" data-corrall="${k}" style="margin-left:auto">${kon?"☐ Untick all":"☑ Tick all"}</button>`:""}</div>
+        ${k==="cover"&&wait.length?`<div class="hint" id="corrCovProg" style="margin:0 0 6px">${corrCovSay()}</div>`:""}
+        ${k==="cover"&&live.length&&!wait.length?`<div class="hint" style="margin:0 0 6px">A row stands only where your cover is missing, small (under ${CORR_COV_SMALL} px tall) or a grey scan, and the file has a better one. Each new one is kept at ${CORR_COVER_PX} px on the long side. Ticked ones go in on ✓ Use, ${COVF_PRESS} a press, each press one step of ↶. A collection's cover is yours to choose: its row changes nothing until you tap one.</div>`:""}
         ${k==="series"&&live.length?`<div class="hint" style="margin:0 0 6px">These become the answers of ✨ Suggested series on the import list and of ✨ Find their series in the Library. Nothing on your shelf changes until 📚 Make them there.</div>`:""}
         ${k==="screen"&&live.length?`<div class="hint" style="margin:0 0 6px">Each film or series goes on its book, collection or story, not seen yet: tick it seen under 🎬 On screen on the page. A collection's row is what was made of the series as a whole, a story's a film of that one book. One ↶ takes a press back.</div>`:""}
         ${k==="author"&&live.length?`<div class="hint" style="margin:0 0 6px">Each goes into that author's panel (press their name on a book), where ✨ Who they are puts its lines. Nothing on your books changes: ↻ Ask again in a panel writes one anew. An author who already has lines starts unticked.</div>`:""}
@@ -82614,13 +82802,15 @@ function corrPaint(){
         ${rest.length>shown.length?`<button class="btn" data-corrmore="${k}" style="margin-top:6px">Show ${Math.min(CORR_SHOW,rest.length-shown.length)} more</button>`:""}
         ${oks.length?`<details style="margin-top:6px" data-corrok${CORR_UI.okOpen?" open":""}><summary class="hint" style="cursor:pointer;margin:0">✓ ${oks.length.toLocaleString()} of ✨ Find the series' answers checked and right, ${oks.filter(corrOn).length.toLocaleString()} ticked: they count as checked, and the app won't ask about them again</summary>${oks.slice(0,CORR_FOLD).map(corrRowHtml).join("")}${oks.length>CORR_FOLD?`<div class="hint" style="margin:4px 0 0">…and ${(oks.length-CORR_FOLD).toLocaleString()} more, ticked with these.</div>`:""}</details>`:""}
         ${nones.length?`<details style="margin-top:6px" data-corrnone${CORR_UI.noneOpen?" open":""}><summary class="hint" style="cursor:pointer;margin:0">${k==="screen"?`${nones.length.toLocaleString()} with nothing made of them, ${nones.filter(corrOn).length.toLocaleString()} ticked: ✨ Which of my books are films or series? won't ask about these`:`${nones.length.toLocaleString()} in no series, ${nones.filter(corrOn).length.toLocaleString()} ticked: ✨ Find the series won't ask Claude about these`}</summary>${nones.slice(0,CORR_FOLD).map(corrRowHtml).join("")}${nones.length>CORR_FOLD?`<div class="hint" style="margin:4px 0 0">…and ${(nones.length-CORR_FOLD).toLocaleString()} more, ticked with these.</div>`:""}</details>`:""}
-        ${same.length?`<div class="hint" style="margin:6px 0 0">${same.length.toLocaleString()} already so, and left out.</div>`:""}
+        ${same.length&&k==="cover"?corrCovSame(same):same.length?`<div class="hint" style="margin:6px 0 0">${same.length.toLocaleString()} already so, and left out.</div>`:""}
         ${gone.length?`<details style="margin-top:6px"><summary class="hint" style="cursor:pointer;margin:0">${gone.length.toLocaleString()} for books that aren't there any more</summary>${gone.slice(0,CORR_SHOW).map(corrRowHtml).join("")}</details>`:""}
       </div>`;});
     const odd=rows.filter(r=>!CORR_KINDS.some(([k])=>k===r.k));
     if(odd.length)h+=`<div class="hint" style="margin:8px 0 0">${odd.length.toLocaleString()} change${odd.length===1?" is":"s are"} of a kind this build doesn't know (${esc([...new Set(odd.map(r=>r.k))].slice(0,4).join(", "))}).</div>`;
     if(!left)h+=`<div class="hint" style="margin:8px 0 0">Everything in this file is used, gone or already so.</div>`;
     box.innerHTML=h+pick+say;
+    /* covers wait for yours to be read (see COVERS, BY FILE) */
+    if(!CORR_COVN.busy&&rows.some(r=>r.wait))setTimeout(corrCovLook,0);
   }
   const on=(id,fn)=>{const b=q(id,box);if(b)b.onclick=fn;};
   on("#corrPick",()=>{const i=q("#corrFileIn",box);if(i)i.click();});
@@ -82628,14 +82818,18 @@ function corrPaint(){
     try{const nf=corrRead(await f.text(),f.name);
       const left=corrRows().filter(r=>r.known&&!r.gone&&!r.same).length;
       if(CORR&&left&&!confirm(`The file loaded now still has ${left} change${left===1?"":"s"} not used. Put it away and load ${f.name} instead?`))return;
-      CORR=nf;CORR_UI.off.clear();CORR_UI.on.clear();CORR_UI.wordOff.clear();CORR_UI.wAddOpen=false;CORR_UI.more={};CORR_UI.keep={};CORR_UI.say="";await corrSave();}
+      CORR=nf;CORR_UI.off.clear();CORR_UI.on.clear();CORR_UI.wordOff.clear();CORR_UI.wAddOpen=false;CORR_UI.more={};CORR_UI.keep={};CORR_UI.covPick={};CORR_UI.say="";CORR_COV.clear();await corrSave();}
     catch(e){CORR_UI.say=`${f.name} couldn't be read: ${(e&&e.message)||e}.`;}
     corrPaint();};}
   on("#corrUse",()=>corrUse());
-  on("#corrAway",async()=>{if(!confirm("Put this file away? What you've already used stays; the rest goes with the file."))return;CORR=null;CORR_UI.say="";await corrSave();corrPaint();});
-  /* Tick all takes in the doubtful and the changed too: it is said beside each */
-  qa("[data-corrall]",box).forEach(b=>b.onclick=()=>{const k=b.dataset.corrall,live=corrRows().filter(r=>r.k===k&&r.known&&!r.gone&&!r.same),any=live.some(corrOn);
-    live.forEach(r=>{if(any){CORR_UI.off.add(r.i);CORR_UI.on.delete(r.i);}else{CORR_UI.off.delete(r.i);CORR_UI.on.add(r.i);}});corrPaint();});
+  on("#corrAway",async()=>{if(!confirm("Put this file away? What you've already used stays; the rest goes with the file."))return;CORR=null;CORR_UI.say="";CORR_UI.covPick={};CORR_COV.clear();await corrSave();corrPaint();});
+  /* Tick all takes in the doubtful and the changed too: it is said beside each. It never
+     chooses a collection's cover; Untick all lets go of the ones tapped */
+  qa("[data-corrall]",box).forEach(b=>b.onclick=()=>{const k=b.dataset.corrall,live=corrRows().filter(r=>r.k===k&&r.known&&!r.gone&&!r.same&&!r.wait),any=live.some(corrOn);
+    live.forEach(r=>{if(any){CORR_UI.off.add(r.i);CORR_UI.on.delete(r.i);delete CORR_UI.covPick[r.i];}else{CORR_UI.off.delete(r.i);CORR_UI.on.add(r.i);}});corrPaint();});
+  /* a collection's cover: the one tapped is lit, "keep yours" lets go */
+  qa("[data-corrcov]",box).forEach(b=>b.onclick=e=>{e.preventDefault();const i=+b.dataset.corrcov,n=+b.dataset.corrcovn;
+    if(n<0)delete CORR_UI.covPick[i];else CORR_UI.covPick[i]=n;corrPaint();});
   /* a name's pill keeps that name instead of the lit one */
   qa("[data-corrkeep]",box).forEach(b=>b.onclick=e=>{e.preventDefault();CORR_UI.keep[b.dataset.corrkeep]=b.dataset.corrname;corrPaint();});
   qa("[data-corrnone]",box).forEach(d=>d.ontoggle=()=>{CORR_UI.noneOpen=d.open;});
@@ -82647,7 +82841,7 @@ function corrPaint(){
     if(CORR_UI.wordOff.has(key))CORR_UI.wordOff.delete(key);else CORR_UI.wordOff.add(key);corrPaint();});
   qa("[data-corrmore]",box).forEach(b=>b.onclick=()=>{const k=b.dataset.corrmore;CORR_UI.more[k]=(CORR_UI.more[k]||0)+CORR_SHOW;corrPaint();});
   qa("[data-corr]",box).forEach(c=>c.onchange=()=>{const i=+c.dataset.corr;if(c.checked){CORR_UI.off.delete(i);CORR_UI.on.add(i);}else{CORR_UI.off.add(i);CORR_UI.on.delete(i);}
-    const n=corrRows().filter(corrOn).length,u=q("#corrUse",box);if(u){u.disabled=!n;u.textContent=`✓ Use ${n>CORR_PRESS?`the first ${CORR_PRESS} of ${n.toLocaleString()}`:`the ${n.toLocaleString()}`} ticked`;}
+    const all=corrRows(),n=all.filter(corrOn).length,u=q("#corrUse",box);if(u){u.disabled=!n;u.textContent=corrUseSay(all);}
     const k=(CORR.changes[i]||{}).kind,a=q(`[data-corrall="${k}"]`,box);if(a)a.textContent=corrRows().some(r=>r.k===k&&corrOn(r))?"☐ Untick all":"☑ Tick all";});
 }
 
