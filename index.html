@@ -11639,8 +11639,10 @@ const netCat=u=>{const m=/\/(rest|storage|functions|auth)\/v1\/([\w-]+)/.exec(St
   return m[1]==="rest"?(m[2]==="meta"?"lists":m[2]==="books"?"books":"tables"):m[1]==="storage"?"pictures":m[1]==="functions"?"fn:"+m[2]:m[1]==="auth"?"signin":"other";};
 function netAdd(u,bytes,unpacked){try{const d=netDay(),c=netCat(u);d.n[c]=(d.n[c]||0)+1;d.b[c]=(d.b[c]||0)+(+bytes||0);
   if(unpacked)d.u[c]=(d.u[c]||0)+(+bytes||0);netSave();}catch(e){}}
-function netPull(rows){try{const d=netDay();d.pulls++;
-  (rows||[]).forEach(r=>{let n=0;try{n=JSON.stringify(r.value).length;}catch(e){}d.keys[r.key]=(d.keys[r.key]||0)+n;});netSave();}catch(e){}}
+/* has: the cloud's keys when only changed lists were fetched — see ONLY WHAT CHANGED COMES DOWN */
+function netPull(rows,has){try{const d=netDay();d.pulls++;d.kn=d.kn||{};
+  if(has){d.lean=(d.lean||0)+1;if(!(rows||[]).length)d.none=(d.none||0)+1;}
+  (rows||[]).forEach(r=>{let n=0;try{n=JSON.stringify(r.value).length;}catch(e){}d.keys[r.key]=(d.keys[r.key]||0)+n;d.kn[r.key]=(d.kn[r.key]||0)+1;});netSave();}catch(e){}}
 (function(){const f0=window.fetch;if(typeof f0!=="function"||f0.__net)return;
   const w=function(input,init){const p=f0.call(window,input,init);
     try{const u=typeof input==="string"?input:(input&&input.url)||String(input||""),base=netBase();
@@ -11660,12 +11662,19 @@ function netHtml(){
   const t=days[netToday()]||{b:{},n:{},u:{},pulls:0,keys:{}};
   const head=`<div class="hrow2" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><span class="none">☁ From the cloud today, to this device: <b>${fmtBytes(tot(t))}</b>${t.pulls?` in ${t.pulls} pull${t.pulls===1?"":"s"}`:""}</span>
     <button class="rdtog" id="netTog" aria-expanded="${netOpen}">${netOpen?"▾ What it was":"▸ What it was"}</button></div>`;
-  if(!netOpen)return head;
+  /* the lines that let the lists come down only when they changed — see ONLY WHAT CHANGED COMES DOWN */
+  const setup=META_LEAN.ok===false?`<div class="hint" id="netAt" style="margin:8px 0 0;line-height:1.55">☁ <b>Every pull still brings every shared list whole.</b> To bring down only the lists that changed, your Supabase needs a stamp on each one, added once: in Supabase open <b>SQL Editor</b> → <b>New query</b>, paste these lines, press <b>Run</b>, then reload My Shelf on each device. Nothing in your lists changes.
+    <div class="hrow2" style="gap:6px;margin-top:6px;flex-wrap:wrap"><button class="btn smallbtn" id="netAtCopy">📋 Copy the lines</button></div>
+    <pre id="netAtSql" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:11.5px;line-height:1.4;margin:6px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;max-height:9em;overflow:auto;user-select:all">${esc(META_AT_SQL)}</pre></div>`:"";
+  if(!netOpen)return head+setup;
   const kinds=Object.keys(t.b||{}).sort((a,c)=>t.b[c]-t.b[a]).map(k=>`${esc(NET_NAMES[k]||k.replace(/^fn:/,""))} ${fmtBytes(t.b[k])}${t.n[k]?` (${t.n[k]}×)`:""}${t.u&&t.u[k]?" unpacked":""}`);
-  const lists=t.pulls?Object.keys(t.keys||{}).sort((a,c)=>t.keys[c]-t.keys[a]).slice(0,8).map(k=>`${esc(NET_LISTS[k]||k)} ${fmtBytes(t.keys[k]/t.pulls)}`):[];
+  const lean=(t.lean||0)>0,kn=t.kn||{};
+  const lists=t.pulls?Object.keys(t.keys||{}).sort((a,c)=>t.keys[c]-t.keys[a]).slice(0,8)
+    .map(k=>lean?`${esc(NET_LISTS[k]||k)} ${fmtBytes(t.keys[k])}${kn[k]?` (${kn[k]}×)`:""}`:`${esc(NET_LISTS[k]||k)} ${fmtBytes(t.keys[k]/t.pulls)}`):[];
   const past=ks.slice(0,7).map(k=>{const d=days[k];return `${esc(printDay(k))} ${fmtBytes(tot(d))}${d.pulls?` · ${d.pulls} pulls`:""}`;});
-  return head+`<div class="hint" style="margin:6px 0 0;line-height:1.6">${kinds.length?`<b>Today, by kind:</b> ${kinds.join(" · ")}`:"Nothing from the cloud yet today."}
-    ${lists.length?`<br><b>Each pull brings every shared list whole, unpacked:</b> ${lists.join(" · ")}`:""}
+  return head+setup+`<div class="hint" style="margin:6px 0 0;line-height:1.6">${kinds.length?`<b>Today, by kind:</b> ${kinds.join(" · ")}`:"Nothing from the cloud yet today."}
+    ${lean?`<br><b>Only lists that changed come down:</b> ${(t.none||0).toLocaleString()} of ${t.lean.toLocaleString()} pull${t.lean===1?"":"s"} brought none${lists.length?`. Brought today, unpacked: ${lists.join(" · ")}`:""}`
+      :lists.length?`<br><b>Each pull brings every shared list whole, unpacked:</b> ${lists.join(" · ")}`:""}
     ${past.length>1?`<br><b>Day by day:</b> ${past.join(" · ")}`:""}
     <br>Only this device; your other one keeps its own count. Sizes are as sent, except where it says unpacked, which is bigger than what was sent.</div>`;
 }
@@ -12074,6 +12083,20 @@ async function runOp(op){
   }else if(op.kind==="meta"){
     let value=op.key==="genres"?genres:op.key==="dnfReasons"?dnfCustom:op.key==="audiences"?audCustom:op.key==="deletions"?deletions:op.key==="backgrounds"?bgList:op.key==="padskins"?padList:op.key==="fandoms"?fandoms:op.key==="groupArt"?groupArt:op.key==="kwColors"?kwColors:op.key==="metaDel"?metaDel:op.key==="metaAlive"?metaAlive:op.key==="trashCloud"?trashCloud:op.key==="libArt"?libArt:op.key==="kwCats"?kwCats:op.key==="catColors"?catColors:op.key==="metaTimes"?metaTimes:op.key==="goal"?(settings.goal||""):null;
     if(value==null){const r=await dbGet("meta",op.key);value=r?r.v:{};}
+    const UP_JOIN={quests:[mergeQuests,()=>quests],achSeen:[mergeAchSeen,()=>achSeen],
+      streaks:[mergeStreaks,()=>streaks],tidyKeep:[mergeTidy,()=>tidyRulings()],
+      histLog:[mergeHistLog,()=>histLog],petPics:[mergePetPics,()=>petPics],
+      shopPics:[mergeShopPics,()=>shopPics],ownIcons:[mergeOwnIcons,()=>ownIcons],pzPics:[mergePzPics,()=>pzPics],
+      prefs:[mergePrefs,()=>sharedPrefs],useDigest:[mergeDigest,()=>useDigest]};
+    /* still the version this device took: written over only while it still is —
+       see ONLY WHAT CHANGED COMES DOWN */
+    const L=META_LEAN,lean=L.ok===true&&L.uid===uid;
+    if(lean&&op.key!=="trashCloud"&&L.at[op.key]!=null){
+      const uj=UP_JOIN[op.key],live=uj?uj[1]():null,mine=live!=null?live:value;
+      const {data:cas,error:ce}=await s.from("meta").update({value:mine}).eq("user_id",uid).eq("key",op.key).eq("at",L.at[op.key]).select("at");
+      if(ce)throw ce;
+      if(Array.isArray(cas)&&cas.length){metaTook(op.key,cas[0].at,mine);return;}
+    }
     /* ---- NEWER, NAME BY NAME ----
        These three are a date per name, joined by the higher date — but the
        upload replaced the cloud's row with this device's whole map. A device
@@ -12128,11 +12151,6 @@ async function runOp(op){
        │ joined copy is what goes up. A join that brought anything new is    │
        │ drawn, as a pull's would be (upJoined).                             │
        └──────────────────────────────────────────────────────────────────────┘ */
-    const UP_JOIN={quests:[mergeQuests,()=>quests],achSeen:[mergeAchSeen,()=>achSeen],
-      streaks:[mergeStreaks,()=>streaks],tidyKeep:[mergeTidy,()=>tidyRulings()],
-      histLog:[mergeHistLog,()=>histLog],petPics:[mergePetPics,()=>petPics],
-      shopPics:[mergeShopPics,()=>shopPics],ownIcons:[mergeOwnIcons,()=>ownIcons],pzPics:[mergePzPics,()=>pzPics],
-      prefs:[mergePrefs,()=>sharedPrefs],useDigest:[mergeDigest,()=>useDigest]};
     const uj=UP_JOIN[op.key];
     if(uj){
       const {data:row,error:re}=await s.from("meta").select("value").eq("user_id",uid).eq("key",op.key).maybeSingle();
@@ -12140,8 +12158,16 @@ async function runOp(op){
       if(row&&row.value!=null&&uj[0](row.value))upJoined(op.key);
       const now=uj[1]();if(now!=null)value=now;
     }
-    const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
-    if(error)throw error;
+    if(lean){
+      const {data:up,error}=await s.from("meta").upsert({user_id:uid,key:op.key,value}).select("at");
+      if(error)throw error;
+      /* joined with the cloud's row, it holds what this device's copy does not: the next pull fetches it */
+      if(META_JOIN_UP.has(op.key)){delete L.at[op.key];delete L.sig[op.key];}
+      else if(Array.isArray(up)&&up[0])metaTook(op.key,up[0].at,value);
+    }else{
+      const {error}=await s.from("meta").upsert({user_id:uid,key:op.key,value});
+      if(error)throw error;
+    }
   }else if(op.kind==="cover"){
     const c=await dbGetOrThrow("covers",op.id);
     if(c&&c.data){const bl=dataURLtoBlob(c.data);
@@ -12249,6 +12275,86 @@ async function runBookBatch(ops){
   dbPut("meta",{k:"seenMod",v:SYNC.seen});
 }
 
+/* ┌─ ONLY WHAT CHANGED COMES DOWN ───────────────────────────────────────────┐
+   │ Every pull asked for every shared list whole (key and value of every     │
+   │ meta row), and every upload of a list that is joined on the way up (the │
+   │ game, the history, the settings, the bin, the dates) read the cloud's    │
+   │ whole row first. Counted by WHAT THE CLOUD SENDS on two devices in one   │
+   │ day: some 400 MB of lists on one and 180 MB on the other, each pull      │
+   │ bringing the same 3.6 MB of lists again, each upload its list again.     │
+   │ The table carries `at` now (schema.sql: a column, and a trigger that     │
+   │ stamps it on every write, from any device and any build, always rising). │
+   │ A pull asks for key and at only, a few kilobytes, and fetches the value  │
+   │ of a list whose stamp is not the one this device last took               │
+   │ (metaPullRows). The stamps taken, and a fingerprint of each list as the  │
+   │ cloud holds it (the "newcomers" check in pullAll compared with the row), │
+   │ are kept for this visit only (META_LEAN, in memory): a reload starts by  │
+   │ fetching everything once, which is the safe side, and a restored backup  │
+   │ forgets them (metaLeanForget).                                           │
+   │ The lists metaTimes speaks for (META_TIMED) travel with it: when either │
+   │ moves, both come down, so cloudNewer always reads the stamps that belong │
+   │ to the list it is deciding about.                                        │
+   │ An upload of a list whose stamp is still the one taken writes over it   │
+   │ only while it still is: an update on key AND at, one request, and no     │
+   │ other device's write can slip in between, as one could between the read │
+   │ and the write it replaces. The cloud's row was joined into this copy at  │
+   │ the pull, so the join would change nothing. A stamp that moved takes the │
+   │ old way: read, join, upsert. The bin always does, because its pull keeps │
+   │ some of the cloud's entries out on purpose.                              │
+   │ A list that went up joined with the cloud's row (META_JOIN_UP) holds     │
+   │ what this device's copy does not, so its stamp is forgotten and the next │
+   │ pull fetches it.                                                         │
+   │ Without the column (the lines in META_AT_SQL not run in Supabase yet)    │
+   │ the first ask fails with 42703; everything goes the old way, and the     │
+   │ Storage card shows the lines to paste.                                   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const META_TIMED=["genres","groupArt","kwColors","goal","dayline","libArt","kwCats","catColors"];
+const META_JOIN_UP=new Set(["metaTimes","metaDel","metaAlive","deletions","trashCloud","kwList"]);
+const META_AT_SQL=`alter table public.meta add column if not exists at bigint not null default 0;
+
+create or replace function public.meta_stamp() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if tg_op = 'UPDATE' then
+    new.at := greatest(old.at + 1, (extract(epoch from clock_timestamp()) * 1000000)::bigint);
+  else
+    new.at := (extract(epoch from clock_timestamp()) * 1000000)::bigint;
+  end if;
+  return new;
+end $$;
+
+create or replace trigger meta_stamp before insert or update on public.meta
+  for each row execute function public.meta_stamp();`;
+let META_LEAN={uid:"",ok:null,at:{},sig:{}};
+function metaLeanFor(uid){if(META_LEAN.uid!==uid)META_LEAN={uid,ok:META_LEAN.ok,at:{},sig:{}};return META_LEAN;}
+function metaLeanForget(){META_LEAN={uid:"",ok:META_LEAN.ok,at:{},sig:{}};}
+const metaAtMissing=e=>!!e&&(e.code==="42703"||/column\s+\S*\bat\b\S*\s+does not exist/i.test(String(e.message||"")));
+const metaSigOf=v=>{try{return strHash(JSON.stringify(v===undefined?null:v));}catch(e){return null;}};
+/* {rows: the lists fetched, has: every key the cloud holds with its stamp (null the old way), error} */
+async function metaPullRows(s,uid){
+  const L=metaLeanFor(uid);
+  if(L.ok!==false){
+    const {data:heads,error}=await s.from("meta").select("key,at").eq("user_id",uid);
+    if(!error&&Array.isArray(heads)){
+      L.ok=true;
+      const has=new Map(heads.map(h=>[h.key,+h.at||0]));
+      for(const k in L.at)if(!has.has(k)){delete L.at[k];delete L.sig[k];}
+      const want=new Set([...has.keys()].filter(k=>L.at[k]!==has.get(k)));
+      if(META_TIMED.some(k=>want.has(k))&&has.has("metaTimes"))want.add("metaTimes");
+      if(want.has("metaTimes"))META_TIMED.forEach(k=>{if(has.has(k))want.add(k);});
+      if(!want.size)return {rows:[],has,error:null};
+      const {data:rows,error:e2}=await s.from("meta").select("key,value,at").eq("user_id",uid).in("key",[...want]);
+      return {rows:e2?null:(rows||[]),has,error:e2||null};
+    }
+    if(!metaAtMissing(error))return {rows:null,has:null,error:error||new Error("the cloud gave no answer")};
+    L.ok=false;
+  }
+  const {data,error}=await s.from("meta").select("key,value").eq("user_id",uid);
+  return {rows:data,has:null,error};
+}
+/* what this device now holds of each: the cloud's stamp and its value's fingerprint */
+function metaTook(key,at,v){const L=META_LEAN;if(L.ok!==true||at==null)return;L.at[key]=+at||0;L.sig[key]=metaSigOf(v);}
+const metaTookRows=rows=>(rows||[]).forEach(r=>{if(r&&r.at!=null)metaTook(r.key,r.at,r.value);});
 async function pullAll(){
   if(!SYNC.on||!SYNC.user||SYNC.pulling)return;
   if(!navigator.onLine){setSync("offline");return;}
@@ -12269,9 +12375,9 @@ async function pullAll(){
     let seenWas="";try{seenWas=JSON.stringify(SYNC.seen);}catch(e){}
     // meta first (additive merge, local edits win)
     try{
-      const {data:metaRows,error:me}=await s.from("meta").select("key,value").eq("user_id",uid);
-      /* every list comes whole on every pull — counted, see WHAT THE CLOUD SENDS */
-      if(!me&&metaRows)netPull(metaRows);
+      /* only the lists that changed — see ONLY WHAT CHANGED COMES DOWN; counted, see WHAT THE CLOUD SENDS */
+      const got=await metaPullRows(s,uid),metaRows=got.rows,me=got.error;
+      if(!me&&metaRows)netPull(metaRows,got.has);
       if(!me&&metaRows){
         /* ---- A PULL WRITES THE LISTS THAT MOVED ----
            Every pull wrote some eighteen lists back to the database whether
@@ -12479,11 +12585,13 @@ async function pullAll(){
            is no cloud copy at all. Written to disk BEFORE it is queued: the
            upload reads the stored record, and a key that had never been stored
            would have gone up as an empty one and wiped the other device's. */
-        {const sent=k=>{const r=metaRows.find(x=>x.key===k);return r?JSON.stringify(r.value):null;};
+        {const sent=k=>{const r=metaRows.find(x=>x.key===k);if(r)return metaSigOf(r.value);
+           /* not fetched because it had not changed: the cloud holds what this device took */
+           return got.has&&got.has.has(k)&&META_LEAN.sig[k]!=null?META_LEAN.sig[k]:null;};
          const mine={quests,achSeen,streaks,tidyKeep:tidyRulings(),petPics,shopPics,ownIcons,pzPics};
          for(const k in mine){
            if(!mine[k])continue;
-           if(JSON.stringify(mine[k])===sent(k))continue;
+           if(metaSigOf(mine[k])===sent(k))continue;
            await dbPut("meta",{k,v:mine[k]});
            enqueue({kind:"meta",key:k});
          }}
@@ -12494,6 +12602,8 @@ async function pullAll(){
         if(gameChanged)touched=true;
         metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
         metaPut("genres",genres);metaPut("dnfReasons",dnfCustom);metaPut("audiences",audCustom);metaPut("deletions",deletions);metaPut("backgrounds",bgList);metaPut("padskins",padList);metaPut("fandoms",fandoms);metaPut("groupArt",groupArt);dbPut("meta",{k:"kwColors",v:kwColors});
+        /* taken only once every list is merged: a pull that fails half-way fetches them again */
+        metaTookRows(metaRows);
       }
     }catch(e){console.warn("[shelf] meta pull",e);}
     // books (per-book last-write-wins by `modified`)
@@ -14835,6 +14945,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-16.12",go:["tab:overview"],lines:["<b>☁ Downloading much less from the cloud.</b> Your shared lists (settings, the game, history, tags, the bin and the rest) came down whole every time the app looked for changes, several megabytes a time, and each one was downloaded again before it was saved. Now the app asks which lists changed, a few kilobytes, and fetches only those, and a list saves without being downloaded first unless the other device changed it in the meantime. It needs a stamp on each list in your Supabase, added once: until then the Storage card, at the foot of Today, shows the lines to paste into Supabase's SQL Editor and a button to copy them. Without the stamp everything works as before. With it, ▸ What it was in the Storage card says how many looks brought no list at all."]},
   {v:"2026-11-16.11",go:["tab:library"],lines:["<b>🚫 Leave a folder out of your Drive list.</b> A folder inside your Drive folder that isn't books, a reading program's own parts or your papers, no longer has to fill the list. In 📚 Library → ☁ Drive, step into the folder and press <b>🚫 Leave this folder out</b>: its files, and those of any folder inside it, stop showing in the tab, in its search, in Connect your Drive files and in 🔎 Do I have it?. A line over the list names each folder left out with how many files it holds, and <b>↩ Bring back</b> returns them at once, with no new look at Drive. Nothing in your Drive is touched, a file a book already holds stays that book's, and the choice follows you to your other devices."]},
   {v:"2026-11-16.10",go:["tab:library"],lines:["<b>🔎 Do I have it?</b> The Library's find box answers for more than the shelf now. With three letters or more typed, a line under it says how many books by that name wait on your import list, and another how many files your Drive folder has and how many of them no book holds yet. A tap on a line takes your words to that list's own search. When the shelf itself has nothing by that name, the books and files are listed right there, each file with ↗ Look; and when nothing anywhere has it, one line says so. The Drive side reads the list this device kept from your last ↻ Look again and asks Google nothing. Files that books on the shelf already hold are not mentioned beside those books. The import list's own search finds by title and author together too, and forgives a typo as the other find boxes do."]},
   {v:"2026-11-16.9",go:["el:care:#drvConnBox"],lines:["<b>📚 A bumper book that names its stories.</b> In Connect your Drive files, a file holding several stories of a collection got <b>Use it for several…</b> only when its name gave their numbers or called it an omnibus or a box set. A file whose name lists the stories by title, like a bumper book of four, now gets it too, with the stories it names already ticked; one you gave to a single story already shows under <b>Give it to them…</b>. A name that only mentions another book as its series (“… a Deep Blue Novel”) doesn't count."]},
@@ -61917,6 +62028,9 @@ async function refreshStorage(){
   }
   /* what the cloud sent this device — see WHAT THE CLOUD SENDS */
   {const nt=q("#netTog");if(nt)nt.onclick=e=>{e.preventDefault();e.stopPropagation();netOpen=!netOpen;refreshStorage();};}
+  {const nc=q("#netAtCopy");if(nc)nc.onclick=async e=>{e.preventDefault();e.stopPropagation();
+    try{await navigator.clipboard.writeText(META_AT_SQL);nc.textContent="✓ Copied";}
+    catch(x){const pre=q("#netAtSql"),r=document.createRange();if(pre){r.selectNodeContents(pre);const sel=getSelection();sel.removeAllRanges();sel.addRange(r);}nc.textContent="Selected: copy it from below";}};}
   wireBreakdown();
   /* the files' own list, on ⚙ Settings — see YOUR BOOK FILES, IN ONE PLACE */
   try{refreshBookFiles();}catch(e){}
@@ -75517,6 +75631,8 @@ const backupShapeOk=data=>!!data&&data.app==="my-shelf"&&Array.isArray(data.book
   &&!data.books.some(b=>!b||typeof b!=="object"||!b.id);
 async function applyBackup(data){
   if(!backupShapeOk(data))throw new Error("not a shelf backup");
+  /* the lists this device holds are the file's now, not what it took from the cloud — see ONLY WHAT CHANGED COMES DOWN */
+  metaLeanForget();
   /* stamp restored books as edited-now: "restore wins" then holds on every device,
      instead of losing a last-write race against newer cloud copies */
   const now=Date.now();

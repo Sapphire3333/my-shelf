@@ -2373,6 +2373,64 @@ const SMOKE=`
       must(m.files.length===4&&!m.out.length&&drvLeaveHtml(m)==="","brought back short: "+m.files.length);
       return "2 of 4 files out with their folder and the one inside it, found by no search, kept beside the list, back whole; the chosen folder never";}
     finally{settings.drvLeave=kl;settings.drive=kd;}});
+  /* measured on two devices in a day: every pull brought every shared list whole,
+     and every upload of a joined list read it whole first. A stand-in cloud here,
+     answering the way the meta table does with and without its "at" stamp. */
+  await check("only the lists that changed come down, and a list goes up over the version it took",async()=>{
+    const fakeCloud=withAt=>{
+      const T=new Map(),log=[];let clock=1000;
+      const put=(k,v)=>{T.set(k,{value:v,at:++clock});};
+      const hasAt=c=>(","+String(c||"").replace(/ /g,"")+",").includes(",at,");
+      const run=st=>{
+        if(!withAt&&(hasAt(st.cols)||hasAt(st.sel)||st.f.at!==undefined))return {data:null,error:{code:"42703",message:"column meta.at does not exist"}};
+        const keyOk=k=>(st.f.key===undefined||st.f.key===k)&&(!st.inK||st.inK.includes(k));
+        if(st.mode==="select"){const cols=st.cols.split(",");let bytes=0;
+          const rows=[...T].filter(([k])=>keyOk(k)).map(([k,r])=>{const o={};cols.forEach(c=>{o[c]=c==="key"?k:r[c];});if(o.value!==undefined)bytes+=JSON.stringify(o.value).length;return o;});
+          log.push({mode:"select",cols:st.cols,n:rows.length,bytes});
+          return {data:st.single?(rows[0]||null):rows,error:null};}
+        if(st.mode==="update"){const r=T.get(st.f.key);
+          if(!r||(st.f.at!==undefined&&r.at!==st.f.at)){log.push({mode:"update",ok:false});return {data:[],error:null};}
+          r.value=st.payload.value;r.at=++clock;log.push({mode:"update",ok:true});return {data:st.sel?[{at:r.at}]:null,error:null};}
+        put(st.payload.key,st.payload.value);log.push({mode:"upsert"});return {data:st.sel?[{at:T.get(st.payload.key).at}]:null,error:null};
+      };
+      const q=(mode,payload)=>{const st={mode,payload,cols:"",sel:"",f:{},inK:null,single:false};
+        const b={select(c){if(mode==="select")st.cols=c;else st.sel=c||"*";return b;},eq(c,v){if(c!=="user_id")st.f[c]=v;return b;},
+          in(c,a){st.inK=a;return b;},maybeSingle(){st.single=true;return b;},then(res,rej){return Promise.resolve().then(()=>run(st)).then(res,rej);}};
+        return b;};
+      return {T,log,put,client:{from:()=>({select:c=>q("select").select(c),update:p=>q("update",p),upsert:p=>q("upsert",p)})}};
+    };
+    const steps=(F,n0)=>F.log.slice(n0).map(x=>x.mode+(x.mode==="select"?":"+x.cols:"")+(x.ok===false?"-":"")).join(" ");
+    const kS=SYNC.supa,kU=SYNC.user,kL=META_LEAN;
+    try{
+      SYNC.user={id:"fx"};
+      let F=fakeCloud(false);F.put("fandoms",{a:1});F.put("metaTimes",{});
+      SYNC.supa=F.client;META_LEAN={uid:"",ok:null,at:{},sig:{}};
+      let g=await metaPullRows(F.client,"fx");
+      must(META_LEAN.ok===false&&!g.error&&g.rows.length===2&&!g.has,"with no stamp column the pull didn't go the old way: "+JSON.stringify(g.error));
+      let n0=F.log.length;await runOp({kind:"meta",key:"fandoms"});
+      must(steps(F,n0)==="upsert","with no stamp column a list went up as: "+steps(F,n0));
+      F=fakeCloud(true);["fandoms","histLog","genres","metaTimes","trashCloud"].forEach((k,i)=>F.put(k,{n:i}));
+      SYNC.supa=F.client;META_LEAN={uid:"",ok:null,at:{},sig:{}};
+      g=await metaPullRows(F.client,"fx");
+      must(META_LEAN.ok===true&&g.rows.length===5,"the first pull of a visit fetched "+(g.rows||[]).length+" of 5");metaTookRows(g.rows);
+      n0=F.log.length;g=await metaPullRows(F.client,"fx");
+      must(!g.rows.length&&steps(F,n0)==="select:key,at"&&F.log[n0].bytes===0,"nothing had changed, yet: "+steps(F,n0));
+      F.put("fandoms",{n:9});g=await metaPullRows(F.client,"fx");metaTookRows(g.rows);
+      must(g.rows.map(r=>r.key).join()==="fandoms","one list changed, fetched: "+g.rows.map(r=>r.key).join());
+      F.put("genres",{n:8});g=await metaPullRows(F.client,"fx");metaTookRows(g.rows);
+      must(g.rows.map(r=>r.key).sort().join()==="genres,metaTimes","a list metaTimes speaks for came down without it: "+g.rows.map(r=>r.key).join());
+      n0=F.log.length;await runOp({kind:"meta",key:"fandoms"});
+      must(steps(F,n0)==="update","a list still at the version taken went up as: "+steps(F,n0));
+      must(META_LEAN.at.fandoms===F.T.get("fandoms").at,"its new stamp wasn't taken");
+      F.put("fandoms",{n:10});n0=F.log.length;await runOp({kind:"meta",key:"fandoms"});
+      must(steps(F,n0)==="update- upsert","written first by another device, it went up as: "+steps(F,n0));
+      F.put("metaTimes",{x:1});n0=F.log.length;await runOp({kind:"meta",key:"metaTimes"});
+      must(steps(F,n0)==="update- select:value upsert","a joined list whose stamp moved went up as: "+steps(F,n0));
+      must(META_LEAN.at.metaTimes===undefined,"a list that went up joined kept its stamp, so the next pull would miss the join");
+      n0=F.log.length;await runOp({kind:"meta",key:"trashCloud"});
+      must(steps(F,n0)==="select:value upsert","the bin went up as: "+steps(F,n0));
+      return "no stamp: the old way; a pull with nothing changed asks for key and at only; one changed list, one fetched; genres brings metaTimes; up over the version taken in one request, else read, join, write";}
+    finally{SYNC.supa=kS;SYNC.user=kU;META_LEAN=kL;}});
   await check("every screen draws",async()=>{
     const drawn=[];
     for(const v of ["overview","care","library","challenges","ach","search","insights","quotes","history","settings"]){

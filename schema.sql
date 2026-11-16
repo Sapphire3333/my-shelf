@@ -33,6 +33,26 @@ create table if not exists public.meta (
   primary key (user_id, key)
 );
 
+-- A stamp on each shared list, moved by the database itself on every write, so a
+-- device can ask which lists changed (a few bytes) instead of downloading them all
+-- on every pull. The app works without it, the old way, and its Storage card
+-- shows these same lines (META_AT_SQL in index.html) until they have been run.
+alter table public.meta add column if not exists at bigint not null default 0;
+
+create or replace function public.meta_stamp() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if tg_op = 'UPDATE' then
+    new.at := greatest(old.at + 1, (extract(epoch from clock_timestamp()) * 1000000)::bigint);
+  else
+    new.at := (extract(epoch from clock_timestamp()) * 1000000)::bigint;
+  end if;
+  return new;
+end $$;
+
+create or replace trigger meta_stamp before insert or update on public.meta
+  for each row execute function public.meta_stamp();
+
 -- ---------- Row Level Security ----------
 alter table public.books enable row level security;
 alter table public.meta  enable row level security;
