@@ -14835,6 +14835,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-16.9",go:["el:care:#drvConnBox"],lines:["<b>📚 A bumper book that names its stories.</b> In Connect your Drive files, a file holding several stories of a collection got <b>Use it for several…</b> only when its name gave their numbers or called it an omnibus or a box set. A file whose name lists the stories by title, like a bumper book of four, now gets it too, with the stories it names already ticked; one you gave to a single story already shows under <b>Give it to them…</b>. A name that only mentions another book as its series (“… a Deep Blue Novel”) doesn't count."]},
   {v:"2026-11-16.8",go:["el:care:#corrSec"],lines:["<b>🔎 Coming next, from a file.</b> 📥 Corrections from a file in 🧰 Shelf care can now bring the books of your series that come after the last one you have, out already or announced. Each row says when, and where it goes: ✓ Use files it as ⌛ Don't have it yet, Want to read, with its date, as a story at its number inside your collection or as a book of its own in its series, just as 🔎 Is the next one out? does. They show on 📅 Coming out. A title you already have is left out, and one whose number you already hold under another title starts unticked. One ↶ takes a press back."]},
   {v:"2026-11-16.7",go:["el:care:#corrSec"],lines:["<b>🖼 A collection's covers, big enough to choose from.</b> In 📥 Corrections from a file, a collection's row under 🖼 Covers now shows yours and each one found 160 px tall instead of a thumbnail, so two editions can be told apart before you tap. On a phone with big text they shrink to two side by side."]},
   {v:"2026-11-16.5",go:["el:care:#corrSec"],lines:["<b>🖼 Old small or grey covers are offered too.</b> Until 9 November the app didn't note who put a cover there, so every cover from before then counted as one you chose, and a covers file left it alone. A small or grey one among them now gets a row too, unticked and saying why: tick it to swap it. Ones you pasted or chose from a file, and good ones from before then, are still never offered."]},
@@ -33987,7 +33988,7 @@ async function drvPickFor(id,enId){
     qa("[data-dpuse]",box).forEach(bt=>bt.onclick=async()=>{const f=files.find(x=>x.id===bt.dataset.dpuse);if(!f)return;
       /* a file holding several books of this collection offers them first — see A FILE THAT HOLDS SEVERAL BOOKS */
       const bb=books.find(x=>x.id===id);
-      if(en&&bb&&isColl(bb)&&entWholes(bb).length>1&&drvHoldsMany(f.name)&&drvForColl(bb,f)){
+      if(en&&bb&&isColl(bb)&&entWholes(bb).length>1&&drvHoldsManyIn(bb,f)){
         box.innerHTML=drvManyHtml(bb,en,f);
         drvManyWire(box,async ids=>{ids.delete(enId);const list=(bb.entries||[]).filter(e=>ids.has(e.id)).map(e=>({b:bb,en:e,use:f}));
           if(list.length)await drvConnectApply(list);await useOne(f);},()=>useOne(f));
@@ -34359,8 +34360,8 @@ function drvManyHeld(){
   const out=[];
   books.forEach(b=>{if(!b||!isColl(b)||b._story)return;const seen=new Set(),NUM=entNumbers(b);
     (b.entries||[]).forEach(e=>{const f=e&&e.driveFile;if(!f||seen.has(f.id)||isSplitTale(b,e))return;seen.add(f.id);
-      const nums=drvNumsOf(f.name);if(nums.length<2||!drvForColl(b,f))return;
-      const want=entWholes(b).filter(x=>!x.driveFile&&nums.includes(+NUM[x.id])).length;
+      const nums=drvNumsOf(f.name),byNum=nums.length>1&&drvForColl(b,f),named=drvTitlesIn(b,f);if(!byNum&&named.size<2)return;
+      const want=entWholes(b).filter(x=>!x.driveFile&&((byNum&&nums.includes(+NUM[x.id]))||named.has(x.id))).length;
       if(want)out.push({b,en:e,f,want});});});
   return out;
 }
@@ -34371,15 +34372,32 @@ const drvHoldsMany=name=>drvNumsOf(name).length>1||DRV_MANY.test(String(name||""
    41 files, mostly other series' omnibuses offered to stories called "Vol. 3" */
 const drvStem=w=>w.replace(/ies$/,"y").replace(/s$/,"");
 const drvForColl=(b,f)=>{const cw=shWords(b&&b.title).map(drvStem),fw=new Set(drvNorm(f&&f.name).split(" ").map(drvStem));return cw.length>0&&cw.every(w=>fw.has(w));};
+/* the stories of a collection a file's name names by TITLE, numbered nowhere: "Bumper Book of
+   <series> 1 <title one> _ <title two>_ <title three>.epub". A story counts when every word of
+   its title that isn't one of the collection's own (the series' name, the hero's) is in the
+   name, in a row, and those words say enough: two of them, or one of seven letters or more.
+   Not when the next word makes it a series' name: "Sea Spell_ A Deep Blue Novel" is one book,
+   not also "Deep Blue" (measured on a real list). Two such stories make it a file of several,
+   offered as Use it for several… with them ticked */
+const DRV_NAME_AFTER=new Set(["novel","sery","saga","book","story","collection","universe"]);
+function drvTitlesIn(b,f){
+  const out=new Set();if(!b||!isColl(b)||!f)return out;
+  const fs=drvNorm(f.name).split(" ").map(drvStem).filter(Boolean),cw=new Set(shWords(b.title).map(drvStem));
+  const at=w=>{for(let i=0;i+w.length<=fs.length;i++)if(w.every((x,k)=>fs[i+k]===x)&&!DRV_NAME_AFTER.has(fs[i+w.length]))return true;return false;};
+  entWholes(b).forEach(e=>{const w=shWords(e.title).map(drvStem).filter(x=>x&&!cw.has(x));
+    if((w.length>=2||(w.length===1&&w[0].length>=7))&&at(w))out.add(e.id);});
+  return out;
+}
+const drvHoldsManyIn=(b,f)=>(drvHoldsMany(f.name)&&drvForColl(b,f))||drvTitlesIn(b,f).size>1;
 function drvManyHtml(b,en,f){
-  const nums=drvNumsOf(f.name),NUM=entNumbers(b),run=nums.length>2&&nums[nums.length-1]-nums[0]===nums.length-1;
+  const nums=drvNumsOf(f.name),NUM=entNumbers(b),run=nums.length>2&&nums[nums.length-1]-nums[0]===nums.length-1,named=drvTitlesIn(b,f);
   const rows=entWholes(b).map(e=>{const n=NUM[e.id],has=!!(e.driveFile&&fileSame(e.driveFile,f)),other=!has&&!!e.driveFile;
-    const on=has||e.id===en.id||(!other&&n!=null&&nums.includes(+n));
+    const on=has||e.id===en.id||(!other&&((n!=null&&nums.includes(+n))||named.has(e.id)));
     return `<label class="hrow2" style="gap:8px;align-items:flex-start;font-size:14px;margin:0;cursor:pointer"><input type="checkbox" data-dmany="${esc(e.id)}"${on?" checked":""}${has||other?" disabled":""} style="margin-top:3px;flex:none">
       <span style="min-width:0;overflow-wrap:anywhere">${n!=null?`<span class="meta" style="display:inline">${esc(String(n))}</span> `:""}${esc(e.title||"Untitled")}${has?` <span class="meta" style="display:inline">· has this file already</span>`:other?` <span class="meta" style="display:inline">· has another file</span>`:""}</span></label>`;}).join("");
   const coll=esc(b.title||"this collection");
   return `<div class="drvmany" style="flex:1 1 100%;border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:grid;gap:5px;min-width:0">
-    <div class="hint" style="margin:0">${nums.length>1?`Its name says it holds books ${run?`${nums[0]} to ${nums[nums.length-1]}`:esc(andList(nums.map(String)))} of ${coll}. Tick the ones it holds:`:`Its name says it holds several books. Tick the ones of ${coll} it holds:`}</div>
+    <div class="hint" style="margin:0">${nums.length>1?`Its name says it holds books ${run?`${nums[0]} to ${nums[nums.length-1]}`:esc(andList(nums.map(String)))} of ${coll}. Tick the ones it holds:`:named.size>1?`Its name names ${named.size} books of ${coll}, ticked. Tick any other it holds:`:`Its name says it holds several books. Tick the ones of ${coll} it holds:`}</div>
     <div style="display:grid;gap:4px;max-height:40vh;overflow:auto;min-width:0">${rows}</div>
     <div class="hint" style="margin:2px 0 0">They share one place in the file, and the page count that moves is the book you're in, found by its title in the file's contents.</div>
     <div class="hrow2" style="gap:8px;flex-wrap:wrap"><button class="btn pri smallbtn" data-dmanygo></button><button class="btn smallbtn" data-dmanyone>Only this one</button></div></div>`;
@@ -34610,7 +34628,7 @@ function refreshDrvConnect(){
   const {sure,maybe}=drvConn,held=drvManyHeld();
   const line=r=>`${esc(r.title||"Untitled")}${r.en?` <span class="meta" style="display:inline">· in ${esc(r.b.title||"Untitled")}</span>`:""}`;
   const whenAt=drvFilesMemo&&drvFilesMemo.at?`List from ${esc(drvAgo(drvFilesMemo.at))}. `:"";
-  const fileRow=(i,j,f)=>`<div class="hrow2" style="flex:1 1 100%;gap:6px;align-items:center;flex-wrap:wrap"><span class="meta" style="flex:1 1 200px;min-width:0;overflow-wrap:anywhere">☁ ${esc(f.name)}</span>${drvLookLink(f)}<button class="btn smallbtn" data-dcuse="${i}|${j}">Use it</button>${maybe[i]&&maybe[i].en&&drvHoldsMany(f.name)&&drvForColl(maybe[i].b,f)?`<button class="btn smallbtn" data-dcmany="${i}|${j}">Use it for several…</button>`:""}</div>`;
+  const fileRow=(i,j,f)=>`<div class="hrow2" style="flex:1 1 100%;gap:6px;align-items:center;flex-wrap:wrap"><span class="meta" style="flex:1 1 200px;min-width:0;overflow-wrap:anywhere">☁ ${esc(f.name)}</span>${drvLookLink(f)}<button class="btn smallbtn" data-dcuse="${i}|${j}">Use it</button>${maybe[i]&&maybe[i].en&&drvHoldsManyIn(maybe[i].b,f)?`<button class="btn smallbtn" data-dcmany="${i}|${j}">Use it for several…</button>`:""}</div>`;
   const restRows=(r,i)=>r.rest.slice(0,DRV_CONN_REST).map((f,k)=>fileRow(i,r.cands.length+k,f)).join("")
     +(r.rest.length>DRV_CONN_REST?`<div class="hint" style="margin:6px 0 0">The first ${DRV_CONN_REST}. ☁ From Drive on its page searches the other ${(r.rest.length-DRV_CONN_REST).toLocaleString()}.</div>`:"");
   const restWord=(r,open)=>`${open?"▾ Hide":"▸ See"} the other ${r.rest.length.toLocaleString()} file${r.rest.length===1?"":"s"}`;
