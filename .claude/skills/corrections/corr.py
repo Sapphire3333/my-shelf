@@ -351,8 +351,9 @@ class File:
         urls: [{"url", "src", "w", "h", "label"}], best first; url is https (or a data:image URL),
         w × h the picture's own size as downloaded here (cover_look), and none of them grey. The
         copy holds no pictures, so the app reads the owner's own cover and gives a row only where
-        it is missing, under 400 px tall or a grey scan, and never where they put it there
-        themselves. A book or story takes the first one better than theirs; a collection shows
+        it is missing, under 400 px tall or a grey scan, never where they pasted or chose it
+        (covMine), and unticked where it is theirs by its date alone. A book or story takes the
+        first one better than theirs; a collection shows
         up to four, each with its `label` ("series art", "box set", "#1"), for them to choose.
         Returns None when no url is usable."""
         keep = []
