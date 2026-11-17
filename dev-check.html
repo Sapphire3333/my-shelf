@@ -92,7 +92,7 @@ const PASSES=[
    care, the shelf as spines, the bookcases panel, a medal's note with its
    book list, every game the stand-in shelf can deal, and the reader */
 const VIEWS=["overview","library","insights","challenges","ach","history","timeline","search","settings","reading","editing","collection",
-  "quotes","care","spines","bookcases","medal","games","reader"];
+  "quotes","care","spines","bookcases","medal","games","reader","music"];
 const results={};   /* "label|view" -> {ok,offenders} */
 
 const frame=document.getElementById("frame");
@@ -307,6 +307,12 @@ const SWEEP=`
     const p=document.querySelector("#bcPanel");if(p&&p.__close)p.__close();});
   await tryView("medal",async()=>{view="ach";achOpen=ACHS[0][0];achBooksOpen=achOpen;render();await look("medal");
     achOpen=null;achBooksOpen=null;});
+  /* the Library's Music tab with a stand-in list, a song chosen and the corner's card open */
+  await tryView("music",async()=>{const was=musicMemo;
+    musicMemo={at:Date.now(),files:["Ann Fixture - Harbour Lights (Official).mp3","Bo Reel - Kites To Your Beautiful (Lyrics).mp3","They Might Be Kites - Harbourtown (Not Constantinople) (Lyrics).mp3",
+      "A Very Long Name Of A Band With Many Words In It - A Song Whose Title Runs On And On Past Any Reasonable Width (Cut From The Team).mp3","untitled_track_07.wav"].map((n,i)=>({id:"sw"+i,n:n,s:4000000+i,t:0}))};
+    libMusicMode=true;view="library";render();MP.q=["sw3"];MP.i=0;MP.state="pause";MP.open=true;mpPaint();await look("music");
+    mpStop();libMusicMode=false;musicMemo=was;});
   /* every tile in the games room, one after another, into one cell — a tile
      the stand-in shelf cannot deal still draws its "needs" card */
   await tryView("games",async()=>{
@@ -2727,6 +2733,45 @@ const SMOKE=`
     /* the book view is left behind: tabCatchUp draws nothing over an open book, and a later check counts its draws */
     finally{Object.assign(SYNC,keepS);window.claudeAsk=ask;settings.bookEdit=keepE;delete cwOut["rev:fx-rv|r1"];revOpen.delete("rev:fx-rv|r1");revCopied="";view="overview";render();
       for(const id of ["fx-rv","fx-rb","fx-rq"]){await dbDel("books",id);await dbDel("trash",id);}}});
+  /* worked out on fourteen file names of the shapes a music folder holds: ten come clean by rule, four need a reader's judgment */
+  await check("music from your Drive: a file's name tidied, the next song fetched ahead, songs kept up to a limit, and a queue that ends goes on shuffled",async()=>{
+    const N=["Ann Fixture - Harbour Lights (Official).mp3","Bo Reel - Kites To Your Beautiful (Lyrics).mp3","Glass Soldier - You Are Enough  (Official Lyric Video).mp3","Green Kite - Holiday with lyrics!.mp3",
+      "They Might Be Kites - Harbourtown (Not Constantinople) (Lyrics).mp3","Set It On - This Winter (I'll Burn It To The Ground).mp3","Taking Back Monday  Cute Without the K (Cut From The Team).mp3","untitled_track_07.wav"];
+    const T=N.map(n=>{const x=songName(n);return x.a+"|"+x.t;});
+    must(T[0]==="Ann Fixture|Harbour Lights"&&T[1]==="Bo Reel|Kites To Your Beautiful"&&T[2]==="Glass Soldier|You Are Enough"&&T[3]==="Green Kite|Holiday","the upload's words come off: "+T.slice(0,4).join(" / "));
+    must(T[4]==="They Might Be Kites|Harbourtown (Not Constantinople)"&&T[5]==="Set It On|This Winter (I'll Burn It To The Ground)"&&T[6]==="|Taking Back Monday Cute Without the K (Cut From The Team)"&&T[7]==="|untitled track 07","a bracket that is part of the title stays, and a name with no dash is all title: "+T.slice(4).join(" / "));
+    const keep={memo:musicMemo,mk:settings.musicKeep,dl:window.drvDownload,tok:drvTok,exp:drvExp,mode:libMusicMode,find:musicFind};let asked=[];
+    try{
+      musicMem.kept={};musicMem.blobs.clear();musicFind="";
+      musicMemo={at:Date.now(),files:N.slice(0,5).map((n,i)=>({id:"mu"+i,n:n,s:400000,t:0}))};
+      settings.musicKeep=1;drvTok="x";drvExp=Date.now()+3600000;
+      window.drvDownload=async(path,size)=>{asked.push(decodeURIComponent(path.split("/")[1].split("?")[0]));return new Blob([new Uint8Array(size)],{type:"audio/mpeg"});};
+      const ids=musicRows().map(x=>x.f.id),until=async f=>{for(let i=0;i<80&&!f();i++)await wait(25);};
+      must(ids.join()==="mu0,mu1,mu2,mu3,mu4","the list, by artist: "+ids.join());
+      mpPlay(ids,0,"list");await until(()=>MP.state==="play");
+      must(MP.state==="play"&&MP.from==="drive"&&MP.took!=null&&musicKept().mu0,"the first song, from Drive and kept: "+JSON.stringify([MP.state,MP.from,Object.keys(musicKept())]));
+      await until(()=>musicKept().mu1);
+      must(musicKept().mu1&&asked.join()==="mu0,mu1","the next one fetched while the first played: "+asked.join());
+      await mpStart(1,true);
+      must(MP.state==="play"&&MP.from==="ahead"&&asked.filter(x=>x==="mu1").length===1,"the second song waited, or was asked for twice: "+MP.from+" "+asked.join());
+      /* one megabyte holds two of these: when the third arrives the least lately played leaves */
+      await until(()=>musicKept().mu2);
+      const k=Object.keys(musicKept()),sum=Object.values(musicKept()).reduce((a,x)=>a+x.s,0);
+      must(sum<=1048576&&k.length===2&&!musicKept().mu0&&musicMem.blobs.size===2,"kept past the limit, or the wrong one left: "+k.join()+" "+sum);
+      await mpStart(1,true);
+      must(MP.from==="kept"&&asked.filter(x=>x==="mu1").length===1,"a song played before was fetched again: "+MP.from);
+      /* the sign-in gone and nobody pressing: a song that is not here is not asked for */
+      drvTok="";const n0=asked.length;await mpStart(3);
+      must(MP.state==="pause"&&MP.need&&asked.length===n0&&MP.err.indexOf("sign-in")>0,"with no sign-in it asked Drive anyway: "+MP.state+" "+MP.err);
+      drvTok="x";MP.i=MP.q.length-1;mpEnded();await until(()=>MP.state==="play"&&MP.kind==="all");
+      must(MP.kind==="all"&&MP.q.length===5&&MP.state==="play","a queue that ended did not go on to every song: "+MP.kind+" "+MP.q.length+" "+MP.state);
+      libMusicMode=true;view="library";await Promise.resolve(render());await wait(60);
+      const tab=document.querySelector("[data-kt=music]");
+      must(tab&&tab.classList.contains("on")&&document.querySelectorAll("#musicList .mrow").length===5&&document.querySelector("#musicList .mrow.cur"),"the Music tab: "+document.querySelectorAll("#musicList .mrow").length+" rows");
+      must(!document.querySelector("#fabMusic").hidden&&!document.querySelector("#fab").hidden,"the ♪ is not in the corner while a song is chosen");
+      mpStop();must(MP.i===-1&&document.querySelector("#fabMusic").hidden,"Stop left the ♪ standing");
+      return "eight names tidied, the next song fetched ahead, a played one kept, two kept under a megabyte, no fetch without a sign-in, and on to all five shuffled";
+    }finally{mpStop();musicMemo=keep.memo;if(keep.mk===undefined)delete settings.musicKeep;else settings.musicKeep=keep.mk;window.drvDownload=keep.dl;drvTok=keep.tok;drvExp=keep.exp;libMusicMode=keep.mode;musicFind=keep.find;musicMem.kept={};musicMem.blobs.clear();view="overview";render();}});
   /* measured on a hundred suggestions for one series: fifty-six were owned already in one of four places, an audiobook's reader
      stood as an author, and a file named for a series' second book was offered as its first */
   await check("more like this, not on my shelf: what is owned is never new, wherever it stands, and a series is offered by its first book",async()=>{
