@@ -13295,6 +13295,8 @@ async function initSync(){
   /* last, because it opens a screen and wants everything else awake first */
   takeSharedBackup();
   if(ICON_GO)setTimeout(()=>{iconGo().catch(()=>{});},300);
+  /* a fic or a list sent by the AO3 bookmark — see AO3 IN ONE CLICK */
+  if(AO3_IN)setTimeout(()=>{ao3Arrive(AO3_IN).catch(()=>{});},400);
   if(!SMOKE_DB)setTimeout(()=>{try{const fam={literata:"Literata",atkinson:"Atkinson Hyperlegible",lexend:"Lexend"}[rdLookOf().face];if(fam&&navigator.onLine!==false&&document.fonts&&document.fonts.load){document.fonts.load(`18px "${fam}"`,"aā");if(fam!=="Lexend")document.fonts.load(`italic 18px "${fam}"`,"aā");}}catch(e){}},6000);
 })();
 
@@ -15011,6 +15013,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-17.5",go:["el:care:#impList"],lines:["<b>📖 AO3 in one click.</b> In 🧰 Shelf care, the import card's AO3 line has a new button, <b>📖 AO3 to My Shelf</b>: drag it to your browser's bookmarks bar once, on the computer. Pressed on a fic's page on AO3, it opens My Shelf with the fic ready: <b>✓ Read, finished today</b> or <b>＋ Want to read</b>, with its fandom, pairing, tags, series and part, and how many chapters were up. A fic already on your shelf offers <b>📅 Finished today</b>, which dates it. Pressed on your History, Marked for Later or Bookmarks, it only counts: how many of that page's fics are on your shelf and how many have no date. AO3 itself is never asked for anything; the bookmark reads the page you have open. A fic's series now keeps its part number, from a downloaded file too."]},
   {v:"2026-11-17.4",go:["tab:care"],lines:["<b>📍 The page stops throwing you back to the top.</b> Just after the app opens it catches up with the cloud and draws the page again, and some of those redraws put you at the very top: going down Shelf care to the corrections, you were sent back up each time. A redraw you didn't ask for now keeps your place, and holds it while the page fills back in (Shelf care takes a couple of seconds). Scroll, click or press a key and you're free at once. A redraw from something you pressed works as before."]},
   {v:"2026-11-17.3",go:["tab:overview"],lines:["<b>↻ Why the page redrew.</b> The Storage card, at the foot of Today and in Settings, has a new line under the cloud's: <b>▸ Why the page redrew</b> lists the last twenty times the page was drawn again, with the time, the screen and what asked for it, such as syncing (and which lists), a pull, or the other tab. When a screen jumps about, a picture of that list says what made it."]},
   {v:"2026-11-17.2",go:["tab:care"],lines:["<b>🧰 Shelf care stops redrawing itself over and over.</b> With My Shelf open in two tabs or windows, every few uploads in one redrew the whole page in the other, so after a press in Shelf care it could flash three, four or more times in a row while the changes went up. The other tab's own bookkeeping no longer redraws anything; a real change there, a genre or a tag, still shows. And when a burst of changes goes up to the cloud, the page is drawn once, half a second after the last of them, instead of once for each."]},
@@ -57343,7 +57346,7 @@ async function renderHub(part){
         <div class="hint" style="margin:9px 0 0">
           <b>Goodreads:</b> My Books → Import and Export → Export Library → download the .csv.<br>
           <b>StoryGraph:</b> Manage Account → Manage Your Data → Export StoryGraph Library.<br>
-          ${ficsOn()?`<b>AO3:</b> the app can never read AO3 itself — a tool like AO3Scraper makes a .csv of your works, and this reads that. Fics arrive as fanfics with their fandom, relationships, characters, tags, maturity and a link to the work — and on fics already on your shelf, Fill in adds what's missing.<br>`:""}
+          ${ficsOn()?`<b>AO3:</b> the app can never read AO3 itself, but a bookmark in your browser can read a page you have open there. <a class="btn smallbtn" id="ao3Mark" href="${esc(ao3Href())}" title="Drag this to your bookmarks bar" style="margin:2px 0">📖 AO3 to My Shelf</a> — drag it to your bookmarks bar once, on the computer. Pressed on a fic's page on AO3, it opens My Shelf with the fic ready to add, finished today or to read; pressed on your History, Marked for Later or Bookmarks, it counts how many of that page's fics are on your shelf. A tool like AO3Scraper makes a .csv of your works, and this reads that too. Fics arrive as fanfics with their fandom, relationships, characters, tags, maturity and a link to the work — and on fics already on your shelf, Fill in adds what's missing.<br>`:""}
           Nothing is added until you pick it. Titles already on your shelf are marked and skipped.<br>
           <b>The day you added each book</b> comes across too, and loading an export again gives it to books already here — only where the shelf has none, changing nothing else. It is what "Waited a year" and the other how-long-has-it-waited squares and medals go by.
         </div>
@@ -74559,7 +74562,9 @@ function parseFicHtml(html){
       else if(key==="language")out.language=vals[0]||"";
       /* a string field, so the truthiness test below would skip it while it is
          still empty — which is always, since that is what it starts as */
-      else if(key==="series")out.series=vals.join(" ").trim();
+      /* "Part 2 of <a>The Paper Kite</a>": the link alone lost the number, so the
+         part is read off the words before the first series link (ficSeries splits it) */
+      else if(key==="series"){const p=txt(dd).match(/^Part\s+(\d+)\s+of\s+/i);out.series=(p&&links[0]?`Part ${p[1]} of ${links[0]}`:links[0]||vals.join(" ")).trim();}
       else if(out[key])out[key]=vals;
     });
   }
@@ -74644,7 +74649,9 @@ function ficFileRow(r){
     link:/^https?:\/\//.test(r.url||"")?r.url.replace(/^http:/,"https:"):"",maturity:r.rating||"",
     fandoms:(r.fandoms||[]).slice(),characters:(r.characters||[]).slice(),ships:[...new Set([...(r.relationships||[]),...(r.categories||[])])],
     ...(lang&&!/^english$/i.test(lang)?{lang}:{}),
-    ...(ser?{series:ser.name,...(ser.num?{seriesNum:ser.num}:{})}:{})};
+    ...(ser?{series:ser.name,...(ser.num?{seriesNum:ser.num}:{})}:{}),
+    /* how far the work had got: "12/?" while it was still being written */
+    ...(r.chapters?{ficCh:String(r.chapters)}:{})};
 }
 async function ficsFromFiles(list){
   const say=q("#impFicSay"),files=list.filter(f=>/\.(epub|x?html?)$/i.test(f.name));
@@ -77573,6 +77580,7 @@ async function importOne(it,extra,steps){
     ...(it.link?{link:it.link}:{}),
     ...(it.driveFile&&it.driveFile.id?{driveFile:Object.assign({},it.driveFile)}:{}),
     ...(it.maturity?{maturity:it.maturity}:{}),
+    ...(it.ficCh?{ficCh:it.ficCh}:{}),
     ...((it.fandoms||[]).length?{fandoms:it.fandoms.slice()}:{}),
     ...((it.characters||[]).length?{characters:it.characters.slice()}:{}),
     ...((it.ships||[]).length?{ships:it.ships.slice()}:{}),
@@ -83453,6 +83461,118 @@ function covgMark(){
   else msg.textContent="📚 No book covers found on this page. Open one of your shelves under My Books, and press the bookmark there.";
   button("Close",function(){box.remove();});
 }
+/* ┌─ AO3 IN ONE CLICK ───────────────────────────────────────────────────────┐
+   │ AO3 answers no other site, so the app can never ask it for a fic. A fic  │
+   │ came in by download, Drive, Look again and Fics from a folder, or by     │
+   │ copying the page. ao3Mark is a bookmark, built like covgMark: pressed on │
+   │ a fic's own page on AO3, a page the reader opened, it takes the title,   │
+   │ byline, summary and the dl.work.meta block as they stand there and opens │
+   │ My Shelf with them after a # (#ao3=…), which the browser never sends to  │
+   │ any server. Pressed on a list of fics (History, Marked for Later,        │
+   │ Bookmarks: li.blurb), it takes each one's work number, title, author and │
+   │ AO3's "Last visited" line. It turns no page and asks AO3 for nothing.    │
+   │ The app reads the # once at start (AO3_IN), takes it off the address,    │
+   │ and ao3Arrive shows a card: a fic goes through parseFicHtml, the reader  │
+   │ the download files use, and ficFileRow, so it is the same row a file    │
+   │ makes, with its chapter count kept (ficCh, "12/?" while unfinished).     │
+   │ Not on the shelf: ✓ Read, finished today, or ＋ Want to read, added by   │
+   │ importOne (one ↶). On the shelf already, found by its AO3 number          │
+   │ (ao3WorkId): 📅 Finished today dates its reading that has no date, or    │
+   │ adds one. A list only counts (ao3ListHtml): how many of the page's fics │
+   │ are on the shelf, how many of those have no date, and how many "Last     │
+   │ visited" days it could read, which is what dating them would go by.     │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+function ao3Mark(app,here,doc){
+  doc=doc||document;here=here||location.href;
+  var txt=function(el){return el?el.textContent.replace(/\s+/g," ").trim():"";};
+  var data=null,m=here.match(/\/works\/(\d+)/);
+  if(m&&doc.querySelector("dl.work.meta")){
+    var parts=[],sels=["#workskin .preface h2.title","#workskin .preface h3.byline","#workskin .preface .summary","dl.work.meta"];
+    for(var i=0;i<sels.length;i++){var el=doc.querySelector(sels[i]);if(el)parts.push(el.outerHTML);}
+    data={myShelfAO3:1,kind:"work",url:"https://archiveofourown.org/works/"+m[1],html:parts.join("")};
+  }else{
+    var lis=doc.querySelectorAll("li.blurb"),items=[];
+    for(var j=0;j<lis.length;j++){
+      var a=lis[j].querySelector('h4.heading a[href*="/works/"]');if(!a)continue;
+      var id=(a.getAttribute("href").match(/\/works\/(\d+)/)||[])[1];if(!id)continue;
+      var au=lis[j].querySelector('a[rel="author"]'),v=lis[j].querySelector(".viewed");
+      items.push({id:id,t:txt(a),a:au?txt(au):"",v:v?txt(v):""});
+    }
+    if(items.length)data={myShelfAO3:1,kind:"list",page:/\/readings/.test(here)?(/show=to-read/.test(here)?"later":"history"):/\/bookmarks/.test(here)?"bookmarks":"list",items:items};
+  }
+  if(!data){alert("📖 Nothing here for My Shelf. Press this on a fic's own page on AO3, or on your History, Marked for Later or Bookmarks.");return null;}
+  var to=app+"#ao3="+encodeURIComponent(JSON.stringify(data));
+  if(window.__ao3Test)return to;
+  window.open(to,"_blank");return to;
+}
+let AO3_HREF="";
+const ao3Href=()=>AO3_HREF||(AO3_HREF="javascript:"+encodeURIComponent("void ("+ao3Mark.toString().replace(/\n\s*/g," ")+")("+JSON.stringify(location.origin+location.pathname)+");"));
+/* what arrived after the #, read once and taken off the address */
+const ao3FromHash=()=>{try{const h=location.hash||"";if(!h.startsWith("#ao3="))return null;
+  history.replaceState(null,"",location.pathname+location.search);
+  const o=JSON.parse(decodeURIComponent(h.slice(5)));return o&&o.myShelfAO3===1?o:null;}catch(e){return null;}};
+const AO3_IN=ao3FromHash();
+/* the same address in a window already open on the app changes only what follows the # */
+window.addEventListener("hashchange",()=>{const o=ao3FromHash();if(o)ao3Arrive(o).catch(()=>{});});
+/* the fic on the shelf that is this AO3 work, a book of its own */
+const ao3OnShelf=id=>id?books.find(b=>b&&!isColl(b)&&ao3WorkId(b.link)===id)||null:null;
+const ao3Undated=b=>!(b.readings||[]).some(r=>r&&r.end)&&!b.dateFinished;
+/* "Last visited: 12 Nov 2026 (Update available.) Visited 3 times" → 2026-11-12 */
+function ao3Visited(s){
+  const m=String(s||"").match(/Last visited:\s*(\d{1,2})\s+([A-Za-z]{3})[a-z]*\s+(\d{4})/);if(!m)return "";
+  const mo=["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(m[2].toLowerCase());
+  return mo<0?"":`${m[3]}-${String(mo+1).padStart(2,"0")}-${String(m[1]).padStart(2,"0")}`;
+}
+function ao3ListHtml(o){
+  const items=(o.items||[]).filter(x=>x&&x.id),on=items.map(x=>ao3OnShelf(String(x.id))),have=on.filter(Boolean);
+  const undated=have.filter(ao3Undated).length,days=items.filter(x=>ao3Visited(x.v)).length;
+  const name={history:"your History",later:"Marked for Later",bookmarks:"your Bookmarks"}[o.page]||"this list";
+  const miss=items.filter((x,i)=>!on[i]);
+  return `<b style="font-size:15px">📖 From ${esc(name)}, this page</b>
+    <div style="font-size:14px;margin-top:6px;line-height:1.55"><b>${items.length}</b> fic${items.length===1?"":"s"}: <b>${have.length}</b> on your shelf${have.length?`, <b>${undated}</b> of them with no date`:""}, <b>${miss.length}</b> not on it.${o.page==="history"?`<br>AO3 shows the day you last opened ${days===items.length?"every one":`${days} of them`}.`:""}</div>
+    ${miss.length?`<div class="hint" style="margin:6px 0 0;overflow-wrap:anywhere">Not on your shelf: ${miss.slice(0,8).map(x=>esc(x.t||"Untitled")).join(" · ")}${miss.length>8?` and ${miss.length-8} more`:""}</div>`:""}
+    <div class="hint" style="margin:8px 0 0">Only counted: nothing on your shelf changed.</div>`;
+}
+async function ao3Arrive(o){
+  if(!o)return;
+  const old=q("#ao3Card");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="ao3Card";d.className="ratepanel";d.style.maxWidth="min(520px,calc(100vw - 24px))";
+  const foot=`<div class="hrow2" id="ao3Btns" style="gap:8px;flex-wrap:wrap;margin-top:12px"></div>`;
+  if(o.kind==="list"){d.innerHTML=ao3ListHtml(o)+foot;}
+  else{
+    const r=parseFicHtml("<html><body>"+String(o.html||"")+"</body></html>");r.url=o.url||r.url;
+    const row=ficFileRow(r),id=ao3WorkId(row.link),b=ao3OnShelf(id);
+    const words=r.words?Math.round(r.words/1000)+"k words":"";
+    d.__row=row;d.__b=b;
+    d.innerHTML=`<b style="font-size:16px;overflow-wrap:anywhere">${esc(row.title||"Untitled")}</b>
+      <div class="meta" style="margin-top:2px;overflow-wrap:anywhere">${esc([row.author,(row.fandoms||[])[0],words,r.chapters?"chapters "+r.chapters:""].filter(Boolean).join(" · "))}</div>
+      ${b?`<div class="hint" style="margin:8px 0 0">On your shelf already: ${esc({finished:"finished",reading:"reading now",want:"want to read"}[statusOf(b)]||statusOf(b))}${ao3Undated(b)&&statusOf(b)==="finished"?", with no date":""}.</div>`:""}
+      ${!row.title?`<div class="hint" style="margin:8px 0 0">This page didn't say its title, so nothing can be added from it.</div>`:""}`+foot;
+  }
+  document.body.appendChild(d);const close=dismissable(d);d.__close=close;
+  const btns=q("#ao3Btns",d),btn=(t,pri,fn)=>{const x=document.createElement("button");x.className="btn"+(pri?" pri":"");x.textContent=t;x.onclick=fn;btns.appendChild(x);return x;};
+  if(o.kind!=="list"&&d.__row.title){
+    const row=d.__row,b=d.__b;
+    if(b){
+      btn("📅 Finished today",true,async()=>{close();
+        await shelfMut(b.id,bk=>{const t=todayStr(),rs=bk.readings=(bk.readings||[]);
+          const un=rs.find(x=>x&&!x.end&&!x.open);if(un){un.end=t;delete un.auto;}else rs.push({id:uid(),start:"",end:t});
+          if(statusOf(bk)!=="finished")bk.status="finished";syncReads(bk);return true;});
+        renderKeepPlace();bannerNote("📖 Dated today: "+(b.title||"the fic")+". ↶ takes it back.",6000);});
+      btn("Open it",false,()=>{close();openBook(b.id);});
+    }else{
+      const add=async st=>{close();const it=Object.assign({},row,{status:st});
+        if(st==="finished")it.readings=[{start:"",end:todayStr()}];
+        await importOne(it);const nb=books[0];renderKeepPlace();if(nb)openBook(nb.id);};
+      btn("✓ Read, finished today",true,()=>add("finished"));
+      btn("＋ Want to read",false,()=>add("want"));
+    }
+  }
+  btn("✕ Close",false,()=>close());
+}
+/* pressed in the app rather than dragged: there is nothing here for it to read */
+document.addEventListener("click",e=>{const a=e.target.closest&&e.target.closest("#ao3Mark");if(!a)return;
+  e.preventDefault();bannerNote("Drag it up to your bookmarks bar, then press it on a fic's page on AO3. Pressed here it has nothing to read.",6000);},true);
 let COVG_HREF="";
 const covgHref=()=>COVG_HREF||(COVG_HREF="javascript:"+encodeURIComponent("void ("+covgMark.toString().replace(/\n\s*/g," ")+")();"));
 const COVG_HOST=/^https:\/\/(?:(?:i|s|images)\.gr-assets\.com|m\.media-amazon\.com|images-na\.ssl-images-amazon\.com)\//;
