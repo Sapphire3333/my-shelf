@@ -12027,9 +12027,28 @@ async function flushQueue(){
    joining them redraws nothing anywhere else; anything else joined redraws in
    place. */
 function upJoined(key){
-  const a=document.activeElement;
   if(key==="histLog"&&view!=="history"){petNudge();return;}
-  if(view!=="book"&&!(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)))renderKeepPlace();else petNudge();
+  syncRedrawSoon();
+}
+/* ---- ONE REDRAW FOR ONE BURST OF SYNCING ----
+   Each list that went up joined with something new redrew the page at once, and
+   the pull after them redrew it again: the game, the settings, the medals and the
+   streaks going up after one press were four redraws in a row, each throwing the
+   screen's covers away and drawing them again. They are gathered now: the page
+   is drawn once, half a second after the last of them, and not while an upload
+   or a pull is still running. Not while you type, and not over an open book,
+   as before. */
+/* the newest ask wins by its number, so a burst ends in one redraw even where a
+   timer cannot be cleared */
+let syncRedrawN=0;
+function syncRedrawSoon(){
+  const n=++syncRedrawN;
+  setTimeout(()=>{
+    if(n!==syncRedrawN)return;
+    if(SYNC.flushing||SYNC.pulling){syncRedrawSoon();return;}
+    const a=document.activeElement;
+    if(view!=="book"&&!(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)))renderKeepPlace();else petNudge();
+  },500);
 }
 async function runOp(op){
   const s=SYNC.supa,uid=SYNC.user.id;
@@ -12769,7 +12788,8 @@ async function pullAll(){
     /* a pull that changed nothing leaves the screen alone. Coming back to the tab
        pulls, and on a phone that is every few minutes — each one used to rebuild
        the page whether or not a single word had changed anywhere. */
-    if((changed.length||touched||shape()!==wasShape)&&view!=="book")renderKeepPlace();
+    /* drawn once with whatever the uploads before it brought — see ONE REDRAW FOR ONE BURST OF SYNCING */
+    if((changed.length||touched||shape()!==wasShape)&&view!=="book")syncRedrawSoon();
     /* the pet's face is cheap to ask about and is not redrawn on a book's page
        otherwise — see THE FACE KEEPS UP WITHOUT A RELOAD */
     else if(changed.length||touched)petNudge();
@@ -13296,6 +13316,15 @@ const META_INTO={
 /* A bulk fill writes hundreds of times in a row, so the far side gathers what
    it hears and reads it once rather than once per message. */
 const tabHeard={books:new Set(),covers:new Set(),imgs:new Set(),meta:new Set()};
+/* ---- THE OTHER TAB'S BOOKKEEPING IS NOT NEWS ----
+   A tab sending changes to the cloud writes its waiting list (syncQueue) and the
+   stamps it has seen (seenMod) after every few uploads, and each write told the
+   other tab, which redrew its whole page for it: measured, ten such writes, ten
+   redraws of Shelf care in the other tab, one after another while a corrections
+   press was going up. These are taken in as before; nothing drawn reads them, so
+   they no longer count as a reason to redraw. A list that shows (genres, tags,
+   the bin…) still does. */
+const TAB_QUIET=new Set(["syncQueue","seenMod","snapIndex","metaTimes","metaDel","metaAlive","deletions"]);
 let tabHeardT=null,tabClashed=new Set();
 function tabSoon(){clearTimeout(tabHeardT);tabHeardT=setTimeout(tabCatchUp,220);}
 async function tabCatchUp(){
@@ -13304,7 +13333,8 @@ async function tabCatchUp(){
   for(const k of tabHeard.meta){
     const fn=META_INTO[k];if(!fn)continue;
     const row=await dbGet("meta",k);
-    fn(row?row.v:null);touched=true;
+    /* taken in, but nothing on screen is drawn from them — see TAB_QUIET */
+    fn(row?row.v:null);if(!TAB_QUIET.has(k))touched=true;
     if(k==="genres"||k==="dnfReasons"||k==="audiences")listsMoved=true;
   }
   /* the other tab's genres, reasons and audiences are the new "before" for
@@ -14945,6 +14975,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-17.2",go:["tab:care"],lines:["<b>🧰 Shelf care stops redrawing itself over and over.</b> With My Shelf open in two tabs or windows, every few uploads in one redrew the whole page in the other, so after a press in Shelf care it could flash three, four or more times in a row while the changes went up. The other tab's own bookkeeping no longer redraws anything; a real change there, a genre or a tag, still shows. And when a burst of changes goes up to the cloud, the page is drawn once, half a second after the last of them, instead of once for each."]},
   {v:"2026-11-17.1",go:["tab:library"],lines:["<b>📌 A book folded into a collection keeps its marks.</b> Folding a book into a collection, by hand or from a corrections file, used to drop its 📌 priority, the films made of it, the day it came out, its Hardcover page and its cast. They all go with it now, and come back with it if it steps out of the collection again. Where it is set, and a television series made of it, go onto the collection, which speaks for its books on both."]},
   {v:"2026-11-16.12",go:["tab:overview"],lines:["<b>☁ Downloading much less from the cloud.</b> Your shared lists (settings, the game, history, tags, the bin and the rest) came down whole every time the app looked for changes, several megabytes a time, and each one was downloaded again before it was saved. Now the app asks which lists changed, a few kilobytes, and fetches only those, and a list saves without being downloaded first unless the other device changed it in the meantime. It needs a stamp on each list in your Supabase, added once: until then the Storage card, at the foot of Today, shows the lines to paste into Supabase's SQL Editor and a button to copy them. Without the stamp everything works as before. With it, ▸ What it was in the Storage card says how many looks brought no list at all."]},
   {v:"2026-11-16.11",go:["tab:library"],lines:["<b>🚫 Leave a folder out of your Drive list.</b> A folder inside your Drive folder that isn't books, a reading program's own parts or your papers, no longer has to fill the list. In 📚 Library → ☁ Drive, step into the folder and press <b>🚫 Leave this folder out</b>: its files, and those of any folder inside it, stop showing in the tab, in its search, in Connect your Drive files and in 🔎 Do I have it?. A line over the list names each folder left out with how many files it holds, and <b>↩ Bring back</b> returns them at once, with no new look at Drive. Nothing in your Drive is touched, a file a book already holds stays that book's, and the choice follows you to your other devices."]},
