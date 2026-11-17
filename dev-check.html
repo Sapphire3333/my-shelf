@@ -2396,6 +2396,48 @@ const SMOKE=`
       new Function(decodeURIComponent(ao3Href().slice(11)));
       return "a work's title, author, fandom, series part 2 and 12/? chapters, no chapter text; a History page's works with their last visit; the bookmark parses";}
     finally{window.__ao3Test=false;}});
+  /* a Bookmarks page in AO3's markup: each blurb has two days, the work's update in the
+     header and the day it was bookmarked in the bookmarker's block; only the second dates */
+  await check("a Bookmarks page dates the undated read fics on the shelf by the day each was bookmarked, one press one undo",async()=>{
+    const li=(id,t,upd,bmd,own)=>'<li id="bookmark_'+id+'" class="bookmark blurb group" role="article"><p class="status" title="Public Bookmark"></p>'
+      +'<div class="header module"><h4 class="heading"><a href="'+(id>0?"/works/"+id:"/series/"+(-id))+'">'+t+'</a> by <a rel="author" href="/users/w/pseuds/w">w'+id+'</a></h4>'
+      +'<h5 class="fandoms heading"><a class="tag">Kite Tales</a></h5><p class="datetime">'+upd+'</p></div>'
+      +'<blockquote class="userstuff summary"><p>A string.</p></blockquote><dl class="stats"><dt class="words">Words:</dt><dd class="words">2,000</dd></dl>'
+      +'<div class="'+(own?"own ":"")+'user module group"><h5 class="byline heading">Bookmarked by <a href="/users/me/pseuds/me/bookmarks">me</a></h5><p class="datetime">'+bmd+'</p></div></li>';
+    const page='<ol class="bookmark index group">'+li(901,"Undated","17 Nov 2026","09 Aug 2024",1)+li(902,"Dated","17 Nov 2026","10 Aug 2024",1)
+      +li(903,"Wanted","01 Jan 2026","11 Aug 2024")+li(904,"Half dated","02 Feb 2026","02 Jun 2024",1)+li(905,"Not on the shelf","03 Mar 2026","12 Aug 2024",1)
+      +li(-66,"A series","04 Apr 2026","13 Aug 2024",1)+li(906,"Started after","05 May 2026","01 Jan 2024",1)+'</ol>';
+    const D=h=>new DOMParser().parseFromString("<html><body>"+h+"</body></html>","text/html");
+    const ln=n=>({link:"https://archiveofourown.org/works/"+n,kind:"fanfic"});
+    window.__ao3Test=true;
+    try{
+      /* the bookmark as it is dragged: its code folded onto one line, which a line comment would cut short */
+      const folded=new Function("return ("+ao3Mark.toString().replace(/\\n\\s*/g," ")+")")();
+      const o=JSON.parse(decodeURIComponent(folded("https://example.test/app/","https://archiveofourown.org/users/me/bookmarks?page=3",D(page)).split("#ao3=")[1]));
+      must(o.kind==="list"&&o.page==="bookmarks"&&o.mk===2&&o.items.length===6,"the page: "+JSON.stringify([o.kind,o.page,o.mk,o.items.length]));
+      must(o.items[0].b==="09 Aug 2024"&&o.items[2].b==="11 Aug 2024","the day bookmarked, not the work's update: "+o.items.map(x=>x.b).join());
+      must(ao3Day(o.items[0].b)==="2024-08-09"&&ao3Day("31 Feb 2024")===""&&ao3Day("01 Jan 2003")===""&&ao3Visited("Last visited: 03 Jan 2025 Visited once")==="2025-01-03","AO3 days: "+[ao3Day(o.items[0].b),ao3Day("31 Feb 2024")].join());
+      const said=await onShelf([B("fx-a1","Undated","w901",Object.assign(ln(901),{status:"finished",readings:[]})),
+        B("fx-a2","Dated","w902",Object.assign(ln(902),{status:"finished",readings:[{id:"r2",start:"",end:"2023-01-05"}],dateFinished:"2023-01-05"})),
+        B("fx-a3","Wanted","w903",ln(903)),
+        B("fx-a4","Half dated","w904",Object.assign(ln(904),{status:"finished",readings:[{id:"r4",start:"2024-05-01",end:"",auto:true}]})),
+        B("fx-a6","Started after","w906",Object.assign(ln(906),{status:"finished",readings:[{id:"r6",start:"2024-03-01",end:""}]}))],async()=>{
+        const list=ao3BmDates(o);
+        must(list.map(x=>x.id+"="+x.day).join()==="fx-a1=2024-08-09,fx-a4=2024-06-02","what one press would date: "+JSON.stringify(list));
+        must(/dates only fics on your shelf/.test(ao3ListHtml(o))&&!/ao3Old/.test(ao3ListHtml(o)),"the card");
+        must(/ao3Old/.test(ao3ListHtml(Object.assign({},o,{mk:undefined}))),"a bookmark dragged before the days were read wasn't told to drag it again");
+        const n0=HIST.undo.length,n=await ao3BmDate(list),by=i=>books.find(b=>b.id===i);
+        must(n===2&&HIST.undo.length===n0+1,"dated "+n+" in "+(HIST.undo.length-n0)+" steps of ↶");
+        must(by("fx-a1").readings.length===1&&by("fx-a1").readings[0].end==="2024-08-09"&&by("fx-a1").dateFinished==="2024-08-09","the undated fic: "+JSON.stringify(by("fx-a1").readings));
+        must(by("fx-a4").readings.length===1&&by("fx-a4").readings[0].end==="2024-06-02"&&!by("fx-a4").readings[0].auto,"the reading with no end: "+JSON.stringify(by("fx-a4").readings));
+        must(by("fx-a2").dateFinished==="2023-01-05"&&by("fx-a2").readings.length===1&&by("fx-a3").status==="want"&&!(by("fx-a3").readings||[]).length,"a dated or wanted fic was touched");
+        must(by("fx-a6").readings[0].end==="","a reading started after the day bookmarked was ended before it began");
+        must(!ao3BmDates(o).length&&(await ao3BmDate(list))===0,"a second press dated again");
+        await doUndo();
+        must(!by("fx-a1").readings.length&&!by("fx-a1").dateFinished&&by("fx-a4").readings[0].end==="","↶ didn't take the press back whole");
+        return n;});
+      return "6 of 7 bookmarks read (a series left out), each with the day bookmarked, not the update; "+said+" dated, a dated one, a wanted one and one started later left alone, one ↶";}
+    finally{window.__ao3Test=false;}});
   /* measured with two copies of the app open: every write of the other one's sync
      bookkeeping redrew this one's whole page, ten writes ten redraws */
   await check("the other tab's sync bookkeeping doesn't redraw this one, and a burst of syncing redraws once",async()=>{
