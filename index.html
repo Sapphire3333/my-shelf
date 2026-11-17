@@ -15011,6 +15011,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-17.4",go:["tab:care"],lines:["<b>📍 The page stops throwing you back to the top.</b> Just after the app opens it catches up with the cloud and draws the page again, and some of those redraws put you at the very top: going down Shelf care to the corrections, you were sent back up each time. A redraw you didn't ask for now keeps your place, and holds it while the page fills back in (Shelf care takes a couple of seconds). Scroll, click or press a key and you're free at once. A redraw from something you pressed works as before."]},
   {v:"2026-11-17.3",go:["tab:overview"],lines:["<b>↻ Why the page redrew.</b> The Storage card, at the foot of Today and in Settings, has a new line under the cloud's: <b>▸ Why the page redrew</b> lists the last twenty times the page was drawn again, with the time, the screen and what asked for it, such as syncing (and which lists), a pull, or the other tab. When a screen jumps about, a picture of that list says what made it."]},
   {v:"2026-11-17.2",go:["tab:care"],lines:["<b>🧰 Shelf care stops redrawing itself over and over.</b> With My Shelf open in two tabs or windows, every few uploads in one redrew the whole page in the other, so after a press in Shelf care it could flash three, four or more times in a row while the changes went up. The other tab's own bookkeeping no longer redraws anything; a real change there, a genre or a tag, still shows. And when a burst of changes goes up to the cloud, the page is drawn once, half a second after the last of them, instead of once for each."]},
   {v:"2026-11-17.1",go:["tab:library"],lines:["<b>📌 A book folded into a collection keeps its marks.</b> Folding a book into a collection, by hand or from a corrections file, used to drop its 📌 priority, the films made of it, the day it came out, its Hardcover page and its cast. They all go with it now, and come back with it if it steps out of the collection again. Where it is set, and a television series made of it, go onto the collection, which speaks for its books on both."]},
@@ -19290,10 +19291,54 @@ const scrollMem={};
    triggered it; and the page keeps growing for a moment afterwards as covers
    land, which slides your place upward. So it is set, then set again twice
    while the page settles. Cheap, and invisible when nothing moves. */
-function keepPlaceAfterRedraw(y){
-  const put=()=>window.scrollTo(0,y);
-  put();
-  [60,220].forEach(ms=>setTimeout(put,ms));
+function keepPlaceAfterRedraw(y){holdPlace(y);}
+/* ┌─ A REDRAW YOU DIDN'T ASK FOR KEEPS YOUR PLACE ────────────────────────────┐
+   │ Shelf care goes on growing for some 2.5 s after a redraw (measured on a   │
+   │ shelf of 3,200 books: drawn in 54 ms, then its sections fill in, the      │
+   │ import list's dupe check alone 540 ms), and the place was put back at 0, │
+   │ 60 and 220 ms, while the page was still too short to hold it: the scroll  │
+   │ clamped, and you landed higher up. And a redraw from syncing that called  │
+   │ render rather than renderKeepPlace put you at the very top: after a       │
+   │ reload, going down Shelf care to the corrections, the page kept throwing  │
+   │ you back up.                                                              │
+   │ holdPlace puts the place back every 80 ms for up to PLACE_HOLD_MS, until  │
+   │ page is tall enough and stays put, and lets go the moment you scroll,     │
+   │ touch, click or press a key, or the page is moved by something else (a   │
+   │ jump, Back) rather than by a page too short to hold it. render holds the  │
+   │ place by itself for a redraw nobody asked for: the same screen as the     │
+   │ draw before, scrolled down, and no press, key or Back in the last         │
+   │ PLACE_ASKED_MS. A redraw you asked for behaves as it always has.          │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const PLACE_HOLD_MS=4000,PLACE_ASKED_MS=1200;
+let holdNow=null,lastAskAt=0;
+["keydown","popstate"].forEach(ev=>window.addEventListener(ev,()=>{lastAskAt=Date.now();},true));
+/* The page is kept at least as tall as it was (the body's min-height) while it
+   refills, so the browser never snaps the scroll up mid-redraw: measured, a
+   redraw empties the page for a moment and the scroll fell to 0 before anything
+   could put it back, and that fall read as somebody else moving it. The height
+   is let go once the page's own content reaches below the screen again. */
+function holdPlace(y){
+  if(holdNow&&Math.abs(holdNow.y-y)<=2){holdNow.t0=Date.now();return;}
+  if(holdNow)holdNow.stop();
+  const evs=["wheel","touchstart","pointerdown","keydown"],body=document.body;
+  let last=null,timer=0,still=0;
+  const me={y,t0:Date.now(),stop(){clearTimeout(timer);evs.forEach(ev=>window.removeEventListener(ev,me.stop,true));
+    if(body)body.style.minHeight="";if(holdNow===me)holdNow=null;}};
+  evs.forEach(ev=>window.addEventListener(ev,me.stop,{capture:true,passive:true}));
+  if(body)body.style.minHeight=document.documentElement.scrollHeight+"px";
+  const natural=()=>{const a=q("#app");return a?a.getBoundingClientRect().bottom+scrollY:0;};
+  const put=()=>{
+    if(holdNow!==me)return;
+    if(Date.now()-me.t0>PLACE_HOLD_MS){me.stop();return;}
+    /* moved since the last look: you, or a jump the app made on purpose */
+    if(last!=null&&Math.abs(scrollY-last)>2){me.stop();return;}
+    if(Math.abs(scrollY-y)>2)window.scrollTo(0,y);
+    last=Math.round(scrollY);
+    /* the page's own content reaches below the screen again, and has for half a second: done */
+    if(natural()>=y+innerHeight){if(++still>=6){me.stop();return;}}else still=0;
+    timer=setTimeout(put,80);
+  };
+  holdNow=me;put();
 }
 /* ---- BACK TO THE THING YOU PRESSED ----
    Coming back restored a number of pixels, set three times in the first
@@ -19823,8 +19868,13 @@ function hideTabBar(){
   const bar=document.getElementById("tabbar"),more=document.getElementById("tabmore");
   if(bar)bar.hidden=true;if(more)more.hidden=true;
 }
+let drawView="";
 function render(){
   drawNote();   /* see WHY THE PAGE REDREW */
+  /* nobody asked for this one: the place is kept — see A REDRAW YOU DIDN'T ASK FOR KEEPS YOUR PLACE */
+  {const asked=Math.max(lastAskAt,(lastPress&&lastPress.at)||0);
+   if(view===drawView&&view!=="book"&&scrollY>0&&Date.now()-asked>PLACE_ASKED_MS)holdPlace(Math.round(scrollY));
+   drawView=view;}
   quietTick();
   nudgeSoon();
   /* leaving Settings leaves its page, and the page's step in history — see SETTINGS, ONE SHORT LIST */
