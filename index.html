@@ -15073,6 +15073,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-17.22",go:["tab:library"],lines:["<b>✨ Ask Claude too, for books not on your shelf.</b> More like this, not on your shelf has a second button beside 🧭: <b>✨ Ask Claude too</b>, about 5¢ a press. Claude is told what you already have that is like the book, so it looks past it, and names twenty with a line each on why. Its answers are checked like the others and stand first in the list, each marked ✨ Claude; ★ looks the book up before adding it. A second press asks for twenty more.","<b>🔎 A fic's page links to more like it on AO3.</b> No app may ask AO3, so a fic's page now has a button that opens AO3's own search for its pairing (or its fandom, where no pairing is named), most kudos first. On that page your 📖 AO3 to My Shelf bookmark says which of the fics you already have."]},
   {v:"2026-11-17.21",lines:["<b>❝ A quote keeps its width beside a story-and-page chip.</b> In ✎ Edit, a quote whose chip names both its story and its page had become much narrower than the quotes around it, because the chip stood on one long line. The chip now puts the story over the page, so the quote is as wide as its neighbours. On a phone nothing changes: the chip already had a line of its own."]},
   {v:"2026-11-17.20",go:["tab:library"],lines:["<b>🧭 More like this, not on your shelf.</b> A book's page and a collection's have a new part under More like this, on your shelf. <b>🧭 Find books like it</b> asks Hardcover what readers of that book also read (and AniList for comics and light novels), which is free and takes a few seconds. Every answer is checked against what you already have: your shelf, the stories inside your collections, your import list and the files in your Drive. New ones are cards with <b>★ Want to read</b> and <b>✕ Not for me</b>, which is remembered. A series is offered by its first book. Ones whose file is already in your Drive come first, with <b>＋ Add it with its file</b>, and what you already own is named in a quiet line you can press to open. On a collection, a picker chooses the whole series or one story."]},
   {v:"2026-11-17.19",lines:["<b>📓 The notebook gets past a long part.</b> In the reader's notebook, a part with many people or long sentences could stop with “Claude couldn't read a part: Claude's answer could not be read”, and ↻ Try again failed the same way each time, so nothing after it was read. The notes had more to say than the room they were given. There is two and a half times the room now, at no extra cost unless it is used, so press <b>↻ Try again</b> on a part that stopped. If an answer ever runs out of room again, the line says that in so many words."]},
@@ -63625,15 +63626,59 @@ async function simFind(b,en){
   if(!out.length)throw new Error(why||"nobody had a list for this one");
   return {rows:simRows(out,b),from,raw:out.length};
 }
+/* ---- ✨ ASK CLAUDE TOO ----
+   The same card, asked of Claude (#secSim's second button; about 5¢ with
+   Opus: the taste profile, cached, a page of text and twenty short answers,
+   no web search). What a plain "books like this" comes back with for a much
+   read series is the reader's own shelf, twenty of twenty in one trial, so
+   the ask carries what is already owned: the rows the card has found and the
+   forty nearest on the shelf by genre, tag and author (likePool), named as
+   ones not to repeat. The answers are rows like any other (from "Claude",
+   with its one line of why), go through simRows and simCheck, and are put in
+   front of the list; a second press asks for twenty more. Claude names books
+   from memory, so a row says it is Claude's, and ★ looks the book up at
+   Hardcover for its page, blurb and length before adding it. */
+async function simAsk(b,en,st){
+  const t=likeTarget(b,en),tg=simTarget(b,en),S={type:"string"};
+  const blurb=stripHtml(String(t.summary||"")).replace(/\s+/g," ").trim().slice(0,600);
+  let near=[];try{near=likePool(t).slice(0,40).map(c=>c.title+(c.author?" — "+c.author:""));}catch(e){}
+  const have=[...new Set([...((st&&st.rows)||[]).map(r=>(r.ser||r.t)+(r.a?" — "+r.a:"")),...near])].slice(0,180);
+  const schema={type:"object",properties:{books:{type:"array",items:{type:"object",properties:{title:S,author:S,series:S,first_book:S,why:S},required:["title","author","series","first_book","why"],additionalProperties:false}}},required:["books"],additionalProperties:false};
+  const name=isColl(b)&&!en?tg.series||tg.title:tg.title;
+  const text=`A reader loved ${isColl(b)&&!en?"the series ":""}“${name}”${tg.author?` by ${tg.author}`:""}${(t.genres||[]).length?` (${t.genres.slice(0,5).join(", ")})`:""}${(t.keywords||[]).length?`, tagged ${t.keywords.slice(0,12).join(", ")}`:""}.${blurb?` Its blurb: ${blurb}`:""}\n\n`
+    +`Name twenty books or series most like it in feel, subject and kind of story, for this reader. Real, published books only: if you are not sure a book exists under that title by that author, leave it out. Go past the obvious ones, since this reader has read widely around it.\n`
+    +`They already have or have been shown these, so none of them:\n${have.join("\n")||"(nothing listed)"}\n\n`
+    +`For each: title (the book, or for a series its first book), author (the writer), series (the series' name, or an empty string), first_book (the first book of that series, or an empty string), why (one short plain line on what it shares with “${name}”, under twenty words, no spoilers). ${VERDICT_VOICE}`;
+  const j=await claudeAsk({what:"🧭 More like this, not on my shelf",kind:"ask",text,schema,effort:"low",max_tokens:3000,system:recTaste(),cache:true,waitMs:120000});
+  return (Array.isArray((j.json||{}).books)?j.json.books:[]).map(x=>{
+    const ser=String((x&&x.series)||"").trim(),fb=String((x&&x.first_book)||"").trim(),ti=String((x&&x.title)||"").trim();
+    return {t:ser&&fb?fb:ti,a:String((x&&x.author)||"").trim(),ser,pos:ser?1:null,slug:"",first:null,from:"Claude",why:String((x&&x.why)||"").trim().slice(0,200)};}).filter(c=>c.t);
+}
+/* a fic has no list anywhere an app may ask: AO3 answers no other site. What
+   there is is AO3's own search, opened by the reader: this fic's first pairing
+   (a pairing's tag is its fandom's own, so it narrows to the fandom too), or
+   its fandom's name as plain words where no pairing is named, most kudos first. */
+function simFicHtml(b){
+  if(!b||!isFic(b))return "";
+  const ship=String((b.ships||[])[0]||"").trim(),fan=String((b.fandoms||[])[0]||"").trim();if(!ship&&!fan)return "";
+  const P=new URLSearchParams();P.set("work_search[sort_column]","kudos_count");P.set("work_search[sort_direction]","desc");
+  if(ship)P.set("work_search[relationship_names]",ship);else P.set("work_search[query]",fan);
+  return `<div class="cap2" id="secSimFic">More like this, on AO3</div>
+    <div class="cwrow"><a class="btn smallbtn" href="${esc("https://archiveofourown.org/works/search?"+P.toString())}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block">🔎 ${ship?"Fics with this pairing":"Fics of this fandom"}, most kudos first ↗</a></div>
+    <div class="hint" style="margin:4px 0 0;overflow-wrap:anywhere">${ship?`Pairing: <b>${esc(ship)}</b>`:`Fandom: <b>${esc(fan)}</b>`}. It opens AO3's own search in a new tab, since no app may ask AO3 for this. On that page, your 📖 AO3 to My Shelf bookmark says which of its fics you already have.</div>`;
+}
 /* ★ and ＋: a book of its own, Want to read. With a file it is the book the file is named for. */
 async function simAdd(r,file){
-  const fb=file&&r.fileBook,title=fb?fb.t:r.add.t,pos=fb?fb.pos:r.addPos,slug=fb?fb.slug:r.add.slug;
+  const fb=file&&r.fileBook,title=fb?fb.t:r.add.t,pos=fb?fb.pos:r.addPos;let slug=fb?fb.slug:r.add.slug;
+  /* a row with no Hardcover page of its own (Claude's, AniList's): looked up by its name, and added as it stands if it isn't found */
+  let hc=null;if(!slug&&hardcoverOn())try{const h=await fetchHardcover(title,r.a||"");if(h&&h.ok){hc=h;slug=h.slug||"";}}catch(e){}
   const b=blankBook(uid());
   Object.assign(b,{title,author:r.a||"",status:"want",modified:Date.now()},
     r.ser?Object.assign({series:r.ser},pos!=null&&pos!==""?{seriesNum:String(pos)}:{}):{},
     slug?{hcSlug:slug}:{},file?{driveFile:drvFileOf(file)}:{unowned:true});
+  if(hc){if(hc.blurb)b.summary=importHtml(hc.blurb);if(parseInt(hc.pages)>0)b.pages=String(parseInt(hc.pages));if(hc.year)b.pubYear=String(hc.year).slice(0,4);}
   /* its blurb and length are asked for now, for the one book pressed, not for the hundred listed */
-  if(slug&&hardcoverOn())try{
+  else if(slug&&hardcoverOn())try{
     const d=await hcGql("query($s:String!){ books(where:{slug:{_eq:$s}},limit:1){ description pages release_year } }",{s:slug},7000),x=(d.books||[])[0];
     if(x){const s2=stripHtml(String(x.description||"")).trim();if(s2)b.summary=importHtml(s2);
       if(parseInt(x.pages)>0)b.pages=String(parseInt(x.pages));if(x.release_year)b.pubYear=String(x.release_year).slice(0,4);}
@@ -63654,8 +63699,8 @@ function simRowHtml(r){
       :r.w==="maybe"?`<button class="btn smallbtn" data-simnot="${r.i}" title="Take it off this list for good">✓ It is mine</button><button class="btn smallbtn" data-simadd="${r.i}">★ Want to read</button>`
       :`<button class="btn smallbtn" data-simadd="${r.i}">★ Want to read</button><button class="btn smallbtn" data-simnot="${r.i}" title="Never offer it again">✕ Not for me</button>`;
     return `<div class="recrow">
-      <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b class="serif" style="font-size:16px;overflow-wrap:anywhere">${esc(lab)}</b>${r.a?`<span class="hint" style="margin:0">${esc(r.a)}</span>`:""}${r.ser?`<span class="chip simchip">a series</span>`:""}</div>
-      ${sub}${state}
+      <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b class="serif" style="font-size:16px;overflow-wrap:anywhere">${esc(lab)}</b>${r.a?`<span class="hint" style="margin:0">${esc(r.a)}</span>`:""}${r.ser?`<span class="chip simchip">a series</span>`:""}${r.from==="Claude"?`<span class="chip simchip" title="Named by Claude from memory. ★ looks it up before adding it">✨ Claude</span>`:""}</div>
+      ${sub}${r.why?`<div class="hint" style="margin:3px 0 0"><b>Why:</b> ${esc(r.why)}</div>`:""}${state}
       <div class="hrow2" style="margin-top:5px;gap:6px;flex-wrap:wrap;align-items:center">${btns}
         <span class="hint" style="margin:0">${r.add.slug?`<a href="https://hardcover.app/books/${esc(r.add.slug)}" target="_blank" rel="noopener" style="color:var(--teal-ink)">Hardcover</a> · `:""}<a href="https://www.goodreads.com/search?q=${q2}" target="_blank" rel="noopener" style="color:var(--teal-ink)">Goodreads</a> · <a href="https://app.thestorygraph.com/browse?search_term=${q2}" target="_blank" rel="noopener" style="color:var(--teal-ink)">StoryGraph</a></span></div></div>`;
   }
@@ -63681,7 +63726,7 @@ function simListHtml(st){
   const flush=()=>{if(run.length){list+=`<div class="hint simmine">Already yours: ${run.map(simMineHtml).join(" · ")}</div>`;run=[];}};
   out.forEach(r=>{if(isNew(r)){flush();list+=simRowHtml(r);}else run.push(r);});flush();
   return `<div class="hcard simcard">
-    <div class="hint" style="margin:0 0 4px">📚 What readers of this also read, from ${esc(st.from.join(" and "))}. <b>${st.raw}</b> came back: <b>${fresh.length}</b> new to you${drv.length?`, <b>${drv.length}</b> already a file in your Drive`:""}, <b>${mine}</b> already yours.</div>
+    <div class="hint" style="margin:0 0 4px">📚 ${st.from.includes("Claude")?"Books like it, from":"What readers of this also read, from"} ${esc(st.from.length>2?st.from.slice(0,-1).join(", ")+" and "+st.from[st.from.length-1]:st.from.join(" and "))}. <b>${st.raw}</b> came back: <b>${fresh.length}</b> new to you${drv.length?`, <b>${drv.length}</b> already a file in your Drive`:""}, <b>${mine}</b> already yours.</div>
     ${drv.length?`<div class="hint" style="margin:8px 0 0"><b>☁ You already have the file</b> (${drv.length})</div>${dShow.map(simRowHtml).join("")}${drv.length>dShow.length?`<div class="cwrow"><button class="btn smallbtn" data-simdrvmore>＋ ${drv.length-dShow.length} more with a file</button></div>`:""}
       <div class="hint" style="margin:12px 0 0"><b>The rest, as they came</b></div>`:""}
     ${list}
@@ -63693,13 +63738,14 @@ function simHtml(b){
   return `<div class="cap2" id="secSim">More like this${isColl(b)?" collection":""}, not on your shelf</div>
     <div class="cwrow" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${ents.length>1?`<select class="field" data-simwho aria-label="The whole series, or one story of it" style="flex:1 1 180px;min-width:0;max-width:340px;font-size:13px;padding:6px 9px"${st&&st.busy?" disabled":""}>
         <option value="">The whole series</option>${ents.map(e=>`<option value="${esc(e.id)}"${pick===e.id?" selected":""}>${esc(e.title||"Untitled")}</option>`).join("")}</select>`:""}
-      <button class="btn smallbtn" data-simgo${st&&st.busy?" disabled":""}>${st&&st.busy?"🧭 Asking its readers…":st&&st.rows?"🧭 Look again":"🧭 Find books like it"}</button></div>
+      <button class="btn smallbtn" data-simgo${st&&(st.busy||st.asking)?" disabled":""}>${st&&st.busy?"🧭 Asking its readers…":st&&st.rows&&st.from.some(f=>f!=="Claude")?"🧭 Look again":"🧭 Find books like it"}</button>
+      ${claudeReady()?`<button class="btn smallbtn" data-simask${st&&(st.busy||st.asking)?" disabled":""} title="Claude names twenty more, told what you already have. About 5¢">${st&&st.asking?"✨ Claude is thinking…":st&&st.from.includes("Claude")?"✨ Ask Claude for 20 more · about 5¢":"✨ Ask Claude too · about 5¢"}</button>`:""}</div>
     ${st&&st.err?`<div class="hint" style="margin:4px 0 0">Nothing to show: ${esc(st.err)}.</div>`:""}
-    ${st&&st.rows?simListHtml(st):st&&(st.busy||st.err)?"":`<div class="hint" style="margin:4px 0 0">Free, about 3 seconds. It asks Hardcover what readers of this also read${simIsComic(b,null)?", and AniList for comics":""}, then marks what you already have: your shelf, the stories in your collections, your import list and the files in your Drive.</div>`}`;
+    ${st&&st.rows&&st.rows.length?simListHtml(st):st&&(st.busy||st.asking||st.err)?"":`<div class="hint" style="margin:4px 0 0">Free, about 3 seconds. It asks Hardcover what readers of this also read${simIsComic(b,null)?", and AniList for comics":""}, then marks what you already have: your shelf, the stories in your collections, your import list and the files in your Drive.</div>`}`;
 }
 document.addEventListener("change",e=>{const s=e.target&&e.target.matches&&e.target.matches("[data-simwho]")?e.target:null;if(s&&cur)simWho={id:cur.id,en:s.value||""};});
 document.addEventListener("click",async e=>{
-  const t=e.target.closest&&e.target.closest("[data-simgo],[data-simadd],[data-simfile],[data-simnot],[data-simopen],[data-simmore],[data-simdrvmore]");
+  const t=e.target.closest&&e.target.closest("[data-simgo],[data-simask],[data-simadd],[data-simfile],[data-simnot],[data-simopen],[data-simmore],[data-simdrvmore]");
   if(!t||view!=="book"||!cur)return;
   e.stopPropagation();
   const b=cur,d=t.dataset,st=simState.id===b.id?simState:null,redraw=()=>{if(view==="book"&&cur&&cur.id===b.id)renderBookView();};
@@ -63707,8 +63753,22 @@ document.addEventListener("click",async e=>{
   if(d.simgo!==undefined){
     const enId=simWho.id===b.id?simWho.en:st?st.en:"",en=enId?(b.entries||[]).find(y=>y.id===enId):null;
     const s=simState={id:b.id,en:en?enId:"",busy:true,rows:null,err:"",shown:SIM_PAGE,drvAll:false,from:[],raw:0};redraw();
-    try{const r=await simFind(b,en);s.rows=r.rows;s.from=r.from;s.raw=r.raw;}catch(er){s.err=String((er&&er.message)||"no answer").replace(/\.$/,"");}
+    /* what Claude named for this same book stays in front of a list looked up again */
+    const kept=st&&st.rows&&st.en===s.en?st.rows.filter(r=>r.from==="Claude"):[];
+    try{const r=await simFind(b,en),had=new Set(kept.map(simKey));s.rows=[...kept,...r.rows.filter(x=>!had.has(simKey(x)))];s.rows.forEach((x,i)=>{x.i=i;});
+      s.from=kept.length?[...r.from,"Claude"]:r.from;s.raw=r.raw+kept.length;}
+    catch(er){s.err=String((er&&er.message)||"no answer").replace(/\.$/,"");if(kept.length){s.rows=kept;s.from=["Claude"];s.raw=kept.length;}}
     s.busy=false;if(simState===s)redraw();return;}
+  if(d.simask!==undefined){
+    /* onto the list that is there, or a list of its own when Claude is asked first */
+    const enId=st&&st.rows?st.en:simWho.id===b.id?simWho.en:"",en=enId?(b.entries||[]).find(y=>y.id===enId):null;
+    const s=st&&st.rows?st:(simState={id:b.id,en:en?enId:"",busy:false,rows:[],err:"",shown:SIM_PAGE,drvAll:false,from:[],raw:0});
+    s.asking=true;s.err="";redraw();
+    try{const got=await simAsk(b,en,s),had=new Set(s.rows.map(simKey)),fresh=simRows(got,b).filter(r=>!had.has(simKey(r)));
+      s.rows=[...fresh,...s.rows];s.rows.forEach((x,i)=>{x.i=i;});s.raw+=got.length;if(!s.from.includes("Claude"))s.from=[...s.from,"Claude"];
+      if(!fresh.length)s.err="Claude named nothing that isn't on the list already";
+    }catch(er){s.err="Claude couldn't ("+String((er&&er.message)||"no answer").replace(/\.$/,"")+")";}
+    s.asking=false;if(simState===s)redraw();return;}
   if(!st||!st.rows)return;
   if(d.simmore!==undefined){st.shown+=SIM_PAGE;redraw();return;}
   if(d.simdrvmore!==undefined){st.drvAll=true;redraw();return;}
@@ -68249,7 +68309,7 @@ function renderBookView(){
     ${(()=>{/* the books of the series already read, recapped — see PREVIOUSLY ON… */
       const pv=prevOnHtml(b);return pv?`<div class="cap2" id="secPrevOn">Previously on ${esc(seriesShown(b))}</div>${pv}`:"";})()}
       ${likeHtml(b)}
-      ${simHtml(b)}
+      ${simHtml(b)}${simFicHtml(b)}
     ${(()=>{
       /* ---- the contents ----
          A collection of a dozen stories is a book with chapters, and its page
