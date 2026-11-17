@@ -15018,6 +15018,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-17.12",go:["tab:library"],lines:["<b>📥 Bring it in from the card.</b> On 📥 New in your Drive (📚 Library → ☁ Drive), a file that isn't a missing file of one of your books is now read by its name and offered its place: <b>📥 Bring it in</b> when it's a row on your import list (added as it stands there, with the file), <b>＋ Add to</b> a collection when it looks like the next of a series you have (a Want to read story at its number, or <b>It isn't</b>), <b>✍ Bring it in</b> for a fic in a fics folder (read from the file: it joins as read, with its fandom and tags), and <b>＋ Want to read</b> for a book new to your shelf, with its title, author and series taken from the file's name. A file for something you already have with a file gets no add button, so a second copy never becomes a second book. Every press is one ↶, and so is Bring in all."]},
   {v:"2026-11-17.11",go:["tab:library"],lines:["<b>📥 New in your Drive.</b> When a look at your Drive finds files that have arrived, they are listed at the top of 📚 Library → ☁ Drive, sorted: a file for a book or story of yours that has none (<b>🔗 Link it</b>, or one button for all the sure ones), a file that might be one of yours (<b>🔗 It is</b> or <b>It isn't</b>), and files matched to nothing yet. <b>↗ Look</b> opens any of them, <b>✕ Leave</b> takes one off the list, and nothing on your shelf changes until you press. A few files are one plain list; more than six go under headings. Today shows one line while there is something new, with <b>See them</b>. The app also looks by itself when you open it or come back to it, while Google's sign-in from the last hour is still alive; it never opens a sign-in window on its own. It counts from now: files already in your Drive are not listed as new."]},
   {v:"2026-11-17.10",go:["tab:library"],lines:["<b>☁ Look again asks Drive only what changed.</b> In 📚 Library → ☁ Drive, <b>↻ Look again</b> used to list your whole Drive every time. It now asks Drive what changed since the last look and puts that into the list it keeps: new files in, deleted ones out, renamed and moved ones put right. A line under the search says what the look found. The first Look again after this update is the last slow one, because it also fetches the day each file arrived; every one after it takes a moment. If a whole folder was moved or deleted, it lists everything afresh once and says so."]},
   {v:"2026-11-17.9",go:["tab:library"],lines:["<b>🎵 A song brief, to paste into Claude.</b> A book's page has a new button beside 🔎 Auto-fill (under ⋯ on a phone): <b>🎵 Song brief</b>. One press copies your rules for the lyrics together with what your shelf says of the book: its series, genres, tags, blurb, what you liked, your notes and the lines you kept; for a fic its fandom, pairings and characters too. Paste it into Claude and it writes the lyrics for Suno. On a collection, a picker chooses the whole series or one story of it. The card shows both halves in boxes you can change before copying again, and it remembers your rules on both devices. Nothing is sent anywhere by the app."]},
@@ -34508,8 +34509,92 @@ function drvNewList(m){
   const got=drvConnectFind(fs),kind=new Map();
   (got.sure||[]).forEach(r=>{if(r.one&&!kind.has(r.one.id))kind.set(r.one.id,{k:"link",r});});
   (got.maybe||[]).forEach(r=>[...(r.cands||[]),...(r.rest||[])].forEach(c=>{if(!kind.has(c.id))kind.set(c.id,{k:"check",r});}));
-  const order={link:0,check:1,new:2};
-  return fs.map(f=>Object.assign({f},kind.get(f.id)||{k:"new"})).sort((a,b)=>order[a.k]-order[b.k]);
+  /* what the titles alone matched to nothing is read by its name — see BRINGING IT IN FROM THE CARD */
+  return fs.map(f=>Object.assign({f},kind.get(f.id)||drvNewSort(f))).sort((a,b)=>DRV_NEW_ORDER[a.k]-DRV_NEW_ORDER[b.k]);
+}
+/* ┌─ BRINGING IT IN FROM THE CARD ──────────────────────────────────────────┐
+   │ An arrival that is no book's missing file is read by its name           │
+   │ (drvNewMeta: a series and number in brackets in front, "Surname, First" │
+   │ turned round, download sites' marks off, through drvNameMeta) and       │
+   │ drvNewSort says what it is, in this order:                              │
+   │ `check`  a book or story of that title with no file: 🔗 It is / It isn't│
+   │ `have`   one of that title that has a file: only ↗ Look and ✕ Leave,    │
+   │          so a second copy never becomes a second book                   │
+   │ `imp`    a row waiting on the import list (same title, the author's     │
+   │          surname in it): 📥 Bring it in adds that row with the file     │
+   │ `next`   its series is a collection on the shelf (serInColl, which also │
+   │          wants a shared author word) and no story there has the title:  │
+   │          ＋ Add to it puts a Want to read story at its number           │
+   │          (serInPlace) with the file, or It isn't                        │
+   │ `fic`    it stands in a folder named for fics: ✍ Bring it in downloads  │
+   │          and reads it (drvFileMeta); an AO3 fic joins as read with the  │
+   │          file, or the file is linked if that fic is on the shelf        │
+   │          already; anything else says so and becomes `new`               │
+   │ `new`    ＋ Want to read: a book from the name, with the file           │
+   │ Every press is one ↶, and so is an all-button (importOne's steps).      │
+   │ It isn't for `check` and `next` is settings.drvConnNot under the unit's │
+   │ key, or the collection's id.                                            │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const DRV_NEW_ORDER={link:0,check:1,next:2,imp:3,fic:4,new:5,have:6};
+const drvNotFic=new Set();
+function drvNewMeta(name){
+  let t=String(name||"").replace(/\.[a-z0-9]{2,5}$/i,""),series="",num="";
+  const s=t.match(/^\s*[\[(]\s*([^\])]*?)\s+(\d+(?:\.\d+)?)(?:\s*,\s*\d+(?:\.\d+)?)*\s*[\])]\s*(.+)$/);
+  if(s){series=s[1].trim();num=s[2];t=s[3];}
+  /* the first author of "Surname, First_ Surname, First - Title", before the underscores are read as spaces */
+  const a1=(t.match(/^([^,_]+,\s*[^,_]+?)(?:_|\s+[-–]\s+)/)||[])[1]||"";
+  const base=drvNameMeta(t+".epub");   /* it takes an ending off, and the one that was there is gone already */
+  let author=a1||String(base.author||"");
+  const c=author.match(/^([^,]+),\s*([^,]+)$/);if(c)author=(c[2].trim()+" "+c[1].trim());
+  /* a title that came out as what is in front of the dash is a file named "Title - Author" */
+  return {title:String(base.title||"").replace(/\s+[-–]\s+aka\b.*$/i,"").trim(),author:author.trim(),alt:base.alt||"",series,num};
+}
+function drvNewIsFic(f){
+  if(!ficsOn()||drvNotFic.has(f.id)||!/\.(epub|x?html?)$/i.test(f.name))return false;
+  const by=new Map(((drvFilesMemo&&drvFilesMemo.dirs)||[]).map(d=>[d.id,d]));
+  for(let p=f.p,g=0;p&&g<40;g++){const d=by.get(p);if(!d)break;if(/fan ?fic|\bfics?\b/i.test(d.name))return true;p=d.p;}
+  return false;
+}
+function drvNewSort(f){
+  const meta=drvNewMeta(f.name),not=settings.drvConnNot||{};
+  const hit=drvShelfMatch(meta);
+  if(hit){const key=hit.en?hit.b.id+"|"+hit.en.id:hit.b.id,has=hit.en?entFileHolder(hit.b,hit.en):(hit.b.driveFile||hit.b.readFile);
+    const r={key,b:hit.b,en:hit.en,title:(hit.en||hit.b).title};
+    if(has)return {k:"have",r,meta};
+    if(!(not[key]||[]).includes(f.id))return {k:"check",r,meta};}
+  const tk=titleKey(meta.title),sur=softFold(String(meta.author||"").split(/\s+/).pop()||"");
+  const row=tk?importQueue.find(it=>it&&!it.dupe&&titleKey(it.title)===tk&&(!sur||!it.author||softFold(it.author).includes(sur))):null;
+  if(row)return {k:"imp",row,meta};
+  const c=meta.series?serInColl(meta.series,meta.author):null;
+  if(c&&!(not[c.id]||[]).includes(f.id)&&!(c.entries||[]).some(en=>en&&titleKey(en.title)===tk))return {k:"next",c,meta};
+  if(drvNewIsFic(f))return {k:"fic",meta};
+  return {k:"new",meta};
+}
+/* the row a file's name makes: Want to read, the file with it */
+const drvNewRow=x=>Object.assign({id:uid(),title:x.meta.title||x.f.name,author:x.meta.author||"",isbn:"",dnf:false,rating:null,pages:"",progress:"",dateFinished:"",readings:[],rereads:0,summary:"",notes:"",tags:[],
+  status:"want",driveFile:drvFileOf(x.f)},x.meta.series?{series:x.meta.series,...(x.meta.num?{seriesNum:x.meta.num}:{})}:{});
+/* one arrival brought in; `steps` gathers the books an all-button adds into one step of undo */
+async function drvNewBring(x,steps){
+  const f=x.f;
+  if(x.k==="imp"){await importOne(Object.assign({},x.row,{driveFile:drvFileOf(f)}),null,steps);saveImportQueue();return {added:1};}
+  if(x.k==="new"){await importOne(drvNewRow(x),null,steps);return {added:1};}
+  if(x.k==="next"){
+    const c=books.find(b=>b.id===x.c.id);if(!c)return {};
+    const before=JSON.parse(JSON.stringify(c)),en=Object.assign(blankEntry(),{title:x.meta.title||f.name,status:"want",driveFile:drvFileOf(f)});
+    serInPlace(c,en,parseFloat(x.meta.num));touchBook(c);
+    try{await dbPut("books",c);}catch(e){Object.keys(c).forEach(k=>delete c[k]);Object.assign(c,before);alert("Couldn't save — storage may be full.");return {};}
+    pushOp({t:"bulk",items:[{id:c.id,before,after:JSON.parse(JSON.stringify(c))}]});
+    if(SYNC.on){enqueue({kind:"book",id:c.id});flushQueue();}
+    if(cur&&cur.id===c.id)try{await rebaseOpenBook(c.id);}catch(e){}
+    return {added:1,into:c};}
+  if(x.k==="fic"){
+    const blob=await drvGet(`files/${encodeURIComponent(f.id)}?alt=media&supportsAllDrives=true`,true);
+    const meta=await drvFileMeta(blob,f);
+    if(!meta||!meta.row){drvNotFic.add(f.id);return {notFic:1};}
+    const on=ao3OnShelf(ao3WorkId(meta.row.link));
+    if(on){if(on.driveFile)return {had:on};await drvConnectApply([{b:on,en:null,use:f}]);return {linked:on};}
+    await importOne(Object.assign({},meta.row,{driveFile:drvFileOf(f)}),null,steps);return {added:1,fic:1};}
+  return {};
 }
 /* the arrivals left since the page opened and still in the list: what ↩ at the card's foot brings back.
    Only those, so a card with nothing in it is not kept standing for ever over the folders */
@@ -34544,13 +34629,27 @@ function drvNewHtml(list){
   const n=list.length,heads=n>DRV_NEW_HEADS,m=drvFilesMemo||{},name={},fo=settings.drive&&settings.drive.folder;
   (m.dirs||[]).forEach(d=>{name[d.id]=d.name;});if(fo)name[fo.id]=fo.name;
   const forWhat=r=>`<b>${esc(r.title||"Untitled")}</b>${r.en?` in ${esc(r.b.title||"Untitled")}`:""}`;
-  const say=x=>x.k==="link"?`for ${forWhat(x.r)}`:x.k==="check"?`might be ${forWhat(x.r)}`:"not matched to a book of yours";
-  const KIND={link:["🔗","For a book you have, with no file yet"],check:["❓","Might be one of yours"],new:["❔","Not matched to a book of yours"]};
+  const stage=it=>it.dnf?"Did not finish":({finished:"Read",reading:"Reading now",want:"Want to read"}[it.status]||"Read");
+  const short=t=>{t=String(t||"the series");return t.length>22?"the series":t;};
+  const say=x=>x.k==="link"?`for ${forWhat(x.r)}`:x.k==="check"?`might be ${forWhat(x.r)}`
+    :x.k==="have"?`you have ${forWhat(x.r)}, with a file`
+    :x.k==="imp"?`on your import list, ${esc(stage(x.row))}: <b>${esc(x.row.title||"Untitled")}</b>`
+    :x.k==="next"?`might be the next of <b>${esc(x.c.title||"Untitled")}</b>${x.meta&&x.meta.num?`, number ${esc(x.meta.num)}`:""}`
+    :x.k==="fic"?"looks like a fic, by its folder"
+    :`new to your shelf: <b>${esc((x.meta&&x.meta.title)||"Untitled")}</b>${x.meta&&x.meta.author?` by ${esc(x.meta.author)}`:""}`;
+  const KIND={link:["🔗","For a book you have, with no file yet"],check:["❓","Might be one of yours"],next:["＋","Might be the next one of a series you have"],
+    imp:["📥","On your import list"],fic:["✍","Fics that aren't on your shelf"],new:["❔","New to your shelf"],have:["✓","You have these already, with a file"]};
+  const ALLK={imp:n=>`📥 Bring in all ${n}`,fic:n=>`✍ Bring in all ${n}`};
   /* on a phone ↗ and ✕ stand without their words (.dnw), so a row's buttons keep to one line:
      with them a row stood 352 px of a 740 px screen at 132% text, three files a screen and a half */
   const look=f=>{drvLookFiles.set(f.id,f);return `<button class="btn smallbtn" data-drvlook="${esc(f.id)}" title="Open its first pages here, in the reader, to see what it is. Nothing on your shelf changes" aria-label="Look inside">↗<span class="dnw"> Look</span></button>`;};
+  const isnt=i=>`<button class="btn smallbtn" data-dnnot="${i}" title="Not that one: the file stays here and is read by its name instead">It isn't</button>`;
   const btns=(x,i)=>(x.k==="link"?`<button class="btn smallbtn pri" data-dnlink="${i}">🔗 Link it</button>`
-      :x.k==="check"?`<button class="btn smallbtn pri" data-dnlink="${i}">🔗 It is</button><button class="btn smallbtn" data-dnnot="${i}" title="Not that book: the file stays here, as one matched to nothing">It isn't</button>`:"")
+      :x.k==="check"?`<button class="btn smallbtn pri" data-dnlink="${i}">🔗 It is</button>${isnt(i)}`
+      :x.k==="next"?`<button class="btn smallbtn pri" data-dnbring="${i}" title="A Want to read story in ${esc(x.c.title||"the collection")}, at its number, with this file">＋ Add to ${esc(short(x.c.title))}</button>${isnt(i)}`
+      :x.k==="imp"?`<button class="btn smallbtn pri" data-dnbring="${i}" title="Adds it from your import list as it stands there, with this file attached">📥 Bring it in</button>`
+      :x.k==="fic"?`<button class="btn smallbtn pri" data-dnbring="${i}" title="Reads the file's first pages: an AO3 fic joins your shelf as read, with its fandom and tags and this file">✍ Bring it in</button>`
+      :x.k==="new"?`<button class="btn smallbtn pri" data-dnbring="${i}" title="A book from the file's name, Want to read, with this file attached">＋ Want to read</button>`:"")
     +look(x.f)+`<button class="btn smallbtn" data-dnleave="${i}" title="Not for the shelf: it leaves this list. The file stays in your Drive and in the folders below" aria-label="Leave it off this list">✕<span class="dnw"> Leave</span></button>`;
   const row=(x,i)=>`<div class="snap" style="padding:7px 10px;gap:6px 10px;align-items:center;flex-wrap:wrap">
       <div style="min-width:0;flex:1 1 260px"><div style="font-size:14px;overflow-wrap:anywhere"><span aria-hidden="true">${KIND[x.k][0]}</span> ${esc(x.f.name)}</div>
@@ -34559,9 +34658,10 @@ function drvNewHtml(list){
   const sureN=list.filter(x=>x.k==="link").length;
   const all=sureN>1?`<button class="btn smallbtn pri" id="dnAll" style="margin-left:auto">🔗 Link all ${sureN}</button>`:"";
   let body="";
-  if(heads)for(const k of ["link","check","new"]){
+  if(heads)for(const k of Object.keys(DRV_NEW_ORDER)){
     const g=list.map((x,i)=>[x,i]).filter(y=>y[0].k===k);if(!g.length)continue;
-    body+=`<div class="hrow2" style="gap:6px 10px;align-items:center;flex-wrap:wrap;margin:12px 0 4px"><b style="font-size:14px">${KIND[k][0]} ${KIND[k][1]}</b><span class="lbl">${g.length}</span>${k==="link"?all:""}</div>`+g.map(y=>row(y[0],y[1])).join("");
+    const allK=k==="link"?all:ALLK[k]&&g.length>1?`<button class="btn smallbtn pri" data-dnallk="${k}" style="margin-left:auto">${ALLK[k](g.length)}</button>`:"";
+    body+=`<div class="hrow2" style="gap:6px 10px;align-items:center;flex-wrap:wrap;margin:12px 0 4px"><b style="font-size:14px">${KIND[k][0]} ${KIND[k][1]}</b><span class="lbl">${g.length}</span>${allK}</div>`+g.map(y=>row(y[0],y[1])).join("");
   }else body=list.map(row).join("");
   const back=drvNewLeftHere().length;
   return `<div class="sec" id="dsNew" style="margin:0 0 14px"><div class="heading"><h2 class="serif">📥 New in your Drive</h2>${n?`<span class="n">(${n})</span>`:""}</div>
@@ -34573,9 +34673,30 @@ function drvNewWire(box,list,redo){
     undoSaid(n===1&&xs.length===1?`“${xs[0].r.title||"It"}” is connected to its file.`:`${n.toLocaleString()} connected to their files on your Drive.`);redo();};
   qa("[data-dnlink]",box).forEach(b=>b.onclick=()=>{const x=list[+b.dataset.dnlink];if(!x||!x.r)return;b.disabled=true;link([x]);});
   {const a=q("#dnAll",box);if(a)a.onclick=()=>{a.disabled=true;link(list.filter(x=>x.k==="link"));};}
-  qa("[data-dnnot]",box).forEach(b=>b.onclick=()=>{const x=list[+b.dataset.dnnot];if(!x||!x.r)return;
-    const was=(settings.drvConnNot||{})[x.r.key]||[];
-    settings.drvConnNot=Object.assign({},settings.drvConnNot||{},{[x.r.key]:[...new Set([...was,x.f.id])].slice(-DRV_CONN_NOT_MAX)});saveSettings();redo();});
+  qa("[data-dnnot]",box).forEach(b=>b.onclick=()=>{const x=list[+b.dataset.dnnot],key=x&&(x.r?x.r.key:x.c?x.c.id:"");if(!key)return;
+    const was=(settings.drvConnNot||{})[key]||[];
+    settings.drvConnNot=Object.assign({},settings.drvConnNot||{},{[key]:[...new Set([...was,x.f.id])].slice(-DRV_CONN_NOT_MAX)});saveSettings();redo();});
+  /* see BRINGING IT IN FROM THE CARD */
+  const told=(x,r)=>{
+    if(r.notFic)bannerNote("That file isn't an AO3 fic, so it's offered as a book instead.",6000);
+    else if(r.had){drvNewLeave([x.f.id]);bannerNote(`“${r.had.title||"That fic"}” is on your shelf already, with a file. This copy is left off the list.`,7000);}
+    else if(r.linked)undoSaid(`“${r.linked.title||"That fic"}” was on your shelf already, so this file is linked to it.`);
+    else if(r.added)undoSaid(r.into?`Added to ${r.into.title||"the collection"} as Want to read, with its file.`:r.fic?"The fic is on your shelf as read, with its file."
+      :x.k==="imp"?`“${x.row.title||"It"}” is on your shelf from your import list, with its file.`:`“${x.meta.title||"It"}” is on your shelf as Want to read, with its file.`);};
+  qa("[data-dnbring]",box).forEach(b=>b.onclick=async()=>{const x=list[+b.dataset.dnbring];if(!x||b.disabled)return;b.disabled=true;b.textContent="…";
+    try{told(x,await drvNewBring(x));}catch(e){bannerNote(`That didn't work: ${(e&&e.message)||"no answer"}.`,7000);}
+    redo();});
+  qa("[data-dnallk]",box).forEach(b=>b.onclick=async()=>{if(b.disabled)return;const k=b.dataset.dnallk,xs=list.filter(x=>x.k===k),steps=[];b.disabled=true;
+    let n=0,not=0,linked=0,done=0,why="";
+    for(const x of xs){
+      try{const r=await drvNewBring(x,steps);if(r.added)n++;if(r.notFic)not++;if(r.linked)linked++;if(r.had)drvNewLeave([x.f.id]);}
+      catch(e){why=(e&&e.message)||"no answer";break;}
+      b.textContent=`${++done} of ${xs.length}…`;}
+    if(steps.length)importAddLog(steps);
+    if(k==="imp")saveImportQueue();
+    const say=`${n.toLocaleString()} brought in${linked?`, ${linked} linked to fics you had`:""}${not?`, ${not} that ${not===1?"isn't an AO3 fic":"aren't AO3 fics"}`:""}${why?`; then it stopped: ${why}`:""}.`;
+    if(n)undoSaid(say);else bannerNote(say,7000);
+    redo();});
   qa("[data-dnleave]",box).forEach(b=>b.onclick=()=>{const x=list[+b.dataset.dnleave];if(!x)return;drvNewLeave([x.f.id]);redo();});
   {const la=q("#dnLeaveAll",box);if(la)la.onclick=()=>{drvNewLeave(list.map(x=>x.f.id));redo();};}
   {const bk=q("#dnBack",box);if(bk)bk.onclick=()=>{const back=new Set(drvNewLeftHere());
