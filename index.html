@@ -15073,6 +15073,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-17.23",go:["tab:library"],lines:["<b>🔎 A fic's AO3 search, as narrow as you want it.</b> A fic that names no pairing was searched by its fandom alone, which is every fic of that fandom. More like this, on AO3 now says what it looks for, and <b>⚙ Narrow or widen it</b> opens a row of switches made from the fic's own words: its fandoms, pairings, people and tags, finished fics only, and its author. The more that is on, the fewer fics come back; then <b>🔎 Open AO3's search</b>.","<b>↗ This fic on the web.</b> A fic's page also has buttons for the fic itself: ↗ Open it where its link goes, and 🔎 Find it on AO3 and on FanFiction.net by its title and author."]},
   {v:"2026-11-17.22",go:["tab:library"],lines:["<b>✨ Ask Claude too, for books not on your shelf.</b> More like this, not on your shelf has a second button beside 🧭: <b>✨ Ask Claude too</b>, about 5¢ a press. Claude is told what you already have that is like the book, so it looks past it, and names twenty with a line each on why. Its answers are checked like the others and stand first in the list, each marked ✨ Claude; ★ looks the book up before adding it. A second press asks for twenty more.","<b>🔎 A fic's page links to more like it on AO3.</b> No app may ask AO3, so a fic's page now has a button that opens AO3's own search for its pairing (or its fandom, where no pairing is named), most kudos first. On that page your 📖 AO3 to My Shelf bookmark says which of the fics you already have."]},
   {v:"2026-11-17.21",lines:["<b>❝ A quote keeps its width beside a story-and-page chip.</b> In ✎ Edit, a quote whose chip names both its story and its page had become much narrower than the quotes around it, because the chip stood on one long line. The chip now puts the story over the page, so the quote is as wide as its neighbours. On a phone nothing changes: the chip already had a line of its own."]},
   {v:"2026-11-17.20",go:["tab:library"],lines:["<b>🧭 More like this, not on your shelf.</b> A book's page and a collection's have a new part under More like this, on your shelf. <b>🧭 Find books like it</b> asks Hardcover what readers of that book also read (and AniList for comics and light novels), which is free and takes a few seconds. Every answer is checked against what you already have: your shelf, the stories inside your collections, your import list and the files in your Drive. New ones are cards with <b>★ Want to read</b> and <b>✕ Not for me</b>, which is remembered. A series is offered by its first book. Ones whose file is already in your Drive come first, with <b>＋ Add it with its file</b>, and what you already own is named in a quiet line you can press to open. On a collection, a picker chooses the whole series or one story."]},
@@ -63658,15 +63659,86 @@ async function simAsk(b,en,st){
    there is is AO3's own search, opened by the reader: this fic's first pairing
    (a pairing's tag is its fandom's own, so it narrows to the fandom too), or
    its fandom's name as plain words where no pairing is named, most kudos first. */
+/* ---- HOW WIDE THE SEARCH IS, IS THE READER'S TO SAY ----
+   A fic with no pairing was searched by its fandom's name alone, and one large
+   fandom came back as 665,654 fics. So the search is put together from the
+   fic's own words, each a pill to switch on or off (simFicPick, for this
+   visit): its fandoms, pairings, characters and tags, finished fics only, and
+   its author. More switched on is fewer fics. It starts with every fandom,
+   the first pairing and finished only; with no pairing, the first two
+   characters, or the first two tags where no character is named. A pairing
+   goes to AO3 as a relationship tag; the others as quoted phrases in the plain
+   search box, since a shelf's name for a fandom is not always AO3's tag.
+   Over it, the fic itself: ↗ to its own link, and a search for its title and
+   author on AO3 and on FanFiction.net, whichever its link is not. */
+const simFicPick=new Map(),simFicMore=new Set(),simFicOpen=new Set();
+function simFicParts(b){
+  const cut=(a,n)=>[...new Set((a||[]).map(x=>String(x||"").trim()).filter(Boolean))].slice(0,n);
+  return {f:cut(b.fandoms,3),s:cut(b.ships,3),c:cut(b.characters,6),t:cut(b.keywords,24)};
+}
+function simFicOn(b,p){
+  let on=simFicPick.get(b.id);
+  if(!on){on=new Set([...p.f.map(x=>"f|"+x),...p.s.slice(0,1).map(x=>"s|"+x),"x|complete"]);
+    if(!p.s.length)(p.c.length?p.c.slice(0,2).map(x=>"c|"+x):p.t.slice(0,2).map(x=>"t|"+x)).forEach(k=>on.add(k));
+    simFicPick.set(b.id,on);}
+  return on;
+}
+function simFicHref(b){
+  const p=simFicParts(b),on=simFicOn(b,p),P=new URLSearchParams();
+  /* only what the fic still says: a pick outlives an edit that took its word away */
+  const got=(k,list)=>list.filter(x=>on.has(k+"|"+x)),words=[...got("f",p.f),...got("c",p.c),...got("t",p.t)].map(x=>'"'+x.replace(/"/g,"")+'"'),ships=got("s",p.s);
+  P.set("work_search[sort_column]","kudos_count");P.set("work_search[sort_direction]","desc");
+  if(ships.length)P.set("work_search[relationship_names]",ships.join(","));
+  if(words.length)P.set("work_search[query]",words.join(" "));
+  if(on.has("x|complete"))P.set("work_search[complete]","T");
+  if(on.has("x|author")&&String(b.author||"").trim())P.set("work_search[creators]",String(b.author).trim());
+  return "https://archiveofourown.org/works/search?"+P.toString();
+}
 function simFicHtml(b){
   if(!b||!isFic(b))return "";
-  const ship=String((b.ships||[])[0]||"").trim(),fan=String((b.fandoms||[])[0]||"").trim();if(!ship&&!fan)return "";
-  const P=new URLSearchParams();P.set("work_search[sort_column]","kudos_count");P.set("work_search[sort_direction]","desc");
-  if(ship)P.set("work_search[relationship_names]",ship);else P.set("work_search[query]",fan);
-  return `<div class="cap2" id="secSimFic">More like this, on AO3</div>
-    <div class="cwrow"><a class="btn smallbtn" href="${esc("https://archiveofourown.org/works/search?"+P.toString())}" target="_blank" rel="noopener" style="text-decoration:none;display:inline-block">🔎 ${ship?"Fics with this pairing":"Fics of this fandom"}, most kudos first ↗</a></div>
-    <div class="hint" style="margin:4px 0 0;overflow-wrap:anywhere">${ship?`Pairing: <b>${esc(ship)}</b>`:`Fandom: <b>${esc(fan)}</b>`}. It opens AO3's own search in a new tab, since no app may ask AO3 for this. On that page, your 📖 AO3 to My Shelf bookmark says which of its fics you already have.</div>`;
+  const p=simFicParts(b),on=simFicOn(b,p),title=String(b.title||"").trim(),au=String(b.author||"").trim(),link=String(b.link||"").trim();
+  let host="";try{host=/^https?:/i.test(link)?new URL(link).hostname.replace(/^www\./,""):"";}catch(e){}
+  const A='target="_blank" rel="noopener" style="text-decoration:none;display:inline-block"';
+  const find=[];
+  if(host)find.push(`<a class="btn smallbtn" href="${esc(link)}" ${A}>↗ Open it on ${esc(host)}</a>`);
+  if(title&&!/archiveofourown\.org$/.test(host)){const P=new URLSearchParams();P.set("work_search[title]",title);if(au)P.set("work_search[creators]",au);
+    find.push(`<a class="btn smallbtn" href="${esc("https://archiveofourown.org/works/search?"+P.toString())}" ${A}>🔎 Find it on AO3 ↗</a>`);}
+  if(title&&!/fanfiction\.net$/.test(host)){const P=new URLSearchParams();P.set("keywords",(title+" "+au).trim());P.set("type","story");P.set("ready","1");
+    find.push(`<a class="btn smallbtn" href="${esc("https://www.fanfiction.net/search/?"+P.toString())}" ${A}>🔎 Find it on FanFiction.net ↗</a>`);}
+  const pill=(k,name,lab)=>`<button class="pill${on.has(k+"|"+name)?" on":""}" data-ficpick="${esc(k+"|"+name)}" aria-pressed="${on.has(k+"|"+name)}">${esc(lab||name)}</button>`;
+  const line=(lab,inner)=>inner?`<div class="pills" style="margin:0 0 6px"><span class="lbl">${lab}</span>${inner}</div>`:"";
+  /* four people and four tags to begin with: every pill of a much-tagged fic stood 1.9 screens of a phone */
+  const all=simFicMore.has(b.id),ppl=all?p.c:p.c.slice(0,4),tags=all?p.t:p.t.slice(0,4),hid=p.c.length-ppl.length+p.t.length-tags.length,any=p.f.length+p.s.length+p.c.length+p.t.length;
+  const moreBtn=hid>0?`<button class="pill" data-ficmore>＋ ${hid} more</button>`:"";
+  return `<div id="simFicBox">
+    ${find.length?`<div class="cap2" id="secFicWeb">This fic on the web</div><div class="cwrow" style="display:flex;gap:6px;flex-wrap:wrap">${find.join("")}</div>`:""}
+    ${any?`<div class="cap2" id="secSimFic">More like this, on AO3</div>
+      <div class="cwrow" style="display:flex;gap:6px;flex-wrap:wrap"><a class="btn smallbtn" id="simFicGo" href="${esc(simFicHref(b))}" ${A}>🔎 Open AO3's search ↗</a>
+        <button class="btn smallbtn" data-ficfold aria-expanded="${simFicOpen.has(b.id)}">${simFicOpen.has(b.id)?"▾ Done":"⚙ Narrow or widen it"}</button></div>
+      <div class="hint" style="margin:4px 0 6px;overflow-wrap:anywhere">It looks for: ${simFicSays(b,p,on)}. Most kudos first, in a new tab on AO3 itself, since no app may ask AO3.</div>
+      ${simFicOpen.has(b.id)?`<div class="hint" style="margin:0 0 6px">Switch on what the search should hold: the more that is on, the fewer fics come back.</div>
+      ${line("Fandom",p.f.map(x=>pill("f",x)).join(""))}${line("Pairing",p.s.map(x=>pill("s",x)).join(""))}${line("People",ppl.map(x=>pill("c",x)).join("")+(p.t.length?"":moreBtn))}
+      ${line("Tags",tags.map(x=>pill("t",x)).join("")+(p.t.length?moreBtn:""))}
+      ${line("And",pill("x","complete","Finished fics only")+(au?pill("x","author","By "+au):""))}
+      <div class="hint" style="margin:4px 0 0">On AO3's page, your 📖 AO3 to My Shelf bookmark says which of the fics you already have.${p.s.length||p.c.length||p.t.length?"":" This fic names only its fandom, so the search can't be narrower than that: its pairing, people and tags come with an AO3 file or the bookmark."}</div>`:""}`:""}</div>`;
 }
+/* what the search holds now, in words: the switches themselves stay folded
+   until ⚙ is pressed, since every pill of a much-tagged fic stood a screen and
+   a half of a phone on a page that is long already */
+function simFicSays(b,p,on){
+  const had=(k,l)=>l.filter(x=>on.has(k+"|"+x)),bits=[...had("f",p.f),...had("s",p.s),...had("c",p.c),...had("t",p.t)].map(x=>`<b>${esc(x)}</b>`);
+  if(on.has("x|complete"))bits.push("finished fics only");
+  if(on.has("x|author")&&String(b.author||"").trim())bits.push("by "+esc(String(b.author).trim()));
+  return bits.length?bits.join(" · "):"every fic there is, since nothing is switched on";
+}
+document.addEventListener("click",e=>{
+  const t=e.target.closest&&e.target.closest("[data-ficpick],[data-ficmore],[data-ficfold]");if(!t||view!=="book"||!cur||!isFic(cur))return;
+  e.stopPropagation();
+  if(t.dataset.ficfold!==undefined){if(simFicOpen.has(cur.id))simFicOpen.delete(cur.id);else simFicOpen.add(cur.id);}
+  else if(t.dataset.ficmore!==undefined)simFicMore.add(cur.id);
+  else{const on=simFicOn(cur,simFicParts(cur)),k=t.dataset.ficpick;if(on.has(k))on.delete(k);else on.add(k);}
+  const box=q("#simFicBox");if(box)box.outerHTML=simFicHtml(cur);
+});
 /* ★ and ＋: a book of its own, Want to read. With a file it is the book the file is named for. */
 async function simAdd(r,file){
   const fb=file&&r.fileBook,title=fb?fb.t:r.add.t,pos=fb?fb.pos:r.addPos;let slug=fb?fb.slug:r.add.slug;
