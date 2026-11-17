@@ -2520,6 +2520,46 @@ const SMOKE=`
       finally{if(c&&c.__close)c.__close();}
       return "a book, a fic, a series and one story of it as plain lines under the rules; the card's picker changes which";}
     finally{if(kr===undefined)delete settings.songRules;else settings.songRules=kr;}});
+  /* ↻ Look again listed the whole Drive every time; it asks only what changed, tried on a stand-in Drive */
+  await check("look again asks Drive only what changed: new, gone, renamed, a new folder; a folder moved in lists it all afresh",async()=>{
+    const kf=window.fetch,kd=settings.drive,kl=localStorage.getItem(DRV_LIST_KEY),km=drvFilesMemo,kt=drvTok,ke=drvExp;
+    const EP="application/epub+zip",DIRM="application/vnd.google-apps.folder",now=new Date().toISOString(),old="2024-03-01T10:00:00.000Z";
+    const ch=(id,name,parent,mime,when)=>({fileId:id,removed:false,file:{id:id,name:name,mimeType:mime||EP,size:"1000",parents:[parent],trashed:false,createdTime:when||now}});
+    let mode="changes";const calls=[];
+    const J=(o,st)=>new Response(JSON.stringify(o),{status:st||200,headers:{"content-type":"application/json"}});
+    try{
+      settings.drive=Object.assign({},kd||{},{folder:{id:"fx-root",name:"Fixture Drive"}});
+      drvTok="fx";drvExp=Date.now()+3600000;
+      window.fetch=async(u,o)=>{u=String(u);if(u.indexOf(DRV_API)!==0)return kf(u,o);
+        const p=u.slice(DRV_API.length);calls.push(p.split("?")[0]);
+        if(p.indexOf("changes/startPageToken")===0)return J({startPageToken:"T-FULL"});
+        if(p.indexOf("changes?")===0){
+          if(mode==="movedin")return J({newStartPageToken:"T3",changes:[ch("fx-old","An Old Folder","fx-a",DIRM,old)]});
+          if(p.indexOf("pageToken=P2")>0)return J({newStartPageToken:"T2",changes:[ch("f2","The Red Door (new name).epub","fx-a",EP,old),{fileId:"f3",removed:true},ch("fx-a","Kites Renamed","fx-root",DIRM,old)]});
+          return J({nextPageToken:"P2",changes:[ch("n1","The Fog.epub","fx-new"),ch("fx-new","Arrived","fx-a",DIRM),ch("pic","cover.jpg","fx-a","image/jpeg"),ch("far","Elsewhere.epub","fx-else")]});}
+        if(p.indexOf("files?")===0)return J({files:decodeURIComponent(p).indexOf("epub")<0?[{id:"fx-a",name:"Kites",parents:["fx-root"]}]:[{id:"f1",name:"The Lost Kite.epub",mimeType:EP,size:"1000",parents:["fx-a"],createdTime:old}]});
+        return J({error:{message:"unexpected"}},404);};
+      /* a list kept before this: names without days, no place to ask from, each file's kind written out */
+      localStorage.setItem(DRV_LIST_KEY,JSON.stringify({id:"fx-root",at:Date.now()-86400000,looked:5,dirs:[{id:"fx-a",name:"Kites",p:"fx-root"}],
+        files:[["f1","The Lost Kite.epub",1000,EP,"file","fx-a"],["f2","The Red Door.epub",1000,EP,"file","fx-a"],["f3","Gone Soon.epub",1000,EP,"file","fx-a"]]}));
+      drvFilesMemo=null;
+      const oldList=drvListLoad();
+      must(oldList&&oldList.files.length===3&&oldList.files[0].mime===EP&&!oldList.tok,"a list kept before this wasn't read: "+JSON.stringify(oldList&&oldList.files[0]));
+      oldList.tok="T1";drvListSave(oldList);
+      const packed=JSON.parse(localStorage.getItem(DRV_LIST_KEY));
+      must(packed.mimes.join()===EP&&packed.files[0][3]===0&&drvListLoad().files[0].mime===EP,"each kind of file isn't written once: "+JSON.stringify(packed.files[0]));
+      const files=await drvFolderFiles(true),m=drvFilesMemo,by=i=>files.find(f=>f.id===i);
+      must(calls.join()==="changes,changes","asked for more than the changes: "+calls.join());
+      must(files.length===3&&by("n1")&&by("n1").p==="fx-new"&&by("n1").t>0&&!by("f3")&&!by("pic")&&!by("far")&&by("f2").name==="The Red Door (new name).epub","the list after: "+files.map(f=>f.name).join(" | "));
+      must(m.dirs.length===2&&m.dirs.find(d=>d.id==="fx-a").name==="Kites Renamed"&&m.dirs.find(d=>d.id==="fx-new").p==="fx-a","the folders after: "+JSON.stringify(m.dirs));
+      must(m.tok==="T2"&&drvListLoad().tok==="T2"&&m.news.length===1&&m.news[0][0]==="n1"&&m.said.added===1&&m.said.gone===1&&m.said.moved===1&&!m.said.full,"what it says it did: "+JSON.stringify([m.tok,m.news,m.said]));
+      must(drvSaidHtml(m).indexOf("1 new, 1 gone, 1 renamed or moved")>0&&drvSaidHtml(m).indexOf("The Fog.epub")>0,"the line: "+drvSaidHtml(m));
+      mode="movedin";calls.length=0;
+      const again=await drvFolderFiles(true);
+      must(calls.join()==="changes,changes/startPageToken,files,files"&&drvFilesMemo.said.full&&drvFilesMemo.said.why==="moved"&&drvFilesMemo.tok==="T-FULL"&&again.length===1&&again[0].t>0,
+        "a folder moved in didn't list it all afresh: "+calls.join()+" "+JSON.stringify(drvFilesMemo.said));
+      return "2 questions for 1 new file in a new folder, 1 gone, 1 renamed and a folder renamed; a picture and a file elsewhere left out; a folder moved in lists everything, with each file's day";}
+    finally{window.fetch=kf;settings.drive=kd;drvTok=kt;drvExp=ke;drvFilesMemo=km;if(kl==null)localStorage.removeItem(DRV_LIST_KEY);else localStorage.setItem(DRV_LIST_KEY,kl);}});
   /* measured with two copies of the app open: every write of the other one's sync
      bookkeeping redrew this one's whole page, ten writes ten redraws */
   await check("the other tab's sync bookkeeping doesn't redraw this one, and a burst of syncing redraws once",async()=>{

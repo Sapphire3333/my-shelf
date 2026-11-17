@@ -15013,6 +15013,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-17.10",go:["tab:library"],lines:["<b>☁ Look again asks Drive only what changed.</b> In 📚 Library → ☁ Drive, <b>↻ Look again</b> used to list your whole Drive every time. It now asks Drive what changed since the last look and puts that into the list it keeps: new files in, deleted ones out, renamed and moved ones put right. A line under the search says what the look found. The first Look again after this update is the last slow one, because it also fetches the day each file arrived; every one after it takes a moment. If a whole folder was moved or deleted, it lists everything afresh once and says so."]},
   {v:"2026-11-17.9",go:["tab:library"],lines:["<b>🎵 A song brief, to paste into Claude.</b> A book's page has a new button beside 🔎 Auto-fill (under ⋯ on a phone): <b>🎵 Song brief</b>. One press copies your rules for the lyrics together with what your shelf says of the book: its series, genres, tags, blurb, what you liked, your notes and the lines you kept; for a fic its fandom, pairings and characters too. Paste it into Claude and it writes the lyrics for Suno. On a collection, a picker chooses the whole series or one story of it. The card shows both halves in boxes you can change before copying again, and it remembers your rules on both devices. Nothing is sent anywhere by the app."]},
   {v:"2026-11-17.8",go:["el:care:#ao3Mark"],lines:["<b>📥 The rest of a Bookmarks page waits on your import list.</b> Pressed on a page of your AO3 Bookmarks, <b>📖 AO3 to My Shelf</b> now also reads what each bookmark says of its fic, and the card's one press does both: it dates the fics on your shelf that have no date, and keeps the ones that aren't on your shelf under <b>✍️ Fics</b> on the import list, as read on the day you bookmarked them, with fandom, pairing, tags, series and length. Nothing joins your shelf until you add it there. One ↶ takes the whole press back. The card says which page of how many it is and which pages are done, and a box under the button does the next pages the same way without asking, until you close the tab. Drag the button to your bookmarks bar once more and delete the old one."]},
   {v:"2026-11-17.7",go:["el:care:#ao3Mark"],lines:["<b>📅 Fics dated by the day you bookmarked them.</b> Pressed on a page of your AO3 Bookmarks, <b>📖 AO3 to My Shelf</b> now reads the day you bookmarked each fic (not the day the fic last changed), and the card offers <b>📅 Date the … on this page by the day you bookmarked them</b>. It dates only fics on your shelf that are read and have no date; a fic with a date keeps it. One ↶ takes the whole page back. Drag the button from 🧰 Shelf care → Import to your bookmarks bar again and delete the old one, because a bookmark keeps the code it had the day it was dragged. Pressed page after page, it now opens My Shelf in one tab rather than a new one each time."]},
@@ -34316,35 +34317,163 @@ function drvLeaveHtml(m){
     `<span class="hrow2" style="gap:6px;align-items:baseline;flex-wrap:wrap;min-width:0"><b style="font-size:13px;min-width:0;overflow-wrap:anywhere">${esc(lv[id]||"a folder")}</b><span class="lbl">${(n[id]||0).toLocaleString()} file${n[id]===1?"":"s"}</span><button class="btn smallbtn" data-dsunleave="${esc(id)}" title="Its files show in the list again">↩ Bring back</button></span>`).join("")}</div>`;
 }
 const DRV_LIST_KEY=COPY_DB?"shelfDriveList-copy":"shelfDriveList";
-const drvListRow=f=>[f.id,f.name,f.size,f.mime,f.kind,f.p],drvListFile=([id,name,size,mime,kind,p])=>({id,name,size,mime,kind,p});
-const drvListPack=m=>Object.assign({id:m.id,at:m.at,looked:m.looked,dirs:m.dirs,files:m.files.map(drvListRow)},m.out&&m.out.length?{out:m.out.map(drvListRow)}:{});
-const drvListUnpack=o=>(!o||!Array.isArray(o.files)||!Array.isArray(o.dirs))?null
-  :drvLeaveApply({id:o.id,at:o.at,looked:o.looked||0,dirs:o.dirs,files:o.files.map(drvListFile),out:(Array.isArray(o.out)?o.out:[]).map(drvListFile)});
-function drvListSave(m){try{localStorage.setItem(DRV_LIST_KEY,JSON.stringify(drvListPack(m)));}catch(e){}}
+/* ┌─ ONLY WHAT CHANGED IN DRIVE ────────────────────────────────────────────┐
+   │ ↻ Look again listed the whole Drive every time: two listings, tens of   │
+   │ thousands of items, to learn that three files had arrived. Drive keeps  │
+   │ a list of changes and hands out a place in it (changes/startPageToken); │
+   │ a full listing now notes that place first, as m.tok, and the next look  │
+   │ (drvFolderFiles(true), whoever asks) goes to drvChanges: every change   │
+   │ since, a page of up to 1,000 at a time, put into the kept list. A file  │
+   │ new to the chosen folder's tree joins it, one trashed, removed or moved │
+   │ out leaves, a renamed or moved one is put right. Folders first: a new   │
+   │ one is taken when Drive made it since the last look (what goes into it  │
+   │ arrives as changes of its own), renamed and moved-within ones are put   │
+   │ right. What a change list does NOT say is what stood inside a folder    │
+   │ that was trashed, moved out, or moved in from elsewhere, so any of      │
+   │ those, a place Drive no longer knows, or more than DRV_CHG_PAGES pages  │
+   │ sends drvChanges back with null and the whole Drive is listed as before.│
+   │ Each file keeps the day Drive got it (createdTime, as `t`, minutes      │
+   │ since 1970; drvWhen). A list kept before this has no days and no place: │
+   │ its first Look again is a full listing, the last slow one.              │
+   │ m.news holds the files that have arrived since ([id, minutes], newest   │
+   │ last, DRV_NEWS_MAX kept), for the list of arrivals to draw from; it     │
+   │ starts empty, so what was already in the Drive is never counted new.    │
+   │ m.said is what the last look did ({full, ms, n, added, names, gone,     │
+   │ moved, why}); drvSaidHtml prints it under the ☁ Drive tab's search.     │
+   │ The kept list writes each kind of file once (o.mimes) and a number in   │
+   │ its place on every row, which pays for the days: 18,700 files were      │
+   │ 3.26 million characters, and are 3.05 million with their days.          │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const DRV_CHG_PAGES=10,DRV_NEWS_MAX=2000,DRV_CHG_SLACK=10*60000;
+const drvWhen=s=>{const t=Date.parse(s||"");return t>0?Math.round(t/60000):0;};
+function drvListPack(m){
+  const mimes=[],ix=new Map(),mi=x=>{if(!ix.has(x)){ix.set(x,mimes.length);mimes.push(x);}return ix.get(x);};
+  const row=f=>{const r=[f.id,f.name,f.size,mi(f.mime||""),f.kind,f.p];if(f.t)r.push(f.t);return r;};
+  const o={id:m.id,at:m.at,looked:m.looked,dirs:m.dirs,files:m.files.map(row)};
+  if(m.out&&m.out.length)o.out=m.out.map(row);
+  o.mimes=mimes;
+  if(m.tok)o.tok=m.tok;
+  if(m.news&&m.news.length)o.news=m.news;
+  if(m.said)o.said=m.said;
+  return o;
+}
+function drvListUnpack(o){
+  if(!o||!Array.isArray(o.files)||!Array.isArray(o.dirs))return null;
+  const mimes=Array.isArray(o.mimes)?o.mimes:null;
+  /* a row kept before the kinds were numbered carries its kind's name itself */
+  const file=([id,name,size,mime,kind,p,t])=>Object.assign({id,name,size,mime:mimes&&typeof mime==="number"?(mimes[mime]||""):mime,kind,p},t?{t}:{});
+  return drvLeaveApply({id:o.id,at:o.at,looked:o.looked||0,dirs:o.dirs,files:o.files.map(file),out:(Array.isArray(o.out)?o.out:[]).map(file),
+    tok:o.tok||"",news:Array.isArray(o.news)?o.news:[],said:o.said||null});
+}
+/* false when the device had no room for it: the list then lives only until the page closes */
+let drvListKept=true;
+function drvListSave(m){try{localStorage.setItem(DRV_LIST_KEY,JSON.stringify(drvListPack(m)));drvListKept=true;}catch(e){drvListKept=false;}return drvListKept;}
 function drvListLoad(){try{return drvListUnpack(JSON.parse(localStorage.getItem(DRV_LIST_KEY)||"null"));}catch(e){return null;}}
+/* the changes since m.tok, put into a copy of the list m; null when only a full listing can answer */
+async function drvChanges(m,f,onProg){
+  const t0=Date.now(),FIELDS="nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,size,parents,trashed,createdTime))";
+  const got=[];let tok=m.tok,next="";
+  for(let page=0;tok&&page<DRV_CHG_PAGES;page++){
+    if(onProg)onProg({stage:"changes",n:got.length});
+    let j;
+    try{j=await drvGet(`changes?pageToken=${encodeURIComponent(tok)}&pageSize=1000&includeRemoved=true&spaces=drive&fields=${encodeURIComponent(FIELDS)}`);}
+    /* a place Drive no longer knows is a reason to list afresh; anything else is a look that failed */
+    catch(e){if(!page&&/page ?token|invalid/i.test(String(e&&e.message||"")))return null;throw e;}
+    got.push(...(j.changes||[]));
+    if(j.newStartPageToken){next=j.newStartPageToken;tok="";}else tok=j.nextPageToken||"";
+  }
+  if(!next)return null;
+  const all=m.out&&m.out.length?m.files.concat(m.out):m.files.slice();
+  const byId=new Map(all.map(x=>[x.id,x])),dirs=new Map((m.dirs||[]).map(d=>[d.id,Object.assign({},d)]));
+  const inTree=id=>id===f.id||dirs.has(id),idOf=c=>c.fileId||(c.file&&c.file.id)||"";
+  const gone=c=>!!c.removed||!c.file||!!c.file.trashed;
+  /* folders first, so a file's new folder is known before the file is placed */
+  const fresh=[];
+  for(const c of got){
+    const id=idOf(c),x=c.file;if(!id)continue;
+    if(id===f.id){if(gone(c))return null;continue;}
+    if(dirs.has(id)){
+      if(gone(c))return null;
+      const p=(x.parents||[]).find(y=>y!==id&&inTree(y));if(!p)return null;
+      const d=dirs.get(id);d.name=x.name;d.p=p;continue;
+    }
+    if(!gone(c)&&x.mimeType===DRV_DIR)fresh.push(x);
+  }
+  for(let grew=true;grew;){grew=false;
+    for(const x of fresh){
+      if(dirs.has(x.id))continue;
+      const p=(x.parents||[]).find(inTree);if(!p)continue;
+      /* older than the last look and new to the tree: it was moved in, with whatever it holds */
+      if(!(Date.parse(x.createdTime||"")>m.at-DRV_CHG_SLACK))return null;
+      dirs.set(x.id,{id:x.id,name:x.name,p});grew=true;
+    }}
+  const said={full:false,n:got.length,added:0,names:[],gone:0,moved:0},news=(m.news||[]).slice(),now=Math.round(Date.now()/60000);
+  for(const c of got){
+    const id=idOf(c),x=c.file;if(!id||id===f.id||dirs.has(id)||(x&&x.mimeType===DRV_DIR))continue;
+    const had=byId.get(id),p=gone(c)?"":(x.parents||[]).find(inTree),k=p&&DRV_MIMES.includes(x.mimeType)?drvKind(x):"";
+    if(!p||!k){if(had){byId.delete(id);said.gone++;}continue;}
+    const row={id,name:x.name,size:+x.size||0,mime:x.mimeType,kind:k,p},t=drvWhen(x.createdTime)||(had&&had.t)||0;
+    if(t)row.t=t;
+    if(!had){said.added++;if(said.names.length<3)said.names.push(x.name);news.push([id,now]);}
+    else if(had.name!==row.name||had.p!==row.p)said.moved++;
+    byId.set(id,row);
+  }
+  const kept=news.filter(x=>x&&byId.has(x[0])).slice(-DRV_NEWS_MAX);
+  said.ms=Date.now()-t0;said.since=m.at;
+  return drvLeaveApply({id:f.id,at:Date.now(),looked:m.looked,dirs:[...dirs.values()],files:[...byId.values()],out:[],tok:next,news:kept,said});
+}
 async function drvFolderFiles(again,onProg){
   const f=settings.drive&&settings.drive.folder;if(!f)throw new Error("choose your Drive folder first, in ⚙ Settings → Devices and Drive");
   if(!again){
     if(drvFilesMemo&&drvFilesMemo.id===f.id)return drvLeaveApply(drvFilesMemo).files;
     const kept=drvListLoad();if(kept&&kept.id===f.id){drvFilesMemo=kept;return kept.files;}
   }
-  const was=drvListLoad(),est=was&&was.looked||0;
+  /* the list to go on from: the kept one, or this page's own when it is the newer (or the device had no room to keep it) */
+  const kept=drvListLoad(),mem=drvFilesMemo&&drvFilesMemo.id===f.id?drvFilesMemo:null;
+  const was=mem&&(!kept||kept.id!==f.id||(mem.at||0)>=(kept.at||0))?mem:kept;
+  const est=was&&was.looked||0,t0=Date.now();
+  /* asked only what changed, when the last listing left a place to ask from — see ONLY WHAT CHANGED IN DRIVE */
+  let why="";
+  if(was&&was.id===f.id&&was.tok){
+    const m=await drvChanges(was,f,onProg);
+    if(m){drvFilesMemo=m;drvListSave(m);ownAutoSoon();return m.files;}
+    why="moved";
+  }
+  /* the place in Drive's list of changes, taken before the listing so nothing that arrives during it is missed */
+  let tok="";try{tok=String((await drvGet("changes/startPageToken")).startPageToken||"");}catch(e){}
   const dirs=await drvList(`mimeType='${DRV_DIR}' and trashed=false`,"id,name,parents",n=>onProg&&onProg({stage:"folders",n}));
   const kids=new Map();dirs.forEach(d=>(d.parents||[]).forEach(p=>{if(!kids.has(p))kids.set(p,[]);kids.get(p).push(d.id);}));
   const inside=[f.id],seen=new Set(inside);
   for(let i=0;i<inside.length;i++)(kids.get(inside[i])||[]).forEach(c=>{if(!seen.has(c)){seen.add(c);inside.push(c);}});
   const files=[];
-  const looked=await drvList(`(${DRV_MIMES.map(m=>`mimeType='${m}'`).join(" or ")}) and trashed=false`,"id,name,mimeType,size,parents",(n,page)=>{
+  const looked=await drvList(`(${DRV_MIMES.map(m=>`mimeType='${m}'`).join(" or ")}) and trashed=false`,"id,name,mimeType,size,parents,createdTime",(n,page)=>{
     page.forEach(x=>{const p=(x.parents||[]).find(y=>seen.has(y));if(!p)return;
-      const k=drvKind(x);if(k)files.push({id:x.id,name:x.name,size:+x.size||0,mime:x.mimeType,kind:k,p});});
+      const k=drvKind(x),t=drvWhen(x.createdTime);if(k)files.push(Object.assign({id:x.id,name:x.name,size:+x.size||0,mime:x.mimeType,kind:k,p},t?{t}:{}));});
     if(onProg)onProg({stage:"files",n,found:files.length,est});});
   /* the folders under the chosen one, with their names, for the ☁ Drive tab */
   const named=dirs.filter(d=>seen.has(d.id)&&d.id!==f.id).map(d=>({id:d.id,name:d.name,p:(d.parents||[]).find(y=>seen.has(y))||f.id}));
-  drvFilesMemo=drvLeaveApply({id:f.id,at:Date.now(),looked:looked.length,dirs:named,files});drvListSave(drvFilesMemo);
+  /* the arrivals noted so far stay, for the files still there */
+  const here=new Set(files.map(x=>x.id)),news=was&&was.id===f.id?(was.news||[]).filter(x=>x&&here.has(x[0])):[];
+  drvFilesMemo=drvLeaveApply({id:f.id,at:Date.now(),looked:looked.length,dirs:named,files,tok,news,
+    said:{full:true,ms:Date.now()-t0,n:dirs.length+looked.length,why}});
+  drvListSave(drvFilesMemo);
   ownAutoSoon();   /* see ⌛ KEEPS ITSELF RIGHT */
   return drvFilesMemo.files;
 }
-const drvListSay=(p,fname)=>p.stage==="folders"
+/* what the last look did, under the ☁ Drive tab's search */
+function drvSaidHtml(m){
+  /* for a day: after that it is the list's age that matters, and "List from…" says it */
+  const s=m&&m.said;if(!s||!(Date.now()-(m.at||0)<86400000))return "";
+  const secs=s.ms>=950?`${(s.ms/1000).toFixed(s.ms<9500?1:0)} s`:"under a second";
+  const keep=drvListKept?"":` <b>This device had no room to keep the list, so it will be read again next time.</b>`;
+  if(s.full)return `<div class="hint" id="dsSaid" style="margin:0 0 8px">The last look listed your whole Drive (${(s.n||0).toLocaleString()} items, ${secs})${s.why==="moved"?", because a folder was moved or removed, or Drive had lost its place":""}. ${m.tok?"The next one asks Drive only what changed.":"Drive gave no place to ask from, so the next one lists it all again."}${keep}</div>`;
+  const bits=[s.added?`${s.added.toLocaleString()} new`:"",s.gone?`${s.gone.toLocaleString()} gone`:"",s.moved?`${s.moved.toLocaleString()} renamed or moved`:""].filter(Boolean);
+  const names=s.added&&(s.names||[]).length?` New: ${s.names.map(n=>esc(n)).join(" · ")}${s.added>s.names.length?` and ${(s.added-s.names.length).toLocaleString()} more`:""}.`:"";
+  return `<div class="hint" id="dsSaid" style="margin:0 0 8px;overflow-wrap:anywhere">The last look asked Drive only what changed${s.since?` since ${esc(drvAgo(s.since)).replace(/^just now$/,"a moment ago")}`:""} (${secs}): ${bits.length?bits.join(", "):"nothing new, nothing gone"}.${names}${keep}</div>`;
+}
+const drvListSay=(p,fname)=>p.stage==="changes"
+  ?drvBarHtml(`Asking Drive what changed…${p.n?` ${p.n.toLocaleString()} changes so far`:""}`,null)
+  :p.stage==="folders"
   ?drvBarHtml(`Finding your folders on Drive… ${p.n.toLocaleString()} so far`,null)
   :drvBarHtml(`Looking through your files… ${p.n.toLocaleString()} looked at, ${p.found.toLocaleString()} in ${esc(fname)}`,p.est?Math.min(99,p.n/p.est*100):null);
 /* a Drive file as the reader's clean HTML — the copy on this device while it is
@@ -34581,7 +34710,7 @@ function drvShelfDraw(box){
   if(!fo){box.innerHTML=`<div class="hcard"><div style="font-size:14px">Choose the Drive folder your files are in, and they show here.</div><div class="hrow2" style="margin-top:8px"><button class="btn pri" id="dsSet">☁ Choose the folder</button></div></div>`;
     q("#dsSet",box).onclick=()=>goTo("el:settings:#secDrive");return;}
   drvLoadGis().catch(()=>{});
-  box.innerHTML=`<div class="hrow2" style="gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><input class="field" id="dsQ" placeholder="🔎 Any part of a name, in every folder" value="${esc(drvFind)}" style="flex:1;min-width:180px"><span id="dsWhen" class="hrow2" style="gap:6px;align-items:center"></span>${ficsOn()?`<button class="btn smallbtn" data-ficdrive="1">✍️ Bring in fics from a folder</button>`:""}</div><div id="dsBody"></div>`;
+  box.innerHTML=`<div class="hrow2" style="gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><input class="field" id="dsQ" placeholder="🔎 Any part of a name, in every folder" value="${esc(drvFind)}" style="flex:1;min-width:180px"><span id="dsWhen" class="hrow2" style="gap:6px;align-items:center"></span>${ficsOn()?`<button class="btn smallbtn" data-ficdrive="1">✍️ Bring in fics from a folder</button>`:""}</div><div id="dsSaidBox"></div><div id="dsBody"></div>`;
   const body=q("#dsBody",box);let files=[],shown=DRV_PAGE,dsSome=false;
   const paint=()=>{
     const memo=drvFilesMemo||{dirs:[]},dirs=memo.dirs||[],name={},up={};dirs.forEach(d=>{name[d.id]=d.name;up[d.id]=d.p;});name[fo.id]=fo.name;
@@ -34612,6 +34741,8 @@ function drvShelfDraw(box){
     qa("[data-dsread]",body).forEach(bt=>bt.onclick=()=>{const f=files.find(x=>x.id===bt.dataset.dsread);if(!f)return;const h=held.get(f.id);
       if(h)openReader(h.b.id,h.en?h.en.id:"");else openReader("drv:"+f.id,"",drvFileOf(f));});
     const wh=q("#dsWhen",box);if(wh&&memo.at){wh.innerHTML=`<span class="hint" style="margin:0">List from ${esc(drvAgo(memo.at))}</span><button class="btn smallbtn" id="dsAgain">↻ Look again</button>`;q("#dsAgain",wh).onclick=()=>load(true);}
+    /* what that look did — see ONLY WHAT CHANGED IN DRIVE */
+    {const sb=q("#dsSaidBox",box);if(sb)sb.innerHTML=drvSaidHtml(drvFilesMemo);}
   };
   q("#dsQ",box).oninput=e=>{drvFind=e.target.value;shown=DRV_PAGE;dsSome=false;paint();};
   const load=async again=>{
