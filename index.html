@@ -15055,6 +15055,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-17.19",lines:["<b>📓 The notebook gets past a long part.</b> In the reader's notebook, a part with many people or long sentences could stop with “Claude couldn't read a part: Claude's answer could not be read”, and ↻ Try again failed the same way each time, so nothing after it was read. The notes had more to say than the room they were given. There is two and a half times the room now, at no extra cost unless it is used, so press <b>↻ Try again</b> on a part that stopped. If an answer ever runs out of room again, the line says that in so many words."]},
   {v:"2026-11-17.18",go:["tab:library"],lines:["<b>★ A mark is a number to a tenth, everywhere.</b> Three quick pickers offered ten whole stars and sent decimals to ✎ Edit: the ★ on a book's row or tile in the Library, ☆ Rate on a book's page, and the ★ on a story's row inside a collection. Each is now the editor's own small box. Press it, type the mark (8.1, or just 81) and press Enter or ✓. The cursor is already in the box, so on a phone the number keys come up at once. Remove the mark is still there, and the guess you make before starting a book is as it was."]},
   {v:"2026-11-17.17",go:["el:insights:#secCast .heading"],lines:["<b>🎭 Your cast opens folded.</b> On Insights, Your cast now shows the people you starred and the first ten of the others; <b>▸ Show the other…</b> brings the rest, and <b>▾ Fold them away</b> puts them back. A ★ keeps a name at the top whatever is folded, and never takes one of the ten places. Typing in Find a name still looks through everyone."]},
   {v:"2026-11-17.16",lines:["<b>📝 “What you wrote” stands clear of your words.</b> On a book's page, the small caption over your notes now has room under it on every screen. On a phone with large text it used to lie across your first line."]},
@@ -32029,8 +32030,17 @@ async function claudeAsk(body){
   if(r.status===404)throw new Error("the claude function is not in Supabase yet — step 2 in claude-function.ts");
   if(r.status===400&&j&&/unknown kind/i.test(String(j.error||"")))throw new Error("the claude function in Supabase is an older copy — paste claude-function.ts over it again and Deploy (step 2)");
   /* what it wrote goes with the failure: a list cut off at its limit and one that was never there look alike otherwise */
-  if(!r.ok||!j||!j.ok){const er=new Error(String((j&&(j.error||j.message||j.msg))||("Supabase answered "+r.status)).slice(0,200));er.usage=j&&j.usage;throw er;}
+  if(!r.ok||!j||!j.ok){const er=new Error(claudeCutSay(String((j&&(j.error||j.message||j.msg))||("Supabase answered "+r.status)).slice(0,200),j&&j.usage,body.max_tokens));er.usage=j&&j.usage;throw er;}
   return j;
+}
+/* ---- AN ANSWER THAT RAN OUT OF ROOM SAYS SO ----
+   An answer held to a schema is whole JSON unless it stops at max_tokens, and
+   the function's word for that is the same as for any answer it can't parse.
+   What it spent tells them apart: the tokens written reached the limit asked
+   for (the function's own clamp, 256 to 16,000, 4,096 when none is given). */
+function claudeCutSay(msg,usage,maxTokens){
+  const cap=Math.max(256,Math.min(16000,Number(maxTokens)||4096)),out=Number(usage&&usage.output)||0;
+  return /could not be read/i.test(String(msg||""))&&out>=cap-4?`Claude's answer was cut off: it reached its limit of ${cap.toLocaleString()} tokens before it was finished`:msg;
 }
 /* ┌─ ONE PHOTO, THREE ANSWERS ───────────────────────────────────────────────┐
    │ ⚡ From photo (quickOcr) and Shelf care's 📷 Books from a photo ask one │
@@ -37502,6 +37512,16 @@ document.addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target&&(e.target.
    │ does. A part under NB_MIN_CHARS letters is noted as skipped and not sent.  │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const NB_MIN_CHARS=400,NB_CHUNK=50000,NB_FREE_PART=24000,NB_PDF_PAGES=15,NB_FAILS=3;
+/* ---- ROOM FOR A PART'S NOTES ----
+   nbAsk's answer was held to 1,200 tokens. What it asks for can come to more:
+   up to 24 people at a name and twenty words each is about a thousand tokens
+   by itself, before the summary, eight ties and six sentences copied out
+   whole. A part with a large cast or long sentences ran out of room, the JSON
+   stopped mid-way, and the function could only say "Claude's answer could not
+   be read"; ↻ Try again asked the same thing with the same room, paid for the
+   part again and failed again, so the notebook never got past that part.
+   A limit costs nothing until it is used: only what Claude writes is paid for. */
+const NB_OUT=3000;
 const NB_MODELS={haiku:[CLAUDE_HAIKU,"Haiku"],sonnet:[CLAUDE_SONNET,"Sonnet"],opus:[CLAUDE_OPUS,"Opus"]};
 const nbModelKey=()=>NB_MODELS[settings.nbModel]?settings.nbModel:"haiku";
 const nbModel=()=>NB_MODELS[nbModelKey()][0];
@@ -37663,7 +37683,7 @@ async function nbAsk(part,text,ctx,model){
     +(ctx.likes&&ctx.likes.length?` Lines this reader has kept before, to go by:\n${ctx.likes.map(l=>"- "+l).join("\n")}`:"")
     +(ctx.names.length?`\nPeople already in the notebook: ${ctx.names.slice(0,80).join(", ")}. Use the same name for the same person.`:"")
     +`\n\n"""\n${text}\n"""`;
-  const j=await claudeAsk({what:"📓 A book's notebook",kind:"ask",text:ask,schema,effort:"low",max_tokens:1200,model,waitMs:120000});
+  const j=await claudeAsk({what:"📓 A book's notebook",kind:"ask",text:ask,schema,effort:"low",max_tokens:NB_OUT,model,waitMs:120000});
   const o=j.json||{};
   return {sum:String(o.summary||"").trim().slice(0,900),
     who:(Array.isArray(o.people)?o.people:[]).filter(p=>p&&p.name).slice(0,24).map(p=>({n:String(p.name).trim().slice(0,60),d:String(p.about||"").trim().slice(0,200)})),
