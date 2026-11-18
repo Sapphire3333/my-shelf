@@ -2193,6 +2193,8 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .mrn small{font-size:12px;color:var(--mut)}
   .mrow .mrn{flex:1 1 auto}
   .mrow .mrx{min-width:0;padding-left:8px;padding-right:8px}
+  .mdir{margin:6px 0 0;min-width:0;font-size:13px}
+  .mdirtog{text-align:left;overflow-wrap:anywhere;padding:4px 0}
   .musiclist .mhead{margin:8px 0 0}
   .musiclist .mhead:first-child{margin-top:0}
   /* the Library's tabs on a phone: signs, and the number of the tab that is open — see ktLabel */
@@ -15137,6 +15139,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-18.5",go:["tab:library"],lines:["<b>📲 Songs from a folder on this device.</b> If your songs already lie in a folder on this phone or computer, the 🎵 Music tab can play them from there: nothing is fetched and no second copy is made. Under the count of your songs, open <b>📲 Songs already in a folder on this device?</b> and choose the folder once. The app only reads it and can never change it. It pairs the folder's files with your Drive list by name and size and marks those songs 📲, and the line then says how many it covers and how long the reading took.","<b>The browser may ask each visit.</b> Before the folder can be read again on a later visit your browser may want a yes: it asks when you press ▶ on a song that is in the folder, or <b>📲 Open it</b> on the tab. A song that starts by itself never brings the question up; it comes from Drive as before until you have said yes. A browser that can't hand a page a folder says so on the same line."]},
   {v:"2026-11-18.4",lines:["<b>🎵 Songs for a book.</b> In the reader, ☰ → 🎧 has a sixth sound for this book beside rain and the fire: <b>🎵 Songs</b>. Press it, find your songs in the list (the one from Library → 🎵 Music) and tick the ones that belong to this book, or to this story when it is a story you have open. They start when you open it here and with ⏱ on its page, in place of rain or a fire, and after the last one all your songs follow, shuffled.","<b>⏮ ⏯ ⏭ in the reader.</b> The reader covers the ♪ in the corner, so while a song is chosen the same 🎧 panel shows what is playing, with buttons to pause it and to skip, and a volume of its own. The sleep timer stops the music too, the reading voice turns it down, and closing the book leaves it playing: the ♪ in the corner stops it."]},
   {v:"2026-11-18.3",go:["tab:challenges"],lines:["<b>📖 A new book counts in the week you finish it.</b> The week's goal Start new books counted a book only if you began it between Monday and Sunday, so one you had begun earlier gave the week nothing when you finished it. It now counts in the week you begin it and in the week you finish it. A reread still doesn't count."]},
   {v:"2026-11-18.2",lines:["<b>🔔 A reward's popup opens the right place.</b> Pressing the popup for a week's goal, the month's work, the year's or the season's bingo, the doorstopper and a few more opened 🎲 Challenges wherever you had last left it, usually on Today. Each now opens its own card, with the right room and the right one of Today, This week, This month and This year chosen.","<b>📓 The notebook says why it isn't reading.</b> In the reader's notebook, a ticked Read ahead could sit over a notebook that was reading nothing, and only unticking and ticking it woke it. Under the tick there is now a line that says what is happening: which part is being read, what is next, or what is in the way (offline, a ⚖ Compare left open, parts that failed three times and were set aside). Beside it, <b>▶ Read on now</b> starts the reading at once."]},
@@ -35286,7 +35289,7 @@ function musicLoad(){
   return musicMemo;
 }
 function musicSave(files){
-  musicMemo={at:Date.now(),files};songNames.clear();
+  musicMemo={at:Date.now(),files};songNames.clear();musicDirMatch();
   if(!TEST_RUN)try{localStorage.setItem(MUSIC_KEY,JSON.stringify({at:musicMemo.at,f:files.map(x=>[x.id,x.n,x.s,x.t])}));}catch(e){}
 }
 const musicFile=id=>{const m=musicLoad();return (m&&m.files.find(f=>f.id===id))||null;};
@@ -35345,6 +35348,160 @@ async function musicCacheClear(){
   if(TEST_RUN){musicMem.blobs.clear();return;}
   try{await caches.delete(MUSIC_CACHE);}catch(e){}
 }
+/* ┌─ 📲 SONGS FROM A FOLDER ON THIS DEVICE ──────────────────────────────────┐
+   │ Where the browser can hand a page a folder (musicDirCan), one folder of  │
+   │ the device is chosen once and the songs in it are played from there:     │
+   │ nothing fetched, nothing copied, and the app only ever reads it.         │
+   │ musicDirRead walks the folder and the folders inside it for music files  │
+   │ and asks each its size; musicDirMatch pairs them with Drive's list by    │
+   │ name and by size (by name alone where either side has no size), so       │
+   │ another file under the same name is still fetched from Drive. musicDir   │
+   │ holds the handle, the files and the pairs (ids, by Drive id). The handle │
+   │ and the files are kept in a database of their own (MUSIC_DIR_DB), never  │
+   │ in the shelf's, so nothing about the device's folders is synced or       │
+   │ exported; MUSIC_DIR_KEY in localStorage only says there is one, so a     │
+   │ device that never chose a folder opens nothing at start.                 │
+   │ A browser may ask again each visit before the folder can be read. That   │
+   │ question is only ever put by a press: ▶ on a song that is in the folder, │
+   │ once a visit, or 📲 Open it on the Music tab; a song that starts by      │
+   │ itself never puts it. mpBlob looks in the folder first, and a song found │
+   │ there is neither kept in the cache nor fetched ahead. The Music tab's    │
+   │ line (musicDirHtml, folded) says how many songs the folder covers, how   │
+   │ many share a name but not a size, and how long the reading took.         │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const MUSIC_DIR_DB="myShelf-music-folder",MUSIC_DIR_KEY="shelfMusicDir",MUSIC_DIR_DEEP=6,MUSIC_DIR_AT_ONCE=8;
+let musicDir=null,musicDirBusy="",musicDirErr="",musicDirOpen=false,musicDirGoing=null;
+/* whether the browser offers a folder of the device to a page at all */
+const musicDirCan=()=>typeof window.showDirectoryPicker==="function";
+const musicNameKey=n=>{let s=String(n||"");try{s=s.normalize("NFC");}catch(e){}return s.toLowerCase().trim();};
+function musicDirStore(mode){
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open(MUSIC_DIR_DB,1);
+    r.onupgradeneeded=()=>{try{r.result.createObjectStore("kv");}catch(e){}};
+    r.onerror=()=>rej(r.error);
+    r.onsuccess=()=>{const db=r.result;
+      try{const t=db.transaction("kv",mode);res({db,st:t.objectStore("kv"),done:new Promise((ok,no)=>{t.oncomplete=ok;t.onerror=()=>no(t.error);t.onabort=()=>no(t.error);})});}
+      catch(e){db.close();rej(e);}};});
+}
+/* what musicDir holds now, written down or taken away; nothing is written under TEST_RUN */
+async function musicDirKeep(){
+  const D=musicDir;if(TEST_RUN)return;
+  try{
+    const x=await musicDirStore("readwrite");
+    if(D)x.st.put({h:D.h,name:D.name,at:D.at,took:D.took,files:D.files},"dir");else x.st.delete("dir");
+    await x.done;x.db.close();
+    if(D)localStorage.setItem(MUSIC_DIR_KEY,"1");else localStorage.removeItem(MUSIC_DIR_KEY);
+  }catch(e){musicDirErr="The folder couldn't be remembered on this device: "+((e&&e.message)||"no reason given");}
+}
+function musicDirMatch(){
+  const D=musicDir;if(!D)return;
+  const m=musicLoad(),by=new Map(),names=new Set();
+  D.files.forEach(x=>{const k=musicNameKey(x.n);if(!by.has(k))by.set(k,[]);by.get(k).push(x);});
+  D.ids=new Map();D.other=0;D.strange=0;
+  if(!m)return;
+  for(const f of m.files){const k=musicNameKey(f.n);names.add(k);const c=by.get(k);if(!c)continue;
+    const hit=c.find(x=>!f.s||x.s==null||x.s===f.s);
+    if(hit)D.ids.set(f.id,hit);else D.other++;}
+  by.forEach((c,k)=>{if(!names.has(k))D.strange+=c.length;});
+}
+const musicDirHas=id=>!!(musicDir&&musicDir.ids&&musicDir.ids.has(id));
+const musicDirReady=id=>musicDirHas(id)&&musicDir.perm==="granted";
+async function musicDirRead(h,say){
+  const t0=performance.now(),found=[];
+  const walk=async(d,path,deep)=>{
+    for await(const e of d.values()){
+      if(e.kind==="file"){if(SONG_EXT.test(e.name)){found.push({e,n:e.name,p:path});if(say&&found.length%50===0)say(found.length,0);}}
+      else if(e.kind==="directory"&&deep<MUSIC_DIR_DEEP)await walk(e,path.concat(e.name),deep+1);}};
+  await walk(h,[],0);
+  /* each file's size, a few at once: every one is a question put to the device's files */
+  let at=0,done=0;
+  const one=async()=>{while(at<found.length){const x=found[at++];try{x.s=(await x.e.getFile()).size;}catch(e){x.s=null;}if(say&&++done%50===0)say(found.length,done);}};
+  await Promise.all(Array.from({length:MUSIC_DIR_AT_ONCE},one));
+  return {files:found.map(x=>({n:x.n,p:x.p,s:x.s})),took:performance.now()-t0};
+}
+/* 📲 Choose the folder, and ↻ Read the folder again (again): both begin with a press */
+async function musicDirPick(again){
+  if(musicDirBusy||!musicDirCan())return;
+  musicDirErr="";
+  let h=again&&musicDir?musicDir.h:null;
+  try{
+    if(!h)h=await window.showDirectoryPicker({id:"my-shelf-music",mode:"read"});
+    else if(await h.requestPermission({mode:"read"})!=="granted"){musicDir.perm="prompt";musicDirDraw();return;}
+  }catch(e){
+    if(!(e&&e.name==="AbortError"))musicDirErr="The folder couldn't be opened: "+((e&&e.message)||"no reason given");
+    musicDirDraw();return;}
+  musicDirBusy="Reading your folder…";musicDirOpen=true;musicDirDraw();
+  try{
+    const got=await musicDirRead(h,(n,sized)=>{musicDirBusy=sized?`Reading your folder… ${sized.toLocaleString()} of ${n.toLocaleString()} songs measured`:`Reading your folder… ${n.toLocaleString()} songs so far`;musicDirDraw();});
+    musicDir={h,name:h.name||"your folder",at:Date.now(),took:got.took,files:got.files,perm:"granted",asked:false};
+    musicDirMatch();await musicDirKeep();
+  }catch(e){musicDirErr="The folder couldn't be read: "+((e&&e.message)||"no reason given");}
+  musicDirBusy="";
+  if(view==="library"&&libMusicMode)musicDraw();
+}
+/* 📲 Open it: the browser's question for this visit */
+async function musicDirAllow(){
+  const D=musicDir;if(!D||!D.h)return;
+  musicDirErr="";
+  try{D.perm=await D.h.requestPermission({mode:"read"});D.asked=D.perm!=="granted";}
+  catch(e){musicDirErr="The folder couldn't be opened: "+((e&&e.message)||"no reason given");}
+  if(view==="library"&&libMusicMode)musicDraw();
+}
+async function musicDirStop(){
+  musicDir=null;musicDirErr="";await musicDirKeep();
+  if(view==="library"&&libMusicMode)musicDraw();
+}
+/* the folder chosen on an earlier visit, once a visit */
+function musicDirInit(){
+  if(musicDirGoing)return musicDirGoing;
+  musicDirGoing=(async()=>{
+    if(TEST_RUN||!musicDirCan())return;
+    try{
+      const x=await musicDirStore("readonly"),v=await new Promise((res,rej)=>{const r=x.st.get("dir");r.onsuccess=()=>res(r.result||null);r.onerror=()=>rej(r.error);});
+      x.db.close();
+      if(!v||!v.h||musicDir)return;
+      let perm="prompt";try{perm=await v.h.queryPermission({mode:"read"});}catch(e){}
+      musicDir={h:v.h,name:v.name||v.h.name||"your folder",at:+v.at||0,took:+v.took||0,files:Array.isArray(v.files)?v.files:[],perm,asked:false};
+      musicDirMatch();
+      if(view==="library"&&libMusicMode)musicDraw();
+    }catch(e){}
+  })();
+  return musicDirGoing;
+}
+try{if(!TEST_RUN&&localStorage.getItem(MUSIC_DIR_KEY))musicDirInit();}catch(e){}
+/* a song's own file in the folder, or null: Drive has it still */
+async function musicDirFile(f,pressed){
+  const D=musicDir,x=D&&D.ids&&D.ids.get(f.id);if(!x||!D.h)return null;
+  try{
+    if(D.perm!=="granted"){
+      if(!pressed||D.asked)return null;
+      D.asked=true;D.perm=await D.h.requestPermission({mode:"read"});
+      if(view==="library"&&libMusicMode)musicDirDraw();
+      if(D.perm!=="granted")return null;}
+    let d=D.h;for(const seg of x.p)d=await d.getDirectoryHandle(seg);
+    const file=await (await d.getFileHandle(x.n)).getFile();
+    /* changed since the folder was read: not the file Drive's list means any more */
+    return f.s&&x.s!=null&&file.size!==f.s?null:file;
+  }catch(e){
+    if(e&&(e.name==="NotAllowedError"||e.name==="SecurityError")){D.perm="prompt";if(view==="library"&&libMusicMode)musicDirDraw();}
+    return null;}
+}
+function musicDirHtml(){
+  const D=musicDir,m=musicLoad(),wrap=h=>`<div class="mdir" id="musicDevice">${h}</div>`;
+  if(!musicDirCan())return wrap(`<div class="hint" style="margin:0">📲 Songs already in a folder on this device: this browser can't open a folder here, so the app can't play them where they lie.</div>`);
+  if(musicDirBusy)return wrap(`<div class="hint" style="margin:0">⏳ ${esc(musicDirBusy)}</div>`);
+  const err=musicDirErr?`<div class="hint" style="margin:4px 0 0">⚠ ${esc(musicDirErr)}</div>`:"";
+  const fold=t=>`<button class="linkbtn mdirtog" data-music="dirfold" aria-expanded="${musicDirOpen}">${musicDirOpen?"▾":"▸"} ${t}</button>`;
+  if(!D)return wrap(fold("📲 Songs already in a folder on this device?")
+    +(musicDirOpen?`<div class="hint" style="margin:4px 0 6px">Choose the folder once and the app plays them from there: nothing is fetched and no second copy is made. The app can only read the folder, never change it.</div><button class="btn smallbtn pri" data-music="dirpick">📲 Choose the folder</button>`:"")+err);
+  const all=m?m.files.length:0,n=D.ids?D.ids.size:0,out=all-n;
+  return wrap(fold(`📲 ${n.toLocaleString()} of ${all.toLocaleString()} songs play from “${esc(D.name)}”`)
+    +(D.perm!=="granted"?`<div class="hrow2" style="gap:6px;flex-wrap:wrap;align-items:center;margin:4px 0 0"><button class="btn smallbtn pri" data-music="diropen">📲 Open it</button><span class="hint" style="margin:0">The browser asks before the app may read the folder on this visit.</span></div>`:"")
+    +(musicDirOpen?`<div class="hint" style="margin:4px 0 6px">${n.toLocaleString()} of your ${all.toLocaleString()} songs are in this folder (📲 on their rows) and play from it with nothing fetched. ${out?`${out.toLocaleString()} ${out===1?"isn't":"aren't"} in it${D.other?`, ${D.other.toLocaleString()} of them under the same name but another size`:""}, and still come${out===1?"s":""} from Drive.`:"Every one is in it."}${D.strange?` ${D.strange.toLocaleString()} music file${D.strange===1?"":"s"} in the folder ${D.strange===1?"isn't":"aren't"} in your Drive.`:""} Read ${esc(drvAgo(D.at))}: ${D.files.length.toLocaleString()} music file${D.files.length===1?"":"s"} in ${(D.took/1000).toFixed(1)} s. A song added to the folder since then shows after ↻.</div>
+      <div class="hrow2" style="gap:6px;flex-wrap:wrap"><button class="btn smallbtn" data-music="dirread">↻ Read the folder again</button><button class="btn smallbtn" data-music="dirstop">✕ Stop using it</button></div>`:"")+err);
+}
+/* only its own line, so the list keeps its place and the find box its cursor */
+function musicDirDraw(){const el=q("#musicDevice");if(el)el.outerHTML=musicDirHtml();}
 /* ---- the player ---- */
 MP={q:[],i:-1,state:"",err:"",kind:"",book:"",el:null,url:"",pre:null,preId:"",going:"",t0:0,took:null,from:"",pct:null,need:false,open:false,tok:0};
 function mpLive(){return !!(MP&&(MP.state==="play"||MP.state==="load"));}
@@ -35367,7 +35524,10 @@ function mpEl(){
 const mpSong=()=>MP.i>=0&&MP.q[MP.i]?(musicFile(MP.q[MP.i])||{id:MP.q[MP.i],n:"A song",s:0}):null;
 const mpDrivePath=id=>`files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`;
 const mpTokLive=()=>!!(drvTok&&Date.now()<drvExp-60000);
-async function mpBlob(f){
+async function mpBlob(f,pressed){
+  /* in the folder chosen on this device: played from where it lies — see 📲 SONGS FROM A FOLDER ON THIS DEVICE */
+  const here=await musicDirFile(f,pressed);
+  if(here)return {blob:here,from:"folder"};
   const kept=await musicCacheGet(f.id);
   if(kept){
     const k=Object.assign({},musicKept());if(k[f.id]){k[f.id]=Object.assign({},k[f.id],{at:musicNow()});musicKeptSave(k);}
@@ -35386,11 +35546,11 @@ async function mpStart(i,pressed){
   const my=++MP.tok,a=mpEl();
   MP.i=((i%MP.q.length)+MP.q.length)%MP.q.length;MP.err="";MP.pct=null;MP.took=null;MP.from="";
   const f=mpSong();try{a.pause();}catch(e){}
-  if(!pressed&&!mpTokLive()&&!musicKept()[f.id]&&!(MP.pre&&MP.pre.id===f.id)){
+  if(!pressed&&!mpTokLive()&&!musicKept()[f.id]&&!(MP.pre&&MP.pre.id===f.id)&&!musicDirReady(f.id)){
     MP.state="pause";MP.need=true;MP.err="Google's sign-in has run out. Press ▶ to sign in and carry on.";mpPaint();return;}
   MP.need=false;MP.state="load";MP.t0=performance.now();mpPaint();
   try{
-    const got=await mpBlob(f);if(my!==MP.tok)return;
+    const got=await mpBlob(f,pressed);if(my!==MP.tok)return;
     if(MP.url)try{URL.revokeObjectURL(MP.url);}catch(e){}
     MP.url=URL.createObjectURL(got.blob);MP.from=got.from;a.src=MP.url;mpLevel();
     await a.play();if(my!==MP.tok)return;
@@ -35408,7 +35568,7 @@ async function mpAhead(){
   if(MP.q.length<2||!mpTokLive())return;
   const id=MP.q[(MP.i+1)%MP.q.length],f=musicFile(id);
   /* going: the one on its way, so a queue changed while it comes does not ask for it twice */
-  if(!f||musicKept()[id]||(MP.pre&&MP.pre.id===id)||MP.going===id)return;
+  if(!f||musicDirReady(id)||musicKept()[id]||(MP.pre&&MP.pre.id===id)||MP.going===id)return;
   MP.going=id;
   try{
     const blob=await drvDownload(mpDrivePath(id),f.s);
@@ -35470,7 +35630,7 @@ function mpSay(){
   if(MP.err)return "⚠ "+MP.err;
   if(MP.state==="load")return "⏳ Fetching from Drive…"+(MP.pct!=null?" "+MP.pct+"%":"");
   const mb=f.s?(f.s/1048576).toFixed(1)+" MB":"";
-  const how=MP.from==="kept"?"✓ From this device: no wait":MP.from==="ahead"?"Fetched while the last song played: no wait"
+  const how=MP.from==="folder"?"📲 From your folder on this device: nothing fetched":MP.from==="kept"?"✓ From this device: no wait":MP.from==="ahead"?"Fetched while the last song played: no wait"
     :MP.took!=null?`⏱ ${MP.took.toFixed(1)} s to the first sound${mb?" · "+mb+" from Drive":""}`:"";
   return (MP.state==="pause"?"Paused"+(how?" · ":""):"")+how;
 }
@@ -35515,15 +35675,15 @@ function musicRows(){
   const m=musicLoad();if(!m)return [];
   const w=musicFind.trim().toLowerCase(),kept=musicKept(),byNew=musicSortNow()==="new";
   const key=x=>(x.nm.t.replace(/^[^\p{L}\p{N}]+/u,"")+" "+x.nm.a).toLowerCase();
-  return m.files.map(f=>({f,nm:songName(f.n),k:kept[f.id]?1:0})).filter(x=>!w||(x.nm.a+" "+x.nm.t+" "+x.f.n).toLowerCase().includes(w))
+  return m.files.map(f=>({f,nm:songName(f.n),k:kept[f.id]?1:0,d:musicDirHas(f.id)?1:0})).filter(x=>!w||(x.nm.a+" "+x.nm.t+" "+x.f.n).toLowerCase().includes(w))
     .map(x=>(x.key=key(x),x)).sort((a,b)=>b.k-a.k||(byNew?(b.f.t||0)-(a.f.t||0):0)||a.key.localeCompare(b.key));
 }
 function musicListHtml(){
   const rows=musicRows(),cur=mpSong(),live=MP.state==="play"||MP.state==="load",nk=rows.filter(x=>x.k).length;
   if(!rows.length)return `<div class="none" style="padding:10px 0">${musicFind.trim()?"No song by that name.":"This sign-in sees no music files in your Drive."}</div>`;
-  const row=({f,nm,k})=>{const on=!!cur&&cur.id===f.id;
+  const row=({f,nm,k,d})=>{const on=!!cur&&cur.id===f.id;
     return `<div class="mrow${on?" cur":""}" data-mrow="${esc(f.id)}"><button class="btn smallbtn" data-music="play" data-id="${esc(f.id)}" aria-label="Play ${esc(nm.t)}">${on&&live?"⏸":"▶"}</button>
-      <span class="mrn"><b>${esc(nm.t)}</b><small>${[nm.a?esc(nm.a):"",f.s?(f.s/1048576).toFixed(1)+" MB":"",k?"✓ on this device":""].filter(Boolean).join(" · ")}</small></span>${k?`<button class="btn smallbtn mrx" data-music="drop" data-id="${esc(f.id)}" title="Take it off this device. It stays in your Drive." aria-label="Take ${esc(nm.t)} off this device">🗑</button>`:""}</div>`;};
+      <span class="mrn"><b>${esc(nm.t)}</b><small>${[nm.a?esc(nm.a):"",f.s?(f.s/1048576).toFixed(1)+" MB":"",d?"📲 in your folder":"",k?"✓ on this device":""].filter(Boolean).join(" · ")}</small></span>${k?`<button class="btn smallbtn mrx" data-music="drop" data-id="${esc(f.id)}" title="Take it off this device. It stays in your Drive." aria-label="Take ${esc(nm.t)} off this device">🗑</button>`:""}</div>`;};
   const shown=rows.slice(0,musicShown),a=shown.filter(x=>x.k),b=shown.filter(x=>!x.k);
   return (a.length?`<div class="cap2 mhead">✓ On this device · ${nk.toLocaleString()}</div>`+a.map(row).join(""):"")
     +(b.length?(a.length?`<div class="cap2 mhead">In your Drive · ${(rows.length-nk).toLocaleString()}</div>`:"")+b.map(row).join(""):"")
@@ -35549,11 +35709,9 @@ function musicHtml(){
     <div class="hrow2" style="gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center"><span class="hint" style="margin:0">Order</span>${MUSIC_SORTS.map(([k,l])=>`<button class="pill${musicSortNow()===k?" on":""}" data-music="sort" data-id="${k}" aria-pressed="${musicSortNow()===k}">${l}</button>`).join("")}</div>
     <div class="hint" style="margin:6px 0 0"><b>${m.files.length.toLocaleString()}</b> song${m.files.length===1?"":"s"} in your Drive · looked ${esc(drvAgo(m.at))} · on this device: ${kn.length.toLocaleString()}, ${Math.round(kb/1048576).toLocaleString()} MB of
       <select id="musicKeep" aria-label="How much music to keep on this device" style="font:inherit;padding:1px 4px">${keeps.map(v=>`<option value="${v}"${v===cap?" selected":""}>${v?v.toLocaleString()+" MB":"none kept"}</option>`).join("")}</select>${kn.length?` <button class="linkbtn" data-music="dropall" title="Take every kept song off this device. They stay in your Drive.">🗑 Free the space</button>`:""}</div>${state}
-    <div id="musicList" class="musiclist">${musicListHtml()}</div>
-    <div class="hint" id="musicDevice" style="margin:12px 0 0">📲 Songs already in a folder on this device: this browser ${musicDirCan()?"says it can open a folder, so they could be played from there with nothing fetched. That isn't built yet.":"can't open a folder on this device, so the app can't play them where they lie."}</div>`;
+    ${musicDirHtml()}
+    <div id="musicList" class="musiclist">${musicListHtml()}</div>`;
 }
-/* whether the browser offers a folder of the device to a page at all — a readout before anything is built on it */
-const musicDirCan=()=>typeof window.showDirectoryPicker==="function";
 function musicDraw(){const box=q("#musicShelf");if(box)box.innerHTML=musicHtml();}
 /* the rows' ▶ and ⏸ follow the player without the list being drawn again, so the find box keeps its cursor */
 function musicMarks(){
@@ -35567,6 +35725,12 @@ document.addEventListener("click",e=>{
   if(t.id==="fabMusic"){closeFabMenu();mpCard();return;}
   const d=t.dataset;
   if(d.music==="look"){musicLook();return;}
+  /* the folder on this device — see 📲 SONGS FROM A FOLDER ON THIS DEVICE */
+  if(d.music==="dirfold"){musicDirOpen=!musicDirOpen;musicDirDraw();return;}
+  if(d.music==="dirpick"){musicDirPick(false);return;}
+  if(d.music==="dirread"){musicDirPick(true);return;}
+  if(d.music==="diropen"){musicDirAllow();return;}
+  if(d.music==="dirstop"){if(confirm("Stop playing songs from this folder? Nothing in it is touched, and you can choose it again."))musicDirStop();return;}
   if(d.music==="sort"){settings.musicSort=d.id==="new"?"new":"name";saveSettings();musicShown=MUSIC_PAGE;musicDraw();return;}
   if(d.music==="drop"){musicDrop(d.id);return;}
   if(d.music==="dropall"){const n=Object.keys(musicKept()).length;if(n&&confirm(`Take ${n.toLocaleString()} kept song${n===1?"":"s"} off this device? They stay in your Drive and are fetched again when played.`))musicDrop();return;}

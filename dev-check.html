@@ -2867,6 +2867,67 @@ const SMOKE=`
     finally{mpStop();el.remove();rdState=keep.r;view=keep.v;cur=keep.c;musicMemo=keep.memo;window.drvDownload=keep.dl;drvTok=keep.tok;drvExp=keep.exp;settings.rdSound=keep.snd;
       if(keep.vol===undefined)delete settings.musicVol;else settings.musicVol=keep.vol;musicMem.kept={};musicMem.blobs.clear();
       await dbDel("books","fx-sg");await dbDel("books","fx-sc");view="overview";render();}});
+  /* a folder of the device standing in for Drive: a stand-in folder of six files, one of them a level down, one under a
+     name Drive has at another size, one Drive has never heard of, and one that is not music */
+  await check("songs from a folder on this device: paired with Drive's list by name and size, played with nothing fetched, and the browser's question put only by a press",async()=>{
+    const N=["Ann Fixture - Harbour Lights.mp3","Bo Reel - Kites.mp3","Glass Soldier - Enough.mp3","Green Kite - Holiday.mp3","Set It On - This Winter.mp3"];
+    const keep={memo:musicMemo,dl:window.drvDownload,tok:drvTok,exp:drvExp,pick:window.showDirectoryPicker,dir:musicDir,open:musicDirOpen,mode:libMusicMode,find:musicFind,cf:window.confirm};
+    let asked=[],perm="granted",grant=true,asks=0,reads=0;
+    const mkFile=(name,size)=>({kind:"file",name:name,getFile:async()=>{if(perm!=="granted"){const e=new Error("no leave");e.name="NotAllowedError";throw e;}reads++;return new Blob([new Uint8Array(size)],{type:"audio/mpeg"});}});
+    const mkDir=(name,kids)=>({kind:"directory",name:name,
+      values:()=>{let i=0;const it={next:async()=>i<kids.length?{value:kids[i++],done:false}:{value:undefined,done:true}};it[Symbol.asyncIterator]=()=>it;return it;},
+      getDirectoryHandle:async n=>{const d=kids.find(k=>k.kind==="directory"&&k.name===n);if(!d)throw new Error("no such folder");return d;},
+      getFileHandle:async n=>{const f=kids.find(k=>k.kind==="file"&&k.name===n);if(!f)throw new Error("no such file");return f;},
+      queryPermission:async()=>perm,requestPermission:async()=>{asks++;perm=grant?"granted":"denied";return perm;}});
+    const root=mkDir("Music",[mkFile(N[0],300000),mkFile("bo reel - kites.MP3",300000),mkFile(N[2],123),mkFile("A Stranger - Nowhere.mp3",500),mkFile("cover.jpg",900),mkDir("More",[mkFile(N[3],300000)])]);
+    try{
+      musicMem.kept={};musicMem.blobs.clear();musicFind="";musicDir=null;musicDirOpen=false;
+      musicMemo={at:Date.now(),files:N.map((n,i)=>({id:"fd"+i,n:n,s:300000,t:i}))};
+      drvTok="x";drvExp=Date.now()+3600000;
+      window.drvDownload=async(path,size)=>{asked.push(decodeURIComponent(path.split("/")[1].split("?")[0]));return new Blob([new Uint8Array(size)],{type:"audio/mpeg"});};
+      window.showDirectoryPicker=async()=>root;
+      const until=async f=>{for(let i=0;i<80&&!f();i++)await wait(25);};
+      must(musicDirCan()&&musicDirHtml().indexOf("data-music=\\"dirfold\\"")>0&&musicDirHtml().indexOf("dirpick")<0,"with no folder chosen the line is not one folded question");
+      await musicDirPick(false);
+      const D=musicDir;
+      must(D&&D.name==="Music"&&D.files.length===5&&D.ids.size===3&&D.other===1&&D.strange===1&&D.perm==="granted","the folder read: "+JSON.stringify(D&&[D.name,D.files.length,D.ids.size,D.other,D.strange,D.perm]));
+      must(D.ids.has("fd0")&&D.ids.has("fd1")&&D.ids.has("fd3")&&!D.ids.has("fd2")&&D.ids.get("fd3").p.join()==="More","the pairs, a name in other capitals and a file a folder down among them: "+[...D.ids.keys()].join());
+      const say=musicDirHtml().replace(/<[^>]+>/g," ");
+      must(say.indexOf("3 of 5 songs play from “Music”")>0&&say.indexOf("2 aren't in it, 1 of them under the same name but another size")>0&&say.indexOf("1 music file in the folder isn't in your Drive")>0,"what the line says of it: "+say);
+      must(musicListHtml().split("📲 in your folder").length===4,"the rows of the three songs in the folder are not marked");
+      /* played from the folder: Drive not asked, nothing kept, the next one not fetched ahead when it is in the folder too */
+      mpPlay(["fd0","fd1","fd2"],0,"list");await until(()=>MP.state==="play");await wait(60);
+      must(MP.state==="play"&&MP.from==="folder"&&asked.length===0&&!Object.keys(musicKept()).length,"a song in the folder was fetched or kept: "+JSON.stringify([MP.state,MP.from,asked,Object.keys(musicKept())]));
+      must(mpSay().indexOf("From your folder")>0,"the card does not say where it came from: "+mpSay());
+      await mpStart(2,true);
+      must(MP.from==="drive"&&asked.join()==="fd2","the file of another size was played from the folder: "+MP.from+" "+asked.join());
+      /* no sign-in and nobody pressing: the folder still plays, since nothing has to be asked of anyone */
+      mpStop();drvTok="";musicMem.kept={};musicMem.blobs.clear();const n0=asked.length;
+      mpPlay(["fd3"],0,"book",true,"fx");await until(()=>MP.state==="play");
+      must(MP.state==="play"&&MP.from==="folder"&&asked.length===n0,"a song in the folder waited for a sign-in: "+MP.state+" "+MP.from);
+      /* the browser wants asking again: a song starting by itself never asks, a press asks once, and no means Drive without asking twice */
+      mpStop();perm="prompt";D.perm="prompt";asks=0;
+      mpPlay(["fd0"],0,"book",true,"fx");await wait(60);
+      must(asks===0&&MP.need&&MP.state==="pause","a song that started by itself put the browser's question: "+asks+" "+MP.state);
+      must(musicDirHtml().indexOf("data-music=\\"diropen\\"")>0,"nothing offers to open the folder for this visit");
+      drvTok="x";grant=false;mpPlay(["fd0"],0,"list");await until(()=>MP.state==="play");
+      must(asks===1&&MP.from==="drive"&&D.perm==="denied","no was not followed by Drive: "+asks+" "+MP.from+" "+D.perm);
+      mpPlay(["fd1"],0,"list");await until(()=>MP.state==="play"&&MP.q[0]==="fd1");
+      must(asks===1,"the question was put a second time in one visit: "+asks);
+      grant=true;await musicDirAllow();mpStop();musicMem.kept={};musicMem.blobs.clear();
+      mpPlay(["fd1"],0,"list");await until(()=>MP.state==="play");
+      must(asks===2&&D.perm==="granted"&&MP.from==="folder","📲 Open it did not open it: "+asks+" "+D.perm+" "+MP.from);
+      /* the tab draws the line above the list, and ✕ Stop using it goes back to Drive */
+      musicDirOpen=false;libMusicMode=true;view="library";await Promise.resolve(render());await wait(60);
+      const line=document.querySelector("#musicDevice"),list=document.querySelector("#musicList");
+      must(line&&list&&(line.compareDocumentPosition(list)&Node.DOCUMENT_POSITION_FOLLOWING)&&document.querySelectorAll("#musicList .mrow").length===5,"the folder's line is not above the list");
+      line.querySelector("[data-music=dirfold]").click();
+      must(document.querySelector("#musicDevice [data-music=dirread]")&&document.querySelectorAll("#musicList .mrow").length===5,"unfolding the line lost its buttons or the list");
+      window.confirm=()=>true;document.querySelector("#musicDevice [data-music=dirstop]").click();await wait(60);
+      must(musicDir===null&&musicListHtml().indexOf("📲 in your folder")<0,"Stop using it left the folder in use");
+      return "five music files read in two folders, three paired, one of another size and one stranger counted, played with Drive never asked and nothing kept, the question only on a press and once a visit";
+    }finally{mpStop();musicDir=keep.dir;musicDirOpen=keep.open;musicMemo=keep.memo;window.drvDownload=keep.dl;drvTok=keep.tok;drvExp=keep.exp;window.showDirectoryPicker=keep.pick;window.confirm=keep.cf;
+      libMusicMode=keep.mode;musicFind=keep.find;musicMem.kept={};musicMem.blobs.clear();view="overview";render();}});
   /* measured on a hundred suggestions for one series: fifty-six were owned already in one of four places, an audiobook's reader
      stood as an author, and a file named for a series' second book was offered as its first */
   await check("more like this, not on my shelf: what is owned is never new, wherever it stands, and a series is offered by its first book",async()=>{
