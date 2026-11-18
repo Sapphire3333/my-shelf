@@ -2743,23 +2743,30 @@ const SMOKE=`
     const keep={memo:musicMemo,mk:settings.musicKeep,dl:window.drvDownload,tok:drvTok,exp:drvExp,mode:libMusicMode,find:musicFind};let asked=[];
     try{
       musicMem.kept={};musicMem.blobs.clear();musicFind="";
-      musicMemo={at:Date.now(),files:N.slice(0,5).map((n,i)=>({id:"mu"+i,n:n,s:400000,t:0}))};
-      settings.musicKeep=1;drvTok="x";drvExp=Date.now()+3600000;
+      musicMemo={at:Date.now(),files:N.slice(0,5).map((n,i)=>({id:"mu"+i,n:n,s:400000,t:i}))};
+      settings.musicKeep=1;drvTok="x";drvExp=Date.now()+3600000;keep.sort=settings.musicSort;delete settings.musicSort;
       window.drvDownload=async(path,size)=>{asked.push(decodeURIComponent(path.split("/")[1].split("?")[0]));return new Blob([new Uint8Array(size)],{type:"audio/mpeg"});};
       const ids=musicRows().map(x=>x.f.id),until=async f=>{for(let i=0;i<80&&!f();i++)await wait(25);};
-      must(ids.join()==="mu0,mu1,mu2,mu3,mu4","the list, by artist: "+ids.join());
+      /* the order goes by the line drawn large, not by what stands before the dash; newest is by the day the file reached Drive */
+      must(ids.join()==="mu0,mu4,mu3,mu1,mu2","the list, A to Z by the song's name: "+ids.join());
+      settings.musicSort="new";must(musicRows().map(x=>x.f.id).join()==="mu4,mu3,mu2,mu1,mu0","newest first: "+musicRows().map(x=>x.f.id).join());delete settings.musicSort;
       mpPlay(ids,0,"list");await until(()=>MP.state==="play");
-      must(MP.state==="play"&&MP.from==="drive"&&MP.took!=null&&musicKept().mu0,"the first song, from Drive and kept: "+JSON.stringify([MP.state,MP.from,Object.keys(musicKept())]));
-      await until(()=>musicKept().mu1);
-      must(musicKept().mu1&&asked.join()==="mu0,mu1","the next one fetched while the first played: "+asked.join());
+      must(MP.state==="play"&&MP.from==="drive"&&MP.took!=null&&musicKept()[ids[0]],"the first song, from Drive and kept: "+JSON.stringify([MP.state,MP.from,Object.keys(musicKept())]));
+      await until(()=>musicKept()[ids[1]]);
+      must(musicKept()[ids[1]]&&asked.join()===ids[0]+","+ids[1],"the next one fetched while the first played: "+asked.join());
       await mpStart(1,true);
-      must(MP.state==="play"&&MP.from==="ahead"&&asked.filter(x=>x==="mu1").length===1,"the second song waited, or was asked for twice: "+MP.from+" "+asked.join());
+      must(MP.state==="play"&&MP.from==="ahead"&&asked.filter(x=>x===ids[1]).length===1,"the second song waited, or was asked for twice: "+MP.from+" "+asked.join());
       /* one megabyte holds two of these: when the third arrives the least lately played leaves */
-      await until(()=>musicKept().mu2);
+      await until(()=>musicKept()[ids[2]]);
       const k=Object.keys(musicKept()),sum=Object.values(musicKept()).reduce((a,x)=>a+x.s,0);
-      must(sum<=1048576&&k.length===2&&!musicKept().mu0&&musicMem.blobs.size===2,"kept past the limit, or the wrong one left: "+k.join()+" "+sum);
+      must(sum<=1048576&&k.length===2&&!musicKept()[ids[0]]&&musicMem.blobs.size===2,"kept past the limit, or the wrong one left: "+k.join()+" "+sum);
       await mpStart(1,true);
-      must(MP.from==="kept"&&asked.filter(x=>x==="mu1").length===1,"a song played before was fetched again: "+MP.from);
+      must(MP.from==="kept"&&asked.filter(x=>x===ids[1]).length===1,"a song played before was fetched again: "+MP.from);
+      /* the kept ones stand first in the list, and 🗑 takes one off the device and out of that part */
+      const top=musicRows().slice(0,2).map(x=>x.f.id).sort().join(),lh=musicListHtml();
+      must(top===[ids[1],ids[2]].sort().join()&&lh.indexOf("On this device · 2")>0&&lh.indexOf("In your Drive · 3")>0&&lh.split("data-music=\\"drop\\"").length===3,"the kept songs first, under their heading, each with its bin: "+top);
+      await musicDrop(ids[2]);
+      must(!musicKept()[ids[2]]&&musicMem.blobs.size===1&&musicRows()[0].f.id===ids[1]&&musicRows()[1].k===0,"a song taken off the device stayed in the kept part: "+Object.keys(musicKept()).join());
       /* the sign-in gone and nobody pressing: a song that is not here is not asked for */
       drvTok="";const n0=asked.length;await mpStart(3);
       must(MP.state==="pause"&&MP.need&&asked.length===n0&&MP.err.indexOf("sign-in")>0,"with no sign-in it asked Drive anyway: "+MP.state+" "+MP.err);
@@ -2770,8 +2777,8 @@ const SMOKE=`
       must(tab&&tab.classList.contains("on")&&document.querySelectorAll("#musicList .mrow").length===5&&document.querySelector("#musicList .mrow.cur"),"the Music tab: "+document.querySelectorAll("#musicList .mrow").length+" rows");
       must(!document.querySelector("#fabMusic").hidden&&!document.querySelector("#fab").hidden,"the ♪ is not in the corner while a song is chosen");
       mpStop();must(MP.i===-1&&document.querySelector("#fabMusic").hidden,"Stop left the ♪ standing");
-      return "eight names tidied, the next song fetched ahead, a played one kept, two kept under a megabyte, no fetch without a sign-in, and on to all five shuffled";
-    }finally{mpStop();musicMemo=keep.memo;if(keep.mk===undefined)delete settings.musicKeep;else settings.musicKeep=keep.mk;window.drvDownload=keep.dl;drvTok=keep.tok;drvExp=keep.exp;libMusicMode=keep.mode;musicFind=keep.find;musicMem.kept={};musicMem.blobs.clear();view="overview";render();}});
+      return "eight names tidied, A to Z and newest, the next song fetched ahead, a played one kept and listed first with its bin, two kept under a megabyte, no fetch without a sign-in, and on to all five shuffled";
+    }finally{mpStop();musicMemo=keep.memo;if(keep.sort===undefined)delete settings.musicSort;else settings.musicSort=keep.sort;if(keep.mk===undefined)delete settings.musicKeep;else settings.musicKeep=keep.mk;window.drvDownload=keep.dl;drvTok=keep.tok;drvExp=keep.exp;libMusicMode=keep.mode;musicFind=keep.find;musicMem.kept={};musicMem.blobs.clear();view="overview";render();}});
   /* measured on a hundred suggestions for one series: fifty-six were owned already in one of four places, an audiobook's reader
      stood as an author, and a file named for a series' second book was offered as its first */
   await check("more like this, not on my shelf: what is owned is never new, wherever it stands, and a series is offered by its first book",async()=>{
