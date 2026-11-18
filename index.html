@@ -1745,6 +1745,7 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .readlist{display:flex;flex-direction:column;gap:5px;margin:2px 0}
   .readrow{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
   .readrow .n{font-size:11px;font-weight:700;color:var(--faint);min-width:13px;text-align:right}
+  .readrow .rmk input{width:44px;border:none;background:transparent;font:inherit;font-size:13px;color:inherit;padding:0;text-align:center}
   .readrow .boxbtn{padding:6px 10px;font-size:13px;gap:5px;max-width:100%}
   .readrow input[type=date]{border:none;background:transparent;font:inherit;font-size:13px;
     color:var(--ink);width:102px;min-width:0;padding:0}
@@ -8577,6 +8578,26 @@ const lastEnd=b=>doneReads(b).map(r=>String(r.end||"")).filter(Boolean).sort().p
    that is its last reading — the only one whose date was ever written down —
    which is exactly the date the page used to show. */
 const firstRead=b=>{const rs=readsOf(b);return rs.find(r=>r&&(r.start||r.end))||rs[0]||null;};
+/* ---- A MARK FOR EACH READING ----
+   A book, a story or a tale has one mark (x.rating), and the mark given after a
+   re-read wrote over the one before it. The mark is the LAST reading's. The
+   moment another reading is opened or added after it, the reading that was last
+   keeps the mark there was (markFreeze writes it on as r.mark), and the mark
+   goes on belonging to whichever reading is last. Every row, cover, count and
+   export still reads x.rating; only the readings list (readListHtml) and the
+   fold's summary (readMarksSay) show the earlier ones, each in a box that takes
+   another. A mark written over before readings kept one is gone. */
+const markNum=v=>{if(v==null||v==="")return null;const n=Number(v);return isFinite(n)?Math.max(0,Math.min(10,Math.round(n*10)/10)):null;};
+function markFreeze(x){
+  const rs=readsOf(x),last=rs[rs.length-1];if(!last)return;
+  const v=markNum(x.rating);if(v==null)delete last.mark;else last.mark=v;
+}
+/* each reading's mark in order, null where there is none: an earlier one's own, the last one's the book's */
+const readMarks=x=>{const rs=readsOf(x);return rs.map((r,i)=>i<rs.length-1?markNum(r.mark):(r.open?null:markNum(x.rating)));};
+function readMarksSay(x){
+  const ms=readMarks(x);
+  return ms.slice(0,-1).some(m=>m!=null)?" · "+ms.map(m=>m==null?"–":"★ "+m.toFixed(1)).join(" → "):"";
+}
 /* How many times you have been through it. A book you marked finished long
    before any of this and never dated still counts as read once — its shelf says
    so even though its list is empty. */
@@ -8632,7 +8653,7 @@ function applyReading(x,st,dnf,flag){
      the collection around it says so, so a book you were opening for the first
      time began its list with a reading that never happened. A reading nobody
      wrote down is not a reading; it is nothing, and nothing is what it gets. */
-  if(nowReading&&!open)reads.push({id:uid(),start:todayStr(),end:"",open:true});
+  if(nowReading&&!open){markFreeze(x);reads.push({id:uid(),start:todayStr(),end:"",open:true});}   /* see A MARK FOR EACH READING */
   if(!nowReading&&open){
     if(st==="finished"&&!dnf){delete open.open;if(!open.end){open.end=todayStr();open.endAt=Date.now();if(!flag)finArm={x,rid:open.id,was:"today",at:Date.now()};}}
     /* Back to the pile means you had not started after all. A story handed back
@@ -8906,12 +8927,16 @@ const readNotesHtml=(x,small)=>{
    (`p`, or a percent when `pc`), on day `d`. Written by rowProgress from a
    shelf row's strip; shown under the reading here, struck off with its ✕. */
 function readListHtml(x,hostId,hint){
-  const rows=readsOf(x);
+  const rows=readsOf(x),ms=readMarks(x),n=rows.length;
+  /* an earlier reading's mark is its own and can be typed; the last one's is the book's, changed where the book's is */
+  const mark=(r,i)=>i<n-1?`<span class="boxbtn rmk" title="The mark this reading had. Type another if it's wrong, or empty it">★ <input type="number" data-rmk="${esc(r.id)}" min="0" max="10" step="0.1" inputmode="decimal" value="${ms[i]==null?"":ms[i]}" placeholder="–" aria-label="The mark of reading ${i+1}"></span>`
+    :(n>1&&ms[i]!=null?`<span class="lbl" title="The last reading's mark is the one the book shows: ★ Rate changes it">★ ${ms[i].toFixed(1)}</span>`:"");
   return `<div class="readlist">${rows.map((r,i)=>`<div class="readrow${r.open?" now":""}">
       <span class="n">${i+1}</span>
       <span class="boxbtn">Started <input type="date" data-rst="${esc(r.id)}" value="${esc(r.start||"")}"><button class="dqk" data-dq title="Pick a year and month without scrolling a calendar">⌄</button></span>
       ${r.open?'<span class="lbl">still reading</span>'
         :`<span class="boxbtn">Finished <input type="date" data-ren="${esc(r.id)}" value="${esc(r.end||"")}"><button class="dqk" data-dq title="Pick a year and month without scrolling a calendar">⌄</button></span>`}
+      ${mark(r,i)}
       <button class="readx" data-rdel="${esc(r.id)}" title="Remove this reading">✕</button>
     </div>${(r.notes||[]).length?`<div class="rdnotes">${r.notes.map((n,j)=>`<div class="rdnote"><span class="rr">${n.pc?esc(String(n.p||0))+"%":"p."+esc(String(n.p||0))}${n.d?" · "+esc(rdWhen(n.d)):""}</span><span class="rdtxt">${esc(n.t||"")}</span><button class="readx" data-rdnx="${esc(r.id)}|${j}" title="Take this thought off">✕</button></div>`).join("")}</div>`:""}`).join("")}
     <div class="readrow"><button class="boxbtn" data-radd="${esc(hostId)}">+ Add a reading</button>
@@ -15186,6 +15211,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-18.12",lines:["<b>★ A mark for each reading.</b> A book read again showed only its newest mark: the new one wrote over the old. Now, the moment you start a book again, the reading before it keeps the mark the book had. On the book's page the <b>▸ readings</b> line says them in order (★ 8.0 → ★ 6.5), and in the list each earlier reading has a ★ box of its own that takes another mark if it's wrong. The last reading's mark is the book's own, changed with ★ Rate as ever. A story in a collection keeps its marks the same way. A mark written over before now can't be brought back, but you can type it into its reading's box if you remember it."]},
   {v:"2026-11-18.11",go:["tab:library"],lines:["<b>🏷 The real names for your songs.</b> On a computer the 🎵 Music tab has <b>🏷 Load the real names</b>: it reads the file that gives each song its real name and artist and lists every change, the old name above the new one. The sure ones are ticked, a guess starts unticked, and ✎ lets you type your own. <b>🏷 Rename the ticked in your Drive</b> does it; the first file is renamed and read back before any other is touched.","<b>Your phone's folder still matches.</b> Each renamed file keeps its old name in a hidden note in your Drive, so a song still pairs with the file of the old name in a folder on your device, and the find box finds a song by either name. <b>↶ put the old names back</b>, in the line under the buttons on any device, gives every renamed song its old name again. On your other devices, ↻ Look again shows the new names."]},
   {v:"2026-11-18.10",go:["tab:library"],lines:["<b>🎵 Only songs in the Music list.</b> Drive calls some game and program files sound, and they stood in your list as songs: settings, saves, the click of a button. A file that doesn't end like music, or is too small to be a song, is left out now, from the list, from 🔀 Shuffle and from the count. The line under the buttons says how many were left out. Nothing in your Drive changes, and you don't need to look again."]},
   {v:"2026-11-18.9",go:["tab:library"],lines:["<b>💾 Save the names of your songs.</b> On a computer the 🎵 Music tab has <b>💾 Save the names</b> beside ↻ Look again. It writes the name of every song to one file in Downloads, which is what working out each file's real song and artist starts from. Nothing in your Drive changes."]},
@@ -69614,7 +69640,7 @@ function renderBookView(){
               really has readings of its own — a whole set read twice is a
               thing that happens and is worth saying. */""}
         ${readsOf(b).length||(statusOf(b)==="finished"&&!b.dnf&&!(isColl(b)&&(b.entries||[]).length))?`<div class="vreads">
-          <button class="rdtog" id="vReads" data-nolog title="Every time you've read this — correct a date, add one, or take a reading off">${vReadsOpen?"▾":"▸"} ${esc(readSummary(b,false))}</button>
+          <button class="rdtog" id="vReads" data-nolog title="Every time you've read this — correct a date, add one, or take a reading off">${vReadsOpen?"▾":"▸"} ${esc(readSummary(b,false)+readMarksSay(b))}</button>
           ${vReadsOpen?readListHtml(b,b.id):""}
         </div>`:""}
         ${/* the time read, once it is no longer being read — it was drawn only
@@ -69831,7 +69857,7 @@ function renderBookView(){
                   value="" placeholder="–" title="How many pages this story has — a page is a better record than a percent"></span></span>`;
               return `<span class="entprog"><span class="prog" style="width:56px"><i style="width:${p||0}%"></i></span>
                 <span class="rr">${pcIn}% · p.${pgIn} of ${esc(String(m.pages))}</span></span>`;})()}
-            ${readsOf(en).length?`<button class="rdtog" data-enrd="${en.id}" data-nolog title="Every time you've read this story — correct a date, add one, or take a reading off">${vEntReads===en.id?"▾":"▸"} ${esc(readSummary(en,true))}</button>`:""}</div>
+            ${readsOf(en).length?`<button class="rdtog" data-enrd="${en.id}" data-nolog title="Every time you've read this story — correct a date, add one, or take a reading off">${vEntReads===en.id?"▾":"▸"} ${esc(readSummary(en,true)+readMarksSay(en))}</button>`:""}</div>
           ${(()=>{
             /* What this story says for itself, shown where you are looking at
                it. A story's own genres REPLACE the collection's while its own
@@ -70419,8 +70445,11 @@ function renderBookView(){
   qa("[data-radd]",page).forEach(el=>el.onclick=e=>{
     e.stopPropagation();
     quickEdit(bk=>{const host=readHost(bk,el.dataset.radd);if(!host)return false;
-      readsOf(host).push({id:uid(),start:"",end:""});syncReads(host);});
+      markFreeze(host);readsOf(host).push({id:uid(),start:"",end:""});syncReads(host);});
   });
+  /* an earlier reading's own mark — see A MARK FOR EACH READING */
+  qa("[data-rmk]",page).forEach(el=>{el.onclick=e=>e.stopPropagation();el.onchange=()=>{const v=markNum(el.value);
+    quickEdit(bk=>{const f=readIn(bk,el.dataset.rmk);if(!f)return false;if(v==null)delete f.r.mark;else f.r.mark=v;});};});
   /* rating without the editor — the most common thing to do after finishing */
   q("#vRate").onclick=e=>{e.stopPropagation();vRateOpen=!vRateOpen;vStatusOpen=false;renderBookView();};
   {const vf=q("#vFrame",page);if(vf)vf.onclick=e=>{e.stopPropagation();
@@ -74321,8 +74350,11 @@ function renderEditor(){
         if(gone&&gone.open&&en.status==="reading")en.status=doneReads(en).length?"finished":"want";
         syncReads(en);renderEntries();scheduleSave();});
       qa("[data-radd]",w).forEach(el=>el.onclick=()=>{
-        readsOf(en).push({id:uid(),start:"",end:""});
+        markFreeze(en);readsOf(en).push({id:uid(),start:"",end:""});
         syncReads(en);renderEntReads(en.id);scheduleSave();});
+      qa("[data-rmk]",w).forEach(el=>el.addEventListener("input",()=>{
+        const r=readsOf(en).find(x=>x.id===el.dataset.rmk),v=markNum(el.value);if(!r)return;
+        if(v==null)delete r.mark;else r.mark=v;scheduleSave();}));
     }
     qa("[data-enrw]",list).forEach(w=>wireEntReads(w,find(w.dataset.enrw)));
     /* ---- THE COLLECTION'S OWN NAME, TYPED INTO A STORY, IS "SAME" ----
@@ -74897,9 +74929,12 @@ function renderEditor(){
       syncReads(cur);renderReads();scheduleSave();
     });
     qa("[data-radd]",w).forEach(el=>el.onclick=()=>{
-      readsOf(cur).push({id:uid(),start:"",end:""});
+      markFreeze(cur);readsOf(cur).push({id:uid(),start:"",end:""});
       syncReads(cur);renderReads();scheduleSave();
     });
+    qa("[data-rmk]",w).forEach(el=>el.addEventListener("input",()=>{
+      const r=readsOf(cur).find(x=>x.id===el.dataset.rmk),v=markNum(el.value);if(!r)return;
+      if(v==null)delete r.mark;else r.mark=v;scheduleSave();}));
   }
   renderReads();
 
