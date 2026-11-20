@@ -401,6 +401,31 @@ class File:
         self.changes.append(c)
         return c
 
+    def similar(self, book, picks, mark=None, why=""):
+        """About ten books or series like one favourite (kind "similar", build 2026-11-20.8 on).
+        book: the favourite, a book or a collection (a series is one favourite, by its collection).
+        picks: [{"title", "author", "series", "why"}], a series named by its first book, none the
+        shelf, the import list or the Drive already holds (the app checks again when it shows
+        them). mark: the favourite's mark, which orders the Library's list. Kept beside the shelf
+        in meta "simFav", so no undo; a favourite that has a list already starts unticked."""
+        rows = []
+        for p in picks or []:
+            t = re.sub(r"\s+", " ", str(p.get("title") or "")).strip()
+            if not t:
+                continue
+            rows.append({"title": t[:200], "author": re.sub(r"\s+", " ", str(p.get("author") or "")).strip()[:120],
+                         "series": re.sub(r"\s+", " ", str(p.get("series") or "")).strip()[:160],
+                         "why": re.sub(r"\s+", " ", str(p.get("why") or "")).strip()[:200]})
+        if not rows:
+            return None
+        c = {"kind": "similar", "book": book["id"], "title": book.get("title", ""), "author": book.get("author", ""), "picks": rows}
+        if mark is not None:
+            c["mark"] = mark
+        if why:
+            c["why"] = why
+        self.changes.append(c)
+        return c
+
     RENAME_WHAT = ("author", "series", "tag", "genre", "fandom", "character", "ship")
 
     def rename(self, what, names, keep, why="", doubt=""):
