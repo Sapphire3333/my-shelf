@@ -101,6 +101,24 @@ if (fatal) {
 }
 line("");
 
+/* The same findings again as workflow commands, so GitHub files each as an
+   annotation. The log of a run can be read only by someone signed in to
+   GitHub; annotations show on the run's own page and come back from the
+   public check-runs API without that, so a red run says what went red to
+   anyone who looks, a phone included. GitHub keeps ten error annotations a
+   step: nine findings, and a tenth saying how many more the report holds. */
+const notes = [];
+if (smoke) { for (const r of smoke.rows) if (!r.ok) notes.push(["Smoke", r.name + " -- " + r.note]); }
+else notes.push(["Smoke", "never finished"]);
+if (sweep) { for (const f of sweep.failed || []) notes.push(["Sweep", f]); }
+else notes.push(["Sweep", "never finished"]);
+for (const c of crashes) notes.push(["Crash", c]);
+if (fatal) notes.push(["Fatal", fatal.split("\n").slice(0, 4).join(" | ")]);
+const ann = (title, msg) =>
+  line("::error title=" + title + "::" + String(msg).slice(0, 900).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A"));
+notes.slice(0, 9).forEach(([t, m]) => ann(t, m));
+if (notes.length > 9) ann("More", notes.length - 9 + " more findings in check-report.json");
+
 /* A check that never ran counts against the run. Silence is not a pass. */
 const bad =
   (smoke ? smoke.bad : 1) + (sweep ? sweep.bad : 1) + crashes.length + (fatal ? 1 : 0);
