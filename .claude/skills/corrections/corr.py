@@ -426,6 +426,23 @@ class File:
         self.changes.append(c)
         return c
 
+    def drvgenre(self, book, genre, why=""):
+        """The genre a collection's folder stands under when 🗂 Sort your Drive files it (kind
+        "drvgenre", build 2026-11-21.1 on): one of the collection's own genres, spelt as it is,
+        the one its blurb fits best. Kept in settings.drvSortGenre, so no undo; the app leaves out
+        a row whose genre is already the one the plan uses (the first), and starts unticked one
+        for a series the owner has chosen a genre for since."""
+        gs = [g for g in (book.get("genres") or []) if str(g).strip()]
+        own = next((g for g in gs if g.lower() == str(genre or "").strip().lower()), None)
+        if not own:
+            return None
+        c = {"kind": "drvgenre", "book": book["id"], "title": book.get("title", ""), "author": book.get("author", ""),
+             "genre": own, "of": gs}
+        if why:
+            c["why"] = str(why)[:160]
+        self.changes.append(c)
+        return c
+
     RENAME_WHAT = ("author", "series", "tag", "genre", "fandom", "character", "ship")
 
     def rename(self, what, names, keep, why="", doubt=""):
