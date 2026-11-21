@@ -15370,6 +15370,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-21.9",lines:["<b>📙 The rest of the series knows a title with the series' name in front.</b> Hardcover and Claude sometimes name a book with its series or hero first, like “Lantern Street: The Grey Heron” for a story you have as The Grey Heron. In 📋 The rest of the series… those now count as already inside instead of arriving twice, and new ones go in without the prefix. A name that ends “… by” a publisher is offered without it. And under the list, <b>🔎 What Claude was asked, and what it said</b> shows the question word for word and Claude's own count, for when a list looks short."]},
   {v:"2026-11-21.8",lines:["<b>✨ The rest of the series asks by any writer when its titles say enough.</b> In 📋 The rest of the series…, a collection of three or more stories now starts with the writer empty, since its titles name the series by themselves; the collection's author is one press away to narrow it. And when every book Claude finds is inside already and it was asked by a writer, <b>Ask again by any writer</b> does just that — the way a series several people wrote gets its whole list."]},
   {v:"2026-11-21.7",lines:["<b>✨ The rest of the series asks with the name you gave it.</b> In a collection's editor, 📋 The rest of the series… now shows the series name and the writer it will ask Claude and Hardcover about, and you can change both. The name starts from the collection's own title; when its series box still holds an older name, that one is a press away. When the stories inside are by more than one writer, the writer starts empty, so a series several people wrote isn't narrowed to one of them. If Claude or Hardcover finds the series under another name, <b>Call the series that</b> puts the name in the collection's title and its series box both."]},
   {v:"2026-11-21.6",lines:["<b>📚 A story's title keeps its room in Contents.</b> On a collection's page, a story with a 🎯 chip for what it would fill and a row of its own tags beside it no longer has its title squeezed into a column one letter wide: the tags wrap onto a second line and the chip shortens instead, and the title stays on one line. On a phone the rows are a little shorter too, since a title that fits no longer wraps."]},
@@ -76520,12 +76521,32 @@ function renderEditor(){
       ${claudeReady()?`<button class="btn" id="spCl" style="margin-bottom:9px;margin-right:6px" title="Claude searches the web for this series and writes its list into the box below — the ones you have are skipped the same way">✨ Ask Claude</button>`:""}
       <button class="btn" id="spAsk" style="margin-bottom:9px">📋 Copy a message that asks for exactly this</button>
       ${hardcoverOn()?`<button class="btn" id="spHc" style="margin-bottom:9px;margin-left:6px" title="Hardcover's own list of this series, written into the box below — the ones you have are skipped the same way">📙 Ask Hardcover instead</button>`:""}
+      <div id="spSaid"></div>
       <textarea id="spText" placeholder="#4 The next book&#10;#5 The one after"></textarea>
       <div class="hint" id="spSay" style="margin:8px 0 0">Nothing yet</div>
       <div class="hrow2" style="margin-top:9px"><button class="btn pri" id="spGo" style="margin-left:auto" disabled>Add them</button></div>`;
     document.body.appendChild(wrap);
     const close=dismissable(wrap);wrap.__close=close;
     const ta=q("#spText",wrap),say=q("#spSay",wrap),go=q("#spGo",wrap);
+    /* ┌─ THE SERIES' OWN WORDS IN FRONT OF A TITLE ─────────────────────────────┐
+       │ A list may name a book with its series' or hero's words before it:     │
+       │ Hardcover's list of a series of 21 gave the shape "Lantern Street: The │
+       │ Grey Heron" and "Lantern Street the silver gull" for stories inside as │
+       │ The Grey Heron and The Silver Gull, and four of the eight inside read  │
+       │ as new — they would have gone in twice. A title is inside when one of  │
+       │ the stories' words close it and every word before them is one of the   │
+       │ series' (the name asked with, the collection's title and series box);  │
+       │ spBare takes such a prefix off a title before it goes in the box, when  │
+       │ a colon or a dash marks where the title starts.                        │
+       └──────────────────────────────────────────────────────────────────────────┘ */
+    const spW=t=>String(t||"").toLowerCase().normalize("NFKD").replace(/\p{M}+/gu,"").replace(/[^\p{L}\p{N}]+/gu," ").trim().split(" ").filter(Boolean);
+    const spSer=()=>new Set(spW(nameNow()+" "+String(cur.title||"")+" "+String(cur.series||"")));
+    const spInside=t=>{const tw=spW(t),sw=spSer();if(!tw.length)return false;
+      return (cur.entries||[]).some(en=>{const ow=spW(en.title);if(!ow.length)return false;
+        const [lo,sh]=tw.length>=ow.length?[tw,ow]:[ow,tw];
+        return lo.slice(lo.length-sh.length).join(" ")===sh.join(" ")&&lo.slice(0,lo.length-sh.length).every(w=>sw.has(w));});};
+    const spBare=t=>{const m=String(t).match(/^(.{2,60}?)\s*[:–—]\s*(.+)$/)||String(t).match(/^(.{2,60}?)\s+-\s+(.+)$/);
+      if(!m)return t;const sw=spSer();return spW(m[1]).every(w=>sw.has(w))&&spW(m[2]).length?m[2].trim():t;};
     const parse=()=>{
       const lines=String(ta.value).replace(/\r\n?/g,"\n").split("\n").map(s=>s.trim()).filter(Boolean)
         /* the reply the ask-message requests when nothing is missing — without
@@ -76542,7 +76563,7 @@ function renderEditor(){
       const fresh=[],dup=[];
       use.forEach(r=>{
         if(!r.title)return;
-        (haveKeys.has(titleKey(r.title))?dup:fresh).push(r);
+        (haveKeys.has(titleKey(r.title))||spInside(r.title)?dup:fresh).push(r);
       });
       fresh.sort((a,b)=>((a.num==null?1e9:a.num)-(b.num==null?1e9:b.num)));
       return {fresh,dup,ignored:rows.length?plain.length:0};
@@ -76571,7 +76592,10 @@ function renderEditor(){
       q("#spAnyGo",box).onclick=()=>{const el=q("#spBy",wrap);if(el)el.value="";box.innerHTML="";const c=q("#spCl",wrap);if(c&&!c.disabled)c.click();};};
     /* the name a list came back under, put in both boxes of the collection */
     const spRename=found=>{const box=q("#spRen",wrap);if(!box)return;
-      const nm=String(found||"").trim(),serNow=String(cur.series||"").trim(),tNow=String(cur.title||"").trim();
+      let nm=String(found||"").trim();const serNow=String(cur.series||"").trim(),tNow=String(cur.title||"").trim();
+      /* Hardcover names a publisher's series "… by <the publisher>": the name asked with, or one the
+         collection wears, is kept without the publisher */
+      {const m=nm.match(/^(.+?)\s+by\s+[^,]{2,60}$/i);if(m&&[nameNow(),serNow,tNow].some(x=>looseSame(x,m[1])))nm=m[1].trim();}
       if(!nm||(looseSame(nm,serNow)&&(!isColl(cur)||looseSame(nm,tNow)))){box.innerHTML="";return;}
       box.innerHTML=`<div class="hint" style="margin:0 0 8px">It found the series as <b>${esc(nm)}</b>. <button class="btn smallbtn" id="spRenGo">Call the series that</button>${isColl(cur)?" — in the collection's title and its series box both.":""}</div>`;
       q("#spRenGo",box).onclick=()=>{
@@ -76589,8 +76613,12 @@ function renderEditor(){
         const by=byNow();
         const r=await fetchClaudeSeries(nameNow(),by,haveSaid(),{anyName:!by});
         if(!r.ok){cl.textContent="✨ Claude "+r.why;cl.disabled=false;return;}
-        ta.value=r.books.map(x=>(x.pos?"#"+x.pos+" ":"")+x.title).join("\n");
+        ta.value=r.books.map(x=>(x.pos?"#"+x.pos+" ":"")+spBare(x.title)).join("\n");
         refresh();spRename(r.name);spThin(r,by);cl.disabled=false;
+        /* what was asked and what came back, word for word, for a list that looks short */
+        const said=q("#spSaid",wrap);if(said)said.innerHTML=`<details class="spsaid"><summary class="hint">🔎 What Claude was asked, and what it said</summary>
+          <div class="hint" style="margin:6px 0 0;white-space:pre-wrap">${esc(r.asked||"")}</div>
+          <div class="hint" style="margin:6px 0 0">It answered: <b>${esc(r.name)}</b>, ${esc(String(r.total||"?"))} books in all by its count, ${r.books.length} listed, from ${r.sources.length} page${r.sources.length===1?"":"s"}${r.sources.length?": "+r.sources.slice(0,8).map(x=>esc(String((x&&(x.title||x.url))||x).slice(0,80))).join(" · "):""}.</div></details>`;
         cl.textContent=`✨ Claude lists ${r.books.length} in “${r.name}”`+(r.sources.length?` · from ${r.sources.length} page${r.sources.length===1?"":"s"}`:"");
       }catch(e){cl.disabled=false;const out=e&&e.usage&&+e.usage.output;
         cl.textContent="✨ Claude didn't answer: "+String(e&&e.message||e).slice(0,70)+(out?` (it wrote ${out.toLocaleString()} tokens). Press to try again`:"");}
@@ -76604,7 +76632,7 @@ function renderEditor(){
         /* a likely translation is named, not written into the box — see
            `foreign` in fetchHardcoverSeries */
         const held=r.books.filter(x=>x.foreign);
-        ta.value=r.books.filter(x=>!x.foreign).map(x=>(x.pos?"#"+x.pos+" ":"")+x.title).join("\n");
+        ta.value=r.books.filter(x=>!x.foreign).map(x=>(x.pos?"#"+x.pos+" ":"")+spBare(x.title)).join("\n");
         refresh();
         hb.textContent=`📙 Hardcover lists ${r.books.length} in “${r.name}”`+(held.length?` · left out as ${held.length===1?"a likely translation":"likely translations"}: ${held.map(x=>x.title).join("; ")}`:"");
         spRename(r.name);hb.disabled=false;
@@ -82292,7 +82320,7 @@ async function fetchClaudeSeries(name,author,have,hint){
   const books=(Array.isArray(o.books)?o.books:[]).map(x=>({pos:String(x&&x.pos||"").replace(/^#/,"").trim(),title:String(x&&x.title||"").replace(/\s+/g," ").trim(),
     year:(String(x&&x.year||"").match(/\b\d{4}\b/)||[""])[0],author:"",pages:"",cover:"",slug:"",foreign:false})).filter(x=>x.title);
   if(!books.length)return {ok:false,why:"found no list for that series"};
-  return {ok:true,name:String(o.series||name).trim()||name,count:parseInt(o.total)||books.length,books,sources:Array.isArray(j.sources)?j.sources:[]};
+  return {ok:true,name:String(o.series||name).trim()||name,count:parseInt(o.total)||books.length,total:String(o.total||""),books,sources:Array.isArray(j.sources)?j.sources:[],asked:text};
 }
 /* ┌─ MANY SERIES AT ONCE ────────────────────────────────────────────────────┐
    │ One series at a time needed a book of it on the shelf first. #serBulk takes │
