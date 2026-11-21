@@ -15370,6 +15370,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-21.11",lines:["<b>🔎 Auto-fill looks a story up by its own writer.</b> Filling in a collection (and a story's own 🔎 Auto-fill) asked for every story by the collection's author, so in a series several people wrote each story found nothing and came back by its title alone — somebody else's book. Each story is now asked by its own writer when it has one. And Apple Books, which names a series' books “Series: The Title”, is no longer turned away for it when the writer matches, so more of them come with a blurb and a cover."]},
   {v:"2026-11-21.10",lines:["<b>✍️ The rest of the series brings each book's writer.</b> In 📋 The rest of the series…, the books Hardcover or Claude lists now come in with their own writer, so a series several people wrote no longer shows every new story as the collection's author — and 🔎 Auto-fill can find them. Stories already inside that have no writer of their own are offered theirs from the list: <b>Give them their writers</b>, one press."]},
   {v:"2026-11-21.9",lines:["<b>📙 The rest of the series knows a title with the series' name in front.</b> Hardcover and Claude sometimes name a book with its series or hero first, like “Lantern Street: The Grey Heron” for a story you have as The Grey Heron. In 📋 The rest of the series… those now count as already inside instead of arriving twice, and new ones go in without the prefix. A name that ends “… by” a publisher is offered without it. And under the list, <b>🔎 What Claude was asked, and what it said</b> shows the question word for word and Claude's own count, for when a list looks short."]},
   {v:"2026-11-21.8",lines:["<b>✨ The rest of the series asks by any writer when its titles say enough.</b> In 📋 The rest of the series…, a collection of three or more stories now starts with the writer empty, since its titles name the series by themselves; the collection's author is one press away to narrow it. And when every book Claude finds is inside already and it was asked by a writer, <b>Ask again by any writer</b> does just that — the way a series several people wrote gets its whole list."]},
@@ -23924,9 +23925,14 @@ async function openBulkFill(ids){
       /* the title is the whole of the question — there is nothing to ask without
          one, and asking anyway returns somebody else's book */
       if(!title){j.row={dead:"No title to search by.",found:[],want:{},chips:[]};return;}
-      /* a story is searched under its collection's author, which is the only
-         name it has */
-      const author=looksBlank(j.b.author)?"":String(j.b.author||"").trim();
+      /* a story is searched under its own writer where it has one (entAuthorOf),
+         and its collection's only where it has none. It was always the
+         collection's: in a series of several writers every story was asked "by"
+         the collection's author, found nothing, and fell back to its title alone,
+         which brought a children's book of the same name and another writer's
+         book with a 12-page count. */
+      const who=j.en?entAuthorOf(j.b,j.en):String(j.b.author||"");
+      const author=looksBlank(who)?"":String(who).trim();
       /* a story's own number where it has one — that is the exact question, and
          it skips the title guessing entirely. The collection's is never used for
          a story: it names one edition of one thing. */
@@ -73931,6 +73937,8 @@ function renderEditor(){
       <button class="btn" id="fpClose" style="margin-left:auto;padding:4px 10px">Close</button></div>`;
     const wireClose=()=>{const c=q("#fpClose",box);if(c)c.onclick=closeFetch;};
     const title=((en?en.title:cur.title)||"").trim();
+    /* a story is asked by its own writer where it has one, as the bulk fill does */
+    const byWho=(en?entAuthorOf(cur,en):String(cur.author||"")).trim();
     /* the book this lookup is for: an answer arriving after you have left it,
        for another book or the Library, is dropped rather than written there */
     const forId=cur.id;
@@ -73941,12 +73949,12 @@ function renderEditor(){
     const askIsbn=(en?String(en.isbn||"").trim():(cur.isbn||"").trim());
     if(!title&&!askIsbn){alert(`Give the ${en?"story":"book"} a title or an ISBN first — one of the two is what it searches by.`);return;}
     box.hidden=false;
-    box.innerHTML=head+`<div class="none">Looking up ${askIsbn?`by its number ${esc(askIsbn)}`:`“${esc(title)}”${cur.author?" by "+esc(cur.author):""}`}…</div>`;
+    box.innerHTML=head+`<div class="none">Looking up ${askIsbn?`by its number ${esc(askIsbn)}`:`“${esc(title)}”${byWho?" by "+esc(byWho):""}`}…</div>`;
     wireClose();
     let info=given||null,unreachable=false;
     const probe=(given&&given.__probe)||{};
     if(!given){
-      try{info=await fetchBookInfo(title,(cur.author||"").trim(),askIsbn,probe);}
+      try{info=await fetchBookInfo(title,byWho,askIsbn,probe);}
       catch(e){unreachable=true;}
     }
     if(box.hidden||!box.isConnected||!cur||cur.id!==forId)return;   /* closed, or left, while we were fetching */
@@ -83802,7 +83810,13 @@ async function fetchApple(title,author,isbn){
   const j=await fetchJson(url,1,7000);
   const hits=((j&&j.results)||[]).filter(x=>x&&x.trackName&&x.kind==="ebook");
   if(!hits.length)return {ok:false,why:"but it doesn't know this one"};
-  const m=n?hits[0]:hits.find(h=>titleSame(t,h.trackName)&&(!author||authorNear(author,h.artistName)));
+  /* by the same writer, a title with its series' or hero's name led on ("Series: The Title",
+     "Series - The Title") is the same book: Apple names a publisher's series that way, and
+     all three of a series' stories asked for were refused as different books. Never
+     without the writer, where a near title is the very thing to refuse. */
+  const led=nm=>{const x=String(nm||"").match(/^(.{2,60}?)\s*[:–—]\s*(.+)$/)||String(nm||"").match(/^(.{2,60}?)\s+-\s+(.+)$/);return !!(x&&titleSame(t,x[2]));};
+  const m=n?hits[0]:hits.find(h=>titleSame(t,h.trackName)&&(!author||authorNear(author,h.artistName)))
+    ||(author?hits.find(h=>led(h.trackName)&&authorNear(author,h.artistName)):null);
   if(!m)return {ok:false,why:"only offered “"+String(hits[0].trackName).slice(0,60)+"” — a different book, refused"};
   const blurb=stripHtml(String(m.description||"").replace(/<br\s*\/?>/gi,"\n").replace(/<\/p>/gi,"\n")).replace(/\n{3,}/g,"\n\n").trim();
   return {ok:true,title:String(m.trackName).trim(),author:String(m.artistName||"").trim(),blurb,
