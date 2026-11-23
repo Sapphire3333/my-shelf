@@ -2276,12 +2276,61 @@ const SMOKE=`
         must(hq.includes('data-nbtab="q"')&&hq.includes('data-nbtab="n"')&&hq.includes('data-nbtab="a"')&&hq.includes("⚙ Who reads, compare, stop")&&!hq.includes("Ahead of you")&&hq.indexOf("nbgo")<hq.indexOf("nbtabs"),"the Quotes tab: "+hq.replace(/<[^>]+>/g," ").slice(0,220));
         const qh=nbQuotesHtml({nbMore:new Set()},[{k:"a",t:"Part one"},{k:"b",t:"Part two"},{k:"c",t:"Part three"}],
           new Map([["a",{k:"a",keep:["one","two"],kept:[1]}],["b",{k:"b",keep:["l1","l2","l3","l4","l5","l6"]}],["c",{k:"c",skip:true}]]));
-        must(qh.indexOf("Part two")>=0&&qh.indexOf("Part two")<qh.indexOf("Part one")&&qh.includes("＋ 2 more from this part")&&!qh.includes("l5")&&qh.includes("· kept")&&qh.split("data-nbkeep=").length===6&&!qh.includes("Part three"),"the lines as a list of their own, newest part first: "+qh.replace(/<[^>]+>/g," "));
-        must(nbQuotesHtml({nbMore:new Set(["b"])},[{k:"b",t:"Part two"}],new Map([["b",{k:"b",keep:["l1","l2","l3","l4","l5","l6"]}]])).includes("l6"),"＋ more doesn't show a part's other lines");}
+        must(qh.indexOf("Part one")>=0&&qh.indexOf("Part one")<qh.indexOf("Part two")&&qh.includes("＋ 2 more from this part")&&!qh.includes("l5")&&qh.includes("· kept")&&qh.split("data-nbkeep=").length===6&&!qh.includes("Part three"),"the lines as a list of their own, in reading order: "+qh.replace(/<[^>]+>/g," "));
+        must(nbQuotesHtml({nbMore:new Set(["b"])},[{k:"b",t:"Part two"}],new Map([["b",{k:"b",keep:["l1","l2","l3","l4","l5","l6"]}]])).includes("l6"),"＋ more doesn't show a part's other lines");
+        /* eight parts with lines: the newest six in reading order, the earlier two one press away above them */
+        const ps=[],nm=new Map();for(let i=0;i<8;i++){ps.push({k:"x"+i,t:"Part "+i});nm.set("x"+i,{k:"x"+i,keep:["a line"]});}
+        const q8=nbQuotesHtml({nbMore:new Set()},ps,nm),ks=(q8.match(/data-nbq="x\\d"/g)||[]).join(" ");
+        must(ks==='data-nbq="x2" data-nbq="x3" data-nbq="x4" data-nbq="x5" data-nbq="x6" data-nbq="x7"'&&q8.indexOf('data-nb="q-all"')<q8.indexOf("data-nbq=")&&q8.includes("▸ 2 earlier parts"),"the newest six, in order, with the earlier above: "+ks);
+        const qa8=nbQuotesHtml({nbMore:new Set(),nbQAll:true},ps,nm);
+        must((qa8.match(/data-nbq="x\\d"/g)||[]).length===8&&qa8.indexOf("▴ Only the newest parts")<qa8.indexOf('data-nbq="x0"'),"every part, unfolded, doesn't start at the first");}
       v.nb.recut=true;
       must(nbWant(s).map(p=>p.k).join(",")==="p1,p2,t2:p1,t3:p0","after ↻ Read them again: "+nbWant(s).map(p=>p.k).join(","));
       return "tales found on pages 1, 31 and 48 (a story's mention of a title passed over), kept with the notebook; parts never cross a tale; the old note for pages 1 to 15 kept; pages read under the old cut wait for ↻"+(h?"; the notebook shows the tale you're in":"");});}
     finally{rdState=keepR;SYNC.user=keepU;SYNC.supa=keepS;await dbDel("books","fx-ft");}});
+  /* the panel opened on Contents at its top every time, so a place in a long list (a
+     notebook's lines, the highlights) had to be found again at each opening. Kept per
+     file by the row at the top: a row added above it meanwhile must not move it */
+  await check("☰ opens a book's panel on the tab it was left on, at the row it was left at, even with a row added above",async()=>{
+    const keepLoad=rdLoad,keepP=settings.rdPanel;
+    const marks=[];for(let i=0;i<40;i++)marks.push({id:"fxm"+i,t:"A marked line, number "+i+", long enough to read as one",f:0.02+i/50});
+    const bk=B("fx-pan","The Lantern Ledger","Ann Fixture",{marks:marks});
+    let html="";for(let i=0;i<6;i++)html+="<h2>Chapter "+(i+1)+"</h2>"+"<p>A stand-in paragraph for the reader, long enough to wrap across the page. </p>".repeat(8);
+    const box=()=>document.querySelector("#rdTocBox"),body=()=>document.querySelector("#rdTocBox .rdtocbody");
+    const toc=()=>document.querySelector("#rdToc").click();
+    const down=id=>{const r=body().querySelector('[data-rdmk="'+id+'"]');return r?Math.round(r.getBoundingClientRect().top-body().getBoundingClientRect().top):null;};
+    try{return await onShelf([bk],async()=>{
+      rdLoad=async()=>html;
+      const open=async()=>{await openReader("fx-pan");for(let i=0;i<60&&!(rdState&&rdState.map&&rdState.map.length);i++)await wait(50);return rdState;};
+      let s=await open();
+      must(s&&s.map&&s.map.length===6,"the reader didn't open the stand-in book: "+(s&&s.map&&s.map.length));
+      delete (settings.rdPanel||{})[s.rk];s.panelLast="toc";s.panelAt={};
+      toc();must(!box().hidden&&s.panelTab==="toc","☰ didn't open on Contents the first time: "+s.panelTab);
+      document.querySelector('[data-rdtab="hl"]').click();
+      must(s.panelTab==="hl"&&body().querySelectorAll("[data-rdmk]").length===40,"the highlights tab didn't draw its forty rows");
+      const b=body(),row=b.querySelector('[data-rdmk="fxm20"]');
+      b.scrollTop+=row.getBoundingClientRect().top-b.getBoundingClientRect().top-10;
+      must(down("fxm20")===10,"the list doesn't scroll far enough to test: "+b.scrollHeight+" / "+b.clientHeight);
+      toc();
+      const kept=(settings.rdPanel||{})[s.rk]||{},at=(kept.at||{}).hl;
+      must(box().hidden&&kept.t==="hl"&&at&&at.a&&at.a[0]==="rdmk"&&at.a[1]==="fxm20"&&at.d===10,"what was kept on shutting it: "+JSON.stringify(kept));
+      closeReader(true);
+      /* a highlight made meanwhile, near the start: every row below it moves down one */
+      books.find(y=>y.id==="fx-pan").marks.unshift({id:"fxm-new",t:"A line marked near the start",f:0.01});
+      s=await open();toc();
+      must(s.panelTab==="hl","☰ opened on "+s.panelTab+", not the Highlights it was left on");
+      must(down("fxm20")===10,"the row it was left at stands "+down("fxm20")+" px down, not 10");
+      /* changing tab is kept too, and Contents opens on the chapter you're in */
+      document.querySelector('[data-rdtab="toc"]').click();
+      must(s.panelTab==="toc"&&settings.rdPanel[s.rk].t==="toc","changing tab wasn't kept: "+JSON.stringify(settings.rdPanel[s.rk]));
+      toc();closeReader(true);
+      s=await open();toc();
+      must(s.panelTab==="toc","☰ didn't open on Contents, where it was left: "+s.panelTab);
+      document.querySelector('[data-rdtab="hl"]').click();
+      must(down("fxm20")===10,"the highlights lost their place behind another tab: "+down("fxm20"));
+      toc();
+      return "☰ opens on Highlights at the row left 10 px down, with a row added above it; then on Contents once left there; Highlights keep their own place";});}
+    finally{closeReader(true);rdLoad=keepLoad;settings.rdPanel=keepP;await dbDel("books","fx-pan");}});
   /* Today's door had 📖 Read and the Also reading rows under it didn't: three books on
      the go with files, two of them opened only from their own pages. A spine's 📖 was a
      mark the press went through to the book's page */
