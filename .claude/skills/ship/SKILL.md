@@ -37,6 +37,11 @@ javascript    await new Promise(r=>{const t=setInterval(()=>{if(window.__smoke||
 Pass is `bad: 0`. If the second call comes back empty, call it again; the run
 continues between calls.
 
+When the pane is hidden or busy, run it instead in a headless Chrome of its
+own: `python -I .claude/skills/ship/headless.py smoke` (and `sweep`), with the
+app served on 8771. About 45 s for the smoke, 6 minutes for the sweep, no
+stubs needed, no sound, and nothing of the desktop's browser touched.
+
 **What a fix was measured on becomes a check.** The cases you built to prove
 the change (the file names, titles and rows that went wrong) go into the
 smoke as a check of their own before the commit, in the shape of the ones
