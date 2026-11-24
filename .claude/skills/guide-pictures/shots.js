@@ -617,6 +617,107 @@ SHOTS["book-edit"] = { async at(dev) {
     spots: { words, how, itself, filing } };
 } };
 
+/* 🎲 Challenges: its three rooms and the Reading room's bands */
+SHOTS["ch-rooms"] = { async at(dev) {
+  chRoomSet("reading"); await goTab("challenges"); window.scrollTo(0, 0); await wait(900);
+  const r = k => $(`[data-chroom="${k}"]`), b0 = $('[data-chband="0"]');
+  const els = [r("reading"), r("games"), r("shop"), b0, $('[data-chband="4"]')].filter(e => e && e.getClientRects().length);
+  const m = need("#main").getBoundingClientRect(), x = box(els, 0);
+  return { clip: box({ x: m.left, y: x.y, w: m.width, h: x.h }, dev === "ph" ? 6 : 14),
+    spots: { reading: r("reading"), games: r("games"), shop: r("shop"), bands: b0 } };
+} };
+
+/* 🎲 Challenges → 🛍 Shop: gold bought with XP, the aisles, 👁 try it on, a price */
+SHOTS["ch-shop"] = { async at(dev) {
+  chRoomSet("shop"); await goTab("challenges"); window.scrollTo(0, 0); await wait(1000);
+  const gold = $("[data-goldbuy]"), aisle = $("[data-shoptab]"), tryOn = vis($("[data-shoptry]")), buy = vis($("[data-shopbuy]"));
+  const els = [gold, aisle, tryOn, buy, $('[data-chroom="shop"]')].filter(e => e && e.getClientRects().length);
+  const m = need("#main").getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: Math.min(r.h, innerHeight - r.y - 4) }, dev === "ph" ? 6 : 14),
+    spots: { gold, aisle, tryon: tryOn, buy, shop: $('[data-chroom="shop"]') } };
+} };
+
+/* 🏅 Medals: the row of walls */
+SHOTS["ach-jump"] = { async at(dev) {
+  await goTab("ach"); window.scrollTo(0, 0); await wait(1200);
+  const jumps = [...document.querySelectorAll("[data-achjump]")].filter(e => e.getClientRects().length);
+  if (!jumps.length) throw new Error("no walls row on Medals");
+  const m = need("#main").getBoundingClientRect(), r = box(jumps, 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: r.h }, dev === "ph" ? 6 : 12), spots: { jump: jumps[0] } };
+} };
+
+/* 🏅 Medals: Nearly there, and a medal on its wall */
+SHOTS["ach-wall"] = { async at(dev) {
+  await goTab("ach"); window.scrollTo(0, 0); await wait(1200);
+  const near = need("[data-achnear]");
+  await place(near, 50);
+  const medal = [...document.querySelectorAll("#main button")].find(b => b.getClientRects().length && /Bronze|Silver|Gold/.test(b.textContent) && !b.dataset.achnear);
+  const els = [near, medal].filter(e => e && e.getClientRects().length);
+  const m = need("#main").getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: m.left, y: r.y - 30, w: m.width, h: Math.min(r.h + 30, innerHeight - r.y + 26) }, dev === "ph" ? 6 : 14),
+    spots: { near, medal } };
+} };
+
+/* 🎲 Challenges → 📖 Reading → Today: today's three, 👀 tomorrow's, your runs */
+SHOTS["ch-today"] = { async at(dev) {
+  chRoomSet("reading"); await goTab("challenges"); window.scrollTo(0, 0); await wait(1000);
+  const b0 = $('[data-chband="0"]'); if (b0) { b0.click(); await wait(500); }
+  const peek = need("#qPeek"), run = vis($('[data-run="touch"]'));
+  const three = [...document.querySelectorAll("#main *")].find(e => e.children.length === 0 && /^Today's three$/.test(e.textContent.trim()));
+  await place(three || peek, 30);
+  const els = [three, peek, run].filter(e => e && e.getClientRects().length);
+  const m = need("#main").getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: Math.min(r.h, innerHeight - r.y - 4) }, dev === "ph" ? 6 : 14),
+    spots: { three, peek } };
+} };
+
+/* a band of the Reading room, and the one button in it a way is about */
+const chBand = async (k, sel) => {
+  chRoomSet("reading"); await goTab("challenges"); window.scrollTo(0, 0); await wait(900);
+  need(`[data-chband="${k}"]`).click(); await wait(700);
+  const b = need(sel), card = b.closest(".qcard,.hcard,.sec") || b.parentElement;
+  await place(card, 30);
+  return { b, card, band: need(`[data-chband="${k}"]`) };
+};
+SHOTS["ch-month"] = { async at(dev) {
+  const { b, card } = await chBand(2, "#customGo");
+  return { clip: box(card, dev === "ph" ? 6 : 14, { top: 40 }), spots: { make: b } };
+} };
+SHOTS["ch-year"] = { async at(dev) {
+  const { b, card } = await chBand(3, "#roadGo");
+  return { clip: box(card, dev === "ph" ? 6 : 14, { top: 40 }), spots: { road: b } };
+} };
+SHOTS["ch-dare"] = { async at(dev) {
+  const { b, card } = await chBand(4, "#qDraw");
+  return { clip: box(card, dev === "ph" ? 6 : 14), spots: { dare: b } };
+} };
+
+/* 🎲 Challenges → 🕹 Games: the tiles */
+SHOTS["ch-games"] = { async at(dev) {
+  chRoomSet("games"); await goTab("challenges"); window.scrollTo(0, 0); await wait(1000);
+  const tiles = [...document.querySelectorAll("#main .gtile[data-chgame]")].filter(e => e.getClientRects().length);
+  if (!tiles.length) throw new Error("no game tiles");
+  /* the day's game stands first in the room; the tiles are under it */
+  await place(tiles[0], 70);
+  const els = tiles.slice(0, dev === "ph" ? 4 : 6);
+  const m = need("#main").getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: m.left, y: r.y - 46, w: m.width, h: Math.min(r.h + 46, innerHeight - r.y + 42) }, dev === "ph" ? 6 : 14),
+    spots: { tile: tiles[0] } };
+} };
+
+/* 🏅 Medals → 🎴 Cards: a pack, the genre and author packs, the trading post */
+SHOTS["ach-cards"] = { async at(dev) {
+  await goTab("ach"); await wait(1100);
+  const buy = need("[data-packbuy]"), post = vis($("[data-post]")), genre = vis($('[data-packtype="genre"]'));
+  const sec = buy.closest(".sec") || buy.parentElement;
+  const head = $(".heading", sec) || sec;
+  await place(head, 60);
+  const els = [head, buy, post, genre].filter(e => e && e.getClientRects().length);
+  const m = need("#main").getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: Math.min(r.h, innerHeight - r.y - 4) }, dev === "ph" ? 6 : 14),
+    spots: { buy, post, genre } };
+} };
+
 /* the quotes on a finished book: ❝ Add a quote…, 📷 off a photo */
 SHOTS["book-quotes"] = { async at(dev) {
   const pg = await bookAt("guide-b5");
