@@ -12275,6 +12275,72 @@ function netHtml(){
    │ lists them under ▸ Why the page redrew (drawHtml), newest first, with the │
    │ seconds between them, so a run of redraws shows as one.                   │
    └──────────────────────────────────────────────────────────────────────────┘ */
+/* ┌─ ⏱ WHERE THE TIME GOES ─────────────────────────────────────────────────┐
+   │ An opening that felt slow on a phone cannot be timed from a computer, so │
+   │ each device keeps its own. Every opening is one record (BOOT) of the     │
+   │ moments it passed, in ms from the press that opened the app (performance │
+   │ .now): the app file arrived, the code was ready, the shelf and the       │
+   │ settings were read, the stores tidied, the sign-in asked and answered    │
+   │ (and whether the saved one had run out and had to be renewed over the    │
+   │ network first), the first screen drawn, and the first sync done. Where   │
+   │ the browser reports them (Chrome does, Firefox does not), the spells the │
+   │ page was too busy to answer in its first minute are counted too. The     │
+   │ last BOOT_MAX openings are kept on this device (BOOT_KEY), and every     │
+   │ full draw adds its screen and its time to DRAWT_KEY (drawTimed, called   │
+   │ from render). ⚙ Settings → ⏱ Where the time goes prints both            │
+   │ (timeLines), and they ride in "Copy all of it" too.                      │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const BOOT_KEY="myShelf.bootLog",BOOT_MAX=12,DRAWT_KEY="myShelf.drawTimes",DRAWT_MAX=80;
+/* var: init uses these while the rest of the script is still being read */
+var BOOT={t:Date.now(),s:{},busy:null};
+function bootStage(k){try{if(BOOT.s[k]==null)BOOT.s[k]=Math.round(performance.now());if(k==="first"||k==="synced")bootSave();}catch(e){}}
+function bootRead(){try{const a=JSON.parse(localStorage.getItem(BOOT_KEY)||"[]");return Array.isArray(a)?a:[];}catch(e){return [];}}
+function bootSave(){try{
+  const a=bootRead().filter(r=>r&&r.t!==BOOT.t);
+  BOOT.file=BOOT.file||(()=>{try{const n=performance.getEntriesByType("navigation")[0];return n?Math.round(n.responseEnd):0;}catch(e){return 0;}})();
+  BOOT.n=typeof books!=="undefined"&&books?books.length:0;BOOT.w=window.innerWidth;
+  a.push(BOOT);if(a.length>BOOT_MAX)a.splice(0,a.length-BOOT_MAX);
+  localStorage.setItem(BOOT_KEY,JSON.stringify(a));
+}catch(e){}}
+/* the sign-in kept in this browser: had it run out, so that asking for it waited on the network? */
+function bootTokenOld(){try{const k=Object.keys(localStorage).find(x=>/^sb-.*-auth-token/.test(x));if(!k)return null;
+  const v=JSON.parse(localStorage.getItem(k)||"null"),at=v&&(v.expires_at||(v.currentSession&&v.currentSession.expires_at));
+  return at?(at*1000<Date.now()+60000):null;}catch(e){return null;}}
+/* the busy spells of the first minute, where the browser reports them */
+try{if(window.PerformanceObserver&&(PerformanceObserver.supportedEntryTypes||[]).includes("longtask")){
+  BOOT.busy={n:0,ms:0,max:0};
+  new PerformanceObserver(l=>{for(const e of l.getEntries()){if(e.startTime>60000)continue;
+    BOOT.busy.n++;BOOT.busy.ms+=Math.round(e.duration);BOOT.busy.max=Math.max(BOOT.busy.max,Math.round(e.duration));}})
+    .observe({type:"longtask",buffered:true});
+  setTimeout(bootSave,61000);}}catch(e){BOOT.busy=null;}
+function drawTimed(v,ms){try{
+  if(!(ms>=0))return;let a=[];try{a=JSON.parse(localStorage.getItem(DRAWT_KEY)||"[]");}catch(e){}if(!Array.isArray(a))a=[];
+  a.push([Date.now(),String(v||""),Math.round(ms)]);if(a.length>DRAWT_MAX)a.splice(0,a.length-DRAWT_MAX);
+  localStorage.setItem(DRAWT_KEY,JSON.stringify(a));
+}catch(e){}}
+const BOOT_SAY=[["file","the app file"],["code","code ready"],["shelf","shelf read"],["settings","settings read"],["tidy","tidied"],["ask","sign-in asked"],["signin","answered"],["first","first screen"],["synced","synced"]];
+function timeLines(){
+  const ms=x=>x>=1000?(x/1000).toFixed(1)+" s":x+" ms";
+  const a=bootRead().slice().reverse(),out=[];
+  const when=t=>{const d=new Date(t);return d.toLocaleDateString(undefined,{weekday:"short",day:"numeric",month:"short"})+" "+d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});};
+  out.push(a.length?`Opening the app, this device, newest first (from the press that opened it):`:"Opening the app: none timed on this device yet — close the app and open it again.");
+  a.forEach((r,i)=>{const prev=a[i+1],s=r.s||{};
+    const gap=prev?(r.t-prev.t)/36e5:null,first=!prev||new Date(prev.t).toDateString()!==new Date(r.t).toDateString();
+    const parts=BOOT_SAY.filter(([k])=>k==="file"?r.file:s[k]!=null).map(([k,l])=>l+" "+ms(k==="file"?r.file:s[k]));
+    const sign=s.signin!=null&&s.ask!=null?` · the sign-in took ${ms(s.signin-s.ask)}${r.renew===true?", renewed over the network":r.renew===false?", still fresh":""}`:"";
+    const busy=r.busy?(r.busy.n?` · busy in the first minute: ${r.busy.n} spell${r.busy.n===1?"":"s"}, ${ms(r.busy.ms)} in all, the longest ${ms(r.busy.max)}`:" · no busy spells in the first minute"):"";
+    out.push(`   · ${when(r.t)}${first?" (first today)":""}${gap!=null?`, ${gap>=1?Math.round(gap)+" h":Math.max(1,Math.round(gap*60))+" min"} after the one before`:""}: ${parts.join(" · ")}${sign}${busy}${r.n?` · ${r.n.toLocaleString()} on the shelf, ${r.w} px wide`:""}`);});
+  let d=[];try{d=JSON.parse(localStorage.getItem(DRAWT_KEY)||"[]");}catch(e){}if(!Array.isArray(d))d=[];
+  if(!d.length){out.push("Pages drawn: none timed on this device yet.");return out;}
+  const by=new Map();d.forEach(([t,v,m])=>{if(!by.has(v))by.set(v,[]);by.get(v).push(m);});
+  const rows=[...by].map(([v,m])=>{const s=m.slice().sort((x,y)=>x-y);return {v,n:m.length,mid:s[Math.floor(s.length/2)],max:s[s.length-1],last:m[m.length-1]};}).sort((x,y)=>y.max-x.max);
+  out.push(`Pages drawn, the last ${d.length} on this device, slowest first (the drawing alone, without its pictures):`);
+  rows.forEach(r=>out.push(`   · ${(typeof DRAW_VIEWS!=="undefined"&&DRAW_VIEWS[r.v])||r.v||"?"}: usually ${ms(r.mid)}, at worst ${ms(r.max)}, last ${ms(r.last)} (${r.n} time${r.n===1?"":"s"})`));
+  return out;
+}
+function timeHtml(){
+  return timeLines().map(l=>`<div${/^\s/.test(l)?` style="padding-left:12px"`:` style="margin-top:6px;color:var(--ink)"`}>${esc(l.trim())}</div>`).join("");
+}
 const DRAW_KEY="myShelf.drawLog",DRAW_MAX=40;
 let drawBy="",drawOpen=false,DRAWS=null;
 const DRAW_SKIP=new Set(["render","renderKeepPlace","renderMain","drawNote"]);
@@ -13629,16 +13695,18 @@ async function initSync(){
     if(event==="SIGNED_IN"&&session&&session.user){
       if(!SYNC.user){
         SYNC.user=session.user;forgetMissingCovers();render();
-        checkAccount(session.user).then(ok=>{if(ok)flushQueue().then(pullAll);});
+        checkAccount(session.user).then(ok=>{if(ok)flushQueue().then(pullAll).then(()=>bootStage("synced"),()=>{});});
       }else SYNC.user=session.user;
     }else if(event==="SIGNED_OUT"){SYNC.user=null;renderLogin();}
     else if(session&&session.user){SYNC.user=session.user;}
   });
+  BOOT.renew=bootTokenOld();bootStage("ask");   /* see ⏱ WHERE THE TIME GOES */
   const {data,error}=await SYNC.supa.auth.getSession();
+  bootStage("signin");
   if(error)authLog("error","getSession: "+(error.message||error));
   if(data&&data.session&&data.session.user){
     SYNC.user=data.session.user;forgetMissingCovers();render();
-    if(await checkAccount(SYNC.user))flushQueue().then(pullAll);
+    if(await checkAccount(SYNC.user))flushQueue().then(pullAll).then(()=>bootStage("synced"),()=>{});
   }else{
     authLog("gate","no usable session at start — the sign-in screen is shown"+(authTokenHere()?" although a token is in storage (refused, or expired)":" and storage holds no token (cleared, or a different browser/app window)"));
     renderLogin();
@@ -13647,13 +13715,14 @@ async function initSync(){
 
 /* =============== boot =============== */
 (async function init(){
+  bootStage("code");   /* see ⏱ WHERE THE TIME GOES */
   try{db=await openDb();}catch(e){
     q("#app").innerHTML='<div class="wrap"><div class="empty">This browser blocked local storage for the file. Try opening the file in Chrome or Edge.</div></div>';return;
   }
   /* ask the browser not to evict our storage under disk pressure — without this,
      "best-effort" IndexedDB (books, covers AND the in-browser backups) can be wiped */
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
-  books=await dbAll("books");
+  books=await dbAll("books");bootStage("shelf");
   /* ┌─ THE SYNC FLOOR IS READ BEFORE ANYTHING STAMPS AGAINST IT ───────────────┐
      │ The two repairs below write books and stamp `modified`, and the note at   │
      │ nextMod says why that stamp must clear everything the cloud has already    │
@@ -13822,6 +13891,7 @@ async function initSync(){
     settings.scrap=window.innerWidth>=700;
     if(!settings.scrap&&settings.fontScale==null)settings.fontScale=115;
   }
+  bootStage("settings");
   applyTheme();applyLook();applyBg();
   saveSettings();   /* so a copy stands from the first opening, see A DEVICE'S SETTINGS ARE KEPT TWICE */
   SETH_NOW.why="";
@@ -13878,6 +13948,7 @@ async function initSync(){
      to open with the aeroplane on, and it would have sat on the Overview waiting
      for a network that was never coming. Found this by opening one and watching
      it not happen. */
+  bootStage("tidy");
   if(!bootRestored){bootRestored=true;restoreFromHistory();}
   await loadSyncLocal();
   initSync();
@@ -15611,6 +15682,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-24.4",go:["set:trouble:#setTime"],lines:["<b>⏱ Where the time goes.</b> ⚙ Settings → If something is wrong has a new card that times this device: each time you open the app, how long each step took — the app file arriving, the shelf and settings being read, the sign-in being checked (and whether it first had to be renewed over the internet), the first screen, the first sync — and how long each page takes to draw, usually and at worst. Each device keeps its own. When something feels slow, press <b>⧉ Copy</b> and send it: the numbers say where the seconds go."]},
   {v:"2026-11-24.2",lines:["<b>⚡ A faster Library.</b> With your shelf's own time zone set (⚙ Settings, when a new day starts), every draw of the Library asked the browser about the zone thousands of times over, and that took most of the time. It asks once a minute now: on a shelf of a few thousand books the Library draws in about a tenth of the time it took, and the challenges, Insights and every other page that knows what day it is are quicker too."]},
   {v:"2026-11-24.1",lines:["<b>Files that aren't songs, hidden.</b> Under what's playing in the ♪ panel, <b>🚫 Not a song</b> hides a recording, a sound or an advert from your songs on every device and plays the next one. They leave the list, Shuffle, the chips and the counts, and Apple's search stops asking about them. The count line under the order says how many are hidden; press it for the list, each with <b>↩ It's a song</b> to bring it back. A file can hide many at once: on your computer, Library → 🎵 → <b>🎭 Load moods or not-songs</b>."]},
   {v:"2026-11-23.16",go:["tab:library"],lines:["<b>✓ The finish window.</b> When you mark Finished a book or story you'd started reading, one window opens instead of the small note. In it: the day (Today, Yesterday, another day), <b>your mark</b> on big 1–10 buttons with a + ½, your guess and last time's mark beside it, ♥, <b>a few words</b> for your notes, what worked and what didn't, the highlights waiting (keep them all as quotes in one press), your predictions to settle, the letter you wrote while reading, the owl's questions, what the finish earned, and the next book in Up next. Everything is optional, and <b>✓ Save</b> writes it all as one step you can undo. <b>Later</b> keeps a <i>✓ Your finish</i> button on the book's page for two weeks, and anything you typed is kept if the window closes. A book ticked off without being started doesn't open it. ⚙ Settings → Marking a book finished brings back the small note, or Quietly."]},
@@ -20701,6 +20773,9 @@ function render(){
   syncHistory();
   /* how long the drawing itself took, apart from the pictures — see covLogKeep */
   coverStats.r=Math.round(performance.now()-drawT0);
+  /* see ⏱ WHERE THE TIME GOES */
+  if(BOOT.s.first==null)bootStage("first");
+  drawTimed(view,coverStats.r);
   return drew;
 }
 /* which screen goes under the tabs. Written out twice before, once here and
@@ -60775,6 +60850,8 @@ function tuneDiagnostics(){
     })(),
     /* see A PIECE IN HAND COSTS ONE PICTURE */
     ...pzDragLines(),
+    /* see ⏱ WHERE THE TIME GOES */
+    ...timeLines(),
     /* see WHY WAS I SIGNED OUT? */
     ...(authLogList&&authLogList.length?["Sign-in log, this device, newest first:",...authLogLines().map(l=>"  "+l)]:[])
   ].filter(Boolean);
@@ -60842,7 +60919,7 @@ const SET_ROWS=[
   ["games","🎲","Games and goals",["setThree","setPacks","setDay","setGame","setFics"]],
   ["backups","🛟","Backups and room",["setBackups","setExport","setRoom","secBookFiles"]],
   ["devices","☁","Devices and Drive",["setDevice","secDrive","secNudge","secShare","setPhotos"]],
-  ["trouble","🩺","If something is wrong",["setTrouble","setUsage"]],
+  ["trouble","🩺","If something is wrong",["setTime","setTrouble","setUsage"]],
   /* drawn above the list by setHistRowHtml, so it can say what changed last */
   ["history","🕘","Changes to your settings",["setHistory"]],
 ];
@@ -60934,6 +61011,7 @@ function setItems(){
     I("devices","Photos: Claude reads them first","#photoClaude","photoClaude",{now:()=>settings.photoClaude!==false,def:true,say:ys,words:"ai ocr money cost scan"}),
     I("devices","Small jobs on Haiku","#claudeSmall","claudeSmall",{now:()=>!!settings.claudeSmall,def:false,say:ys,words:"claude ai money cost cheaper"}),
     I("devices","A second language in photos","#ocrExtra","ocrExtra",{now:()=>settings.ocrExtra||"",def:"",say:v=>v||"English only",words:"translate"}),
+    I("trouble","Where the time goes","#setTime .heading","timing",{fixed:true,noMark:true,words:"slow fast speed lag laggy load loading open opening start time timing seconds wait"}),
     I("trouble","What this device is running","#diagCopy","diag",{fixed:true,noMark:true,words:"broken wrong bug report help slow stuck problem copy"}),
     I("history","Changes to your settings","#setHistBox","setHist",{fixed:true,noMark:true,words:"history undo put back changed lost reset gone missing went wrong earlier before restore"}),
   ];
@@ -61464,6 +61542,14 @@ function renderSettings(){
       </div>
     </div>
     ${ownPicsHtml()}
+    <div class="sec" id="setTime">
+      <div class="heading"><h2 class="serif">⏱ Where the time goes</h2>
+        <button class="btn smallbtn" id="timeCopy" style="margin-left:auto;white-space:nowrap">⧉ Copy</button></div>
+      <div class="hcard">
+        <div class="hint" style="margin:0 0 6px">How long this device took to open the app, step by step, and to draw each page. Each device keeps its own. When something feels slow, copy this into a message.</div>
+        <div id="timeBox" style="font-size:12px;line-height:1.6;color:var(--mut);overflow-wrap:anywhere">${timeHtml()}</div>
+      </div>
+    </div>
     <div class="sec" id="setTrouble">
       <div class="heading"><h2 class="serif">If something looks wrong</h2>
         <button class="btn smallbtn" id="diagCopy" style="margin-left:auto">⧉ Copy all of it</button></div>
@@ -61736,6 +61822,14 @@ function wireSettings(m){
   /* Copyable, because the last time this was needed it was photographed one
      column at a time — eight shots of a table that a button could have handed
      over in one press. */
+  /* see ⏱ WHERE THE TIME GOES */
+  const tc=q("#timeCopy",m);
+  if(tc)tc.onclick=async()=>{
+    const txt=timeLines().join("\n");
+    try{await navigator.clipboard.writeText(txt);tc.textContent="✓ Copied";}
+    catch(e){prompt("Copy this:",txt);}
+    setTimeout(()=>{if(q("#timeCopy"))q("#timeCopy").textContent="⧉ Copy";},4000);
+  };
   const dc=q("#diagCopy",m);
   if(dc)dc.onclick=async()=>{
     const txt=tuneDiagnostics().join("\n");
