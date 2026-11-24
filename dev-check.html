@@ -4270,13 +4270,48 @@ const SMOKE=`
       must(glass===3&&stone===2&&!("fx-e2" in spfMatch)&&spfMatch["fx-e1"][1]==="spotify:track:g1","asked again after a 500 and a 429; the failing song is not kept as not found: "+JSON.stringify([glass,stone,Object.keys(spfMatch)]));
       must(asks.filter(a=>a.indexOf("Paper")>=0||a.indexOf("track:Paper")>=0).length===1+SPF_WAITS.length,"the failing song asked "+(1+SPF_WAITS.length)+" times: "+asks.join("|"));
       asks.length=0;plFail=true;musicPool=()=>[{id:"fx-e1",n:"The Lamps - Glass River.mp3"}];
-      await spfRun("all","Errors",true,false);R=SPF.last;
+      await spfRun("all","Errors again",true,false);R=SPF.last;
       must(R.err&&R.err.indexOf("500")>=0&&asks.filter(a=>a.indexOf("POST")===0).length===1,"a POST that failed is sent once: "+asks.join("|")+" "+R.err);
       asks.length=0;plFail=false;musicPool=()=>[1,2,3,4,5,6].map(i=>({id:"fx-b"+i,n:"Nobody - Broken "+i+".mp3"}));
       await spfRun("all","Errors",true,false);R=SPF.last;
       must(R.err&&R.err.indexOf("5 songs in a row")>=0&&R.err.indexOf("502")>=0&&R.i===5&&!asks.some(a=>a.indexOf("POST")===0),"five in a row stop it, no playlist: "+JSON.stringify([R.err,R.i]));
       return "500 twice then found; 429 waited; one song left for later; the playlist made; a failed POST sent once; five failures in a row stop with the status";
     }finally{musicPool=keepPool;spfMatch=keepM;SPF.mem=keepMem;SPF.last=keepLast;SPF.net=null;SPF.waitScale=keepScale;}});
+  /* two real runs stopped part way and left nothing on Spotify: the playlist and Liked Songs were only filled at the very end */
+  await check("🎧 songs go to Spotify as they are found: the playlist and Liked Songs fill during the run, a later run under the same name adds only what is missing to the same playlist, a deleted playlist is made again, and too many requests slows the run instead of stopping it",async()=>{
+    const keepPool=musicPool,keepM=spfMatch,keepMem=SPF.mem,keepLast=SPF.last,keepScale=SPF.waitScale,keepPace=SPF.pace,asks=[];
+    const ans=(st,j)=>new Response(JSON.stringify(j||{}),{status:st,headers:{"Content-Type":"application/json"}});
+    const song=i=>({id:"fx-q"+i,n:"Ann Vale - Song "+i+".mp3"});
+    try{
+      SPF.mem={cid:"0123456789abcdef0123456789abcdef",a:"t",exp:Date.now()+3600000};SPF.last=null;SPF.waitScale=0.001;SPF.pace=0;spfMatch={};
+      let n=0,busy=0,gone=false;
+      SPF.net=async(url,o)=>{const u=new URL(url),q=u.searchParams.get("q")||"",p=u.pathname.replace("/v1","");
+        if(busy>0){busy--;asks.push("429");return ans(429,{error:{status:429,message:"Too many requests"}});}
+        if(p==="/search"){asks.push("find");const t=(q.split("track:")[1]||"").split(" artist:")[0];
+          return ans(200,{tracks:{items:[{uri:"spotify:track:"+t.replace(/ /g,"-"),name:t,artists:[{name:"Ann Vale"}]}]}});}
+        if(p==="/me/playlists"){asks.push("make");n++;return ans(201,{id:"plq"+n,external_urls:{spotify:"https://open.spotify.com/playlist/plq"+n}});}
+        if(p.indexOf("/playlists/")===0){if(gone&&p.indexOf("plq1")>0){asks.push("404");return ans(404,{error:{status:404,message:"Not found"}});}
+          asks.push("items "+JSON.parse(o.body).uris.length+" "+p.split("/")[2]);return ans(201,{snapshot_id:"s"});}
+        if(p==="/me/library"){asks.push("like "+u.searchParams.get("uris").split(",").length);return ans(200,{});}
+        return ans(200,{});};
+      musicPool=()=>Array.from({length:120},(_,i)=>song(i));
+      await spfRun("all","Kept list",true,true);
+      let R=SPF.last;
+      const firstIn=asks.indexOf(asks.find(a=>a.indexOf("items")===0)),lastFind=asks.lastIndexOf("find");
+      must(R.done&&R.inList===120&&R.liked===120&&asks.filter(a=>a==="make").length===1,"all 120 in the playlist and liked, one playlist: "+JSON.stringify([R.done,R.inList,R.liked,R.err]));
+      must(firstIn>=0&&firstIn<lastFind&&asks.indexOf("like 40")<lastFind,"sent while the run was still looking, not only at its end: "+[firstIn,lastFind].join());
+      asks.length=0;musicPool=()=>Array.from({length:130},(_,i)=>song(i));
+      await spfRun("all","Kept list",true,true);R=SPF.last;
+      must(R.again&&asks.filter(a=>a==="find").length===10&&asks.slice(10).join("|")==="items 10 plq1|like 10"&&R.inList===10,"a second run under the same name adds the 10 new ones to the same playlist: "+asks.join("|"));
+      asks.length=0;gone=true;musicPool=()=>Array.from({length:135},(_,i)=>song(i));
+      await spfRun("all","Kept list",true,false);R=SPF.last;
+      must(asks.filter(a=>a==="make").length===1&&asks.indexOf("items 100 plq2")>0&&asks.indexOf("items 35 plq2")>0&&SPF.mem.pl.id==="plq2","a playlist deleted on Spotify is made again, once, with every song in it: "+asks.join("|"));
+      asks.length=0;gone=false;busy=3;musicPool=()=>Array.from({length:137},(_,i)=>song(i));
+      await spfRun("all","Kept list",true,false);R=SPF.last;
+      must(R.done&&!R.err&&SPF.slow===3&&SPF.pace>SPF_GAP&&asks.filter(a=>a==="429").length===3,"three 429s waited out, the gap between asks longer after: "+JSON.stringify([R.err,SPF.slow,SPF.pace,asks.join("|")]));
+      must(spfSlowHtml().indexOf("3 times")>0&&spfSlowHtml().indexOf("didn't say how long")>0,"the readout says how often and that Spotify gave no wait: "+spfSlowHtml());
+      return "120 sent while looking (one playlist, liked too); 10 new added to the same playlist next run; a deleted one made again once; three 429s waited out and the pace slowed";
+    }finally{musicPool=keepPool;spfMatch=keepM;SPF.mem=keepMem;SPF.last=keepLast;SPF.net=null;SPF.waitScale=keepScale;SPF.pace=keepPace;SPF.slow=0;SPF.slowS=0;SPF.ra=0;}});
   /* a series linked to MangaDex: the first look is a baseline, a later chapter is news, Seen puts it away */
   await check("📚 a new chapter: the first look at a linked series shows nothing, a chapter past where you are and past the newest seen shows on Today, ✓ Seen puts it away and is synced; Shelf care lists the manga not linked yet",async()=>{
     const keepFeed=mdFeedFor,keepDev=window.MD_DEV,keepN=mdNewest,keepS=mdSeen,keepL=mdNewBusy.last;

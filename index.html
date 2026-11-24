@@ -15781,6 +15781,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-24.19",go:["tab:library"],lines:["<b>🎧 Your songs reach Spotify as they're found.</b> The playlist was only made, and Liked Songs only filled, once every song had been looked for, so a run that stopped part way left nothing on Spotify. Now they go in fifty at a time while the run looks, and the panel links the playlist from its first songs. Another run under the same playlist name adds to that playlist instead of making a new one. When Spotify says “too many requests”, My Shelf waits and slows down instead of stopping, and says how often Spotify asked it to wait. And the Liked Songs tick no longer comes undone while a run is going."]},
   {v:"2026-11-24.18",go:["tab:library"],lines:["<b>🎧 Spotify's hiccups no longer stop the run.</b> When Spotify answered a search with its own “An unexpected error occurred”, the whole run to Spotify stopped there, before any playlist was made. Now My Shelf waits a moment and asks again; a song Spotify still can't answer for is left for the next run while the rest carry on to the playlist, and only five failures in a row stop it. Everything already found is kept, so in Library → 🎵 → 🎧 To Spotify, <b>▶ Find them on Spotify</b> carries on where the last run stopped."]},
   {v:"2026-11-24.17",go:["tab:library"],lines:["<b>🎵 Your songs' genres keep coming with another tab in front.</b> Apple's genres, covers and years for your songs used to be looked up only while My Shelf was the tab in front. Now they carry on behind other tabs too, one My Shelf tab doing it if you have several open. Firefox keeps the pace; Chrome slows a tab that's been behind others for a while to about one a minute."]},
   {v:"2026-11-24.16",go:["el:care:#chatMark"],lines:["<b>🤖 A Claude chat, read in one press.</b> In 🧰 Shelf care's import buttons, beside 🔖 Book page to My Shelf, is <b>🤖 Claude chat to My Shelf</b>: a bookmark. Drag it to your bookmarks bar and press it on a chat at claude.ai, and My Shelf opens and shows what the chat would make as a story: its chapters and their words, the replies that are talk, your prompts. It reads the whole chat, not only what's on screen, and of a retried reply only the version you kept. It adds nothing yet: <b>⧉ Copy the numbers</b> takes the counts, none of the chat's words."]},
@@ -37642,7 +37643,7 @@ function musicDraw(){const box=q("#musicShelf");if(box)box.innerHTML=musicHtml()
    │ One ask every SPF_GAP; a 429 waits as long as Spotify says. What wasn't  │
    │ found can be copied as a list. Not asked from a test copy.              │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const SPF_KEY="myShelf-spotify",SPF_GAP=350,SPF_API="https://api.spotify.com/v1",SPF_AUTH="https://accounts.spotify.com";
+const SPF_KEY="myShelf-spotify",SPF_GAP=600,SPF_API="https://api.spotify.com/v1",SPF_AUTH="https://accounts.spotify.com";
 const SPF_SCOPES="playlist-modify-private playlist-modify-public user-library-modify";
 const SPF={run:null,said:"",err:"",mem:null};
 let spfMatch=null;
@@ -37692,8 +37693,18 @@ async function spfArrive(o){
    429 waits as long as Spotify says, unless that is more than SPF_LONG;
    and a song whose search still fails is left for the next run (R.skip)
    rather than ending this one, unless SPF_FAILS songs fail in a row,
-   which is Spotify being down. Every error says the status it came with. */
-const SPF_WAITS=[2,5,15],SPF_LONG=120,SPF_FAILS=5;
+   which is Spotify being down. Every error says the status it came with.
+   ---- TOO MANY REQUESTS SLOWS THE RUN DOWN, IT DOESN'T END IT ----
+   The next run met "429: Too many requests" about 600 songs in, and twelve
+   waits of five seconds (Spotify's Retry-After can't always be read from a
+   web page, so the 5 was a guess) were not enough. A 429 now waits
+   Retry-After when it is there, else 5, 10, 20, 40, then 60 seconds at a
+   time, for up to SPF_PATIENCE seconds in all; and every 429 doubles the
+   gap between asks (SPF.pace, from SPF_GAP up to SPF_PACE_MAX), which
+   eases back a little after each answer. The run counts how often and how
+   long it was told to wait (SPF.slow, SPF.slowS, SPF.ra) and the panel
+   says so, which is the readout to ask for if it still stops. */
+const SPF_WAITS=[2,5,15],SPF_LONG=120,SPF_FAILS=5,SPF_PATIENCE=600,SPF_PACE_MAX=4000;
 const spfErr=(status,msg)=>Object.assign(new Error(msg),{status});
 /* an error one song can be skipped for: Spotify's trouble, no answer, a search it could not read */
 const spfPassable=e=>!!e&&(e.status===0||e.status===400||e.status===404||e.status>=500);
@@ -37711,13 +37722,19 @@ async function spfCall(method,path,body){
   let r=await go();
   if(r&&r.status===401&&s.r){s=await spfToken({grant_type:"refresh_token",refresh_token:s.r,client_id:s.cid});r=await go();}
   const again=method==="GET"||method==="PUT";
-  for(let k=0,w5=0;k<12;k++){
-    if(r&&r.status===429){const w=+(r.headers.get("retry-after")||5);
-      if(w>SPF_LONG)throw spfErr(429,`Spotify asks this app to wait ${Math.ceil(w/60)} minutes before it asks again`);
-      await nap(w);r=await go();continue;}
+  for(let w5=0,n429=0,slept=0;;){
+    if(r&&r.status===429){
+      const ra=+(r.headers.get("retry-after")||0);SPF.ra=ra||0;
+      if(ra>SPF_LONG)throw spfErr(429,`Spotify asks this app to wait ${Math.ceil(ra/60)} minutes before it asks again`);
+      const w=Math.max(ra,Math.min(60,5*2**n429++));
+      if(slept+w>SPF_PATIENCE)throw spfErr(429,`Spotify kept saying “too many requests” for ${Math.round(slept/60)} minutes`);
+      SPF.slow=(SPF.slow||0)+1;SPF.slowS=(SPF.slowS||0)+w;SPF.pace=Math.min(SPF_PACE_MAX,(SPF.pace||SPF_GAP)*2);
+      if(SPF.run)spfPaint();
+      await nap(w);slept+=w;r=await go();continue;}
     if(again&&(!r||r.status>=500)&&w5<SPF_WAITS.length){await nap(SPF_WAITS[w5++]);r=await go();continue;}
     break;
   }
+  if(r&&r.ok&&SPF.pace>SPF_GAP)SPF.pace=Math.max(SPF_GAP,SPF.pace*0.97);
   if(!r)throw spfErr(0,"Spotify didn't answer (is the connection down?)");
   if(r.status===403)throw spfErr(403,"Spotify refused. It lets a personal app in only while the account that made it has Premium, and only accounts added under the app's Users");
   const j=r.status===204?{}:await r.json().catch(()=>({}));
@@ -37736,9 +37753,11 @@ async function spfFind(f){
   const nm=lyrNameOf(f);
   const ask=async q=>((await spfCall("GET","/search?"+new URLSearchParams({q,type:"track",limit:"10"}))).tracks||{}).items||[];
   let x=spfPick(await ask(nm.a?`track:${nm.t} artist:${nm.a}`:nm.t),nm);
-  if(!x&&nm.a){await new Promise(r=>setTimeout(r,SPF_GAP));x=spfPick(await ask(nm.a+" "+nm.t),nm);}
+  if(!x&&nm.a){await spfRest();x=spfPick(await ask(nm.a+" "+nm.t),nm);}
   return x?x.uri:"";
 }
+/* the gap between two asks: SPF_GAP, or longer since Spotify last said too many */
+const spfRest=()=>new Promise(r=>setTimeout(r,SPF.waitScale!=null?0:Math.max(SPF_GAP,SPF.pace||0)));
 /* which songs: all of them, a mood's, or a genre's */
 function spfChoices(){
   const pool=musicPool(),out=[["all","All your songs",pool.length]],gs={};
@@ -37748,10 +37767,53 @@ function spfChoices(){
   return out;
 }
 const spfPool=pick=>musicPool().filter(f=>pick==="all"||(pick.startsWith("m:")&&songTagOf(f.id).m.includes(pick.slice(2)))||(pick.startsWith("g:")&&songTagOf(f.id).g===pick.slice(2)));
+/* ---- WHAT IS FOUND GOES IN AS IT IS FOUND ----
+   The playlist was made, and Liked Songs filled, only once every song had
+   been looked for, so two runs that stopped part way (an error at 445 of
+   2,176, a 429 at 608) left nothing at all on Spotify. Now songs are sent
+   SPF_SEND at a time as they are found (a playlist takes up to 100 a press,
+   Liked Songs 40), and what was sent is written on each song's spfMatch
+   entry ([at, uri, playlist id it went into, 1 once liked]), so a later
+   run sends only what is missing. The playlist is remembered on this
+   device (spfStore().pl): a run under the same name carries on adding to
+   it rather than making another, and one deleted on Spotify (404) is made
+   again, once. A new name makes a new playlist. */
+const SPF_SEND=50;
+/* an error from sending, so a failed POST is never sent again by the clean-up after it */
+const spfInSend=e=>{e.inSend=true;throw e;};
 async function spfRun(pick,name,toList,toLiked){
   if(SPF.run)return;
   await spfMatchLoad();
-  const pool=spfPool(pick),R=SPF.run={n:pool.length,i:0,found:0,miss:[],stop:false,list:"",liked:0,done:false,skip:0,bad:""};
+  name=String(name||"My Shelf songs").slice(0,100);
+  SPF.slow=0;SPF.slowS=0;SPF.ra=0;
+  const pool=spfPool(pick),R=SPF.run={n:pool.length,i:0,found:0,miss:[],stop:false,list:"",liked:0,inList:0,done:false,skip:0,bad:"",name,again:false};
+  let pl=null;
+  {const s=spfStore();if(toList&&s.pl&&s.pl.id&&s.pl.name===name){pl=s.pl;R.list=pl.url;R.again=true;}}
+  const byUri=new Map();let pendPl=[],pendLk=[];
+  const inPl=u=>!!pl&&byUri.get(u).some(id=>spfMatch[id]&&spfMatch[id][2]===pl.id);
+  const liked=u=>byUri.get(u).some(id=>spfMatch[id]&&spfMatch[id][3]===1);
+  const note=(u,id)=>{const first=!byUri.has(u);if(first)byUri.set(u,[]);byUri.get(u).push(id);
+    if(first){if(toList&&!inPl(u))pendPl.push(u);if(toLiked&&!liked(u))pendLk.push(u);}};
+  const sendPl=async all=>{
+    while(toList&&pendPl.length&&(all||pendPl.length>=SPF_SEND)){
+      pendPl=pendPl.filter(u=>!inPl(u));if(!pendPl.length)break;
+      if(!pl){const p=await spfCall("POST","/me/playlists",{name,public:false,description:"Made by My Shelf from the songs in your Drive"}).catch(spfInSend);
+        pl={id:p.id,url:(p.external_urls&&p.external_urls.spotify)||"https://open.spotify.com/playlist/"+p.id,name,at:Date.now()};
+        spfStore(Object.assign(spfStore(),{pl}));R.list=pl.url;spfPaint();}
+      const part=pendPl.slice(0,100);
+      try{await spfCall("POST","/playlists/"+pl.id+"/items",{uris:part}).catch(spfInSend);}
+      /* the playlist was deleted on Spotify: a new one, with every song found so far in it */
+      catch(e){if(e.status===404&&!R.remade){R.remade=true;pl=null;const s=spfStore();delete s.pl;spfStore(s);R.again=false;pendPl=[...byUri.keys()];continue;}throw e;}
+      part.forEach(u=>byUri.get(u).forEach(id=>{spfMatch[id][2]=pl.id;}));
+      pendPl=pendPl.slice(part.length);R.inList+=part.length;spfMatchSave();spfPaint();await spfRest();
+    }};
+  const sendLk=async all=>{
+    while(toLiked&&pendLk.length&&(all||pendLk.length>=SPF_SEND)){
+      const part=pendLk.slice(0,40);
+      await spfCall("PUT","/me/library?"+new URLSearchParams({uris:part.join(",")})).catch(spfInSend);
+      part.forEach(u=>byUri.get(u).forEach(id=>{spfMatch[id][3]=1;}));
+      pendLk=pendLk.slice(part.length);R.liked+=part.length;spfMatchSave();spfPaint();await spfRest();
+    }};
   spfPaint();
   try{
     let fails=0;
@@ -37765,20 +37827,18 @@ async function spfRun(pick,name,toList,toLiked){
           if(!spfPassable(e))throw e;
           R.skip++;R.bad=e.message||"";
           if(++fails>=SPF_FAILS)throw spfErr(e.status,`Spotify failed on ${fails} songs in a row (${e.message})`);
-          await new Promise(r=>setTimeout(r,SPF_GAP));continue;}
-        m=[Date.now(),uri];spfMatch[f.id]=m;if(R.i%25===0)spfMatchSave();await new Promise(r=>setTimeout(r,SPF_GAP));}
-      if(m[1])R.found++;else{const nm=lyrNameOf(f);R.miss.push(nm.a?nm.a+" - "+nm.t:nm.t);}
+          await spfRest();continue;}
+        m=[Date.now(),uri];spfMatch[f.id]=m;if(R.i%25===0)spfMatchSave();await spfRest();}
+      if(m[1]){R.found++;note(m[1],f.id);}else{const nm=lyrNameOf(f);R.miss.push(nm.a?nm.a+" - "+nm.t:nm.t);}
+      await sendPl(false);await sendLk(false);
       if(R.i%10===0)spfPaint();}
-    spfMatchSave();
-    const uris=[...new Set(pool.map(f=>spfMatch[f.id]&&spfMatch[f.id][1]).filter(Boolean))];
-    if(!R.stop&&uris.length&&toList){
-      const pl=await spfCall("POST","/me/playlists",{name:String(name||"My Shelf songs").slice(0,100),public:false,description:"Made by My Shelf from the songs in your Drive"});
-      for(let k=0;k<uris.length;k+=100){await spfCall("POST","/playlists/"+pl.id+"/items",{uris:uris.slice(k,k+100)});spfPaint();}
-      R.list=(pl.external_urls&&pl.external_urls.spotify)||"https://open.spotify.com/playlist/"+pl.id;}
-    if(!R.stop&&uris.length&&toLiked)
-      for(let k=0;k<uris.length;k+=40){await spfCall("PUT","/me/library?"+new URLSearchParams({uris:uris.slice(k,k+40).join(",")}));R.liked=Math.min(uris.length,k+40);spfPaint();}
-    R.done=true;
-  }catch(e){R.err=e.message||"Spotify didn't answer";}
+    /* what is left over goes in too, even after ⏹ Stop: it was found */
+    await sendPl(true);await sendLk(true);
+    R.done=!R.stop;
+  }catch(e){R.err=e.message||"Spotify didn't answer";
+    /* what was found before the error still goes in, if Spotify will take it
+       (not after a 429: that would only be told to wait again) */
+    if(!e.inSend&&e.status!==429&&e.status!==403)try{await sendPl(true);await sendLk(true);}catch(e2){}}
   finally{spfMatchSave();SPF.last=R;SPF.run=null;spfPaint();}
 }
 function spfPanelHtml(){
@@ -37796,23 +37856,45 @@ function spfPanelHtml(){
     <div class="hrow2" style="gap:6px;flex-wrap:wrap"><button class="btn pri" data-sp="connect">▶ Connect to Spotify</button><button class="btn smallbtn" data-sp="forget">Change the Client ID</button></div>`;
   const ch=spfChoices();
   const prog=R?(R.done||R.err||!SPF.run
-      ?`<div class="sprun"><b>${R.err?"Stopped":R.stop?"Stopped":"Done"}</b>: ${R.found.toLocaleString()} of ${R.n.toLocaleString()} found on Spotify${R.list?` · <a href="${esc(R.list)}" target="_blank" rel="noopener">open the playlist ↗</a>`:""}${R.liked?` · ${R.liked.toLocaleString()} in your Liked Songs`:""}.
+      ?`<div class="sprun"><b>${R.err?"Stopped":R.stop?"Stopped":"Done"}</b>: ${R.found.toLocaleString()} of ${R.n.toLocaleString()} found on Spotify.
+        ${spfSentHtml(R)}
         ${R.err?`<div style="color:#b91c1c">⚠ ${esc(R.err)}</div>`:""}
-        ${R.err||R.stop?`<div class="hint" style="margin:4px 0 0">What was found is kept on this device: press <b>▶ Find them on Spotify</b> again and it carries on from song ${Math.max(1,R.i).toLocaleString()}, then makes the playlist.</div>`:""}
+        ${spfSlowHtml()}
+        ${R.err||R.stop?`<div class="hint" style="margin:4px 0 0">What was found is kept on this device: press <b>▶ Find them on Spotify</b> again${R.err&&/too many|wait/.test(R.err)?" in an hour or so":""} and it carries on from song ${Math.max(1,R.i).toLocaleString()}${R.list?`, adding to the same playlist while its name is “${esc(R.name)}”`:""}.</div>`:""}
         ${R.skip?`<div class="hint" style="margin:4px 0 0">${R.skip.toLocaleString()} ${R.skip===1?"song":"songs"} couldn't be looked up just now${R.err?"":` (${esc(R.bad)})`}; the next run asks for ${R.skip===1?"it":"them"} again.</div>`:""}
         ${R.miss.length?`<div class="hrow2" style="gap:6px;margin-top:4px"><span>${R.miss.length.toLocaleString()} not found</span><button class="btn smallbtn" data-sp="copymiss">⧉ Copy their names</button></div>`:""}</div>`
-      :`<div class="sprun">Looking ${R.i.toLocaleString()} of ${R.n.toLocaleString()} · found ${R.found.toLocaleString()}${R.skip?` · ${R.skip.toLocaleString()} to ask again later`:""}${R.list?" · adding to the playlist":""} <button class="btn smallbtn" data-sp="stop">⏹ Stop</button></div>`):"";
-  return head+said+err+`<div class="hint" style="margin:0 0 8px">Each song is looked for by its title and artist; one Spotify can't find is listed, never guessed. What's found is kept on this device, so another run only looks for what's new.</div>
+      :`<div class="sprun">Looking ${R.i.toLocaleString()} of ${R.n.toLocaleString()} · found ${R.found.toLocaleString()}${R.skip?` · ${R.skip.toLocaleString()} to ask again later`:""} <button class="btn smallbtn" data-sp="stop">⏹ Stop</button>
+        ${spfSentHtml(R)}${spfSlowHtml()}</div>`):"";
+  const plWas=s.pl&&s.pl.name?`<div class="hint" style="margin:4px 0 0">“${esc(s.pl.name)}” was made from here: a run under that name adds to it; another name makes a new playlist.</div>`:"";
+  return head+said+err+`<div class="hint" style="margin:0 0 8px">Each song is looked for by its title and artist; one Spotify can't find is listed, never guessed. Songs go into the playlist (and Liked Songs) as they are found, fifty at a time, and what's found is kept on this device, so another run only looks for what's new.</div>
     <label class="lbl" for="spfPick" style="display:block;margin:0 0 3px">Which songs</label>
     <select class="field" id="spfPick" style="width:100%">${ch.map(([v,l,n])=>`<option value="${esc(v)}">${esc(l)} (${n.toLocaleString()})</option>`).join("")}</select>
-    <label class="lbl" for="spfName" style="display:block;margin:10px 0 3px">A new playlist called</label>
-    <input class="field" id="spfName" value="My Shelf songs" maxlength="100" style="width:100%;box-sizing:border-box">
+    <label class="lbl" for="spfName" style="display:block;margin:10px 0 3px">A playlist called</label>
+    <input class="field" id="spfName" value="${esc((s.pl&&s.pl.name)||"My Shelf songs")}" maxlength="100" style="width:100%;box-sizing:border-box">${plWas}
     <label class="hrow2" style="gap:6px;margin:8px 0 0;align-items:center"><input type="checkbox" id="spfList" checked> Make the playlist (private)</label>
     <label class="hrow2" style="gap:6px;margin:4px 0 0;align-items:center"><input type="checkbox" id="spfLiked"> Put them in my Liked Songs too</label>
     <div class="hrow2" style="gap:6px;margin-top:10px;flex-wrap:wrap"><button class="btn pri" data-sp="go"${SPF.run?" disabled":""}>▶ Find them on Spotify</button><button class="btn smallbtn" data-sp="out">Disconnect</button></div>${prog}`;
 }
-function spfPaint(){const d=q("#spfPanel");if(!d)return;const keep={p:(q("#spfPick",d)||{}).value,n:(q("#spfName",d)||{}).value};
-  d.innerHTML=spfPanelHtml();if(keep.p&&q("#spfPick",d))q("#spfPick",d).value=keep.p;if(keep.n!=null&&q("#spfName",d))q("#spfName",d).value=keep.n;}
+/* what has gone into Spotify so far, with the playlist's link from its first song */
+function spfSentHtml(R){
+  const bits=[];
+  if(R.list)bits.push(`${R.inList?`${R.inList.toLocaleString()} added to`:R.again?"carrying on in":"made"} <a href="${esc(R.list)}" target="_blank" rel="noopener">“${esc(R.name)}” ↗</a>`);
+  if(R.liked)bits.push(`${R.liked.toLocaleString()} put in your Liked Songs`);
+  return bits.length?`<div style="margin:3px 0 0">${bits.join(" · ")}</div>`:"";
+}
+/* the readout of Spotify's "too many requests": how often, how long, and whether it said how long */
+function spfSlowHtml(){
+  if(!SPF.slow)return "";
+  return `<div class="hint" style="margin:3px 0 0">Spotify said “too many requests” ${SPF.slow.toLocaleString()} ${SPF.slow===1?"time":"times"}; waited ${minsSay(SPF.slowS/60)} in all (${SPF.ra?`Spotify asked for ${SPF.ra} s`:"Spotify didn't say how long"}), and now asks every ${(Math.max(SPF_GAP,SPF.pace||0)/1000).toFixed(1)} s.</div>`;
+}
+/* the boxes keep what was typed and ticked while the run redraws the panel */
+function spfPaint(){const d=q("#spfPanel");if(!d)return;
+  const v=s=>q(s,d),keep={p:(v("#spfPick")||{}).value,n:(v("#spfName")||{}).value,t:(v("#spfName")||{dataset:{}}).dataset.typed,l:(v("#spfList")||{}).checked,k:(v("#spfLiked")||{}).checked};
+  d.innerHTML=spfPanelHtml();
+  if(keep.p&&v("#spfPick"))v("#spfPick").value=keep.p;
+  if(keep.n!=null&&v("#spfName")){v("#spfName").value=keep.n;if(keep.t)v("#spfName").dataset.typed=keep.t;}
+  if(keep.l!=null&&v("#spfList"))v("#spfList").checked=keep.l;
+  if(keep.k!=null&&v("#spfLiked"))v("#spfLiked").checked=keep.k;}
 function spfOpen(){
   if(panelOpen("spfPanel"))return;
   const d=document.createElement("div");d.id="spfPanel";d.className="ratepanel";d.setAttribute("role","dialog");d.setAttribute("aria-label","Your songs on Spotify");
