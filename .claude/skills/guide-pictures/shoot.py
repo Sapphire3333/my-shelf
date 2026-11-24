@@ -31,7 +31,7 @@ from cdp import Chrome  # noqa: E402
 
 DEVICES = {
     "pc": dict(width=2144, height=1206, deviceScaleFactor=1, mobile=False),
-    "ph": dict(width=412, height=860, deviceScaleFactor=2, mobile=True),
+    "ph": dict(width=412, height=915, deviceScaleFactor=2, mobile=True),
 }
 QUALITY = 84
 MARK = "const GUIDE_PICS="

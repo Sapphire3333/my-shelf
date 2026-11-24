@@ -46,16 +46,22 @@ const T = [
   ["The Cinder Atlas", "Mira Vantwell", "want", ["Fantasy"], 455],
   ["Quill and Marrow", "Pell Ashby", "reading", ["Horror"], 310],
   ["Night Trains to Nowhere", "Corin Sallow", "finished", ["Travel"], 264, 6],
-  ["The Hollow Tide", "Hollis Graye", "want", ["Science fiction"], 390],
+  ["The Hollow Tide", "Hollis Graye", "finished", ["Science fiction"], 390, 8],
   ["Paper Moons", "Lio Marchetti", "finished", ["Poetry"], 112, 8],
   ["A Field Guide to Quiet", "Ada Brennagh", "want", ["Nonfiction"], 240],
 ];
 window.__guideSeed = async (dev) => {
   const au = $("#auLocal");
   if (au) { au.click(); await wait(900); }
+  /* nothing pops up over a picture: the medals' first count, their toasts,
+     the owl's remarks (a fresh shelf earns a few medals the moment it is seeded) */
+  try { achXpCard = () => {}; achToast = () => {}; owlSay = () => {}; } catch (e) {}
   /* in memory only, like the sweep's stand-ins: nothing calls a save */
   settings.fontScale = dev === "ph" ? 132 : 135;
   settings.scrap = false; settings.bookEdit = false;
+  /* settings outlive a page in the same browser: every picture starts from
+     the same tabs and drawers, whatever the one before it opened */
+  settings.todayTab = "reading"; settings.libFilt = false; settings.libTools = false; settings.libBench = false;
   settings.sfx = false;
   books.length = 0;
   T.forEach((r, i) => {
@@ -67,11 +73,22 @@ window.__guideSeed = async (dev) => {
       progress: status === "reading" ? Math.round(pages * (i ? .62 : .34)) : 0,
       summary: "An invented blurb for a book that does not exist, long enough to wrap over two or three lines on a phone.",
       ...(i === 6 || i === 0 ? { series: "The Lantern Cycle", seriesNum: i ? "2" : "1", seriesTotal: "3" } : {}),
+      /* three on Today's Up next */
+      ...({ 2: { upnext: 1 }, 4: { upnext: 2 }, 6: { upnext: 3 } })[i] || {},
+      /* a series read one book of, the next waiting: Today's Series tab */
+      ...(i === 9 ? { series: "Tidewater", seriesNum: "1" } : i === 4 ? { series: "Tidewater", seriesNum: "2" } : {}),
+      ...(i === 5 ? { favorite: true } : {}),
+      ...(i === 1 ? { quotes: ["A made-up line kept from a made-up book, long enough to be the quote of the day."] } : {}),
       readings: status === "finished" ? [{ id: "gr" + i, start: day(60 + i * 9), end: day(40 + i * 9) }]
         : status === "reading" ? [{ id: "gr" + i, start: day(6 + i), end: "", open: true }] : [],
       created: Date.now() - (i + 1) * 3 * 864e5, modified: Date.now() - i * 864e5,
     }));
   });
+  /* a collection two stories into, for Series → Collections, the next story */
+  books.push(Object.assign(blankBook("guide-c1"), { title: "Tales from the Salt Road", author: "Oskar Dellamere", type: "collection",
+    status: "want", genres: ["Literary fiction"], created: Date.now() - 50 * 864e5,
+    entries: ["The Ferryman's Wife", "Lamps at Low Tide", "A Wind from the Orchard", "The Last Toll"].map((t, k) =>
+      Object.assign(blankEntry(), { title: t, status: k < 2 ? "finished" : "want", rating: k < 2 ? 8 : "" })) }));
   applyLook();
   await wait(300);
 };
@@ -118,7 +135,7 @@ SHOTS["ai-editor"] = { async at(dev) {
   const ai = need('#kindRow [data-kind="ai"]').closest("label") || need('#kindRow [data-kind="ai"]');
   const chat = await until(() => $("#chatIn"));
   if (!chat) throw new Error("💬 Bring in a chat… did not show for an AI story");
-  fold.scrollIntoView({ block: "start" }); window.scrollBy(0, -16); await wait(400);
+  await place(fold);
   const f = fold.getBoundingClientRect(), c = chat.getBoundingClientRect(), sec = need("#edsec-book").getBoundingClientRect();
   const clip = box({ x: Math.min(f.left, sec.left), y: f.top, w: Math.max(f.right, sec.right) - Math.min(f.left, sec.left), h: c.bottom - f.top }, dev === "ph" ? 8 : 16);
   if (dev !== "ph") clip.w = Math.min(clip.w, 900);
@@ -174,6 +191,15 @@ SHOTS["import-list"] = { async at(dev) {
   return { clip, spots: { one, tick, all, fill } };
 } };
 
+/* 📚 Straight from Goodreads, under the import card's buttons */
+SHOTS["care-goodreads"] = { async at(dev) {
+  await careAt();
+  const add = need("#grAdd"), row = add.parentElement, say = $("#grSay");
+  await place(row);
+  const shelves = $$("[data-grshelf]", row);
+  return { clip: box([row, say].filter(Boolean), dev === "ph" ? 8 : 14), spots: { shelf: shelves[0], add } };
+} };
+
 /* the ReadEra card on 🧰 Shelf care */
 SHOTS["care-readera"] = { async at(dev) {
   await careAt();
@@ -184,7 +210,7 @@ SHOTS["care-readera"] = { async at(dev) {
 
 /* Library → ☁ Drive, with files in a folder and some just arrived. Drive
    itself is never asked: the list is put in place of what it would say */
-SHOTS["drive-tab"] = { async at(dev) {
+const driveStandIn = () => {
   const fo = { id: "gdf0", name: "Books" };
   settings.drive = Object.assign({}, settings.drive || {}, { folder: fo });
   const F = [
@@ -202,16 +228,32 @@ SHOTS["drive-tab"] = { async at(dev) {
     { k: "new", f: F[3], meta: { title: "The Lamplighter's Debt", author: "Pell Ashby" } },
     { k: "fic", f: F[4] },
   ];
+};
+SHOTS["drive-tab"] = { async at(dev) {
+  driveStandIn();
   await goTab("library"); await wait(300);
   setKindTab("drive"); await wait(900);
   const tab = $('[data-kt="drive"]'), nb = await until(() => $("#dsNew"), 4000), rd = $("[data-dsread]");
   const want = nb && $("[data-dnbring]", nb), fic = nb && $$("[data-dnbring]", nb)[1];
   const top = tab || nb;
-  top.scrollIntoView({ block: "start" }); window.scrollBy(0, -16); await wait(400);
+  await place(top);
   const els = [tab, nb, rd].filter(Boolean);
   const clip = box(els, dev === "ph" ? 6 : 16);
-  clip.h = Math.min(clip.h, dev === "ph" ? 800 : 900);
+  clip.h = Math.min(clip.h, dev === "ph" ? innerHeight - clip.y - 4 : 900);
   return { clip, spots: { tab, want, fic, read: rd } };
+} };
+
+/* Library → ☁ Drive, down at the folder's files and their 📖 Read */
+SHOTS["drive-read"] = { async at(dev) {
+  driveStandIn();
+  await goTab("library"); await wait(300);
+  setKindTab("drive"); await wait(900);
+  const read = await until(() => $("[data-dsread]"), 4000);
+  if (!read) throw new Error("no 📖 Read in the Drive tab");
+  const row = read.closest(".snap") || read;
+  const folders = [...document.querySelectorAll("[data-dsdir]")], first = folders[0] || row;
+  await place(first, 20);
+  return { clip: box([first, row], dev === "ph" ? 6 : 14), spots: { read, folder: folders[0] } };
 } };
 
 /* Library → 🧰 Tools: 🧭 Like your favourites and 🔎 Is the next one out? */
@@ -245,7 +287,7 @@ SHOTS["book-sim"] = { async at(dev) {
   const d = await until(() => { const x = $("#secSim"); return x && x.getBoundingClientRect().height > 30 && x; }, 4000);
   if (!d) throw new Error("More like this did not show on the book's page: " + (($("#secSim") || {}).outerHTML || "none").slice(0, 200));
   const go = $("[data-simgo]", d), add = $("[data-simadd]", d), sum = $("summary", d);
-  sum.scrollIntoView({ block: "start" }); window.scrollBy(0, -20); await wait(400);
+  await place(sum, 20);
   const r = d.getBoundingClientRect();
   const clip = box({ x: r.left, y: r.top, w: r.width, h: Math.min(r.height, dev === "ph" ? 720 : 620) }, dev === "ph" ? 6 : 14);
   return { clip, spots: { fold: sum, simgo: go, add } };
@@ -271,6 +313,202 @@ SHOTS["author-panel"] = { async at(dev) {
   return { clip, spots: { more: head, want } };
 } };
 
+/* the Library's head: 🔎 in the corner, the find box, ☰ Filters, ☑ Select books, the look, ⋯ More */
+SHOTS["lib-bar"] = { async at(dev) {
+  await goTab("library"); window.scrollTo(0, 0); await wait(600);
+  const jump = need("#jumpBtn"), find = need("#libFind"), filt = $("#filtTog"), sel = $("#selTog"), look = $("#layTog"), more = $("#libMore"), sort = $("#toolsTog");
+  const kinds = $('[data-kt="books"]') || $("[data-kt]");
+  const els = [jump, find, filt, sel, look, more, sort, kinds].filter(e => e && e.getClientRects().length);
+  /* the whole width of the page, from the corner's 🔎 down to the shelf's own bar */
+  const m = need("#main").getBoundingClientRect(), r = box(els, 0);
+  const clip = box({ x: m.left, y: r.y, w: m.width, h: r.h }, dev === "ph" ? 6 : 14);
+  return { clip, spots: { jump, find, filt, sel, look, more, sort } };
+} };
+
+/* Today: the book in your hands, with ✎ Log my page and 🌅 Your day */
+SHOTS["today-door"] = { async at(dev) {
+  await goTab("overview"); window.scrollTo(0, 0); await wait(900);
+  const door = need("#secDoor"), log = $(".doorbtns [data-pgedit],.doorbtns [data-doorlog]", door), day = $("[data-dayopen]", door);
+  const pen = [...door.querySelectorAll("[data-pgedit]")].find(e => !e.closest(".doorbtns"));
+  return { clip: box(door, dev === "ph" ? 6 : 14), spots: { door: $(".rtitle", door) || door, log, pen, day } };
+} };
+
+/* Today: Up next, with 🎡 Spin, 📖 Start it and the arrows */
+SHOTS["today-upnext"] = { async at(dev) {
+  await goTab("overview"); await wait(900);
+  const sec = need("#secUpNext");
+  await place(sec);
+  return { clip: box(sec, dev === "ph" ? 6 : 14), spots: { spin: $("[data-wheel]", sec), start: $("[data-setst]", sec), move: $$("[data-unmv]", sec)[1] || $("[data-unmv]", sec) } };
+} };
+
+/* a row's stage disc pressed: the stages, ⏭ Up next and 📌 Priority */
+SHOTS["lib-stage"] = { async at(dev) {
+  await goTab("library"); await wait(600);
+  const row = [...document.querySelectorAll('.row[data-open="guide-b11"]')][0];
+  if (!row) throw new Error("the made-up book for the stage picture is not on the shelf");
+  await place(row, dev === "ph" ? 90 : 120);
+  const dot = need(".stdot[data-cyc]", row);
+  dot.click(); await wait(500);
+  const pick = await until(() => { const x = $(".stpick"); return x && x.getClientRects().length && x; });
+  if (!pick) throw new Error("the stage list did not open");
+  const up = $("[data-upnext]", pick), fin = [...pick.querySelectorAll("[data-setst]")].find(b => /Finished/.test(b.textContent));
+  return { clip: box([row, pick], dev === "ph" ? 6 : 14), spots: { dot, up, fin, pick } };
+} };
+
+/* Today's three tabs: 📖 Reading, 📚 Series, ❝ Notes */
+SHOTS["today-tabs"] = { async at(dev) {
+  await goTab("overview"); window.scrollTo(0, 0); await wait(900);
+  const bar = need(".todaytabs"), t = k => $(`[data-ttab="${k}"]`, bar);
+  return { clip: box(bar, dev === "ph" ? 6 : 12), spots: { reading: t("reading"), series: t("series"), notes: t("notes") } };
+} };
+
+/* Today → 📚 Series: the next story of a collection, the next book of a series */
+SHOTS["today-series"] = { async at(dev) {
+  await goTab("overview"); await wait(700);
+  todayTabSet("series"); await wait(700);
+  const sec = need("#secSeries");
+  await place(sec);
+  const coll = $("#secContinue .rnrow", sec), next = $("#secNextLine", sec), start = $("#secNextLine [data-setst]", sec);
+  const r = sec.getBoundingClientRect();
+  const clip = box({ x: r.left, y: r.top, w: r.width, h: Math.min(r.height, dev === "ph" ? innerHeight - r.top - 4 : 620) }, dev === "ph" ? 6 : 14);
+  return { clip, spots: { coll, next: next && ($(".rtitle", next) || next), start } };
+} };
+
+/* 🎡 Spin: the wheel of Up next and Want to read */
+SHOTS["today-wheel"] = { async at(dev) {
+  await goTab("overview"); await wait(800);
+  need("[data-wheel]").click(); await wait(900);
+  const p = await until(() => { const x = $("#wheelPanel"); return x && x.getClientRects().length && x; });
+  if (!p) throw new Error("the wheel did not open");
+  return { clip: box(p, 6), spots: { whspin: $("[data-whspin]", p), whmore: $("[data-whmore]", p) } };
+} };
+
+/* 🌅 Your day, open */
+SHOTS["today-day"] = { async at(dev) {
+  await goTab("overview"); await wait(800);
+  need("[data-dayopen]").click(); await wait(1200);
+  const p = await until(() => { const x = $("#ydPanel"); return x && x.getClientRects().length && x; });
+  if (!p) throw new Error("Your day did not open");
+  const row = k => $(`[data-ydtog="${k}"]`, p);
+  /* the scratch card opens by itself, being the first not done: shut it, so the rows show */
+  const sc = row("scratch"); if (sc && sc.getAttribute("aria-expanded") === "true") { sc.click(); await wait(400); }
+  const r = p.getBoundingClientRect();
+  return { clip: box({ x: r.left, y: r.top, w: r.width, h: Math.min(r.height, innerHeight - r.top) }, 6),
+    spots: { scratch: row("scratch"), tasks: row("tasks"), tarot: row("tarot"), globe: row("globe") } };
+} };
+
+/* 🌅 Your day → ❄️ The snow globe, open */
+SHOTS["today-globe"] = { async at(dev) {
+  await goTab("overview"); await wait(800);
+  need("[data-dayopen]").click(); await wait(1200);
+  const p = await until(() => { const x = $("#ydPanel"); return x && x.getClientRects().length && x; });
+  if (!p) throw new Error("Your day did not open");
+  let row = need('[data-ydtog="globe"]', p);
+  if (row.getAttribute("aria-expanded") !== "true") { row.click(); await wait(600); }
+  row = need('[data-ydtog="globe"]', p);
+  const shake = need("[data-globe]", p);
+  row.scrollIntoView({ block: "start" }); await wait(300);
+  const a = row.getBoundingClientRect(), b = shake.getBoundingClientRect(), r = p.getBoundingClientRect();
+  return { clip: box({ x: r.left, y: a.top, w: r.width, h: b.bottom - a.top }, 10), spots: { globe: row, shake } };
+} };
+
+/* Today → ❝ Notes: the big picture (and the room), the owl's story */
+SHOTS["today-notes"] = { async at(dev) {
+  await goTab("overview"); await wait(700);
+  todayTabSet("notes"); await wait(800);
+  const big = $("#secBig"), story = $("#secStory");
+  const first = big || story;
+  if (!first) throw new Error("the Notes tab has neither the big picture nor the owl's story");
+  await place(first);
+  const els = [big, story].filter(Boolean), r = box(els, 0);
+  const clip = box({ x: r.x, y: r.y, w: r.w, h: Math.min(r.h, innerHeight - r.y - 4) }, dev === "ph" ? 6 : 14);
+  return { clip, spots: { room: $("[data-roomshow],[data-roomarrange]"), story: $("[data-story]") } };
+} };
+
+/* Today → ❝ Notes: the year, with Aim for */
+SHOTS["today-year"] = { async at(dev) {
+  await goTab("overview"); await wait(700);
+  todayTabSet("notes"); await wait(800);
+  const y = need("#secYear");
+  await place(y);
+  return { clip: box(y, dev === "ph" ? 6 : 14), spots: { goal: $("#goalIn", y), pages: $("#pgAimAdd", y) } };
+} };
+
+/* Library: ☰ Filters open, its stage pills */
+SHOTS["lib-filters"] = { async at(dev) {
+  settings.libFilt = true;
+  await goTab("library"); window.scrollTo(0, 0); await wait(700);
+  const filt = need("#filtTog"), pills = $$("[data-sf]");
+  const want = pills.find(b => /Want/.test(b.textContent)), fav = pills.find(b => /Favourites/.test(b.textContent));
+  const m = need("#main").getBoundingClientRect(), r = box([need("#libFind"), filt, ...pills], 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: r.h }, dev === "ph" ? 6 : 14), spots: { filt, want, fav, all: pills[0] } };
+} };
+
+/* Library: one row, its stage disc, heart and mark */
+SHOTS["lib-row"] = { async at(dev) {
+  await goTab("library"); await wait(600);
+  const row = $('.row[data-open="guide-b5"]');
+  if (!row) throw new Error("the made-up favourite is not on the shelf");
+  await place(row, 60);
+  return { clip: box(row, dev === "ph" ? 6 : 12), spots: { dot: $(".stdot[data-cyc]", row), heart: $(".favdot[data-favt]", row), mark: $("[data-ratep]", row) } };
+} };
+
+/* Library: ☑ Select books, two ticked, ⚙ Do something with them open */
+SHOTS["lib-select"] = { async at(dev) {
+  await goTab("library"); window.scrollTo(0, 0); await wait(600);
+  if (!$("#selTog") || !$("#selTog").getClientRects().length) { const f = $("#filtTog"); if (f) { f.click(); await wait(500); } }
+  need("#selTog").click(); await wait(600);
+  for (const id of ["guide-b2", "guide-b4"]) { const r = $(`.row[data-open="${id}"]`); if (r) { r.click(); await wait(250); } }
+  const phone = document.documentElement.dataset.phone === "1";
+  if (phone) { need("#selBarGo").click(); await wait(700); }
+  else { need("#selMoreTog").click(); await wait(600); }
+  const coll = $("#selColl"), all = $("#selAll"), count = $("#selCount"), go = phone ? $("#selBarGo") : $("#selMoreTog");
+  const panel = phone ? ($("#selSheet") || go) : ($("#selMore") || go);
+  const els = [count, go, all, coll, panel].filter(e => e && e.getClientRects().length);
+  const r = box(els, 0);
+  return { clip: box({ x: r.x, y: r.y, w: r.w, h: Math.min(r.h, innerHeight - r.y - 2) }, dev === "ph" ? 6 : 14), spots: { count, go, all, coll } };
+} };
+
+/* Library: ⋯ More open on a computer; ☰ open on a phone (where Sort and the look live) */
+SHOTS["lib-more"] = { async at(dev) {
+  await goTab("library"); window.scrollTo(0, 0); await wait(600);
+  const phone = document.documentElement.dataset.phone === "1";
+  let tog = phone ? need("#filtTog") : need("#barMoreTog");
+  if (tog.getAttribute("aria-expanded") !== "true") { tog.click(); await wait(600); }
+  /* pressing it draws the Library again: find it afresh */
+  tog = phone ? need("#filtTog") : need("#barMoreTog");
+  const drop = phone ? null : $("#barMore");
+  const look = $("#layTog"), sort = $("#toolsTog"), pin = $("[data-barpin]") || $("#followEdit");
+  const els = [tog, drop, look, sort, pin].filter(e => e && e.getClientRects().length);
+  const m = need("#main").getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: phone ? m.left : r.x, y: r.y, w: phone ? m.width : r.w, h: Math.min(r.h, innerHeight - r.y - 2) }, dev === "ph" ? 6 : 14),
+    spots: { more: tog, look, sort, pin } };
+} };
+
+/* Library: ⇅ Sort & layout open */
+SHOTS["lib-sort"] = { async at(dev) {
+  settings.libTools = true; settings.libFilt = document.documentElement.dataset.phone === "1";
+  await goTab("library"); window.scrollTo(0, 0); await wait(700);
+  const sorts = $$("[data-sort]");
+  if (!sorts.length) throw new Error("⇅ Sort & layout did not open");
+  /* no scrolling here: the bar that follows you down the Library would cover the Sort row */
+  if (document.documentElement.dataset.phone === "1") await place(sorts[0], 40);
+  const groups = $$("[data-gb]"), cases = $("#bcGo"), print = $("#libPrint");
+  const m = need("#main").getBoundingClientRect(), r = box([...sorts, ...groups, cases, print].filter(e => e && e.getClientRects().length), 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: Math.min(r.h, innerHeight - r.y - 2) }, dev === "ph" ? 6 : 14),
+    spots: { sort: sorts[0], group: groups[1] || groups[0], cases, print } };
+} };
+
+/* Library: ⛶ Your bookcases */
+SHOTS["lib-cases"] = { async at(dev) {
+  await goTab("library"); await wait(500);
+  openBookcases(); await wait(800);
+  const p = await until(() => { const x = $("#bcPanel"); return x && x.getClientRects().length && x; });
+  if (!p) throw new Error("the bookcases did not open");
+  const r = p.getBoundingClientRect();
+  return { clip: box({ x: r.left, y: r.top, w: r.width, h: Math.min(r.height, innerHeight - r.top) }, 4), spots: { add: $("#bcAdd", p), find: $("#bcFind", p) } };
+} };
+
 /* the dev page reads this back to see each picture's crop and spots drawn */
 window.__guideShot = async (name, dev) => {
   const s = SHOTS[name];
@@ -280,8 +518,12 @@ window.__guideShot = async (name, dev) => {
   const spots = {};
   for (const k in r.spots) {
     const e = r.spots[k];
-    if (!e) continue;
+    /* a thing that isn't drawn (hidden on this screen, or behind a menu) has no spot */
+    if (!e || (e.getClientRects && !e.getClientRects().length)) continue;
     const q = e.getBoundingClientRect ? e.getBoundingClientRect() : e;
+    /* nor one whose middle lies outside the picture */
+    const cx = (q.left ?? q.x) + (q.width ?? q.w) / 2, cy = (q.top ?? q.y) + (q.height ?? q.h) / 2;
+    if (cx < r.clip.x || cx > r.clip.x + r.clip.w || cy < r.clip.y || cy > r.clip.y + r.clip.h) continue;
     spots[k] = [Math.round((q.left ?? q.x) - r.clip.x), Math.round((q.top ?? q.y) - r.clip.y),
       Math.round(q.width ?? q.w), Math.round(q.height ?? q.h)];
   }

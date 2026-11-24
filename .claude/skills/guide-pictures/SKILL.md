@@ -31,7 +31,7 @@ touched), blocks every request to the sync server, Google, Spotify, MangaDex
 and Anthropic, and for each picture opens `index.html?db=smoke` at an address
 of its own, seeds the invented shelf in `shots.js`, draws the screen and cuts
 the picture. The computer is 2144 px wide with text at 135% (it lays out for
-1588); the phone is 412 px at 132%, taken at twice the pixels.
+1588); the phone is 412 × 915 px at 132%, taken at twice the pixels.
 
 ## Add a picture
 
