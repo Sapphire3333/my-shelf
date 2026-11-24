@@ -11938,7 +11938,7 @@ const st=(s,m)=>db.transaction(s,m).objectStore(s);
 const dbPut=(s,v)=>new Promise((res,rej)=>{
   const tx=db.transaction(s,"readwrite");let g=null;
   const fail=()=>{const e=tx.error||(g&&g.error)||new Error("write failed");storeFullNote(e);rej(e);};
-  tx.oncomplete=()=>{tabSay({t:"put",s,k:v&&(v.id!=null?v.id:(v.k!=null?v.k:v.key))});res(true);};
+  tx.oncomplete=()=>{if(s==="covers"&&v&&v.id!=null)coverKeysTouch(v.id,true);tabSay({t:"put",s,k:v&&(v.id!=null?v.id:(v.k!=null?v.k:v.key))});res(true);};
   tx.onabort=fail;
   try{g=tx.objectStore(s).put(v);}catch(e){storeFullNote(e);rej(e);}});
 const dbGet=(s,k)=>new Promise(res=>{const g=st(s,"readonly").get(k);g.onsuccess=()=>res(g.result||null);g.onerror=()=>res(null);});
@@ -11947,10 +11947,45 @@ const dbGet=(s,k)=>new Promise(res=>{const g=st(s,"readonly").get(k);g.onsuccess
    try again, where a book that is genuinely gone means the upload can be dropped. */
 const dbGetOrThrow=(s,k)=>new Promise((res,rej)=>{const g=st(s,"readonly").get(k);g.onsuccess=()=>res(g.result||null);g.onerror=()=>rej(g.error||new Error("read failed"));});
 const dbDel=(s,k)=>new Promise(res=>{const g=st(s,"readwrite").delete(k);
-  g.onsuccess=()=>{tabSay({t:"del",s,k});res();};g.onerror=()=>res();});
+  g.onsuccess=()=>{if(s==="covers")coverKeysTouch(k,false);tabSay({t:"del",s,k});res();};g.onerror=()=>res();});
 const dbAll=s=>new Promise(res=>{const g=st(s,"readonly").getAll();g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
 const dbAllKeys=s=>new Promise(res=>{const g=st(s,"readonly").getAllKeys();g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
 const dbAllRange=(s,range)=>new Promise(res=>{const g=st(s,"readonly").getAll(range);g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);});
+/* ┌─ THE COVER KEYS, KEPT IN MEMORY ───────────────────────────────────────┐
+   │ A cover is kept as a data address inside its row of the covers store,  │
+   │ and Firefox keeps rows that size inside its database file, so listing  │
+   │ the store's keys walks every picture in it: about a third of a second  │
+   │ for a few thousand covers, measured in a headless Firefox. Which books │
+   │ have a cover was asked that way again and again: by the cover colours  │
+   │ every minute, by Search and its hub at every opening, by a cover game  │
+   │ once a visit and by Fill in from the internet. It is read once now     │
+   │ (coverKeys, one getAllKeys) and kept right as covers come and go:      │
+   │ dbPut and dbDel on "covers" tell coverKeysTouch, and so does another   │
+   │ tab's put or delete heard over TABS. A write made while the first read │
+   │ is still under way is applied to it once it lands. The Set is shared:  │
+   │ read it, never change it. Overview's storage counts and the stores'    │
+   │ sweep (bootSweep) still read the store itself.                          │
+   │ dbKeysFrom(store, prefix) lists only the keys that begin with a prefix  │
+   │ ("__pz|", "__read|", "__icon|", "__drv|"), so a look for one kind of    │
+   │ picture no longer walks all the others.                                 │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+let COVER_KEYS=null,coverKeysP=null;
+function coverKeys(){
+  if(COVER_KEYS)return Promise.resolve(COVER_KEYS);
+  if(!coverKeysP)coverKeysP=dbAllKeys("covers").then(ks=>{COVER_KEYS=new Set(ks.map(String));coverKeysP=null;return COVER_KEYS;},
+    ()=>{coverKeysP=null;return new Set();});
+  return coverKeysP;
+}
+function coverKeysTouch(k,on){
+  if(k==null)return;const key=String(k);
+  const apply=S=>{if(on)S.add(key);else S.delete(key);};
+  if(COVER_KEYS)apply(COVER_KEYS);else if(coverKeysP)coverKeysP.then(apply);
+}
+function dbKeysFrom(s,prefix){
+  const p=String(prefix),up=p.slice(0,-1)+String.fromCharCode(p.charCodeAt(p.length-1)+1);
+  return new Promise(res=>{try{const g=st(s,"readonly").getAllKeys(IDBKeyRange.bound(p,up,false,true));
+    g.onsuccess=()=>res(g.result||[]);g.onerror=()=>res([]);}catch(e){res([]);}});
+}
 
 /* =============== state =============== */
 let books=[],genres={},dnfCustom=[],audCustom=[];
@@ -13907,12 +13942,17 @@ async function initSync(){
    │ ten seconds while a first sync is still running, BOOT_SWEEP_MAX at most.│
    │ Its keys are read before the shelf, so a book a sync brings in while it │
    │ runs keeps its pictures. What it looked at and took away is kept in the │
-   │ opening's record (BOOT.sweep) and printed in ⏱ Where the time goes. A   │
-   │ test run sweeps where it always did, inside init, so the smoke sees the │
-   │ same order as before.                                                   │
+   │ opening's record (BOOT.sweep) and printed in ⏱ Where the time goes.     │
+   │ It runs at most once a day on a device (BOOT_SWEEP_DAY, kept under      │
+   │ BOOT_SWEPT_KEY): with covers kept as data addresses, Firefox spent 0.8  │
+   │ to 1.1 s listing the two stores' keys for a few thousand of them, and   │
+   │ a picture no book names costs nothing but room until then. The smoke    │
+   │ sweeps where it always did, inside init, so it sees the same order as   │
+   │ before; the test copy (?db=copy) opens the way a real shelf does.       │
    └──────────────────────────────────────────────────────────────────────────┘ */
-const BOOT_SWEEP_MS=20000,BOOT_SWEEP_MAX=120000;
+const BOOT_SWEEP_MS=20000,BOOT_SWEEP_MAX=120000,BOOT_SWEEP_DAY=864e5,BOOT_SWEPT_KEY="myShelf.sweptAt";
 function bootSweepSoon(){
+  try{if(Date.now()-(+localStorage.getItem(BOOT_SWEPT_KEY)||0)<BOOT_SWEEP_DAY)return;}catch(e){}
   const t0=Date.now();
   const go=()=>{
     if(BOOT.s.synced==null&&SYNC.on&&SYNC.user&&navigator.onLine!==false&&Date.now()-t0<BOOT_SWEEP_MAX){setTimeout(go,10000);return;}
@@ -13968,6 +14008,7 @@ async function bootSweep(){
     setTimeout(async()=>{try{await rdTwinFoldAll();}catch(e){}drvRecentPrune();},8000);
   }catch(e){}
   BOOT.sweep=Object.assign({ms:Math.round(performance.now()-T0)},seen);bootSave();
+  try{localStorage.setItem(BOOT_SWEPT_KEY,String(Date.now()));}catch(e){}
 }
 
 /* =============== boot =============== */
@@ -14158,7 +14199,7 @@ async function bootSweep(){
   SETH_NOW.why="";
   if(lookBack)setTimeout(()=>{try{bannerNote(DEV_COPY_SAID,8000);}catch(e){}},1200);
   setTimeout(()=>{prefsRescue().catch(()=>{});},4000);
-  if(TEST_RUN)await bootSweep();else bootSweepSoon();   /* see THE FIRST SCREEN BEFORE THE SIGN-IN */
+  if(TEST_RUN&&!COPY_DB)await bootSweep();else bootSweepSoon();   /* see THE FIRST SCREEN BEFORE THE SIGN-IN */
   /* A book named in the address is opened HERE, as soon as the shelf is in
      memory — not wherever the first paint happens to come from, because that is
      inside initSync, behind a call to the sign-in service. A bookmarked book has
@@ -14369,7 +14410,7 @@ if(TABS)TABS.onmessage=e=>{
   const m=e.data;
   if(!m||typeof m!=="object")return;
   if(m.s==="books")tabHeard.books.add(m.k);
-  else if(m.s==="covers")tabHeard.covers.add(m.k);
+  else if(m.s==="covers"){tabHeard.covers.add(m.k);if(m.t==="put"||m.t==="del")coverKeysTouch(m.k,m.t==="put");}
   else if(m.s==="images")tabHeard.imgs.add(m.k);
   else if(m.s==="meta")tabHeard.meta.add(m.k);
   else return;
@@ -16733,6 +16774,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-24.26",go:["el:settings:#setTime"],lines:["<b>⏱ Opening sooner in Firefox, and less waiting on covers.</b> Covers are kept inside the browser's own storage, and in Firefox asking for the list of them meant reading through every picture. The app did that at every opening, once more for the jigsaw's own pictures, and again and again while you used it: the cover colours in the Library every minute, Search and its hub each time they opened. The list is read once now and kept up to date as covers come and go, a look for one kind of picture reads only that kind, and the tidying of pictures no book uses runs at most once a day. Timed in Firefox with a few thousand covers: the first screen came at 0.9 s instead of 2.2 to 2.5 s."]},
   {v:"2026-11-24.25",go:["el:settings:#setTime"],lines:["<b>⏱ Opening sooner.</b> The first screen used to wait until the app had read everything, tidied its stored pictures and heard back from the sign-in. Now it is drawn from what's on this device first, and the sign-in follows. The tidying of pictures no book uses any more waits until the first sync is done. ⚙ Settings → ⏱ Where the time goes now also says how long the start-up repairs, the stored pieces and the sync queue took, how many times the screen was drawn again while syncing, and what the later tidying looked at."]},
   {v:"2026-11-24.24",lines:["<b>📚 Two series that only share a name stay apart.</b> On a collection's page, <b>Others in</b> used to list every collection with the same series name, so two writers' series that happen to be called the same pointed at each other. It now lists only the same writer's, however the name is written (surname first or not). A collection whose series name finds no one else shows <b>Other collections by</b> its writer instead."]},
   {v:"2026-11-24.23",go:["guide:map:chal"],lines:["<b>📖 The guide's fifth chapter: Challenges and medals.</b> Press ? and turn to <b>🎲 Challenges and medals</b>: eleven ways on three lines. The Reading room (today's three and tomorrow's, a challenge of your own, the long road, the dare), the games and the shop (playing a game, gold from XP, trying a look on before you buy) and medals and cards (the walls and Nearly there, one medal's story, opening a pack, the trading post), each with its picture and ▶ Show me."]},
@@ -25262,7 +25304,7 @@ async function openBulkFill(ids){
   /* one read instead of one per book. A story needs no read at all: `en.cover`
      is a plain flag on the entry, which is why a whole shelf can be costed
      before anything is fetched. */
-  const hasCover=new Set((await dbAllKeys("covers")).filter(k=>typeof k==="string"));
+  const hasCover=await coverKeys();   /* see THE COVER KEYS, KEPT IN MEMORY */
   if(q("#bulkSheet"))return;         /* opened twice while that read was in flight */
   /* A collection is not a thing to look up: its stories are the books. Each one
      wants a cover, a blurb and a page count of its own, while the author and the
@@ -36693,7 +36735,7 @@ async function bfRows(){
   for(const b of books){if(!rdFileOf(b))continue;seen.add(b.id);
     rows.push({id:b.id,title:b.title||"Untitled",f:b.readFile,here:await size(b.id),state:"live"});}
   const binned=new Set((await dbAllKeys("trash")).map(String));
-  for(const k of (await dbAllKeys("images")).map(String)){
+  for(const k of (await dbKeysFrom("images","__read|")).map(String)){
     if(k.indexOf("__read|")!==0)continue;const id=k.slice(7);if(seen.has(id))continue;seen.add(id);
     let t=null;if(binned.has(id))try{t=await dbGet("trash",id);}catch(e){}
     rows.push({id,title:(t&&t.book&&t.book.title)||"a book that is gone",f:t&&t.book&&t.book.readFile,here:await size(id),state:t?"bin":"gone",at:t&&t.at});}
@@ -43518,7 +43560,7 @@ async function drvRecentPrune(){
   try{
     const spare=[];
     /* one at a time and let go of at once: these hold whole books */
-    for(const k of await dbAllKeys("images")){const s=String(k);if(s.indexOf("__drv|")!==0||drvCopyLive(s))continue;
+    for(const k of await dbKeysFrom("images","__drv|")){const s=String(k);if(s.indexOf("__drv|")!==0||drvCopyLive(s))continue;
       const r=await dbGet("images",k);if(!r)continue;
       const {eid,b,en,loose}=drvCopyHolder(s),stands=loose||(b&&(!eid||en));
       if(r.keep&&stands)continue;
@@ -49776,8 +49818,8 @@ const slivPay=()=>SLIV_PAY[Math.min(SLIV_PAY.length-1,(quests&&quests.sliver&&qu
 /* the ids that have a picture, asked once a visit — the books themselves do
    not say, because a cover lives in its own store */
 function slivLoadKeys(then){
-  dbAllKeys("covers").then(ks=>{
-    slivKeys=new Set(ks.map(String).filter(k=>k.indexOf("__")!==0));
+  coverKeys().then(ks=>{
+    slivKeys=new Set([...ks].filter(k=>k.indexOf("__")!==0));
     if(then)then();
   }).catch(()=>{slivKeys=new Set();if(then)then();});
 }
@@ -54422,7 +54464,7 @@ async function pzPicsLoad(){
   try{const r=await dbGet("meta","pzPics");pzPics=(r&&r.v&&typeof r.v==="object")?r.v:{};}catch(e){pzPics={};}
   /* a restored backup brings the pictures but not the index */
   try{let add=false;
-    for(const k of await dbAllKeys("images")){const s=String(k);if(s.indexOf("__pz|")!==0)continue;const id=s.slice(5);
+    for(const k of await dbKeysFrom("images","__pz|")){const s=String(k);if(s.indexOf("__pz|")!==0)continue;const id=s.slice(5);
       if(!pzPics[id]){pzPics[id]={at:1,n:""};add=true;}}
     if(add)pzPicsSave();}catch(e){}
 }
@@ -59135,7 +59177,7 @@ let hueCovAt=0;
 async function hueLoad(){
   if(!hueMap){try{const r=await dbGet("meta","coverHues");hueMap=(r&&r.v&&typeof r.v==="object")?r.v:{};}catch(e){hueMap={};}}
   if(!hueCov||Date.now()-hueCovAt>60000){
-    try{hueCov=new Set((await dbAllKeys("covers")).map(String));}catch(e){hueCov=hueCov||new Set();}
+    try{hueCov=await coverKeys();}catch(e){hueCov=hueCov||new Set();}   /* kept current: see THE COVER KEYS, KEPT IN MEMORY */
     hueCovAt=Date.now();}
 }
 /* undefined: not looked at yet; "": no cover; otherwise the band. A book that
@@ -61735,7 +61777,7 @@ function iconSweepSay(){
 /* the medals whose original is kept on this device beside the cut one —
    which is what "changed by the sweep" means, whichever run did it */
 async function medalSweepChanged(){
-  const keys=new Set(await dbAllKeys("images"));
+  const keys=new Set(await dbKeysFrom("images","__icon|"));
   return Object.keys(ownIcons||{}).filter(k=>k.indexOf("medal:")===0&&ownIconHas(k)&&keys.has(ownIconKey(k)+"~before"));
 }
 /* each changed medal as it was and as it is, side by side, with its own way
@@ -63817,7 +63859,7 @@ async function renderHub(part){
      │ The cover truth needs the store's key list, same as Search's tab-open    │
      │ refresh.                                                                 │
      └──────────────────────────────────────────────────────────────────────────┘ */
-  try{searchCoverIds=new Set((await dbAllKeys("covers")).map(String));}catch(e){}
+  try{searchCoverIds=await coverKeys();}catch(e){}
   /* Shelf care's alone — Today never draws them, and walked every gap list anyway */
   const hubGapCounts=today?GAPS.map(()=>0):GAPS.map(g=>g[2]().filter(sKindOk).length);
   const hubDeepCounts=today?DEEP_GAPS.map(()=>0):DEEP_GAPS.map(g=>g[2]().filter(sKindOk).length);
@@ -70457,8 +70499,8 @@ document.addEventListener("click",e=>{
   settings.savedShelves=[...shelvesOf(),Object.assign({id:uid(),name},snap)];saveSettings();shelfRowPaint();
 },true);
 function renderSearchView(){
-  dbAllKeys("covers").then(ks=>{
-    searchCoverIds=new Set(ks.map(String));
+  coverKeys().then(ks=>{
+    searchCoverIds=ks;
     if(view==="search")renderSearchBody();
   });
   q("#main").innerHTML=`
@@ -84199,6 +84241,7 @@ async function copyLoad(data){
   if(!backupShapeOk(data))throw new Error("not a shelf copy");
   const clear=s=>new Promise(res=>{try{const r=st(s,"readwrite").clear();r.onsuccess=r.onerror=()=>res();}catch(e){res();}});
   for(const s of ["books","covers","images","meta","snapshots","trash"])await clear(s);
+  COVER_KEYS=null;   /* see THE COVER KEYS, KEPT IN MEMORY */
   books.length=0;
   const c=data.copy||{};
   await applyBackup(data);
