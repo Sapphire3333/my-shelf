@@ -12482,7 +12482,10 @@ function drawTimed(v,ms){try{
   a.push([Date.now(),String(v||""),Math.round(ms)]);if(a.length>DRAWT_MAX)a.splice(0,a.length-DRAWT_MAX);
   localStorage.setItem(DRAWT_KEY,JSON.stringify(a));
 }catch(e){}}
-const BOOT_SAY=[["file","the app file"],["code","code ready"],["shelf","shelf read"],["settings","settings read"],["tidy","tidied"],["ask","sign-in asked"],["signin","answered"],["first","first screen"],["synced","synced"]];
+/* repairs, loads and local came with THE FIRST SCREEN BEFORE THE SIGN-IN: the
+   start-up repairs, the stored pieces read before the settings, and the sync
+   queue read. An opening timed before them simply has no such stage. */
+const BOOT_SAY=[["file","the app file"],["code","code ready"],["shelf","shelf read"],["repairs","repairs checked"],["loads","stored pieces read"],["settings","settings read"],["tidy","tidied"],["local","sync queue read"],["first","first screen"],["ask","sign-in asked"],["signin","answered"],["synced","synced"]];
 function timeLines(){
   const ms=x=>x>=1000?(x/1000).toFixed(1)+" s":x+" ms";
   const a=bootRead().slice().reverse(),out=[];
@@ -12493,7 +12496,10 @@ function timeLines(){
     const parts=BOOT_SAY.filter(([k])=>k==="file"?r.file:s[k]!=null).map(([k,l])=>l+" "+ms(k==="file"?r.file:s[k]));
     const sign=s.signin!=null&&s.ask!=null?` · the sign-in took ${ms(s.signin-s.ask)}${r.renew===true?", renewed over the network":r.renew===false?", still fresh":""}`:"";
     const busy=r.busy?(r.busy.n?` · busy in the first minute: ${r.busy.n} spell${r.busy.n===1?"":"s"}, ${ms(r.busy.ms)} in all, the longest ${ms(r.busy.max)}`:" · no busy spells in the first minute"):"";
-    out.push(`   · ${when(r.t)}${first?" (first today)":""}${gap!=null?`, ${gap>=1?Math.round(gap)+" h":Math.max(1,Math.round(gap*60))+" min"} after the one before`:""}: ${parts.join(" · ")}${sign}${busy}${r.n?` · ${r.n.toLocaleString()} on the shelf, ${r.w} px wide`:""}`);});
+    /* drawn again while the first sync ran, and the stores' sweep that now waits for it */
+    const drawn=r.dn?` · drawn ${r.dn} time${r.dn===1?"":"s"} more while syncing, ${ms(r.dms||0)} of drawing`:"";
+    const swept=r.sweep?` · pictures swept after: ${ms(r.sweep.ms)}, ${r.sweep.covers.toLocaleString()} covers and ${r.sweep.images.toLocaleString()} pictures looked at, ${r.sweep.gone} taken away`:"";
+    out.push(`   · ${when(r.t)}${first?" (first today)":""}${gap!=null?`, ${gap>=1?Math.round(gap)+" h":Math.max(1,Math.round(gap*60))+" min"} after the one before`:""}: ${parts.join(" · ")}${sign}${busy}${drawn}${swept}${r.n?` · ${r.n.toLocaleString()} on the shelf, ${r.w} px wide`:""}`);});
   let d=[];try{d=JSON.parse(localStorage.getItem(DRAWT_KEY)||"[]");}catch(e){}if(!Array.isArray(d))d=[];
   if(!d.length){out.push("Pages drawn: none timed on this device yet.");return out;}
   const by=new Map();d.forEach(([t,v,m])=>{if(!by.has(v))by.set(v,[]);by.get(v).push(m);});
@@ -13868,6 +13874,9 @@ async function initSync(){
     }else if(event==="SIGNED_OUT"){SYNC.user=null;renderLogin();}
     else if(session&&session.user){SYNC.user=session.user;}
   });
+  /* the first screen from this device, before the sign-in is asked — see THE
+     FIRST SCREEN BEFORE THE SIGN-IN; drawn again below when it answers */
+  if(BOOT.s.first==null){try{render();}catch(e){console.warn("[shelf] first draw",e);}}
   BOOT.renew=bootTokenOld();bootStage("ask");   /* see ⏱ WHERE THE TIME GOES */
   const {data,error}=await SYNC.supa.auth.getSession();
   bootStage("signin");
@@ -13879,6 +13888,86 @@ async function initSync(){
     authLog("gate","no usable session at start — the sign-in screen is shown"+(authTokenHere()?" although a token is in storage (refused, or expired)":" and storage holds no token (cleared, or a different browser/app window)"));
     renderLogin();
   }
+}
+
+/* ┌─ THE FIRST SCREEN BEFORE THE SIGN-IN ──────────────────────────────────┐
+   │ An opening timed on a computer with a shelf of a few thousand books in  │
+   │ Firefox drew its first screen 4.7 to 12.7 s after the press, and the    │
+   │ sign-in itself was 0.05 to 0.9 s of it: the rest was this device's own  │
+   │ work, settings read at about 2.0 s, "tidied" at about 4.4 s, the        │
+   │ sign-in asked at about 5.7 s, and only then the first screen, because   │
+   │ it was drawn inside initSync after getSession answered. Two things      │
+   │ changed. The screen is drawn from what is on the device before the      │
+   │ sign-in is asked (initSync, "the first screen from this device"); when  │
+   │ the sign-in answers it is drawn again as before, and with no sign-in    │
+   │ the sign-in screen replaces it. And the stores' sweep below, which took │
+   │ the "tidied" step (every cover and picture key read, and the ones no    │
+   │ book names deleted one at a time), runs after the first sync instead   │
+   │ (bootSweepSoon): BOOT_SWEEP_MS after the start, waiting in steps of     │
+   │ ten seconds while a first sync is still running, BOOT_SWEEP_MAX at most.│
+   │ Its keys are read before the shelf, so a book a sync brings in while it │
+   │ runs keeps its pictures. What it looked at and took away is kept in the │
+   │ opening's record (BOOT.sweep) and printed in ⏱ Where the time goes. A   │
+   │ test run sweeps where it always did, inside init, so the smoke sees the │
+   │ same order as before.                                                   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const BOOT_SWEEP_MS=20000,BOOT_SWEEP_MAX=120000;
+function bootSweepSoon(){
+  const t0=Date.now();
+  const go=()=>{
+    if(BOOT.s.synced==null&&SYNC.on&&SYNC.user&&navigator.onLine!==false&&Date.now()-t0<BOOT_SWEEP_MAX){setTimeout(go,10000);return;}
+    bootSweep().catch(()=>{});};
+  setTimeout(go,BOOT_SWEEP_MS);
+}
+async function bootSweep(){
+  const T0=performance.now(),seen={covers:0,images:0,gone:0};
+  try{
+    const ck=await dbAllKeys("covers"),ik=await dbAllKeys("images");seen.covers=ck.length;seen.images=ik.length;
+    const live=new Set(books.map(b=>b.id));
+    const validImg=new Set();books.forEach(b=>imgKeysOf(b).forEach(k=>validImg.add(k)));
+    bgList.forEach(c=>validImg.add(bgKey(c.id)));
+    padList.forEach(c=>validImg.add(padKey(c.id)));
+    Object.keys(groupArt).forEach(k=>{if(groupArt[k]&&groupArt[k].img)validImg.add(gartKey(groupArt[k].img));});
+    libArt.forEach(a=>{if(a&&a.id)validImg.add(libArtKey(a.id));});
+    /* ┌─ A COVER KEY BEGINNING __ IS NOT A BOOK ────────────────────────────┐
+       │ This line reads "a cover whose book is gone", and every cover key WAS │
+       │ a book id — so it swept the store by asking whether the key was on    │
+       │ the shelf. Two pictures are filed here that are nobody's cover: the   │
+       │ badge's own picture (__avatar) and the Library's dragon (__dragon).   │
+       │ Both were deleted at EVERY start, a few lines after being read into   │
+       │ memory — so each lasted exactly one visit and came back the next as   │
+       │ the drawn stand-in, with nothing said. Anything new filed here under  │
+       │ a __ name must be reserved the same way, or this line will eat it.    │
+       └───────────────────────────────────────────────────────────────────────┘ */
+    const reserved=k=>typeof k==="string"&&k.slice(0,2)==="__";
+    for(const k of ck)if(!live.has(k)&&!reserved(k)){await dbDel("covers",k);seen.gone++;}
+    /* …and the same goes for a picture of your own for a medal, a game or a
+       task (__icon|…): no book names it, so this line deleted every one at the
+       next start and it came back as the emoji. The ownIcons index is what
+       keeps or drops those — see YOUR OWN PICTURES — and the pzPics index
+       does the same for your puzzle pictures (__pz|…, YOUR OWN PUZZLES).
+       The same trap took the room's pictures (__room|…) and a book's own map
+       (__map|…) at every start, while only __icon| and __pz| were spared by
+       name: on a device that syncs they came back from the cloud each visit,
+       on one that doesn't they were simply gone. Every key that begins with
+       two underscores is spared now, the rule the covers already keep — a
+       book's picture key is "<book id>|<picture id>", and no id begins so. */
+    for(const k of ik)if(!validImg.has(k)&&String(k).slice(0,2)!=="__"){await dbDel("images",k);seen.gone++;}
+    /* …except a book's own file to read (__read|<book>), which goes with its
+       book — see THE READER */
+    /* …and a book's own map (__map|<book>). A book in Recently deleted keeps
+       both: its bin copy carries them since EVERY FILE A BOOK OWNS, but bin
+       copies made before that do not, so the sweep spares them while the book
+       is in the bin and takes them once it is gone for good. */
+    {const binned=new Set((await dbAllKeys("trash")).map(k=>String(k)));
+     for(const k of ik){const s=String(k),id=s.indexOf("__read|")===0?s.slice(7):s.indexOf("__map|")===0?s.slice(6):null;
+       if(id&&!live.has(id)&&!binned.has(id)){await dbDel("images",k);seen.gone++;}}}
+    /* …and a Drive file's copy on this device lasts while its book is being
+       read — see BOOK FILES ON GOOGLE DRIVE */
+    /* later, so reading the copies never slows the shelf's first paint */
+    setTimeout(async()=>{try{await rdTwinFoldAll();}catch(e){}drvRecentPrune();},8000);
+  }catch(e){}
+  BOOT.sweep=Object.assign({ms:Math.round(performance.now()-T0)},seen);bootSave();
 }
 
 /* =============== boot =============== */
@@ -13909,6 +13998,7 @@ async function initSync(){
   backfilled.push(...await liftUnanimousGenres());  /* same reason, same send */
   backfilled.push(...await undateOldGuesses());     /* once, and sent the same way */
   backfilled.push(...await collReadingToDefault());  /* likewise */
+  bootStage("repairs");   /* see ⏱ WHERE THE TIME GOES */
   const g=await dbGet("meta","genres");genres=g?g.v:{};
   const d=await dbGet("meta","dnfReasons");dnfCustom=d?d.v:[];
   const au=await dbGet("meta","audiences");audCustom=au?au.v:[];
@@ -13957,6 +14047,7 @@ async function initSync(){
   await moneyLoad();
   await freeLoad();
   await offLoad();
+  bootStage("loads");
   if(!TEST_RUN)setTimeout(()=>{freeStep();},FREE_START);   /* see 🏛 FREE TO BORROW */
   if(!TEST_RUN){ownAutoSoon(FREE_START+10000);setInterval(()=>{ownAutoSoon(0);ownDriveTick();},OWN_AUTO_EVERY);}   /* see ⌛ KEEPS ITSELF RIGHT */
   /* the look at opening, and at coming back to the app — see 📥 NEW IN YOUR DRIVE */
@@ -14067,51 +14158,7 @@ async function initSync(){
   SETH_NOW.why="";
   if(lookBack)setTimeout(()=>{try{bannerNote(DEV_COPY_SAID,8000);}catch(e){}},1200);
   setTimeout(()=>{prefsRescue().catch(()=>{});},4000);
-  try{
-    const live=new Set(books.map(b=>b.id));
-    const validImg=new Set();books.forEach(b=>imgKeysOf(b).forEach(k=>validImg.add(k)));
-    bgList.forEach(c=>validImg.add(bgKey(c.id)));
-    padList.forEach(c=>validImg.add(padKey(c.id)));
-    Object.keys(groupArt).forEach(k=>{if(groupArt[k]&&groupArt[k].img)validImg.add(gartKey(groupArt[k].img));});
-    libArt.forEach(a=>{if(a&&a.id)validImg.add(libArtKey(a.id));});
-    /* ┌─ A COVER KEY BEGINNING __ IS NOT A BOOK ────────────────────────────┐
-       │ This line reads "a cover whose book is gone", and every cover key WAS │
-       │ a book id — so it swept the store by asking whether the key was on    │
-       │ the shelf. Two pictures are filed here that are nobody's cover: the   │
-       │ badge's own picture (__avatar) and the Library's dragon (__dragon).   │
-       │ Both were deleted at EVERY start, a few lines after being read into   │
-       │ memory — so each lasted exactly one visit and came back the next as   │
-       │ the drawn stand-in, with nothing said. Anything new filed here under  │
-       │ a __ name must be reserved the same way, or this line will eat it.    │
-       └───────────────────────────────────────────────────────────────────────┘ */
-    const reserved=k=>typeof k==="string"&&k.slice(0,2)==="__";
-    for(const k of await dbAllKeys("covers"))if(!live.has(k)&&!reserved(k))await dbDel("covers",k);
-    /* …and the same goes for a picture of your own for a medal, a game or a
-       task (__icon|…): no book names it, so this line deleted every one at the
-       next start and it came back as the emoji. The ownIcons index is what
-       keeps or drops those — see YOUR OWN PICTURES — and the pzPics index
-       does the same for your puzzle pictures (__pz|…, YOUR OWN PUZZLES).
-       The same trap took the room's pictures (__room|…) and a book's own map
-       (__map|…) at every start, while only __icon| and __pz| were spared by
-       name: on a device that syncs they came back from the cloud each visit,
-       on one that doesn't they were simply gone. Every key that begins with
-       two underscores is spared now, the rule the covers already keep — a
-       book's picture key is "<book id>|<picture id>", and no id begins so. */
-    for(const k of await dbAllKeys("images"))if(!validImg.has(k)&&String(k).slice(0,2)!=="__")await dbDel("images",k);
-    /* …except a book's own file to read (__read|<book>), which goes with its
-       book — see THE READER */
-    /* …and a book's own map (__map|<book>). A book in Recently deleted keeps
-       both: its bin copy carries them since EVERY FILE A BOOK OWNS, but bin
-       copies made before that do not, so the sweep spares them while the book
-       is in the bin and takes them once it is gone for good. */
-    {const binned=new Set((await dbAllKeys("trash")).map(k=>String(k)));
-     for(const k of await dbAllKeys("images")){const s=String(k),id=s.indexOf("__read|")===0?s.slice(7):s.indexOf("__map|")===0?s.slice(6):null;
-       if(id&&!live.has(id)&&!binned.has(id))await dbDel("images",k);}}
-    /* …and a Drive file's copy on this device lasts while its book is being
-       read — see BOOK FILES ON GOOGLE DRIVE */
-    /* later, so reading the copies never slows the shelf's first paint */
-    setTimeout(async()=>{try{await rdTwinFoldAll();}catch(e){}drvRecentPrune();},8000);
-  }catch(e){}
+  if(TEST_RUN)await bootSweep();else bootSweepSoon();   /* see THE FIRST SCREEN BEFORE THE SIGN-IN */
   /* A book named in the address is opened HERE, as soon as the shelf is in
      memory — not wherever the first paint happens to come from, because that is
      inside initSync, behind a call to the sign-in service. A bookmarked book has
@@ -14121,6 +14168,7 @@ async function initSync(){
   bootStage("tidy");
   if(!bootRestored){bootRestored=true;restoreFromHistory();}
   await loadSyncLocal();
+  bootStage("local");
   initSync();
   /* after loadSyncLocal, so these join the saved queue. Not gated on SYNC.on:
      initSync turns it on before its first await only when the library is
@@ -16685,6 +16733,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-24.25",go:["el:settings:#setTime"],lines:["<b>⏱ Opening sooner.</b> The first screen used to wait until the app had read everything, tidied its stored pictures and heard back from the sign-in. Now it is drawn from what's on this device first, and the sign-in follows. The tidying of pictures no book uses any more waits until the first sync is done. ⚙ Settings → ⏱ Where the time goes now also says how long the start-up repairs, the stored pieces and the sync queue took, how many times the screen was drawn again while syncing, and what the later tidying looked at."]},
   {v:"2026-11-24.24",lines:["<b>📚 Two series that only share a name stay apart.</b> On a collection's page, <b>Others in</b> used to list every collection with the same series name, so two writers' series that happen to be called the same pointed at each other. It now lists only the same writer's, however the name is written (surname first or not). A collection whose series name finds no one else shows <b>Other collections by</b> its writer instead."]},
   {v:"2026-11-24.23",go:["guide:map:chal"],lines:["<b>📖 The guide's fifth chapter: Challenges and medals.</b> Press ? and turn to <b>🎲 Challenges and medals</b>: eleven ways on three lines. The Reading room (today's three and tomorrow's, a challenge of your own, the long road, the dare), the games and the shop (playing a game, gold from XP, trying a look on before you buy) and medals and cards (the walls and Nearly there, one medal's story, opening a pack, the trading post), each with its picture and ▶ Show me."]},
   {v:"2026-11-24.22",go:["guide:map:book"],lines:["<b>📖 The guide's fourth chapter: a book's page.</b> Press ? and turn to <b>📖 A book's page</b>: nineteen ways on four lines. Your verdict (its stage, ✓ Finish it, your mark, guessing your mark, its readings), your words (quotes typed or off a photo, ✍ Your words, what you think will happen, a letter for the day you finish, 🧠 Questions for later), while you read (📖 Read it here, ⏱ the timer with rain or a fire, 🏃 a sprint, lent or borrowed) and the book itself (🔎 Auto-fill, its cover, format, language and where it's set, a map of your own, 🖨 printing its page). Each with its picture and ▶ Show me, which opens the book you're reading. The ? buttons now say <b>The guide</b>."]},
@@ -21798,6 +21847,7 @@ function render(){
   coverStats.r=Math.round(performance.now()-drawT0);
   /* see ⏱ WHERE THE TIME GOES */
   if(BOOT.s.first==null)bootStage("first");
+  else if(BOOT.s.synced==null){BOOT.dn=(BOOT.dn||0)+1;BOOT.dms=(BOOT.dms||0)+coverStats.r;}
   drawTimed(view,coverStats.r);
   return drew;
 }
