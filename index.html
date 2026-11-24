@@ -15781,6 +15781,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-24.18",go:["tab:library"],lines:["<b>🎧 Spotify's hiccups no longer stop the run.</b> When Spotify answered a search with its own “An unexpected error occurred”, the whole run to Spotify stopped there, before any playlist was made. Now My Shelf waits a moment and asks again; a song Spotify still can't answer for is left for the next run while the rest carry on to the playlist, and only five failures in a row stop it. Everything already found is kept, so in Library → 🎵 → 🎧 To Spotify, <b>▶ Find them on Spotify</b> carries on where the last run stopped."]},
   {v:"2026-11-24.17",go:["tab:library"],lines:["<b>🎵 Your songs' genres keep coming with another tab in front.</b> Apple's genres, covers and years for your songs used to be looked up only while My Shelf was the tab in front. Now they carry on behind other tabs too, one My Shelf tab doing it if you have several open. Firefox keeps the pace; Chrome slows a tab that's been behind others for a while to about one a minute."]},
   {v:"2026-11-24.16",go:["el:care:#chatMark"],lines:["<b>🤖 A Claude chat, read in one press.</b> In 🧰 Shelf care's import buttons, beside 🔖 Book page to My Shelf, is <b>🤖 Claude chat to My Shelf</b>: a bookmark. Drag it to your bookmarks bar and press it on a chat at claude.ai, and My Shelf opens and shows what the chat would make as a story: its chapters and their words, the replies that are talk, your prompts. It reads the whole chat, not only what's on screen, and of a retried reply only the version you kept. It adds nothing yet: <b>⧉ Copy the numbers</b> takes the counts, none of the chat's words."]},
   {v:"2026-11-24.15",go:["el:insights:#secTbr"],lines:["<b>⛰ Your mountain's path lands where you tap.</b> On ✨ Insights, a photo of your own mountain took the foot and the top you tapped a good way off to the right and down when the text was larger than 100% in Firefox. It's measured the way every other picture in the app is now: press <b>⤴ Set the path again</b> under the mountain and tap its foot and its top once more."]},
@@ -37681,19 +37682,46 @@ async function spfArrive(o){
   libMusicMode=true;libDriveMode=false;libNextMode=false;libFandomMode=false;libSeriesMode=false;
   if(view==="library")renderLibrary();else await goTab("library");setTimeout(spfOpen,300);
 }
-/* an ask of the Web API, the token renewed when it has run out or Spotify says so */
+/* ---- SPOTIFY'S OWN TROUBLE IS WAITED OUT, NOT A REASON TO STOP ----
+   A run of a couple of thousand songs met one "An unexpected error
+   occurred. Please try again later." (Spotify's words for its own 500 or
+   502) about 450 songs in, and the whole run stopped there with no
+   playlist made. Now a 5xx, or no answer at all, is asked again after
+   SPF_WAITS seconds (GET and PUT only: a POST may have been done before
+   the error came back, and doing it twice would make two playlists); a
+   429 waits as long as Spotify says, unless that is more than SPF_LONG;
+   and a song whose search still fails is left for the next run (R.skip)
+   rather than ending this one, unless SPF_FAILS songs fail in a row,
+   which is Spotify being down. Every error says the status it came with. */
+const SPF_WAITS=[2,5,15],SPF_LONG=120,SPF_FAILS=5;
+const spfErr=(status,msg)=>Object.assign(new Error(msg),{status});
+/* an error one song can be skipped for: Spotify's trouble, no answer, a search it could not read */
+const spfPassable=e=>!!e&&(e.status===0||e.status===400||e.status===404||e.status>=500);
+/* an ask of the Web API, the token renewed when it has run out or Spotify says so.
+   SPF.stub answers in place of Spotify for the smoke; SPF.net stands in for fetch
+   itself, so the waiting below can be tried too (SPF.waitScale shortens it) */
 async function spfCall(method,path,body){
-  if(TEST_RUN&&!SPF.stub)throw new Error("Spotify isn't asked from a test copy");
+  if(TEST_RUN&&!SPF.stub&&!SPF.net)throw new Error("Spotify isn't asked from a test copy");
   if(SPF.stub)return SPF.stub(method,path,body);
   let s=spfStore();if(!s.a)throw new Error("not connected");
   if(Date.now()>(s.exp||0)&&s.r)s=await spfToken({grant_type:"refresh_token",refresh_token:s.r,client_id:s.cid});
-  const go=()=>fetch(SPF_API+path,{method,headers:Object.assign({Authorization:"Bearer "+s.a},body?{"Content-Type":"application/json"}:{}),body:body?JSON.stringify(body):undefined});
+  const net=SPF.net||fetch,nap=sec=>new Promise(x=>setTimeout(x,sec*1000*(SPF.waitScale==null?1:SPF.waitScale)));
+  /* null: no answer at all (no connection, or the request failed on the way) */
+  const go=()=>net(SPF_API+path,{method,headers:Object.assign({Authorization:"Bearer "+s.a},body?{"Content-Type":"application/json"}:{}),body:body?JSON.stringify(body):undefined}).catch(()=>null);
   let r=await go();
-  if(r.status===401&&s.r){s=await spfToken({grant_type:"refresh_token",refresh_token:s.r,client_id:s.cid});r=await go();}
-  if(r.status===429){const w=Math.min(60,+(r.headers.get("retry-after")||5));await new Promise(x=>setTimeout(x,w*1000));r=await go();}
-  if(r.status===403)throw new Error("Spotify refused. It lets a personal app in only while the account that made it has Premium, and only accounts added under the app's Users");
+  if(r&&r.status===401&&s.r){s=await spfToken({grant_type:"refresh_token",refresh_token:s.r,client_id:s.cid});r=await go();}
+  const again=method==="GET"||method==="PUT";
+  for(let k=0,w5=0;k<12;k++){
+    if(r&&r.status===429){const w=+(r.headers.get("retry-after")||5);
+      if(w>SPF_LONG)throw spfErr(429,`Spotify asks this app to wait ${Math.ceil(w/60)} minutes before it asks again`);
+      await nap(w);r=await go();continue;}
+    if(again&&(!r||r.status>=500)&&w5<SPF_WAITS.length){await nap(SPF_WAITS[w5++]);r=await go();continue;}
+    break;
+  }
+  if(!r)throw spfErr(0,"Spotify didn't answer (is the connection down?)");
+  if(r.status===403)throw spfErr(403,"Spotify refused. It lets a personal app in only while the account that made it has Premium, and only accounts added under the app's Users");
   const j=r.status===204?{}:await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error((j.error&&j.error.message)||"Spotify answered "+r.status);
+  if(!r.ok)throw spfErr(r.status,`Spotify answered ${r.status}${j.error&&j.error.message?": "+j.error.message:""}`);
   return j;
 }
 /* a title or an artist to compare: brackets, "feat.", and a dash's "Remastered", "Live", "Radio Edit", "… Version" aside */
@@ -37723,12 +37751,22 @@ const spfPool=pick=>musicPool().filter(f=>pick==="all"||(pick.startsWith("m:")&&
 async function spfRun(pick,name,toList,toLiked){
   if(SPF.run)return;
   await spfMatchLoad();
-  const pool=spfPool(pick),R=SPF.run={n:pool.length,i:0,found:0,miss:[],stop:false,list:"",liked:0,done:false};
+  const pool=spfPool(pick),R=SPF.run={n:pool.length,i:0,found:0,miss:[],stop:false,list:"",liked:0,done:false,skip:0,bad:""};
   spfPaint();
   try{
+    let fails=0;
     for(const f of pool){if(R.stop)break;R.i++;
       let m=spfMatch[f.id];
-      if(!m){m=[Date.now(),await spfFind(f)];spfMatch[f.id]=m;if(R.i%25===0)spfMatchSave();await new Promise(r=>setTimeout(r,SPF_GAP));}
+      if(!m){
+        let uri;
+        try{uri=await spfFind(f);fails=0;}
+        catch(e){
+          /* not kept as "not found": the next run asks for it again */
+          if(!spfPassable(e))throw e;
+          R.skip++;R.bad=e.message||"";
+          if(++fails>=SPF_FAILS)throw spfErr(e.status,`Spotify failed on ${fails} songs in a row (${e.message})`);
+          await new Promise(r=>setTimeout(r,SPF_GAP));continue;}
+        m=[Date.now(),uri];spfMatch[f.id]=m;if(R.i%25===0)spfMatchSave();await new Promise(r=>setTimeout(r,SPF_GAP));}
       if(m[1])R.found++;else{const nm=lyrNameOf(f);R.miss.push(nm.a?nm.a+" - "+nm.t:nm.t);}
       if(R.i%10===0)spfPaint();}
     spfMatchSave();
@@ -37760,8 +37798,10 @@ function spfPanelHtml(){
   const prog=R?(R.done||R.err||!SPF.run
       ?`<div class="sprun"><b>${R.err?"Stopped":R.stop?"Stopped":"Done"}</b>: ${R.found.toLocaleString()} of ${R.n.toLocaleString()} found on Spotify${R.list?` · <a href="${esc(R.list)}" target="_blank" rel="noopener">open the playlist ↗</a>`:""}${R.liked?` · ${R.liked.toLocaleString()} in your Liked Songs`:""}.
         ${R.err?`<div style="color:#b91c1c">⚠ ${esc(R.err)}</div>`:""}
+        ${R.err||R.stop?`<div class="hint" style="margin:4px 0 0">What was found is kept on this device: press <b>▶ Find them on Spotify</b> again and it carries on from song ${Math.max(1,R.i).toLocaleString()}, then makes the playlist.</div>`:""}
+        ${R.skip?`<div class="hint" style="margin:4px 0 0">${R.skip.toLocaleString()} ${R.skip===1?"song":"songs"} couldn't be looked up just now${R.err?"":` (${esc(R.bad)})`}; the next run asks for ${R.skip===1?"it":"them"} again.</div>`:""}
         ${R.miss.length?`<div class="hrow2" style="gap:6px;margin-top:4px"><span>${R.miss.length.toLocaleString()} not found</span><button class="btn smallbtn" data-sp="copymiss">⧉ Copy their names</button></div>`:""}</div>`
-      :`<div class="sprun">Looking ${R.i.toLocaleString()} of ${R.n.toLocaleString()} · found ${R.found.toLocaleString()}${R.list?" · adding to the playlist":""} <button class="btn smallbtn" data-sp="stop">⏹ Stop</button></div>`):"";
+      :`<div class="sprun">Looking ${R.i.toLocaleString()} of ${R.n.toLocaleString()} · found ${R.found.toLocaleString()}${R.skip?` · ${R.skip.toLocaleString()} to ask again later`:""}${R.list?" · adding to the playlist":""} <button class="btn smallbtn" data-sp="stop">⏹ Stop</button></div>`):"";
   return head+said+err+`<div class="hint" style="margin:0 0 8px">Each song is looked for by its title and artist; one Spotify can't find is listed, never guessed. What's found is kept on this device, so another run only looks for what's new.</div>
     <label class="lbl" for="spfPick" style="display:block;margin:0 0 3px">Which songs</label>
     <select class="field" id="spfPick" style="width:100%">${ch.map(([v,l,n])=>`<option value="${esc(v)}">${esc(l)} (${n.toLocaleString()})</option>`).join("")}</select>

@@ -4246,6 +4246,37 @@ const SMOKE=`
       must(spfChoices()[0][0]==="all"&&spfChoices()[0][2]===3,"the choice of songs");
       return "the standard's challenge; matched by title and artist; 2 of 3 to a private playlist and Liked Songs; the second run asks Spotify only to make it";
     }finally{musicPool=keepPool;spfMatch=keepM;SPF.mem=keepMem;SPF.last=keepLast;SPF.stub=null;}});
+  /* a real run stopped dead at Spotify's own "An unexpected error occurred" about 450 songs in; a stand-in fetch answers the same way */
+  await check("🎧 Spotify's own errors are waited out: a 500 is asked again, a 429 waits as told, a song that keeps failing is left for the next run while the rest go on to the playlist, a failed POST is never sent twice, and five failures in a row stop the run with the status",async()=>{
+    const keepPool=musicPool,keepM=spfMatch,keepMem=SPF.mem,keepLast=SPF.last,keepScale=SPF.waitScale,asks=[];
+    const T=(uri,name,a)=>({uri,name,artists:[{name:a}]});
+    const ans=(st,j,h)=>new Response(JSON.stringify(j||{}),{status:st,headers:Object.assign({"Content-Type":"application/json"},h||{})});
+    const oops={error:{status:500,message:"An unexpected error occurred. Please try again later."}};
+    try{
+      SPF.mem={cid:"0123456789abcdef0123456789abcdef",a:"t",exp:Date.now()+3600000};SPF.last=null;SPF.waitScale=0.001;spfMatch={};
+      let glass=0,stone=0,plFail=false;
+      SPF.net=async(url,o)=>{const u=new URL(url),q=u.searchParams.get("q")||"";asks.push(o.method+" "+u.pathname.replace("/v1","")+(q?" "+q.split(" ")[0]:""));
+        if(u.pathname.endsWith("/search")){
+          if(q.indexOf("Glass River")>=0)return ++glass<3?ans(500,oops):ans(200,{tracks:{items:[T("spotify:track:g1","Glass River","The Lamps")]}});
+          if(q.indexOf("Paper Moon")>=0||q.indexOf("Broken")>=0)return ans(502,oops);
+          if(q.indexOf("Stone Bell")>=0)return ++stone<2?ans(429,{},{"retry-after":"1"}):ans(200,{tracks:{items:[T("spotify:track:s1","Stone Bell","Ann Vale")]}});
+          return ans(200,{tracks:{items:[]}});}
+        if(u.pathname.endsWith("/me/playlists"))return plFail?ans(500,oops):ans(201,{id:"pl9",external_urls:{spotify:"https://open.spotify.com/playlist/pl9"}});
+        return ans(201,{snapshot_id:"x"});};
+      musicPool=()=>[{id:"fx-e1",n:"The Lamps - Glass River.mp3"},{id:"fx-e2",n:"Bo Field - Paper Moon.mp3"},{id:"fx-e3",n:"Ann Vale - Stone Bell.mp3"}];
+      await spfRun("all","Errors",true,false);
+      let R=SPF.last;
+      must(R.done&&!R.err&&R.found===2&&R.skip===1&&R.bad.indexOf("502")>=0&&R.list.indexOf("pl9")>0,"two found, one left for later, the playlist made: "+JSON.stringify([R.done,R.err,R.found,R.skip,R.bad,R.list]));
+      must(glass===3&&stone===2&&!("fx-e2" in spfMatch)&&spfMatch["fx-e1"][1]==="spotify:track:g1","asked again after a 500 and a 429; the failing song is not kept as not found: "+JSON.stringify([glass,stone,Object.keys(spfMatch)]));
+      must(asks.filter(a=>a.indexOf("Paper")>=0||a.indexOf("track:Paper")>=0).length===1+SPF_WAITS.length,"the failing song asked "+(1+SPF_WAITS.length)+" times: "+asks.join("|"));
+      asks.length=0;plFail=true;musicPool=()=>[{id:"fx-e1",n:"The Lamps - Glass River.mp3"}];
+      await spfRun("all","Errors",true,false);R=SPF.last;
+      must(R.err&&R.err.indexOf("500")>=0&&asks.filter(a=>a.indexOf("POST")===0).length===1,"a POST that failed is sent once: "+asks.join("|")+" "+R.err);
+      asks.length=0;plFail=false;musicPool=()=>[1,2,3,4,5,6].map(i=>({id:"fx-b"+i,n:"Nobody - Broken "+i+".mp3"}));
+      await spfRun("all","Errors",true,false);R=SPF.last;
+      must(R.err&&R.err.indexOf("5 songs in a row")>=0&&R.err.indexOf("502")>=0&&R.i===5&&!asks.some(a=>a.indexOf("POST")===0),"five in a row stop it, no playlist: "+JSON.stringify([R.err,R.i]));
+      return "500 twice then found; 429 waited; one song left for later; the playlist made; a failed POST sent once; five failures in a row stop with the status";
+    }finally{musicPool=keepPool;spfMatch=keepM;SPF.mem=keepMem;SPF.last=keepLast;SPF.net=null;SPF.waitScale=keepScale;}});
   /* a series linked to MangaDex: the first look is a baseline, a later chapter is news, Seen puts it away */
   await check("📚 a new chapter: the first look at a linked series shows nothing, a chapter past where you are and past the newest seen shows on Today, ✓ Seen puts it away and is synced; Shelf care lists the manga not linked yet",async()=>{
     const keepFeed=mdFeedFor,keepDev=window.MD_DEV,keepN=mdNewest,keepS=mdSeen,keepL=mdNewBusy.last;
