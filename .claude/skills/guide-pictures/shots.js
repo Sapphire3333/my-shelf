@@ -64,6 +64,8 @@ window.__guideSeed = async (dev) => {
   settings.todayTab = "reading"; settings.libFilt = false; settings.libTools = false; settings.libBench = false;
   settings.vMoreOpen = false; delete settings.viewFold;
   settings.sfx = false;
+  /* the 🎬 pictures give a made-up key and the switch; no other picture keeps them */
+  settings.tmdbKey = ""; delete settings.screenAll;
   books.length = 0;
   T.forEach((r, i) => {
     const [title, author, status, gs, pages, rating] = r;
@@ -726,6 +728,68 @@ SHOTS["book-quotes"] = { async at(dev) {
   const add = sec.querySelector("input,textarea");
   await place(sec, 70);
   return { clip: box(sec, dev === "ph" ? 6 : 14, { top: 44 }), spots: { add, photo } };
+} };
+
+/* ---- 🎬 a made-up film of a made-up book, as a card would keep it ----
+   Put on the book only for the pictures below, so no other picture changes.
+   The poster is drawn here; the services in Where to watch are invented;
+   nothing is asked of TMDB (filmFetch refuses). */
+const filmPoster = () => "data:image/svg+xml," + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="342" height="513" viewBox="0 0 342 513">' +
+  '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16324f"/><stop offset=".62" stop-color="#2f6f8f"/><stop offset="1" stop-color="#e8b56a"/></linearGradient></defs>' +
+  '<rect width="342" height="513" fill="url(#g)"/><circle cx="250" cy="120" r="46" fill="#f6e7c1" opacity=".9"/>' +
+  '<path d="M0 400 Q85 360 171 392 T342 380 V513 H0Z" fill="#0f2235" opacity=".85"/>' +
+  '<text x="171" y="455" font-family="Georgia,serif" font-size="34" fill="#fff" text-anchor="middle" letter-spacing="3">THE HOLLOW</text>' +
+  '<text x="171" y="492" font-family="Georgia,serif" font-size="34" fill="#fff" text-anchor="middle" letter-spacing="3">TIDE</text></svg>');
+const filmSeedOn = () => {
+  const b = books.find(x => x.id === "guide-b9");
+  b.screen = [{ id: "gf1", kind: "film", title: "The Hollow Tide", year: "2021", seen: false,
+      info: { src: "tmdb", kind: "movie", id: "900001", url: "https://www.themoviedb.org/", t: "The Hollow Tide", yr: "2021", poster: filmPoster(),
+        sum: "An invented summary of a film that was never made: a lighthouse keeper's daughter, a tide that stops coming in, and a town that has to decide what it owes the sea. Long enough to run over several lines.",
+        yt: "invented", len: "1 h 58 min", net: "", gen: "Drama, Mystery", at: Date.now() } },
+    { id: "gf2", kind: "series", title: "Tidewater", year: "2023", seen: true }];
+  b.status = "want";
+  settings.tmdbKey = "0123456789abcdef0123456789abcdef"; settings.tmdbRegion = "GB";
+  try { filmFetch = async () => { throw new Error("no network in the pictures"); }; } catch (e) {}
+  FILM.prov.set("tmdb:movie:900001", { at: Date.now(), r: { GB: { link: "", flatrate: [{ provider_name: "Streamline", logo_path: "" }],
+    rent: [{ provider_name: "Picturebox", logo_path: "" }, { provider_name: "Reel Shop", logo_path: "" }] } } });
+  return b;
+};
+
+/* a book's 🎬 On screen line: the films by name */
+SHOTS["book-film"] = { async at(dev) {
+  filmSeedOn();
+  const pg = await bookAt("guide-b9");
+  const screen = need("#screenOpen"), line = screen.closest(".vloan") || screen.parentElement, name = need(".filmname", line);
+  await place(line, dev === "ph" ? 120 : 90);
+  const m = pg.getBoundingClientRect(), r = box(line, 0), top = r.y - (dev === "ph" ? 70 : 56);
+  return { clip: box({ x: m.left, y: top, w: m.width, h: r.y + r.h - top }, dev === "ph" ? 6 : 14), spots: { screen, name } };
+} };
+
+/* the card a film's name opens */
+SHOTS["film-card"] = { async at(dev) {
+  filmSeedOn();
+  await bookAt("guide-b9");
+  need(".vloan .filmname").click();
+  const card = await until(() => { const c = $("#filmCard"); return c && c.querySelector(".filmwhere .filmprov") ? c : null; });
+  if (!card) throw new Error("the film's card didn't open");
+  card.scrollTop = 0; await wait(300);
+  return { clip: box(card, dev === "ph" ? 4 : 8), spots: { post: need(".filmpost", card), play: need('[data-fc="play"]', card), where: need(".filmwhere", card), seen: need('[data-fc="seen"]', card) } };
+} };
+
+/* 🎬 Read before you watch, with its switch: Still to watch · Everything on screen */
+SHOTS["lib-screen"] = { async at(dev) {
+  filmSeedOn();
+  const b2 = books.find(x => x.id === "guide-b3");
+  b2.screen = [{ id: "gf3", kind: "series", title: "The Orchard Cipher", year: "2019", seen: true }];
+  settings.screenAll = true;
+  libSetFilter("screen");
+  await goTab("library"); window.scrollTo(0, 0); await wait(800);
+  const which = need(".scwhich"), still = need('[data-scall="0"]', which), every = need('[data-scall="1"]', which);
+  const row = need(".scfilms").closest(".row") || need(".scfilms");
+  const name = need(".scfilms .filmname");
+  await place(which, 20);
+  return { clip: box([which, row], dev === "ph" ? 6 : 12), spots: { still, every, name } };
 } };
 
 /* the dev page reads this back to see each picture's crop and spots drawn */
