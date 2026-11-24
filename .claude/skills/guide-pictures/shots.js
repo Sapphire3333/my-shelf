@@ -62,6 +62,7 @@ window.__guideSeed = async (dev) => {
   /* settings outlive a page in the same browser: every picture starts from
      the same tabs and drawers, whatever the one before it opened */
   settings.todayTab = "reading"; settings.libFilt = false; settings.libTools = false; settings.libBench = false;
+  settings.vMoreOpen = false; delete settings.viewFold;
   settings.sfx = false;
   books.length = 0;
   T.forEach((r, i) => {
@@ -97,6 +98,7 @@ window.__guideSeed = async (dev) => {
    the window */
 const box = (els, pad = 16, extra = {}) => {
   const rs = [].concat(els).filter(Boolean).map(e => e.getBoundingClientRect ? e.getBoundingClientRect() : e);
+  if (!rs.length) throw new Error("nothing on the screen to cut a picture around");
   let x0 = Math.min(...rs.map(r => r.left ?? r.x)), y0 = Math.min(...rs.map(r => r.top ?? r.y));
   let x1 = Math.max(...rs.map(r => (r.right ?? (r.x + r.w)))), y1 = Math.max(...rs.map(r => (r.bottom ?? (r.y + r.h))));
   x0 -= (extra.left ?? pad); y0 -= (extra.top ?? pad); x1 += (extra.right ?? pad); y1 += (extra.bottom ?? pad);
@@ -507,6 +509,122 @@ SHOTS["lib-cases"] = { async at(dev) {
   if (!p) throw new Error("the bookcases did not open");
   const r = p.getBoundingClientRect();
   return { clip: box({ x: r.left, y: r.top, w: r.width, h: Math.min(r.height, innerHeight - r.top) }, 4), spots: { add: $("#bcAdd", p), find: $("#bcFind", p) } };
+} };
+
+/* A BOOK'S PAGE. guide-b0 is being read (pages, a mark, a series); guide-b5 is finished, a favourite */
+const bookAt = async (id) => { await openBook(id); await wait(1100); window.scrollTo(0, 0); await wait(200); return need("#edPage"); };
+const vis = e => e && e.getClientRects().length ? e : null;
+
+/* the head: stage, ✓ Finish it, ★, ♡, the page line, ⏱ Start, the sound, ✎ Edit, 🔎 Auto-fill */
+SHOTS["book-head"] = { async at(dev) {
+  const pg = await bookAt("guide-b0");
+  const st = need("#vStatus"), timer = vis($("#vTimer")), amb = vis($("#vAmb"));
+  const fin = [...pg.querySelectorAll("[data-vst]")].find(b => /Finish it/.test(b.textContent));
+  const prog = pg.querySelector(".prog, .vprog, progress") || timer;
+  const els = [need("#edBack"), st, timer, amb, fin].filter(Boolean);
+  const m = pg.getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: r.h }, dev === "ph" ? 6 : 14),
+    spots: { status: st, finish: fin, rate: vis($("#vRate")), fav: vis($("#vFav")), timer, amb, edit: vis($("#toEdit")), fill: vis($("#vFill")) } };
+} };
+
+/* what will you give it?, what you think will happen, a letter for the day you finish */
+SHOTS["book-guess"] = { async at(dev) {
+  const pg = await bookAt("guide-b0");
+  const g = need("[data-vguess]"), pred = $("[data-predopen]"), go = vis($("#predGo")), letter = $("[data-cap]");
+  /* room above the buttons for the card's own line, "What will you give it?" */
+  await place(g, dev === "ph" ? 110 : 80);
+  const els = [g, pred, go, letter].filter(e => e && e.getClientRects().length);
+  const m = pg.getBoundingClientRect(), r = box(els, 0), top = g.getBoundingClientRect().top - (dev === "ph" ? 90 : 52);
+  return { clip: box({ x: Math.max(m.left, r.x - 20), y: top, w: Math.min(r.w + 20, m.right - r.x), h: Math.min(r.y + r.h - top, innerHeight - top - 4) }, dev === "ph" ? 6 : 14),
+    spots: { guess: g, pred, keep: go, letter } };
+} };
+
+/* 🏃 Sprint, 📖 Read it here, ☁ From Drive, ▸ More for this book, ▸ readings */
+SHOTS["book-tools"] = { async at(dev) {
+  const pg = await bookAt("guide-b0");
+  const sprint = vis($("#vSprint")), read = vis($("#rdAdd")), drive = vis($("#rdDrive")), more = vis($("#vMore")), reads = vis($("#vReads"));
+  const first = sprint || read;
+  await place(first, 30);
+  const els = [sprint, read, drive, more, reads].filter(Boolean);
+  const m = pg.getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: r.x, y: r.y, w: Math.max(r.w, Math.min(m.width, 700)), h: r.h }, dev === "ph" ? 6 : 14),
+    spots: { sprint, read, drive, more, reads } };
+} };
+
+/* a finished book's head: the stage, 📖 Read it again, the bookplate, 🧠 Questions for later */
+SHOTS["book-done"] = { async at(dev) {
+  const pg = await bookAt("guide-b5");
+  const st = need("#vStatus"), again = [...pg.querySelectorAll("[data-vst],button")].find(b => /Read it again/.test(b.textContent));
+  const ql = [...pg.querySelectorAll("button")].find(b => /Questions for later/.test(b.textContent));
+  if (dev === "ph") await place(st, 20);
+  const els = (dev === "ph" ? [st, again, ql] : [need("#edBack"), st, again, ql]).filter(e => e && e.getClientRects().length);
+  const m = need("#edPage").getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: Math.min(r.h, innerHeight - r.y - 4) }, dev === "ph" ? 6 : 14),
+    spots: { status: st, again, later: ql } };
+} };
+
+/* ▸ More for this book, open: 📤 Lent to…, 📥 Borrowed from…, 🎬 On screen, 🗺 A map of your own… */
+SHOTS["book-more"] = { async at(dev) {
+  const pg = await bookAt("guide-b0");
+  if (!/▾/.test(need("#vMore").textContent)) { need("#vMore").click(); await wait(500); }
+  const more = need("#vMore"), loans = $$("[data-loan]"), screen = vis($("#screenOpen")), map = vis($("#ownMapAdd"));
+  await place(more, 30);
+  const els = [more, ...loans, screen, map].filter(e => e && e.getClientRects().length);
+  const m = pg.getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: r.x, y: r.y, w: Math.max(r.w, Math.min(m.width, 640)), h: r.h }, dev === "ph" ? 6 : 14),
+    spots: { more, lent: loans[0], borrowed: loans[1], screen, map } };
+} };
+
+/* ▸ 1 reading, open: its dates, + Add a reading */
+SHOTS["book-reads"] = { async at(dev) {
+  const pg = await bookAt("guide-b0");
+  if (!/▾/.test(need("#vReads").textContent)) { need("#vReads").click(); await wait(500); }
+  const reads = need("#vReads"), add = need("[data-radd]"), date = vis($("[data-rst]"));
+  await place(reads, 30);
+  const els = [reads, add, date].filter(Boolean);
+  const m = pg.getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: r.x, y: r.y, w: Math.max(r.w, Math.min(m.width, 560)), h: r.h }, dev === "ph" ? 6 : 14), spots: { reads, add, date } };
+} };
+
+/* ⚙ View, open: text size, cover size, 🖨 Print */
+SHOTS["book-view"] = { async at(dev) {
+  await bookAt("guide-b0");
+  /* on a phone ⚙ View stands behind ⋯ at the top */
+  const dots = vis($("#moreTog"));
+  if (!vis($("#viewTog")) && dots) { dots.click(); await wait(500); }
+  if (!/▴/.test(need("#viewTog").textContent)) { need("#viewTog").click(); await wait(500); }
+  const tog = need("#viewTog"), print = need("#vPrint"), up = vis($("#fsUp"));
+  const pop = print.closest(".vsbox,.viewsheet,[class*=view]") || print.parentElement.parentElement;
+  const els = [tog, pop, print].filter(e => e && e.getClientRects().length);
+  return { clip: box(els.concat(dots ? [dots] : []), dev === "ph" ? 6 : 12), spots: { dots, view: tog, print, size: up, fill: vis($("#vFill")) } };
+} };
+
+/* ✎ Edit: the folds of a book's page being written */
+SHOTS["book-edit"] = { async at(dev) {
+  const pg = await bookAt("guide-b0");
+  need("#toEdit").click(); await wait(900);
+  const heads = [...document.querySelectorAll("#edPage .edsechead")];
+  const h = re => heads.find(x => re.test(x.textContent));
+  const words = h(/Your words/), how = h(/How you read it/), itself = h(/The book itself/), filing = h(/Filing/);
+  /* the first fold, ✍ Your words, stands open on a new edit: shut it so the four heads stand together */
+  if (words && words.getAttribute("aria-expanded") === "true") { words.click(); await wait(400); }
+  const done = vis($("#toView")) || vis($("[data-tov]"));
+  const hs = [words, how, itself, filing].filter(Boolean);
+  await place(hs[0], dev === "ph" ? 60 : 40);
+  /* ✎ Edit drew the page again: measure the new one */
+  const m = need("#edPage").getBoundingClientRect(), r = box(hs, 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: r.h }, dev === "ph" ? 6 : 14),
+    spots: { words, how, itself, filing } };
+} };
+
+/* the quotes on a finished book: ❝ Add a quote…, 📷 off a photo */
+SHOTS["book-quotes"] = { async at(dev) {
+  const pg = await bookAt("guide-b5");
+  { const q0 = $("#secQuotes") || $("#vQuotePhoto"); if (q0 && typeof vTabFor === "function") { vTabFor(q0); await wait(300); } }
+  const photo = need("#vQuotePhoto"), sec = photo.closest(".sec,.hcard,section") || photo.parentElement;
+  const add = sec.querySelector("input,textarea");
+  await place(sec, 70);
+  return { clip: box(sec, dev === "ph" ? 6 : 14, { top: 44 }), spots: { add, photo } };
 } };
 
 /* the dev page reads this back to see each picture's crop and spots drawn */
