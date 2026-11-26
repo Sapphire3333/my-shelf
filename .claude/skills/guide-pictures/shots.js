@@ -867,6 +867,95 @@ SHOTS["rd-listen"] = { async at(dev) {
   return { clip: box(box_, 6), spots: { go: $("#rdlGo", box_), voice: $("#rdlVoice", box_), sleep: $("#rdlSleep", box_), rain: $('[data-rdsnd="rain"]', box_), songs: $('[data-rdsnd="songs"]', box_), vol: $("#rdlVol", box_) } };
 } };
 
+/* ---- 🎵 invented songs, as the Drive list would hold them ----
+   Names of made-up artists and titles; nothing is fetched or played
+   (TEST_RUN's stand-in player). Genres and moods as songTags would keep them. */
+const MU_SONGS = [["Harbour Lights", "Slow Water"], ["Harbour Lights", "The Last Ferry"], ["Nell Ashgrove", "Paper Moons"], ["Nell Ashgrove", "Winter Kitchen"],
+  ["The Orchard Choir", "Cipher"], ["The Orchard Choir", "Lantern Road"], ["Corin Sallow", "Night Train"], ["Corin Sallow", "Meridian"], ["Pell Ashby", "Quill and Marrow"], ["Lio Marchetti", "Field Guide"]];
+const MU_GENRE = ["Folk", "Folk", "Indie", "Indie", "Choral", "Choral", "Jazz", "Jazz", "Rock", "Ambient"];
+const MU_MOOD = ["calm", "nostalgic", "hopeful", "calm", "intense", "hopeful", "upbeat", "sad", "intense", "calm"];
+const musicSeed = () => {
+  musicMemo = { at: Date.now(), files: MU_SONGS.map((p, i) => ({ id: "gs" + i, n: p[0] + " - " + p[1] + ".mp3", s: 3500000 + i * 120000, t: 30000 + i * 700 })) };
+  songTags = {}; MU_SONGS.forEach((p, i) => { songTags["gs" + i] = [MU_GENRE[i], 100, MU_MOOD[i], 100]; });
+  settings.musicSort = "name"; musicFind = ""; musicGenre = ""; musicMood = "";
+  try { musicMem.kept = { gs0: { s: 3500000, at: Date.now() }, gs2: { s: 3700000, at: Date.now() } }; } catch (e) {}
+  CFG.googleClientId = CFG.googleClientId || "guide.apps.googleusercontent.com";
+};
+const musicAt = async () => { musicSeed(); setKindTab("music"); await wait(700); window.scrollTo(0, 0); await wait(200); return need("#musicShelf"); };
+/* the 🎵 tab's head: the tab, ↻ Look again, 💾 🏷 🎭, 🎧 To Spotify, Keep on this device */
+SHOTS["mu-head"] = { async at(dev) {
+  const sh = await musicAt();
+  const tab = need('.kindtabs [data-kt="music"]'), look = need('[data-music="look"]', sh), keep = vis($("#musicKeep", sh));
+  const head = look.closest(".musichead") || look.parentElement, keepRow = keep ? (keep.closest(".hrow2,div") || keep) : null;
+  const els = [tab, head, keepRow, $('[data-music="gpause"]', sh)].filter(e => e && e.getClientRects().length);
+  const m = need("#main").getBoundingClientRect(), r = box(els, 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: r.h }, dev === "ph" ? 6 : 14),
+    spots: { tab, look, keep, spotify: vis($('[data-music="spotify"]', sh)), moodpick: vis($('[data-music="moodpick"]', sh)), genres: vis($('[data-music="gpause"]', sh)) } };
+} };
+/* the list: the find box, the order pills, genre and mood chips, rows with ▶ */
+SHOTS["mu-list"] = { async at(dev) {
+  const sh = await musicAt();
+  const find = need("#musicFind", sh), sort = need('.mstrip [data-music="sort"]', sh), genre = $('[data-music="genre"]', sh), mood = $('[data-music="mood"]', sh);
+  /* a phone's chips take several lines: two rows fit under them, a computer shows four */
+  const rows = $$(".mrow", sh).slice(0, dev === "ph" ? 2 : 4), play = $('[data-music="play"]', rows[0]);
+  await place(find, 30);
+  const m = need("#main").getBoundingClientRect(), r = box([find, sort, genre, mood, ...rows].filter(Boolean), 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: r.h }, dev === "ph" ? 6 : 14), spots: { find, sort, genre, mood, play, drop: vis($('[data-music="drop"]', sh)) } };
+} };
+/* the rows themselves: ▶ on each, 🗑 on a kept one (a phone's chips push them a screen down) */
+SHOTS["mu-rows"] = { async at(dev) {
+  const sh = await musicAt();
+  const rows = $$(".mrow", sh).slice(0, 3), head = rows[0].previousElementSibling && rows[0].previousElementSibling.matches(".cap2") ? rows[0].previousElementSibling : null;
+  await place(head || rows[0], 30);
+  const m = need("#main").getBoundingClientRect(), r = box([head, ...rows].filter(Boolean), 0);
+  return { clip: box({ x: m.left, y: r.y, w: m.width, h: r.h }, dev === "ph" ? 6 : 14), spots: { play: $('[data-music="play"]', rows[0]), drop: vis($('[data-music="drop"]', sh)) } };
+} };
+/* ▸ 📲 Songs already in a folder on this device?, open, with 📲 Choose the folder */
+SHOTS["mu-folder"] = { async at(dev) {
+  const sh = await musicAt();
+  const fold = need('[data-music="dirfold"]', sh);
+  if (!musicDirOpen) { fold.click(); await wait(400); }
+  const box_ = need("#musicDevice");
+  await place(box_, 30);
+  return { clip: box(box_, dev === "ph" ? 6 : 14), spots: { dirfold: $('[data-music="dirfold"]', box_), dirpick: vis($('[data-music="dirpick"]', box_)) } };
+} };
+/* the ♪ player open in the corner, a song paused part-way, its words open */
+SHOTS["mu-player"] = { async at(dev) {
+  await musicAt();
+  MP.q = MU_SONGS.map((p, i) => "gs" + i); MP.i = 2; MP.state = "pause"; MP.open = true;
+  try { LYR.mem.set("gs2", { t: "Paper Moons", a: "Nell Ashgrove", at: Date.now(), sy: "[00:01.00]Paper moons over the harbour wall\n[00:05.00]And every window lit for no one at all\n[00:09.00]The ferry gone, the tide gone too" }); } catch (e) {}
+  mpPaint(); await wait(400);
+  try { const a = mpEl(); a.duration = 215; a.currentTime = 72; mpTick(); } catch (e) {}
+  try { lyrPaint(); } catch (e) {}
+  await wait(300);
+  const card = need("#musicCard"), fab = need("#fabMusic");
+  const lyr = $('[data-mp="lyr"]', card); if (lyr && !$(".mplyrw", card)) { lyr.click(); await wait(300); }
+  return { clip: box([card, fab], dev === "ph" ? 4 : 10), spots: { fab, toggle: $('[data-mp="toggle"]', card), bar: $('[data-mp="seek"]', card), lyr: $('[data-mp="lyr"]', card), open: $(".mpopen a", card), out: $('[data-mp="out"]', card), shuffle: $('[data-music="shuffle"]', card) } };
+} };
+/* a book's page: 🎵 Its songs at the top, ▸ 🎵 3 songs with ▶ Play under the title */
+SHOTS["mu-book"] = { async at(dev) {
+  musicSeed();
+  const b = books.find(x => x.id === "guide-b0"); b.songs = ["gs0", "gs2", "gs5"]; settings.rdSound = Object.assign({}, settings.rdSound, { "guide-b0": "songs" });
+  await bookAt("guide-b0");
+  { const f0 = need("[data-songfold]"); if (f0.getAttribute("aria-expanded") !== "true") { f0.click(); await wait(500); } }
+  /* the press above redraws the page: everything is found again */
+  const pg = need("#edPage"), fold = need("[data-songfold]");
+  const line = fold.closest(".vsongs") || fold.parentElement, pick = $("[data-songpick]"), vs = vis($("#vSongs"));
+  await place(line, dev === "ph" ? 100 : 70);
+  const m = pg.getBoundingClientRect(), r = box([line, $(".vsongbox")].filter(Boolean), 0), top = vs ? Math.min(r.y, vs.getBoundingClientRect().top) : r.y;
+  return { clip: box({ x: m.left, y: top, w: m.width, h: r.y + r.h - top }, dev === "ph" ? 6 : 14), spots: { vsongs: vs, songfold: $("[data-songfold]"), songplay: $("[data-songplay]"), songpick: pick } };
+} };
+/* 🎧 To Spotify, before a Client ID: the four steps */
+SHOTS["mu-spotify"] = { async at(dev) {
+  await musicAt();
+  try { SPF.mem = {}; } catch (e) {}
+  spfOpen(); await wait(500);
+  const pn = need("#spfPanel");
+  /* on a phone the card scrolls: the Client ID box at the foot is brought up */
+  if (dev === "ph") { need("#spfCid", pn).scrollIntoView({ block: "center" }); await wait(300); }
+  return { clip: box(pn, dev === "ph" ? 4 : 10), spots: { steps: $(".spsteps", pn), cid: $("#spfCid", pn), spotify: $('[data-music="spotify"]') } };
+} };
+
 /* ---- 🎬 a made-up film of a made-up book, as a card would keep it ----
    Put on the book only for the pictures below, so no other picture changes.
    The poster is drawn here; the services in Where to watch are invented;
