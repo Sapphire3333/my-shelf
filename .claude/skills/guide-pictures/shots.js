@@ -867,6 +867,86 @@ SHOTS["rd-listen"] = { async at(dev) {
   return { clip: box(box_, 6), spots: { go: $("#rdlGo", box_), voice: $("#rdlVoice", box_), sleep: $("#rdlSleep", box_), rain: $('[data-rdsnd="rain"]', box_), songs: $('[data-rdsnd="songs"]', box_), vol: $("#rdlVol", box_) } };
 } };
 
+/* ---- ☁ Drive: the Settings card, the tab's head, a loose file, Shelf care's cards ----
+   On driveStandIn's invented folder; the files are given the invented books'
+   names so Connect has sure ones and ones to check. */
+const driveFilesNamed = () => {
+  driveStandIn();
+  const F = [{ id: "gdx1", name: "Mira Vantwell - The Lantern Keeper.epub", p: "gdf0", size: 812000, kind: "file" },
+    { id: "gdx2", name: "Salt and Meridian.epub", p: "gdf0", size: 640000, kind: "file" },
+    { id: "gdx3", name: "Harbour.pdf", p: "gdf0", size: 1900000, kind: "pdf" },
+    { id: "gdx4", name: "Ember Road - Hollis Graye.epub", p: "gdf1", size: 700000, kind: "file" },
+    { id: "gdx5", name: "The Orchard Cipher - Tobias Rennick.epub", p: "gdf0", size: 520000, kind: "file" }];
+  drvFilesMemo = Object.assign({}, drvFilesMemo, { files: F, id: "gdf0", looked: 5 });
+  try { drvFolderFiles = async () => F; } catch (e) {}
+  return F;
+};
+const careCard = async (dev, sel, spots) => {
+  await careAt();
+  const el = await until(() => $(sel), 4000); if (!el) throw new Error("not on Shelf care: " + sel);
+  const card = el.closest(".sec") || el;
+  await place(card, 20);
+  const r = box(card, 0), mm = need("#main").getBoundingClientRect();
+  const out = {}; for (const k in spots) out[k] = typeof spots[k] === "string" ? $(spots[k]) : spots[k];
+  return { clip: box({ x: mm.left, y: r.y, w: mm.width, h: Math.min(r.h, stuckFoot() - r.y) }, dev === "ph" ? 6 : 14), spots: out };
+};
+/* ⚙ Settings → Devices and Drive: the Google Drive card */
+SHOTS["dv-settings"] = { async at(dev) {
+  driveStandIn(); delete settings.drive;
+  await setGoTo("devices", "#secDrive"); await wait(600);
+  const card = need("#secDrive");
+  await place(card, 20);
+  return { clip: box(card, dev === "ph" ? 6 : 14), spots: { fq: $("#drvFq"), fgo: $("#drvFgo") } };
+} };
+/* the ☁ tab's head: the find box, ↻ Look again, ✍️ Bring in fics from a folder */
+SHOTS["dv-head"] = { async at(dev) {
+  driveFilesNamed(); settings.fics = true;
+  await goTab("library"); await wait(300); setKindTab("drive"); await wait(900);
+  const q_ = need("#dsQ"), again = need("#dsAgain"), fic = $("[data-ficdrive]"), tab = $('[data-kt="drive"]');
+  await place(tab || q_, 10);
+  const els = [tab, q_, again, fic].filter(Boolean), r = box(els, 0), mm = need("#main").getBoundingClientRect();
+  return { clip: box({ x: mm.left, y: r.y, w: mm.width, h: r.h }, dev === "ph" ? 6 : 14), spots: { tab, dsq: q_, dsagain: again, ficdrive: fic } };
+} };
+/* a file on no shelf, open in the reader: the strip to link or add it, and 📌 Keep here */
+SHOTS["dv-loose"] = { async at(dev) {
+  const F = driveFilesNamed();
+  try { drvHtml = async () => READER_TEXT; } catch (e) {}
+  await openReader("drv:gdx3", "", F[2]);
+  await until(() => rdState && $("#rdText p") && $("#rdLoose"), 6000); await wait(600);
+  const strip = need("#rdLoose"), foot = rdFoot();
+  return { clip: box([$(".rdtop"), strip, foot], 0), spots: { rladd: $("#rlAdd"), rlother: $("#rlOther"), rllink: vis($("#rlLink")), rdpin: vis($("#rdPin")) } };
+} };
+/* 🧰 Shelf care → Connect your Drive files, after 🔗 Connect my files */
+SHOTS["dv-connect"] = { async at(dev) {
+  driveFilesNamed();
+  const r = await careCard(dev, "#drvConnBox", {});
+  const go = $("#dcGo"); if (go) { go.click(); await until(() => $("#dcSure") || $("[data-dcuse]"), 6000); await wait(400); }
+  const card = need("#drvConnBox").closest(".sec") || need("#drvConnBox");
+  await place(card, 20);
+  const rr = box(card, 0), mm = need("#main").getBoundingClientRect();
+  return { clip: box({ x: mm.left, y: rr.y, w: mm.width, h: Math.min(rr.h, stuckFoot() - rr.y) }, dev === "ph" ? 6 : 14), spots: { dcsure: $("#dcSure"), dcagain: $("#dcAgain"), dcuse: $("[data-dcuse]"), dcno: $("[data-dcno]") } };
+} };
+/* the Import card's fics box, open: ☁ My Drive folder */
+SHOTS["dv-fics"] = { async at(dev) {
+  driveFilesNamed(); settings.fics = true;
+  const r = await careCard(dev, "#impFicDir", {});
+  const d = need("#impFicDir"); if (need("#impFicBox").hidden) { d.click(); await wait(400); }
+  const bx = need("#impFicBox");
+  await place(d, 30);
+  return { clip: box([d, bx], dev === "ph" ? 6 : 14), spots: { impficdir: d, impficdrive: $("#impFicDrive"), impficdirpick: $("#impFicPickDir") } };
+} };
+/* Tidy your Drive */
+SHOTS["dv-tidy"] = { async at(dev) { driveFilesNamed(); return careCard(dev, "#drvTidyBox", { dtfind: "#dtFind" }); } };
+/* 👯 One book, several files */
+SHOTS["dv-same"] = { async at(dev) { driveFilesNamed(); return careCard(dev, "#drvSameBox", { dmfind: "#dmFind" }); } };
+/* 🗂 Sort your Drive, with a linked file to move */
+SHOTS["dv-sort"] = { async at(dev) {
+  driveFilesNamed();
+  books.find(x => x.id === "guide-b0").driveFile = { id: "gdx1", name: "Mira Vantwell - The Lantern Keeper.epub", size: 812000 };
+  books.find(x => x.id === "guide-b3").driveFile = { id: "gdx5", name: "The Orchard Cipher - Tobias Rennick.epub", size: 520000 };
+  return careCard(dev, "#drvSortBox", { dsgo: "#dsGo", dsgenfold: "[data-dsgenfold]", dssee: "#drvSortBox details summary" });
+} };
+
 /* ---- ✨ Insights: the invented shelf given a past, so every card has something to draw ----
    Readings in the year before, places the books are set, pages logged on
    recent days, a named stretch, a kept reading of the owner's taste (invented
