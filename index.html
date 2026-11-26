@@ -913,6 +913,12 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   .wrword{font-size:26px;font-weight:700;margin:6px 0 2px;overflow-wrap:anywhere}
   .wrctx{font-style:italic;color:var(--mut);margin:4px 0 0;overflow-wrap:anywhere}
   .wrmean{margin:10px 0 0;padding:9px 11px;border-radius:10px;background:color-mix(in srgb,var(--teal) 12%,var(--card));font-size:16px}
+  /* the quiz: four answers, one a line; after the press the right one is lit and the pressed wrong one struck */
+  .wrquiz{display:grid;gap:6px;margin:6px 0 0}
+  .wrans{font:inherit;font-size:15px;text-align:left;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px 11px;cursor:pointer;overflow-wrap:anywhere;line-height:1.4}
+  button.wrans:hover{border-color:var(--teal)}
+  .wrans.right{background:color-mix(in srgb,var(--teal) 16%,var(--card));border-color:var(--teal);font-weight:600}
+  .wrans.wrong{text-decoration:line-through;opacity:.7}
   .wrbox{display:inline-flex;gap:3px}.wrbox i{width:9px;height:9px;border-radius:50%;border:1px solid var(--teal)}.wrbox i.on{background:var(--teal)}
   /* 🔮 predictions, ✉ the finish-day letter */
   .vpreds{margin:8px 0 0}
@@ -17077,6 +17083,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-26.1",go:["el:overview:[data-ydrow=wr]"],lines:["<b>📇 Word review is a quiz.</b> A word's card now shows four meanings and asks which is right: press one. Right, and the word goes up a box; wrong, and the right one lights up, the one you pressed is struck through, and the word comes back tomorrow. The three wrong meanings are written by Claude on Haiku the first time a word comes up, all the day's words in one ask, and kept on the word. Until then (or with Claude not set up) the card keeps Show what it means. The book's name on the card opens the book."]},
   {v:"2026-11-24.32",go:["el:settings:#setFilms"],lines:["<b>🎬 A film or series you can open.</b> Press the name of a film or series made of one of your books wherever it's named: on the book's page under 🎬 On screen, on a story's own card under What's inside, in 🎬 Read before you watch, in 🎬 On screen this week. Its card opens with the poster, what it's about, how long it runs, ▶ the trailer playing right there, where to watch it in your country, and ✓ I've seen it. Without a key it comes from TVmaze for a series and from Wikipedia for a film with a page of its own; a free TMDB key gives every card the poster, the trailer and where to watch (⚙ Settings → Devices and Drive → 🎬 Films and series shows how to make one, in four steps). What a card finds is kept, so it opens offline and on your other devices.","<b>🎬 Everything on screen.</b> 🎬 Read before you watch, in the Library's filters, has a switch at the top: <b>Still to watch</b>, or <b>Everything on screen</b> — every book and story made into a film or a series, read or not, seen or not."]},
   {v:"2026-11-24.31",go:["tab:ach"],lines:["<b>🎴 A pack in one press.</b> <b>Buy a pack</b> on 🏅 Medals buys it straight away now; it asks only when your purse is short and XP would be changed into gold to pay. And if your browser has been told to stop this page asking questions, the app says so, with the way to get them back: close the tab and open My Shelf again."]},
   {v:"2026-11-24.30",go:["guide:contents"],lines:["<b>💬 Ask the app.</b> Press <b>?</b> and type a question at the top of the guide's Contents: where something is, how to do a thing. It looks through the guide, How do I…, What every button does, ⚙ Settings and What's changed, free and on this device, and shows what it found with the way to each. When that isn't enough, <b>✨ Ask Claude</b> reads the same help and answers in a few sentences, with the buttons to go there. It says the price before you press: on Haiku (⚙ Small jobs on Haiku) about half a cent, less for another question within five minutes."]},
@@ -72203,6 +72210,14 @@ document.addEventListener("input",e=>{if(!e.target||e.target.id!=="wgQ"||view!==
    │ pays WR_DONE_XP and WR_KNEW_XP a word you knew, once (wr:<day>). In 🌅  │
    │ Your day (📇 Word review) and from ❝ Quotes → 📖 Words; any .wrcard on    │
    │ screen is drawn again in place (wrRedraw).                               │
+   │ THE CARD IS A QUIZ: the meaning among WR_WRONG wrong ones (x.wrong on    │
+   │ the word, written once by wrWrongAsk: one ask on Haiku for every word   │
+   │ of the day that has none, kept quietly on the book, synced, no step of  │
+   │ ↶), shuffled the same way all day (wrOrder). A press is the answer:     │
+   │ right is ✓ I knew it, wrong is ✗ Not yet, and the card stays with the   │
+   │ right one lit and the pressed one struck (wrResult) until Next. A word  │
+   │ with no wrong answers yet (Claude not set up, offline, or still being   │
+   │ asked) keeps Show what it means and the two buttons.                    │
    └──────────────────────────────────────────────────────────────────────────┘ */
 const WR_GAPS=[0,1,3,7,14,30,60],WR_DAY=8,WR_NEW=4,WR_KNEW_XP=2,WR_DONE_XP=10,WR_MIN=3;
 const wrKey=(b,x)=>b.id+"|"+softFold(x.w);
@@ -72227,7 +72242,42 @@ function wrAnswer(k,knew){
   const T=wrToday();
   if(!T.left.length&&T.seen.length>=WR_MIN)questAward(WR_DONE_XP+WR_KNEW_XP*T.knew,`📇 Word review: ${T.seen.length} words, ${T.knew} you knew`,"wr:"+day);
 }
-let wrShown="";
+let wrShown="",wrResult=null;
+const WR_WRONG=3;
+let wrAsking=false;
+/* the four answers in an order that holds all day: a small hash of the word's key and the day */
+function wrOrder(w,day){
+  const l=[{t:w.x.mean,ok:true},...(Array.isArray(w.x.wrong)?w.x.wrong:[]).slice(0,WR_WRONG).map(t=>({t,ok:false}))];
+  let h=0;for(const c of (w.k+"|"+day))h=(h*31+c.charCodeAt(0))>>>0;
+  const r=()=>{h=(h*1103515245+12345)>>>0;return h/4294967296;};
+  for(let i=l.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[l[i],l[j]]=[l[j],l[i]];}
+  return l;
+}
+const wrHasQuiz=w=>Array.isArray(w.x.wrong)&&w.x.wrong.filter(t=>String(t||"").trim()).length>=WR_WRONG;
+/* three wrong meanings for every word of the day that has none: one ask, kept on each word's book quietly */
+async function wrWrongAsk(list){
+  const need=(list||[]).filter(w=>!wrHasQuiz(w)&&!w.x.wrongAsked).slice(0,WR_DAY);
+  if(!need.length||wrAsking||!claudeReady()||navigator.onLine===false)return 0;
+  wrAsking=true;let n=0;
+  try{
+    const schema={type:"object",properties:{words:{type:"array",items:{type:"object",properties:{n:{type:"integer"},wrong:{type:"array",items:{type:"string"}}},required:["n","wrong"],additionalProperties:false}}},required:["words"],additionalProperties:false};
+    const text=`A reader is quizzed on words looked up while reading: the right meaning among three wrong ones. For each word below, write ${WR_WRONG} wrong meanings: each a short plain line of English like the right one (under fifteen words, the same shape and length), believable for a word of that kind, but clearly not what it means. Never the right meaning in other words, never a joke.\n\n`
+      +need.map((w,i)=>`[${i}] “${w.x.w}”${w.x.base&&softFold(w.x.base)!==softFold(w.x.w)?` (${w.x.base})`:""} — it means: ${w.x.mean}`).join("\n");
+    const j=await claudeAsk({what:"📇 Word review: the wrong answers",kind:"ask",text,schema,effort:"low",max_tokens:200+need.length*120,model:CLAUDE_HAIKU});
+    const got={};((j.json&&j.json.words)||[]).forEach(r=>{if(need[r.n])got[r.n]=(r.wrong||[]).map(t=>String(t||"").trim().slice(0,160)).filter(Boolean).slice(0,WR_WRONG);});
+    const byBook=new Map();
+    need.forEach((w,i)=>{const b=books.find(x=>x.id===w.b.id);if(!b)return;const x=wordsOf(b).find(y=>softFold(y.w)===softFold(w.x.w));if(!x)return;
+      if(got[i]&&got[i].length>=WR_WRONG){x.wrong=got[i];n++;}else x.wrongAsked=todayStr();
+      byBook.set(b.id,b);});
+    for(const b of byBook.values()){const before=JSON.parse(JSON.stringify(b));touchBook(b,true);
+      if(!(await putOrRestore(b,before)))continue;if(SYNC.on)enqueue({kind:"book",id:b.id});try{await rebaseOpenBook(b.id);}catch(e){}}
+    if(SYNC.on)flushQueue();
+  }catch(e){}
+  finally{wrAsking=false;}
+  return n;
+}
+/* asked a little after a card is drawn, never twice at once */
+function wrWrongSoon(){if(wrAsking||TEST_RUN)return;setTimeout(()=>{try{const T=wrToday();wrWrongAsk(T.left).then(n=>{if(n)wrRedraw();}).catch(()=>{});}catch(e){}},400);}
 /* the sentence with the word in it made bold, wherever its capitals */
 function wrCtx(x){
   const c=String(x.ctx||"").trim();if(!c)return "";
@@ -72238,16 +72288,30 @@ function wrHtml(where){
   const T=wrToday(),W=`class="wrcard" data-where="${esc(where||"")}"`;
   if(!T.all.length)return `<div ${W}><div class="hint" style="margin:0">Words you look up in the reader, or type on a book's page, come back here a few a day until you know them.</div></div>`;
   const w=T.left[0];
+  if(wrResult){const d=wrResult;return `<div ${W}>
+    <div class="hint" style="margin:0">${d.ok?"✓ You knew it":"✗ Not yet — it comes back tomorrow"}</div>
+    <div class="wrword serif">${esc(d.w)}</div>
+    <div class="wrquiz">${d.order.map((o,i)=>`<span class="wrans${o.ok?" right":""}${i===d.pick&&!o.ok?" wrong":""}">${esc(o.t)}</span>`).join("")}</div>
+    <div class="hrow2" style="margin-top:10px"><button class="btn pri" data-wr="next:">${w?"Next word →":"Done →"}</button></div></div>`;}
   if(!w)return `<div ${W}><div style="margin:0">✓ <b>Today's review is done</b>${T.seen.length?` — ${T.seen.length} word${T.seen.length===1?"":"s"}, ${T.knew} you knew`:""}.</div>
     <div class="hint" style="margin:4px 0 0">${T.next?`The next ${T.next===dayBack(T.day,-1)?"come back tomorrow":"come back "+esc(printDay(T.next))}.`:""} ${T.all.length.toLocaleString()} word${T.all.length===1?"":"s"} in your glossary.</div></div>`;
   const s=wrSt(w.k),shown=wrShown===w.k,n=T.seen.length+1,of=T.seen.length+T.left.length;
+  if(!wrHasQuiz(w))wrWrongSoon();
+  const quiz=wrHasQuiz(w)?wrOrder(w,T.day):null;
+  /* the card just answered stays until Next, the right one lit and the pressed one struck */
+  if(wrResult){const d=wrResult;return `<div ${W}>
+    <div class="hrow2" style="justify-content:space-between;gap:8px;align-items:center"><span class="hint" style="margin:0">${d.ok?"✓ You knew it":"✗ Not yet — it comes back tomorrow"}</span></div>
+    <div class="wrword serif">${esc(d.w)}</div>
+    <div class="wrquiz">${d.order.map((o,i)=>`<span class="wrans${o.ok?" right":""}${i===d.pick&&!o.ok?" wrong":""}">${esc(o.t)}</span>`).join("")}</div>
+    <div class="hrow2" style="margin-top:10px"><button class="btn pri" data-wr="next:">${T.left.length?"Next word →":"Done →"}</button></div></div>`;}
   return `<div ${W}>
     <div class="hrow2" style="justify-content:space-between;gap:8px;align-items:center"><span class="hint" style="margin:0">${n} of ${of}${s?"":" · new"}</span>
       <span class="wrbox" title="Box ${s?s.box:0} of ${WR_GAPS.length-1} — the higher, the longer it sleeps">${Array.from({length:WR_GAPS.length-1},(_,i)=>`<i class="${s&&i<s.box?"on":""}"></i>`).join("")}</span></div>
     <div class="wrword serif">${esc(w.x.w)}${w.x.base&&softFold(w.x.base)!==softFold(w.x.w)?` <span class="hint" style="margin:0">(${esc(w.x.base)})</span>`:""}</div>
     ${w.x.ctx?`<div class="wrctx serif">“${wrCtx(w.x)}”</div>`:""}
-    <div class="hint" style="margin:4px 0 0">${esc(w.b.title||"Untitled")}${w.x.src&&w.x.src!=="typed"?" · "+esc(w.x.src):""}</div>
-    ${shown?`<div class="wrmean">${esc(w.x.mean)}</div>
+    <div class="hint" style="margin:4px 0 0"><a class="tgo" href="${esc(bookHash(w.b.id,w.x.en||""))}" style="text-decoration:underline;text-underline-offset:2px" title="Open the book">${esc(w.b.title||"Untitled")}</a>${w.x.src&&w.x.src!=="typed"?" · "+esc(w.x.src):""}</div>
+    ${quiz?`<div class="hint" style="margin:8px 0 0">What does it mean?</div><div class="wrquiz">${quiz.map((o,i)=>`<button class="wrans" data-wr="pick:${esc(w.k)}|${i}">${esc(o.t)}</button>`).join("")}</div>`
+    :shown?`<div class="wrmean">${esc(w.x.mean)}</div>
       <div class="hrow2" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn pri" data-wr="yes:${esc(w.k)}">✓ I knew it</button><button class="btn" data-wr="no:${esc(w.k)}">✗ Not yet</button></div>`
       :`<div class="hrow2" style="margin-top:10px"><button class="btn pri" data-wr="show:${esc(w.k)}">Show what it means</button></div>`}
     <div class="hint" style="margin:8px 0 0">${T.left.length} to go today · done, it pays ${WR_DONE_XP} XP and ${WR_KNEW_XP} a word you knew.</div></div>`;
@@ -72265,6 +72329,11 @@ document.addEventListener("click",e=>{
   if(a==="open"){ydOpen="wr";const p=q("#ydPanel");if(p&&p.__close)p.__close();openYourDay();return;}
   if(a==="show")wrShown=k;
   else if(a==="yes"||a==="no"){wrAnswer(k,a==="yes");wrShown="";}
+  else if(a==="next")wrResult=null;
+  else if(a==="pick"){const j=k.lastIndexOf("|"),key=k.slice(0,j),i=+k.slice(j+1);
+    const T=wrToday(),w=T.left.find(x=>x.k===key);if(!w)return;
+    const order=wrOrder(w,T.day),o=order[i];if(!o)return;
+    wrResult={k:key,w:w.x.w,order,pick:i,ok:!!o.ok};wrAnswer(key,!!o.ok);wrShown="";}
   wrRedraw();
 });
 
