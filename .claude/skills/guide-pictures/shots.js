@@ -730,6 +730,143 @@ SHOTS["book-quotes"] = { async at(dev) {
   return { clip: box(sec, dev === "ph" ? 6 : 14, { top: 44 }), spots: { add, photo } };
 } };
 
+/* ---- 📖 the reader, on a stand-in text ----
+   The book being read (guide-b0) is given a file by name only; rdLoad hands
+   the reader an invented text of six chapters instead of reading a file, the
+   way the smoke does. Nothing of a real book. */
+const READER_TEXT = (() => {
+  let h = "";
+  const para = ["The lantern keeper counted the boats as they came in, each one a small light on the dark water, and wrote the number in the book she kept under the stair.",
+    "By the third week the harbour had learned her habits: the lamp lit at dusk, the window open an inch, the kettle on the stove that never quite boiled.",
+    "Nobody asked what the numbers were for. They were simply kept, the way the tide was kept, and the weather, and the names of the boats that did not come back."];
+  for (let i = 0; i < 6; i++) { h += "<h2>Chapter " + (i + 1) + "</h2>"; for (let k = 0; k < 7; k++) h += "<p>" + para[(i + k) % 3] + " " + para[(i + k + 1) % 3] + "</p>"; }
+  return h;
+})();
+const readerAt = async (dev, opts) => {
+  const b = books.find(x => x.id === "guide-b0");
+  b.readFile = { name: "the-lantern-keeper.epub", size: 120000 };
+  try { rdLoad = async () => READER_TEXT; } catch (e) {}
+  if (opts && opts.before) opts.before(b);
+  await openReader("guide-b0");
+  await until(() => rdState && document.getElementById("readerPage") && $("#rdText p"), 6000);
+  await wait(700);
+  return need("#readerPage");
+};
+window.__guideReader = readerAt;
+/* the reader's own picture in the text (an invented drawing), for 🖼 Keep this picture */
+const READER_PIC = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="300" viewBox="0 0 480 300"><rect width="480" height="300" fill="#dbe7ee"/><circle cx="380" cy="80" r="34" fill="#f6e7c1"/><path d="M0 220 Q120 170 240 215 T480 205 V300 H0Z" fill="#2f6f8f"/><rect x="60" y="120" width="26" height="100" fill="#f8f4ea"/><path d="M60 120 h26 l-13 -30z" fill="#c8443c"/></svg>');
+const readerTextWithPic = () => READER_TEXT.replace("</h2>", '</h2><p><img src="' + READER_PIC + '" alt="" style="max-width:100%"></p>');
+/* the reader claims Claude is set up, so its 📖 and 💬 buttons draw (nothing is sent: the picture rig blocks the sync server) */
+const claudeOn = () => { SYNC.supa = SYNC.supa || {}; SYNC.user = SYNC.user || { id: "guide" }; if (!CFG.url) CFG.url = "https://example.supabase.co"; };
+/* select the first words of the second paragraph, the way a finger or a mouse would */
+const readerSelect = async (words) => {
+  const p = $$("#rdText p").find(x => x.textContent.trim().length > 40);
+  const t = p.firstChild;
+  /* a phone selects by itself (user-select is off there): hand the reader its own range */
+  if ($(".rdview.rdtouch")) { rdState.tsel = { a: { n: t, o: 0 }, z: { n: t, o: words } }; rdOwnPaint(rdState); if (rdState.onSel) rdState.onSel(); await wait(400); return; }
+  const r = document.createRange(); r.setStart(t, 0); r.setEnd(t, words);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.dispatchEvent(new Event("selectionchange")); await wait(400);
+};
+const rdBar = () => need(".rdtop .rdbar"), rdFoot = () => need(".rdbottom");
+/* the book's page: 📖 Read it here, ⤓ Another file, ☁ From Drive */
+SHOTS["rd-open"] = { async at(dev) {
+  const b = books.find(x => x.id === "guide-b0"); b.readFile = { name: "the-lantern-keeper.epub", size: 120000 };
+  const keep = CFG.googleClientId; CFG.googleClientId = "guide.apps.googleusercontent.com";
+  try { drvLoadGis = async () => {}; } catch (e) {}
+  const pg = await bookAt("guide-b0");
+  const open = need("#rdOpen"), add = vis($("#rdAdd")), drive = vis($("#rdDrive"));
+  const row = open.closest(".vloan") || open.parentElement;
+  await place(row, dev === "ph" ? 100 : 60);
+  const m = pg.getBoundingClientRect(), r = box(row, 0), top = r.y - (dev === "ph" ? 60 : 46);
+  CFG.googleClientId = keep;
+  return { clip: box({ x: m.left, y: top, w: m.width, h: r.y + r.h - top }, dev === "ph" ? 6 : 14), spots: { open, add, drive } };
+} };
+/* the reader with its bars: ‹ Back, 🔖, ☰, ⇆ Pages at the top; the bar, the count, 🎧 Listen, 🌙 at the foot */
+SHOTS["rd-page"] = { async at(dev) {
+  const pg = await readerAt(dev);
+  return { clip: box(pg, 0), spots: { back: $("#rdBack"), bm: $("#rdBm"), toc: $("#rdToc"), mode: $("#rdMode"), drag: $("#rdDrag"), pos: $("#rdPos"), listen: $("#rdListen"), night: $("#rdNight"), clock: $("#rdClock") } };
+} };
+/* words selected: 🖍 Highlight, 📖 What does it mean?, 💬 What does this mean? */
+SHOTS["rd-sel"] = { async at(dev) {
+  claudeOn();
+  const pg = await readerAt(dev);
+  /* three words, eighteen letters: a word to look up and a passage to explain, both on offer */
+  await readerSelect(18);
+  const keep = need("#rdKeep"), word = vis($("#rdWord")), mean = vis($("#rdMean"));
+  const strip = keep.closest(".rdask") || keep.parentElement;
+  return { clip: box([strip, rdFoot()], 6), spots: { keep, word, mean } };
+} };
+/* a longer passage selected: 💬 What does this mean? (a word alone offers 📖 instead) */
+SHOTS["rd-mean"] = { async at(dev) {
+  claudeOn();
+  await readerAt(dev);
+  await readerSelect(70);
+  const keep = need("#rdKeep"), mean = need("#rdMean"), strip = keep.closest(".rdask") || keep.parentElement;
+  return { clip: box([strip, rdFoot()], 6), spots: { keep, mean } };
+} };
+/* a highlight tapped: ❝ Keep it, ✕ Remove the mark */
+SHOTS["rd-hl"] = { async at(dev) {
+  const pg = await readerAt(dev);
+  await readerSelect(5); need("#rdKeep").click(); await wait(500);
+  const mk = await until(() => $("#rdText mark.rdhl"), 3000); if (!mk) throw new Error("no highlight was made");
+  mk.click(); await wait(500);
+  const bar = await until(() => $("#rdHlBar"), 3000); if (!bar) throw new Error("the highlight's bar didn't open");
+  return { clip: box([bar, mk], 10), spots: { hlkeep: $("#rdHlKeep"), hloff: $("#rdHlOff") } };
+} };
+/* a picture in the text pressed: 🖼 Keep this picture */
+SHOTS["rd-pic"] = { async at(dev) {
+  try { rdLoad = async () => readerTextWithPic(); } catch (e) {}
+  const b = books.find(x => x.id === "guide-b0"); b.readFile = { name: "the-lantern-keeper.epub", size: 120000 };
+  await openReader("guide-b0"); await until(() => rdState && $("#rdText img"), 6000); await wait(600);
+  const img = need("#rdText img"); img.scrollIntoView({ block: "center" }); await wait(300);
+  /* the view hears a press as pointerdown then pointerup at the same point */
+  { const r = img.getBoundingClientRect(), o = { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, pointerId: 1, bubbles: true };
+    img.dispatchEvent(new PointerEvent("pointerdown", o)); img.dispatchEvent(new PointerEvent("pointerup", o)); await wait(500); }
+  const bar = await until(() => $("#rdPicBar"), 3000); if (!bar) throw new Error("the picture's bar didn't open");
+  return { clip: box([bar, img], 10), spots: { pickeep: $("#rdPicKeep") } };
+} };
+/* ☰ the side panel on Contents: its tabs and the chapters */
+SHOTS["rd-toc"] = { async at(dev) {
+  await readerAt(dev);
+  rdState.panelGo("toc"); await wait(500);
+  const box_ = need("#rdTocBox"), tab = k => $('[data-rdtab="' + k + '"]', box_);
+  return { clip: box(box_, 6), spots: { chapter: $(".rdtocch", box_), hl: tab("hl"), wd: tab("wd"), bm: tab("bm"), find: tab("find"), look: tab("look"), nb: tab("nb"), listen: tab("listen") } };
+} };
+/* 🔎 Find */
+SHOTS["rd-find"] = { async at(dev) {
+  await readerAt(dev);
+  rdState.panelGo("find"); await wait(500);
+  const box_ = need("#rdTocBox"), qf = need("#rdFindQ", box_); qf.value = "lantern"; need("#rdFindBtn", box_).click(); await wait(600);
+  return { clip: box(box_, 6), spots: { findq: qf, findgo: $("#rdFindBtn", box_) } };
+} };
+/* Aa: typeface, size, paper, the eye-saving light */
+SHOTS["rd-look"] = { async at(dev) {
+  await readerAt(dev);
+  rdState.panelGo("look"); await wait(500);
+  const box_ = need("#rdTocBox");
+  /* the panel scrolls: the typefaces at the top of the picture, the paper row in it */
+  $$("[data-rdkface]", box_)[0].scrollIntoView({ block: "start" }); await wait(300);
+  return { clip: box(box_, 6), spots: { face: $$("[data-rdkface]", box_)[1], size: $("#rdkSize", box_) } };
+} };
+/* Aa, further down: the eye-saving light */
+SHOTS["rd-light"] = { async at(dev) {
+  await readerAt(dev);
+  rdState.panelGo("look"); await wait(500);
+  const box_ = need("#rdTocBox");
+  /* from the paper row down: the papers, ↺, then the light's rows */
+  const pap = $$("[data-rdkpaper]", box_)[0], lab = pap.closest(".rdklab,.rdkrow,label,div") || pap;
+  lab.scrollIntoView({ block: "start" }); await wait(300); $("#rdTocBox").scrollTop -= 30; await wait(200);
+  return { clip: box(box_, 6), spots: { paper: $$("[data-rdkpaper]", box_)[2], lit: $("#rdkLit", box_), warm: $("#rdkWarm", box_), clock: $("#rdkClock", box_), awake: $("#rdkAwake", box_) } };
+} };
+/* 🎧: read aloud, the sleep timer, a sound for this book, songs */
+SHOTS["rd-listen"] = { async at(dev) {
+  await readerAt(dev);
+  rdState.panelGo("listen"); await wait(600);
+  const box_ = need("#rdTocBox");
+  return { clip: box(box_, 6), spots: { go: $("#rdlGo", box_), voice: $("#rdlVoice", box_), sleep: $("#rdlSleep", box_), rain: $('[data-rdsnd="rain"]', box_), songs: $('[data-rdsnd="songs"]', box_), vol: $("#rdlVol", box_) } };
+} };
+
 /* ---- 🎬 a made-up film of a made-up book, as a card would keep it ----
    Put on the book only for the pictures below, so no other picture changes.
    The poster is drawn here; the services in Where to watch are invented;
