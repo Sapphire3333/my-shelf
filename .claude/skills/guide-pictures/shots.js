@@ -867,6 +867,104 @@ SHOTS["rd-listen"] = { async at(dev) {
   return { clip: box(box_, 6), spots: { go: $("#rdlGo", box_), voice: $("#rdlVoice", box_), sleep: $("#rdlSleep", box_), rain: $('[data-rdsnd="rain"]', box_), songs: $('[data-rdsnd="songs"]', box_), vol: $("#rdlVol", box_) } };
 } };
 
+/* ---- ✨ Insights: the invented shelf given a past, so every card has something to draw ----
+   Readings in the year before, places the books are set, pages logged on
+   recent days, a named stretch, a kept reading of the owner's taste (invented
+   sentences), a prediction. In memory only, for these pictures. */
+const insSeed = () => {
+  const day = n => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+  const B = id => books.find(x => x.id === id);
+  const places = { "guide-b1": ["Lisbon, Portugal"], "guide-b3": ["Maine"], "guide-b5": ["Norway"], "guide-b8": ["Japan"], "guide-b9": ["Peru"], "guide-b10": ["Lisbon, Portugal"], "guide-b0": ["Middle-earth"] };
+  Object.keys(places).forEach(id => { const b = B(id); if (b) b.setIn = places[id]; });
+  /* a second, earlier reading of two books (so there is a year before, and a re-read), and two more finished last year */
+  const earlier = { "guide-b1": [430, 400, 6], "guide-b5": [520, 500, 8] };
+  Object.keys(earlier).forEach(id => { const b = B(id), [s0, e0, mk] = earlier[id]; b.readings = [{ id: "gre" + id, start: day(s0), end: day(e0), mark: mk }].concat(b.readings || []); });
+  [["guide-b2", 470, 450, 7], ["guide-b4", 390, 370, 9]].forEach(([id, s0, e0, mk]) => { const b = B(id); b.status = "finished"; b.rating = mk; b.readings = [{ id: "grl" + id, start: day(s0), end: day(e0) }]; });
+  /* a book that has sat on the pile for over a year, with the cobweb */
+  { const b = B("guide-b6"); b.created = Date.now() - 400 * 864e5; }
+  /* pages logged on recent days, for the calendars and the climber's pace */
+  [B("guide-b0"), B("guide-b7")].forEach((b, k) => { b.progLog = []; for (let i = 1; i <= 20; i++) if ((i + k) % 3) b.progLog.push({ d: day(i), p: Math.round(b.pages * (0.6 - i * 0.02)) }); });
+  B("guide-b0").sessions = [{ secs: 1500, at: Date.now() - 2 * 864e5 }, { secs: 2400, at: Date.now() - 5 * 864e5 }];
+  ["guide-b1", "guide-b3", "guide-b5", "guide-b8"].forEach((id, i) => { const b = B(id); b.format = ["print", "ebook", "audio", "print"][i]; b.pubYear = [1998, 2011, 1974, 2020][i]; b.lang = ["English", "English", "Norwegian", "English"][i]; });
+  B("guide-b9").from = "a friend"; B("guide-b3").from = "the library";
+  B("guide-b9").preds = [{ id: "gp1", t: "The brother knows more than he says", at: day(100), open: true, res: "yes", resAt: day(80) }];
+  B("guide-b9").dnf = false;
+  quests.eras = [{ id: "gera1", from: day(130), to: day(60), name: "The lighthouse summer", at: Date.now() }];
+  settings.taste = { profile: "You read for the place as much as the people: harbours, small towns, weather. Quiet books rate highest with you, and a plot that hurries loses you.",
+    high: ["Literary fiction with a strong sense of place", "A mystery told slowly"], quit: ["Anything that opens with a battle"], again: ["Mira Vantwell, every time"], tags: ["coastal: a book you will finish"], from: 8, at: new Date(Date.now() - 3 * 864e5).toISOString().slice(0, 10) };
+  settings.insTab = "year";
+};
+const insAt = async (tab) => { insSeed(); await goTab("insights"); await wait(600); insTabSet(tab); await wait(500); window.scrollTo(0, 0); await wait(200); return need("#main"); };
+const sec = (sel) => { const e = need(sel); return e.closest(".sec") || e; };
+/* the five tabs, and 📝 Write me a full analysis above them */
+SHOTS["in-tabs"] = { async at(dev) {
+  const m = await insAt("year");
+  const bar = need(".instabs"), ana = need("#anaGo");
+  const tab = k => $('[data-itab="' + k + '"]', bar);
+  return { clip: box([ana.closest(".sec") || ana, bar], dev === "ph" ? 6 : 14), spots: { ana, year: tab("year"), readertab: tab("reader"), numtab: tab("numbers"), timetab: tab("time"), placestab: tab("places") } };
+} };
+/* one card of a tab, placed at the top of the screen and cut to what fits */
+const insCard = async (dev, tab, sel, spots) => {
+  const m = await insAt(tab);
+  const el = need(sel), card = el.closest(".sec") || el;
+  await place(card, 20);
+  const r = box(card, 0), mm = m.getBoundingClientRect();
+  const out = {}; for (const k in spots) out[k] = typeof spots[k] === "string" ? $(spots[k]) : spots[k];
+  return { clip: box({ x: mm.left, y: r.y, w: mm.width, h: Math.min(r.h, stuckFoot() - r.y) }, dev === "ph" ? 6 : 14), spots: out };
+};
+/* 🎁 Your year, wrapped: the year pills */
+SHOTS["in-wrapped"] = { async at(dev) { return insCard(dev, "year", "[data-wrapy]", { wrapy: "[data-wrapy]", booky: "[data-booky]" }); } };
+/* ✦ A year in stars */
+SHOTS["in-sky"] = { async at(dev) { return insCard(dev, "year", "#secSky", { skyy: "[data-skyy]", skybig: "#skyBig", skysave: "#skySave" }); } };
+/* 📅 Month by month */
+SHOTS["in-month"] = { async at(dev) { return insCard(dev, "year", "[data-recappic]", { recappic: "[data-recappic]" }); } };
+/* the year wrapped, open */
+SHOTS["in-wrap"] = { async at(dev) {
+  await insAt("year");
+  need("[data-wrapy]").click(); await wait(900);
+  const pg = need("#wrapPage");
+  return { clip: box(pg, 0), spots: { wpsave: $("#wpSave", pg), wpprint: $("#wpPrint", pg), wpx: $("#wpX", pg) } };
+} };
+/* 🪞 You, as a reader: the sentences and ▸ Show me which */
+SHOTS["in-reader"] = { async at(dev) {
+  const m = await insAt("reader");
+  const gap = need("#gapTog"), card = gap.closest(".sec") || gap;
+  /* the sentences run long: the fold is brought to the top, with a few lines above it */
+  gap.scrollIntoView({ block: "start" }); await wait(200); window.scrollBy(0, -(stuckTop() + (dev === "ph" ? 160 : 120))); await wait(300);
+  const mm = m.getBoundingClientRect(), g = gap.getBoundingClientRect(), top = Math.max(stuckTop(), g.top - (dev === "ph" ? 160 : 120));
+  return { clip: box({ x: mm.left, y: top, w: mm.width, h: Math.min(card.getBoundingClientRect().bottom, stuckFoot()) - top }, dev === "ph" ? 6 : 14), spots: { gaptog: gap } };
+} };
+/* 🏷 Genres, honestly rated */
+SHOTS["in-genres"] = { async at(dev) { return insCard(dev, "reader", "[data-gord]", { gord: "[data-gord]" }); } };
+/* ✨ Your taste, as Claude reads it (an invented reading kept), and what Claude is told */
+SHOTS["in-taste"] = { async at(dev) {
+  const r = await insCard(dev, "reader", "#secTaste", { tsedit: "#tsEdit", mefold: "#meFold summary" });
+  r.spots.tsread = vis($("#tsRead")) || $("#tsEdit"); if (!r.spots.mefold) r.spots.mefold = $("#meFold");
+  return r;
+} };
+/* 🔢 The numbers: the big number and the tiles */
+SHOTS["in-numbers"] = { async at(dev) { return insCard(dev, "numbers", ".bignum", { bignum: ".bignum", stat: ".numgrid .stat" }); } };
+/* Pages a day: the calendars */
+SHOTS["in-days"] = { async at(dev) { return insCard(dev, "numbers", ".dcal", { dcal: ".dcal" }); } };
+/* 🗓 When you finish */
+SHOTS["in-finish"] = { async at(dev) {
+  const r = await insCard(dev, "time", "[data-ysday]", {});
+  /* a marked day, brought into the strip's view: the strips scroll sideways on a phone */
+  const d = $$("[data-ysday]").find(e => /(^| )f[1-4]( |$)/.test(e.className)) || $("[data-ysday]");
+  d.scrollIntoView({ inline: "center", block: "nearest" }); await wait(300);
+  r.spots.ysday = d; return r;
+} };
+/* 📈 Your reading, drawn */
+SHOTS["in-drawn"] = { async at(dev) { return insCard(dev, "time", "#secTimeline", { tlmove: "#secTimeline [data-tlmove]", tlzoom: "#secTimeline [data-tlzoom]", tlview: "#secTimeline [data-tlview]", tlbig: "#secTimeline [data-tlbig]" }); } };
+/* 🗓 What you read, and when */
+SHOTS["in-period"] = { async at(dev) { return insCard(dev, "time", "[data-insby]", { insby: "[data-insby]", insWhen: "#insWhen" }); } };
+/* 🛂 Your passport */
+SHOTS["in-passport"] = { async at(dev) { return insCard(dev, "places", "#secPassport", { ppst: "#secPassport .ppst", ppturn: "#secPassport [data-ppturn]" }); } };
+/* 🗺 The atlas */
+SHOTS["in-atlas"] = { async at(dev) { return insCard(dev, "places", "#secAtlas", { atlasbig: "#atlasBig", atpin: "#secAtlas .atpin" }); } };
+/* ⛰ The mountain of unread books */
+SHOTS["in-tbr"] = { async at(dev) { return insCard(dev, "places", "#secTbr", { tbrpic: '#secTbr [data-tbrpic="peak"]', tbrme: '#secTbr [data-tbrpic="me"]' }); } };
+
 /* ---- 🎵 invented songs, as the Drive list would hold them ----
    Names of made-up artists and titles; nothing is fetched or played
    (TEST_RUN's stand-in player). Genres and moods as songTags would keep them. */
