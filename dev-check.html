@@ -5258,6 +5258,56 @@ const SMOKE=`
       ["fx-wl1","fx-wl2","fx-wl3","fx-wl5","fx-wl6","fx-wl6|w1"].forEach(k=>coverCache.delete(k));
       pzPics=keepPics;try{await dbPut("meta",{k:"pzPics",v:keepPics||{}});}catch(e){}slivKeys=keepSliv;if(keepSrc===undefined)delete settings.pzSrc;else settings.pzSrc=keepSrc;try{ruMemo=null;}catch(e){}
       quests.arc=quests.arc||{};quests.arc.pz=keepPz||null;quests.arc.pd=keepPd||null;}});
+  await check("sort the shelves: every deal is the sorted shelves moved backwards by legal moves, so played forward it sorts; spines from the shelf's series and a collection's stories; a move onto any shelf with room, never a full one; take back, start again, and a sorted board pays",async()=>{
+    /* 📚 SORT THE SHELVES in index.html */
+    const keepSlot=arcSlot("shv"),keepSize=settings.shvSize,keepSfx=window.gameSfx,keepRC=window.renderChallenges,keepSay=SHV_SAY;
+    const ser=(name,n,i0)=>Array.from({length:n},(_,i)=>B("fx-sv"+name.length+"-"+i,name+" "+(i+1),"Ann Fixture",{series:name,seriesNum:String(i0+i)}));
+    const shelf=[...ser("The Harbour Lights",5,1),...ser("Moth Hollow",3,4),
+      B("fx-svc","The Bell Stories","Bea Fixture",{type:"collection",entries:[E("v1","Bell Tales #1"),E("v2","Bell Tales #2"),E("v3","Bell Tales #3"),E("v4","Bell Tales #4")]})];
+    const replay=(sh,path,cap,serList)=>{const s={ser:serList,cap,sh:JSON.parse(JSON.stringify(sh))};let ok=true;
+      path.forEach(([a,b])=>{if(!shvCan(s,a,b))ok=false;else s.sh[b].push(s.sh[a].pop());});return ok&&shvSolved(s);};
+    try{window.gameSfx=()=>{};window.renderChallenges=()=>{};
+      return await onShelf(shelf,async()=>{
+        const say=[];
+        [3,4,5].forEach(k=>{let steps=[];
+          for(let t=0;t<12;t++){const sl=shvSeries(k,SHV_LEN[k]),cap=Math.max(...sl.map(x=>x.items.length)),m=shvMake(sl,cap,SHV_STEPS[k],Math.random);
+            must(!!m,"no deal of "+k+" series");
+            must(m.sh.length===k+2&&m.sh.reduce((a,x)=>a+x.length,0)===sl.reduce((a,x)=>a+x.items.length,0)&&m.sh.every(a=>a.length<=cap),"the shelves of a deal of "+k);
+            must(!m.sh.some(a=>a.length&&shvDone({ser:sl},a))&&shvPairs(m.sh)<=SHV_MIX*sl.reduce((t,x)=>t+x.items.length-1,0),"a deal of "+k+" began with a shelf already sorted, or too little mixed");
+            must(replay(m.sh,m.path,cap,sl),"a deal of "+k+" series could not be sorted by its own moves played forward");
+            steps.push(m.path.length);}
+          say.push(k+": "+Math.min(...steps)+"–"+Math.max(...steps)+" moves back");});
+        /* the shelf's own series first: two by number and a collection's numbered stories */
+        const own=shvSeries(3,4);
+        must(own.map(x=>x.s).sort().join("|")==="Moth Hollow|The Bell Stories|The Harbour Lights"&&own.every(x=>x.items.every(it=>it.id)),"the series dealt are not the shelf's own: "+own.map(x=>x.s).join(", "));
+        const mh=own.find(x=>x.s==="Moth Hollow");must(mh.items.map(it=>it.num).join()==="4,5,6","the spines' numbers are not the series' own: "+mh.items.map(it=>it.num).join());
+        must(shvSeries(5,5).length===5&&shvSeries(5,5).filter(x=>!x.items[0].id).length===2,"too few series on the shelf were not made up");
+        /* the rule: onto any shelf with room, never a full one, never from an empty one */
+        const t={ser:[{items:[1,2,3]},{items:[1,2,3]}],cap:3,sh:[[[0,0]],[[1,0]],[],[[0,1],[0,2],[1,1]]]};
+        must(shvCan(t,0,1)&&shvCan(t,0,2)&&!shvCan(t,1,3)&&shvCan(t,3,1)&&!shvCan(t,2,0)&&!shvCan(t,0,0),"a move onto another series, an empty shelf or a full one was judged wrongly");
+        /* play one through by its own path, with a wrong press, a take-back and a start again on the way */
+        settings.shvSize=3;const sl=shvSeries(3,4),cap=Math.max(...sl.map(x=>x.items.length)),m=shvMake(sl,cap,SHV_STEPS[3],Math.random);
+        const s=arcPut("shv",{k:3,ser:sl,cap,sh:m.sh,start:JSON.parse(JSON.stringify(m.sh)),sel:-1,moves:0,hist:[],over:false,at:Date.now()});
+        const press=i=>{const d=document.createElement("div");d.innerHTML=shvHtml();shvWire(d);d.querySelector('[data-shvs="'+i+'"]').click();};
+        const box=document.createElement("div");box.innerHTML=shvHtml();
+        must(box.querySelectorAll("[data-shvs]").length===5&&box.querySelectorAll(".shvb").length===sl.reduce((a,x)=>a+x.items.length,0)&&box.querySelectorAll(".shvn").length===box.querySelectorAll(".shvb").length,"the shelves are not drawn whole, a number on every spine");
+        const [a0,b0]=m.path[0];press(a0);press(b0);
+        must(s.moves===1&&s.hist.length===1,"a legal move by two presses: "+s.moves);
+        {const d=document.createElement("div");d.innerHTML=shvHtml();shvWire(d);d.querySelector("[data-shvundo]").click();}
+        must(s.moves===0&&JSON.stringify(s.sh)===JSON.stringify(s.start),"take back did not put it back");
+        const full=s.sh.findIndex(a=>a.length>=cap),from=s.sh.findIndex((a,i)=>i!==full&&a.length);
+        if(full>=0&&from>=0){press(from);press(full);
+          must(s.moves===0&&s.sel===full&&/That shelf is full/.test(SHV_SAY),"a move onto a full shelf was made, or not said");s.sel=-1;}
+        press(a0);press(b0);{const d=document.createElement("div");d.innerHTML=shvHtml();shvWire(d);d.querySelector("[data-shvagain]").click();}
+        must(s.moves===0&&JSON.stringify(s.sh)===JSON.stringify(s.start),"start again did not lay the shelves out as dealt");
+        m.path.forEach(([a,b])=>{press(a);press(b);});
+        const led=(quests.led||{})["x:shv:"+s.at];
+        must(s.over&&shvSolved(s)&&!!led&&(led[2]||led[0])===SHV_XP[3]&&/in order, in /.test(shvHtml()),"the sorted shelves did not win: "+JSON.stringify(led));
+        must(GAME_SHELVES.some(x=>x[2].indexOf("shv")>=0)&&GAME_STAGED.has("shv")&&!!gameDesc("shv")&&!!arcOf("shv"),"not on the wall, staged or described");
+        return "36 deals sorted by their own moves ("+say.join("; ")+"); the shelf's own series, made-up ones past them; the rule; a move, take back, a wrong press said, start again; sorted pays "+SHV_XP[3];
+      });
+    }finally{window.gameSfx=keepSfx;window.renderChallenges=keepRC;SHV_SAY=keepSay;if(keepSize===undefined)delete settings.shvSize;else settings.shvSize=keepSize;
+      quests.arc=quests.arc||{};if(keepSlot)quests.arc.shv=keepSlot;else delete quests.arc.shv;}});
   await check("worlds: a worlds file loads, a world's fics are every fic with one of its fandom names, small worlds fold, a second file keeps the ids and drops what it no longer holds",async()=>{
     /* 🌍 WORLDS in index.html */
     const keepMap=wldMap,keepMode=libWorldsMode,keepOpen=wldOpen,keepRL=window.renderLibrary;
