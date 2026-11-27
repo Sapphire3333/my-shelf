@@ -176,7 +176,7 @@ SHOTS["care-import"] = { async at(dev) {
   const r = head.getBoundingClientRect(), s = sec.getBoundingClientRect();
   const bottom = Math.max(...btns.map(b => b.getBoundingClientRect().bottom));
   const clip = box({ x: s.left, y: r.top, w: s.width, h: bottom - r.top }, dev === "ph" ? 6 : 14);
-  return { clip, spots: { csv, photo: $("#impPhoto"), paste: $("#impPaste"), ficdir: $("#impFicDir"), ao3: $("#ao3Mark") } };
+  return { clip, spots: { csv, photo: $("#impPhoto"), paste: $("#impPaste"), ficdir: $("#impFicDir"), ao3: $("#ao3Mark"), chat: $("#chatMark") } };
 } };
 
 /* the import list, with rows waiting */
@@ -946,6 +946,97 @@ SHOTS["dv-sort"] = { async at(dev) {
   books.find(x => x.id === "guide-b3").driveFile = { id: "gdx5", name: "The Orchard Cipher - Tobias Rennick.epub", size: 520000 };
   return careCard(dev, "#drvSortBox", { dsgo: "#dsGo", dsgenfold: "[data-dsgenfold]", dssee: "#drvSortBox details summary" });
 } };
+
+/* ---- 🧰 Shelf care, card by card ----
+   Its checks fill their boxes a moment after the page is drawn (careChecks in
+   index.html), so each picture waits for the thing it points at, not for the
+   box. careBits cuts around some of a card's boxes, at #main's width, where
+   careCard's whole card would run off the foot of the window. */
+const careBits = async (dev, wantSel, els, spots) => {
+  await careAt();
+  const want = await until(() => $(wantSel), 6000);
+  if (!want) throw new Error("Shelf care never drew " + wantSel);
+  const list = [].concat(els).map(e => typeof e === "string" ? $(e) : e).filter(Boolean);
+  await place(list[0], 20);
+  const r = box(list, 0), mm = need("#main").getBoundingClientRect();
+  const out = {}; for (const k in spots) out[k] = typeof spots[k] === "string" ? $(spots[k]) : spots[k];
+  return { clip: box({ x: mm.left, y: r.y, w: mm.width, h: Math.min(r.h, stuckFoot() - r.y) }, dev === "ph" ? 6 : 14), spots: out };
+};
+const addBook = (id, o) => { const b = Object.assign(blankBook(id), { created: Date.now() - 864e5, modified: Date.now() }, o); books.push(b); return b; };
+
+/* What's missing, at the top: the made-up books have no covers and no notes */
+SHOTS["care-missing"] = { async at(dev) {
+  await careAt();
+  const gap = await until(() => $("[data-hubgap]"), 4000); if (!gap) throw new Error("What's missing has nothing to count");
+  const sec = gap.closest(".sec");
+  await place(sec, 20);
+  return { clip: box(sec, dev === "ph" ? 6 : 14), spots: { gap: $('[data-hubgap="cover"]') || gap, deep: $("[data-hubdgap]") } };
+} };
+
+/* 🧪 Shelf health: a book with no author, its fold opened */
+SHOTS["care-health"] = { async at(dev) {
+  addBook("guide-h1", { title: "The Unsigned Map", author: "", status: "want", genres: ["Mystery"], pages: 230 });
+  await careAt();
+  const row = await until(() => $('#healthBox details.hlth[data-hlrow="noauth"]') || $("#healthBox details.hlth"), 6000);
+  if (!row) throw new Error("Shelf health found nothing");
+  row.open = true; await wait(300);
+  const sec = need("#healthSec");
+  await place(sec, 20);
+  const r = box(sec, 0), mm = need("#main").getBoundingClientRect();
+  return { clip: box({ x: mm.left, y: r.y, w: mm.width, h: Math.min(r.h, stuckFoot() - r.y) }, dev === "ph" ? 6 : 14),
+    spots: { hlrow: $("summary", row), hlopen: $("[data-hlopen]", row), hlx: $("[data-hlx]", row) } };
+} };
+
+/* ⌛ Says you don't have it, but…: a book marked ⌛ that you have read */
+SHOTS["care-clash"] = { async at(dev) {
+  addBook("guide-o1", { title: "The Borrowed Lighthouse", author: "Ines Kowalczyk", status: "finished", unowned: true, genres: ["Romance"], pages: 310,
+    readings: [{ id: "go1", start: new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10), end: new Date(Date.now() - 20 * 864e5).toISOString().slice(0, 10) }] });
+  await careAt();
+  const tab = await until(() => $('[data-cltab="read"]'), 6000); if (!tab) throw new Error("⌛ Says you don't have it never showed its tabs");
+  tab.click(); await wait(500);
+  return careBits(dev, "[data-clhave]", ["#ownClashSec"], { cltab: '[data-cltab="read"]', clhave: "[data-clhave]", oaon: "[data-oaon]" });
+} };
+
+/* 🧹 Tidying up: one book twice, and a book that is already a story */
+SHOTS["care-dupes"] = { async at(dev) {
+  addBook("guide-d2", { title: "The Last Toll", author: "Oskar Dellamere", status: "want", genres: ["Literary fiction"], pages: 40 });
+  return careBits(dev, "[data-scfold]", ["#dupBox", "#storyCopyBox"], { fold: "[data-scfold]" });
+} };
+
+/* One name, spelled more than one way */
+SHOTS["care-names"] = { async at(dev) {
+  addBook("guide-n1", { title: "A Lantern for Two", author: "Inés Kowalczyk", status: "want", genres: ["Romance"], pages: 280 });
+  addBook("guide-n2", { title: "Small Hours", author: "Ines  Kowalczyk", status: "want", genres: ["Romance"], pages: 190 });
+  return careBits(dev, "[data-nmk]", ["#nameDupBox"], { nm: "[data-nmk]" });
+} };
+
+/* Tags that repeat a genre, and tags with no capital letter */
+SHOTS["care-tags"] = { async at(dev) {
+  const kw = { "guide-b0": ["fantasy", "found family"], "guide-b6": ["fantasy", "maps"], "guide-b2": ["slow burn", "seaside"], "guide-b9": ["space"] };
+  books.forEach(b => { if (kw[b.id]) b.keywords = kw[b.id].slice(); });
+  return careBits(dev, "[data-kdup]", ["#kwDupBox", "#capBox"], { kdup: "[data-kdup]", kboth: "[data-kboth]", kgo: "#kdupGo", cap: "#capGo" });
+} };
+
+/* 📥 Corrections from a file, before one is loaded */
+SHOTS["care-corr"] = { async at(dev) { return careCard(dev, "#corrPick", { corrpick: "#corrPick" }); } };
+
+/* 🖼 Better covers: books with an ISBN, so 🔎 Look can be pressed */
+SHOTS["care-covers"] = { async at(dev) {
+  ["9780000000011", "9780000000028", "9780000000035"].forEach((n, i) => { const b = books.find(x => x.id === "guide-b" + i); if (b) b.isbn = n; });
+  return careCard(dev, "#covfGo", { covf: "#covfGo" });
+} };
+
+/* 📝 Better blurbs and page counts: two books with no blurb, and Claude there */
+SHOTS["care-blurbs"] = { async at(dev) {
+  signedIn();
+  ["guide-b8", "guide-b11"].forEach(id => { const b = books.find(x => x.id === id); if (b) b.summary = ""; });
+  await careAt();
+  const look = await until(() => $("#blbLook"), 8000); if (!look) throw new Error("🔎 Look in the free places never showed");
+  return careCard(dev, "#blbLook", { blblook: "#blbLook" });
+} };
+
+/* Pictures from your files */
+SHOTS["care-scan"] = { async at(dev) { return careCard(dev, "#scanBtn", { scan: "#scanBtn", scandir: "#scanDirBtn" }); } };
 
 /* ---- ✨ Insights: the invented shelf given a past, so every card has something to draw ----
    Readings in the year before, places the books are set, pages logged on
