@@ -17748,6 +17748,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-27.31",go:["tab:library"],lines:["<b>📋 A narration's words, pasted in.</b> A story you added from a YouTube link has <b>📋 Paste the words</b> on its ▶ On YouTube row. On the computer, under the video press …more, then Show transcript, copy it all and paste it: the times are taken out, the words go into the reader with their count, and a story with no length gets one from them. Then <b>✨ A blurb from the words</b> has Claude write its blurb from the story itself, for a cent or two."]},
   {v:"2026-11-27.30",lines:["<b>📜 What's new, from the owl.</b> Press the owl, and its card has <b>📜 What's new</b> beside <b>? Help</b>: every update to the app, newest first, a day at a time. The help's Ask box finds it too, as the changelog, updates or release notes."]},
   {v:"2026-11-27.29",go:["tab:library"],lines:["<b>▶ A story from a YouTube link.</b> ＋ Add book has <b>▶ From a YouTube link</b>: paste the link of a story read aloud on YouTube, put its title right and type who wrote it if you know, and it comes onto your shelf as Want to read, an audiobook, with the video's picture as its cover and its link kept. Its page has a ▶ On YouTube row in Where to read it. The narration's own words can't be fetched, since YouTube asks a program to sign in first; pasting them in comes next."]},
   {v:"2026-11-27.28",go:["tab:challenges"],lines:["<b>🚰 Pipes, against the ink.</b> A new game in 🎲 Challenges → 🕹 Games, on the A steady hand shelf. Turn the pieces to lead the ink from the well to the press: press <b>▶ Pour</b>, you have 8 seconds, then the ink runs a square every 3 seconds, and races once the whole way is joined. Blots let nothing through, rusted pieces won't turn, tanks fill slowly and buy you time. One of your covers lies under the pipes, grey, and comes up in colour where the ink runs; get through and the whole cover prints. A spill gives you the same board again if you like. Three sizes: 5 × 7, 7 × 11 and 9 × 14."]},
@@ -92753,8 +92754,101 @@ function ytLineHtml(b){
   if(!b||b._story||!b.yt||!b.yt.id)return "";
   return whRow("▶ On YouTube",`<span>Read aloud${b.yt.ch?` by <b>${esc(b.yt.ch)}</b>`:""}.</span> <a class="btn smallbtn" href="${esc(ytWatch(b.yt.id))}" target="_blank" rel="noopener">Open the video ↗</a>${ytWordsHtml(b)}`);
 }
-/* the words come in by hand — see 📋 THE NARRATION'S WORDS, PASTED */
-function ytWordsHtml(b){return "";}
+/* ┌─ 📋 THE NARRATION'S WORDS, PASTED ───────────────────────────────────────┐
+   │ A story from a YouTube link (b.yt) has 📋 Paste the words on its ▶ On   │
+   │ YouTube row (ytWordsHtml). YouTube shows the words to its own reader:   │
+   │ under the video, …more → Show transcript. Copied from there they come  │
+   │ with a time on every line (0:12, 1:02:03, or "2 minutes, 3 seconds"   │
+   │ for a screen reader) and the panel's own words; ytClean takes those    │
+   │ out and makes paragraphs of about YT_PARA words, ending at a sentence  │
+   │ where the words have any. The text goes to the reader as a .txt file   │
+   │ given to the book (rdImport), so it reads, keeps its place and counts   │
+   │ its words (b.readFile.words) as any file does. A book with no length   │
+   │ takes one from the words, at YT_WPM words a minute read aloud          │
+   │ (b.audioMins, and its pages at AUDIO_PPH when it has none).            │
+   │ ✨ A blurb from the words (ytBlurb) asks Claude, Haiku, for a blurb of │
+   │ the story from the words (at most YT_BLURB_IN letters of them), written │
+   │ the way a publisher would and keeping the ending back; it replaces the │
+   │ blurb with one step of ↶, and says its price before the press.         │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const YT_PARA=120,YT_WPM=150,YT_BLURB_IN=120000,YT_MIN_WORDS=100;
+function ytClean(t){
+  const out=[];
+  String(t||"").replace(/\r/g,"").split("\n").forEach(l=>{
+    let x=l.trim();if(!x)return;
+    if(/^\d{1,2}(:\d{2}){1,2}$/.test(x))return;
+    if(/^(\d+\s*(hours?|minutes?|seconds?),?\s*)+$/i.test(x))return;
+    if(/^(transcript|search in video|show transcript|follow along using the transcript\.?|chapters?|description|in this video)$/i.test(x))return;
+    x=x.replace(/^\d{1,2}(:\d{2}){1,2}\s+/,"").replace(/\[(music|applause|laughter|silence|__)\]/gi," ").trim();
+    if(x)out.push(x);
+  });
+  const all=out.join(" ").replace(/\s+/g," ").trim();if(!all)return "";
+  const sents=all.split(/(?<=[.!?…]["”’)]?)\s+(?=[A-Z"“‘(])/),paras=[];let cur=[],n=0;
+  const push=()=>{if(cur.length){paras.push(cur.join(" "));cur=[];n=0;}};
+  sents.forEach(s=>{const w=s.split(" ");
+    if(w.length>YT_PARA*2){push();for(let i=0;i<w.length;i+=YT_PARA)paras.push(w.slice(i,i+YT_PARA).join(" "));return;}
+    cur.push(s);n+=w.length;if(n>=YT_PARA)push();});
+  push();
+  return paras.join("\n\n");
+}
+function ytWordsHtml(b){
+  const f=b.readFile;
+  if(!f||!(+f.words>0))return ` <button class="btn smallbtn pri" data-ytpaste="1" title="YouTube shows the words under the video: …more → Show transcript">📋 Paste the words</button>`;
+  return ` <button class="btn smallbtn" data-ytread="1">📖 Read the words</button> <span class="hint" style="margin:0">${(+f.words).toLocaleString()} words</span>`
+    +(claudeReady()?` <button class="btn smallbtn" data-ytblurb="1" title="Claude, Haiku, writes a blurb from the words: ${esc(ytBlurbCost(f.words))}">✨ A blurb from the words</button>`:"");
+}
+const ytBlurbCost=words=>{const P=CLAUDE_PRICES[CLAUDE_HAIKU],inT=Math.min(+words||0,YT_BLURB_IN/5.5)*1.35+300;return "about "+askCents((inT*P.input+400*P.output)/1e6);};
+function ytPasteOpen(){
+  const b=cur;if(!b||!b.yt)return;
+  const old=q("#ytWords");if(old&&old.__close)old.__close();
+  const d=document.createElement("div");d.id="ytWords";d.className="ratepanel mdpanel";d.setAttribute("role","dialog");d.setAttribute("aria-label","The narration's words");
+  d.innerHTML=`<div class="hrow2" style="flex:none;align-items:center"><b class="serif" style="font-size:17px">📋 The narration's words</b><button class="btn" data-ytwx="1" style="margin-left:auto;padding:4px 10px">✕ Close</button></div>
+    <ol class="hint ytsteps" style="margin:6px 0 8px;padding-left:1.3em">
+      <li>On the computer, <a href="${esc(ytWatch(b.yt.id))}" target="_blank" rel="noopener" style="color:var(--teal-ink)">open the video on YouTube ↗</a>.</li>
+      <li>Under it, press <b>…more</b>, then <b>Show transcript</b>.</li>
+      <li>Drag over the transcript from its first line to its last, copy it, and paste it here. The times are taken out for you.</li></ol>
+    <textarea class="field" id="ytWordsIn" rows="9" style="width:100%;resize:vertical" placeholder="Paste the transcript here"></textarea>
+    <div class="hrow2" style="gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap"><button class="btn pri" data-ytuse="1" disabled>Use these words</button><span class="hint" id="ytWordsN" style="margin:0"></span></div>`;
+  document.body.appendChild(d);const close=dismissable(d);d.__close=close;
+  q("[data-ytwx]",d).onclick=()=>close();
+  const ta=q("#ytWordsIn",d),say=q("#ytWordsN",d),go=q("[data-ytuse]",d);
+  ta.oninput=()=>{const n=wordCount(ytClean(ta.value));say.textContent=n?`${n.toLocaleString()} words once the times are out`:"";go.disabled=n<YT_MIN_WORDS;};
+  go.onclick=async()=>{go.disabled=true;const text=ytClean(ta.value),n=wordCount(text);
+    if(n<YT_MIN_WORDS){alert(`That's only ${n} words. Is it the whole transcript?`);go.disabled=false;return;}
+    await ytWordsUse(b.id,text);close();};
+  setTimeout(()=>ta.focus(),50);
+}
+async function ytWordsUse(id,text){
+  if(!cur||cur.id!==id)await openBook(id,false);
+  const b=books.find(x=>x.id===id);if(!b)return;
+  const file=new File([text],String(b.title||"The narration").replace(/[\\/:*?"<>|]+/g," ").slice(0,80).trim()+".txt",{type:"text/plain"});
+  await rdImport(file);
+  const n=wordCount(text);
+  /* a length for an audiobook that has none, from the words read aloud */
+  await quickEdit(bk=>{if(+bk.audioMins>0)return false;bk.audioMins=Math.max(1,Math.round(n/YT_WPM));if(!parseInt(bk.pages))bk.pages=String(audioPages(bk.audioMins));return true;});
+}
+async function ytBlurb(){
+  const b=cur;if(!b||!b.yt)return;
+  let html=rdCache.get(b.id);
+  if(typeof html!=="string"){try{const r=await dbGet("images",rdKey(b.id));if(r&&r.data)html=await (await fetch(r.data)).text();}catch(e){}}
+  const words=stripHtml(String(html||"")).replace(/\s+/g," ").trim();
+  if(wordCount(words)<YT_MIN_WORDS){alert("The words aren't on this device yet. Open them in the reader once, then try again.");return;}
+  const btn=q("[data-ytblurb]");if(btn){btn.disabled=true;btn.textContent="✨ Writing…";}
+  try{
+    const j=await claudeAsk({what:"▶ A blurb from a narration",kind:"ask",effort:"low",max_tokens:700,model:CLAUDE_HAIKU,
+      schema:{type:"object",properties:{blurb:{type:"string"}},required:["blurb"],additionalProperties:false},
+      text:`These are the words of a story read aloud on YouTube, taken from the video's transcript (so the punctuation may be missing). The video is called "${String(b.title||"")}".\n\nWrite the blurb for the back of its book: 120 to 180 words in two or three short paragraphs, about the story itself: who it is about, their situation, what is at stake, and the kind of story it is. Keep the ending and the big turns back. No praise, no mention of the narration, the channel, YouTube or the transcript. Answer in the story's own language if it isn't English.\n\nThe words:\n${words.slice(0,YT_BLURB_IN)}`});
+    const t=String((j.json&&j.json.blurb)||"").trim();if(!t)throw new Error("no blurb came back");
+    const html2=t.split(/\n{2,}/).map(p=>"<p>"+esc(p.trim())+"</p>").join("");
+    await quickEdit(bk=>{bk.summary=html2;return true;});
+  }catch(e){alert("✨ "+((e&&e.message)||"Claude couldn't write it just now")+".");if(btn){btn.disabled=false;btn.textContent="✨ A blurb from the words";}}
+}
+document.addEventListener("click",e=>{
+  const t=e.target.closest&&e.target.closest("[data-ytpaste],[data-ytread],[data-ytblurb]");if(!t||!cur)return;
+  if(t.dataset.ytpaste)ytPasteOpen();
+  else if(t.dataset.ytread)openReader(cur.id);
+  else if(t.dataset.ytblurb)ytBlurb();
+});
 /* the reading page's own wiring for the line, called after it is drawn */
 function mdLineWire(){const s=q("#mdLine");if(s)mdWire(s,s.dataset.mdkey);}
 /* ┌─ 🎧 LISTEN FREE: LIBRIVOX ───────────────────────────────────────────────┐
