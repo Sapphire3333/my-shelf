@@ -707,12 +707,11 @@ SHOTS["ch-games"] = { async at(dev) {
     spots: { tile: tiles[0] } };
 } };
 
-/* 🏅 Medals → 🎴 Cards: a pack, the genre and author packs, the trading post */
+/* 🎲 Challenges → 🎴 Cards: a pack, the genre and author packs, the trading post */
 SHOTS["ach-cards"] = { async at(dev) {
-  await goTab("ach"); await wait(1100);
+  chRoomSet("cards"); await goTab("challenges"); await wait(1100);
   const buy = need("[data-packbuy]"), post = vis($("[data-post]")), genre = vis($('[data-packtype="genre"]'));
-  const sec = buy.closest(".sec") || buy.parentElement;
-  const head = $(".heading", sec) || sec;
+  const head = need(".cardspacks .cardslbl");
   await place(head, 60);
   const els = [head, buy, post, genre].filter(e => e && e.getClientRects().length);
   const m = need("#main").getBoundingClientRect(), r = box(els, 0);
