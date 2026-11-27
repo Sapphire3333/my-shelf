@@ -1067,12 +1067,12 @@ const insSeed = () => {
 };
 const insAt = async (tab) => { insSeed(); await goTab("insights"); await wait(600); insTabSet(tab); await wait(500); window.scrollTo(0, 0); await wait(200); return need("#main"); };
 const sec = (sel) => { const e = need(sel); return e.closest(".sec") || e; };
-/* the five tabs, and 📝 Write me a full analysis above them */
+/* the five tabs */
 SHOTS["in-tabs"] = { async at(dev) {
   const m = await insAt("year");
-  const bar = need(".instabs"), ana = need("#anaGo");
+  const bar = need(".instabs");
   const tab = k => $('[data-itab="' + k + '"]', bar);
-  return { clip: box([ana.closest(".sec") || ana, bar], dev === "ph" ? 6 : 14), spots: { ana, year: tab("year"), readertab: tab("reader"), numtab: tab("numbers"), timetab: tab("time"), placestab: tab("places") } };
+  return { clip: box(bar, dev === "ph" ? 6 : 14), spots: { year: tab("year"), readertab: tab("reader"), numtab: tab("numbers"), timetab: tab("time"), placestab: tab("places") } };
 } };
 /* one card of a tab, placed at the top of the screen and cut to what fits */
 const insCard = async (dev, tab, sel, spots) => {
