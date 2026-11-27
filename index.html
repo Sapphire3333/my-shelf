@@ -17948,6 +17948,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-27.40",go:["tab:challenges"],lines:["<b>🗓 A month on one wall.</b> When a month ends, the covers of everything you finished in it, stories inside collections too, are laid on one picture with a tile naming the month, and it waits in the 🧩 Cover puzzle and the 💎 Diamond cover: on their Pictures row press <b>🗓 Month walls</b>, then a wall. It is cut with the pieces, cut and cloth you chose there, needs nothing from the shop, and reaches your other device. A month needs at least three covers finished to make a wall; the last three months that have one are made the first time you open the puzzle."]},
   {v:"2026-11-27.39",go:["tab:challenges"],lines:["<b>📁 The casebook keeps your cases, and one page arrives torn.</b> Every case Claude writes for you is filed in <b>📚 The casebook</b>, a pill over the case: newest first, each with the world it is set in and how it went. An unsolved one opens to play with no signal and no Claude needed, and if you leave one half done to open another, it keeps its place. One you have solved or given up opens to read again, every document turned over, and pays only once. The casebook reaches your other device and goes into your backups.","<b>✂ One page arrives torn.</b> In every new case, one of the documents that clears someone comes in twelve pieces, cut with the cover puzzle's wavy cut and laid round an outline of the page. Turn it over as you would any other, drag each piece to its place until it clicks in, and the page reads. Piecing it costs nothing."]},
   {v:"2026-11-27.38",go:["tab:challenges"],lines:["<b>📁 The casebook, a new game.</b> In 🎲 Challenges → 🕹 Games, on the Cases shelf beside the locked library. Claude writes a short whodunit set in the world of one of your books, its places and its mood taken from the blurb, where it is set and its genres: someone found dead, four suspects with a claim and a motive each, and six documents lying face down, a letter, a ticket, a page of a diary. One of the four did it, and the documents prove which. Turn over as few as you need and accuse: a case pays 60 XP, less 5 for each document turned and 15 for each wrong accusation. <b>✗ Rule out</b> is your own note. Once it is solved, or you give up, every document is turned over with whom it cleared, and the solution is told.","<b>Fair before you see it.</b> Every case is checked first: exactly one suspect is left that no document clears, and Claude, shown only the cards, must name the same one. A case that fails is written again once; if that fails too, the window says so. A case costs about 4¢ of your Claude credit and is priced on its button before you press; once written it needs no signal."]},
   {v:"2026-11-27.37",go:["tab:library"],lines:["<b>🌍 Worlds you can change.</b> On a world's page, ✎ renames it, <b>Join with…</b> folds it into another world, and ✕ on a song takes it out. A book or fic in no world has <b>🌍 Put it in a world</b> on its page: a book joins by itself, a fic brings its fandom, so every fic of that fandom comes too. A book a world lists has ✕ beside the world's name to take it out. Every change reaches your other device."]},
@@ -56906,7 +56907,7 @@ const pzCut=()=>{const c=settings&&settings.pzCut;return PZ_CUTS.some(x=>x[0]===
    deeper tray under the board */
 const PZ_W=200,PZ_H=300,PZ_MX=84,PZ_MT=12,PZ_MB=168;
 const PZ_VB=[-PZ_MX,-PZ_MT,PZ_W+2*PZ_MX,PZ_H+PZ_MT+PZ_MB];
-function pzCan(){return arcCovered().length>=1||pzOwnOn();}
+function pzCan(){return arcCovered().length>=1||pzOwnOn()||pzWallOn();}
 /* ┌─ A CLOTH ON THE TABLE ──────────────────────────────────────────────────┐
    │ What the board lies on — the svg's own background, behind the board's  │
    │ bed and every loose piece — bought in the shop (cloth:<id>) and chosen  │
@@ -56952,7 +56953,7 @@ const pzPicKey=id=>"__pz|"+id;
 const pzIsOwn=id=>String(id||"").indexOf("__pz|")===0;
 const pzPicLive=id=>!!(pzPics&&pzPics[id]&&!pzPics[id].gone);
 /* the live pictures, oldest first, as deal ids */
-const pzOwnIds=()=>Object.keys(pzPics||{}).filter(pzPicLive).sort((a,b)=>(pzPics[a].at||0)-(pzPics[b].at||0)).map(pzPicKey);
+const pzOwnIds=()=>Object.keys(pzPics||{}).filter(id=>pzPicLive(id)&&!pzPics[id].wall).sort((a,b)=>(pzPics[a].at||0)-(pzPics[b].at||0)).map(pzPicKey);
 const pzOwnBought=()=>shopOwned("own:puzzle");
 const pzOwnOn=()=>pzOwnBought()&&settings&&settings.pzSrc==="own"&&pzOwnIds().length>0;
 const pzIdOk=id=>pzIsOwn(id)?pzPicLive(String(id).slice(5)):!!coverRow(id);
@@ -56962,7 +56963,7 @@ async function pzPicsLoad(){
   /* a restored backup brings the pictures but not the index */
   try{let add=false;
     for(const k of await dbKeysFrom("images","__pz|")){const s=String(k);if(s.indexOf("__pz|")!==0)continue;const id=s.slice(5);
-      if(!pzPics[id]){pzPics[id]={at:1,n:""};add=true;}}
+      if(!pzPics[id]){pzPics[id]=id.indexOf("wall-")===0?{at:1,n:monthName(id.slice(5))+", on one wall",wall:id.slice(5)}:{at:1,n:""};add=true;}}
     if(add)pzPicsSave();}catch(e){}
 }
 function pzPicsSave(){dbPut("meta",{k:"pzPics",v:pzPics}).then(()=>enqueue({kind:"meta",key:"pzPics"})).catch(()=>{});}
@@ -57078,12 +57079,18 @@ function pzPicDrop(key){
 }
 /* the row on the puzzle's page: where the pictures come from, and yours */
 function pzSrcHtml(){
+  /* last month's wall and those before it, made once — see 🗓 THE MONTH'S COVER WALL */
+  if(pzPics&&slivKeys&&!pzWallBusy)setTimeout(()=>{pzWallSoon();},0);
   const own=pzOwnBought(),ids=own&&pzPics?pzOwnIds():[],on=own&&settings.pzSrc==="own";
+  const walls=pzPics?pzWallIds():[],wall=pzWallOn();
   const it=shopItem("own:puzzle");
   const row=`<div class="pills" style="margin:0 0 7px"><span class="lbl">Pictures:</span>
-    <button class="pill ${on?"":"on"}" data-pzsrc="">📚 Your covers</button>
+    <button class="pill ${on||wall?"":"on"}" data-pzsrc="">📚 Your covers</button>
+    ${walls.length?`<button class="pill ${wall?"on":""}" data-pzsrc="wall" title="Every cover you finished in a month, on one picture">🗓 Month walls · ${walls.length}</button>`:""}
     ${own?`<button class="pill ${on?"on":""}" data-pzsrc="own">🖼 Your own${ids.length?` · ${ids.length}`:""}</button>`
       :`<button class="pill" data-pzsrcbuy="1" title="Your own pictures to cut up — in the shop">🖼 Your own · 🔒 ${it?goldSay(shopPrice(it)):""}</button>`}</div>`;
+  if(wall)return row+`<div class="pzmine">${walls.map(k=>`<span class="pzminet"><button class="pzminep" data-pzpick="${esc(k)}" data-arcbg="${esc(k)}" title="Play ${esc(pzPicTitle(k))}" aria-label="Play ${esc(pzPicTitle(k))}"></button></span>`).join("")}</div>
+    <div class="hint" style="margin:0 0 7px">${walls.map(k=>esc(pzPicTitle(k).replace(/, on one wall$/,""))).join(" · ")} · press one to play it. A new wall comes when a month ends with ${PZ_WALL_MIN} or more covers finished.</div>`;
   if(!on)return row;
   return row+`<div class="pzmine">${ids.map(k=>`<span class="pzminet"><button class="pzminep" data-pzpick="${esc(k)}" data-arcbg="${esc(k)}" title="Play ${esc(pzPicTitle(k))}" aria-label="Play ${esc(pzPicTitle(k))}"></button><button class="pzminex" data-pzdrop="${esc(k)}" title="Take it out" aria-label="Take ${esc(pzPicTitle(k))} out">✕</button></span>`).join("")}
     ${ids.length<PZ_PIC_MAX?`<button class="pzmineadd" data-pzadd="1" title="Add pictures — up to ${PZ_PIC_MAX}"><b>+</b>Add</button>`:""}</div>
@@ -57096,8 +57103,8 @@ function pzSrcWire(m,k){
     const v=b.dataset.pzsrc;if((settings.pzSrc||"")===v)return;
     settings.pzSrc=v;saveSettings();
     /* a board in play from the other source is dealt again from this one */
-    const s=arcSlot(g),own=v==="own";
-    if(s&&!s.over&&pzIsOwn(s.id)!==own&&(own?pzOwnIds().length:arcCovered().length)){slotClose("arc",g);deal();questSave();}
+    const s=arcSlot(g),srcOf=id=>pzIsWall(id)?"wall":pzIsOwn(id)?"own":"",n=v==="wall"?pzWallIds().length:v==="own"?pzOwnIds().length:arcCovered().length;
+    if(s&&!s.over&&srcOf(s.id)!==v&&n){slotClose("arc",g);deal();questSave();}
     renderChallenges();});
   qa("[data-pzsrcbuy]",m).forEach(b=>b.onclick=()=>{if(shopBuy("own:puzzle")){settings.pzSrc="own";saveSettings();renderChallenges();q("#pzFile").click();}});
   qa("[data-pzadd]",m).forEach(b=>b.onclick=()=>q("#pzFile").click());
@@ -57105,6 +57112,100 @@ function pzSrcWire(m,k){
     if(s&&s.id===id&&!s.over)return;slotClose("arc",g);deal(id);questSave();renderChallenges();});
   qa("[data-pzdrop]",m).forEach(b=>b.onclick=e=>{e.stopPropagation();pzPicDrop(b.dataset.pzdrop);});
   arcHydrate(m);
+}
+/* ┌─ 🗓 THE MONTH'S COVER WALL ───────────────────────────────────────────────┐
+   │ When a month ends, the covers of everything finished in it, stories in  │
+   │ collections too, become one picture for the cover puzzle. pzWallPics    │
+   │ takes the month's finishes off readsBetween: a story by its own picture │
+   │ where it has one, else its collection's, each picture once, at most     │
+   │ PZ_WALL_MAX. pzWallMake lays them on a PZ_PIC_W × PZ_PIC_H canvas in a  │
+   │ square grid of the board's own 2:3 cells, one cell a paper tile naming  │
+   │ the month, and the cells past the covers taking them again in turn.     │
+   │ It is filed the way your own puzzle pictures are (YOUR OWN PUZZLES):    │
+   │ the picture in the images store as __pz|wall-YYYY-MM, sent to the      │
+   │ cloud's picture folder ("img"), and a line in the pzPics index with     │
+   │ `wall`, so pzIdOk, arcPicture, arcTitle and pzDeal take it as they take │
+   │ yours, and it reaches the other device the same way. A wall is not one  │
+   │ of your own pictures: pzOwnIds leaves walls out, so they never count    │
+   │ against PZ_PIC_MAX or wait behind the shop's own:puzzle. The Pictures   │
+   │ row offers 🗓 Month walls as soon as there is one (settings.pzSrc       │
+   │ "wall"), for the cover puzzle and the diamond cover alike, each wall    │
+   │ cut with the pieces, cut and cloth chosen there. pzWallSoon, run when   │
+   │ the Pictures row is drawn and the covers are listed, makes the walls of │
+   │ the last PZ_WALL_BACK months that have none and at least PZ_WALL_MIN    │
+   │ pictures; a wall's id is its month's, so two devices make the same one, │
+   │ and one made (or taken off) on either is never made again.             │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const PZ_WALL_MIN=3,PZ_WALL_MAX=35,PZ_WALL_BACK=3;
+const pzWallId=ym=>"wall-"+ym;
+const pzIsWall=k=>{const r=pzPics&&pzPics[String(k||"").replace(/^__pz\|/,"")];return !!(r&&r.wall);};
+/* the walls, newest month first, as deal ids */
+const pzWallIds=()=>Object.keys(pzPics||{}).filter(id=>pzPicLive(id)&&pzPics[id].wall)
+  .sort((a,b)=>String(pzPics[b].wall).localeCompare(String(pzPics[a].wall))).map(pzPicKey);
+const pzWallOn=()=>!!(settings&&settings.pzSrc==="wall"&&pzWallIds().length);
+/* the month's finished books and stories, by picture, each picture once */
+function pzWallPics(ym){
+  const out=[],seen=new Set();
+  readsBetween(ym+"-01",ymEnd(ym)).forEach(x=>{
+    const b=x.u&&x.u.book,en=x.u&&x.u.en;if(!b||b.apart)return;
+    const id=en&&en.cover?b.id+"|"+en.id:slivKeys&&slivKeys.has(String(b.id))?String(b.id):"";
+    if(!id||seen.has(id))return;seen.add(id);out.push(id);});
+  return out.slice(0,PZ_WALL_MAX);
+}
+/* the wall itself: a square grid of 2:3 cells on a dark board, one of them the month's name */
+async function pzWallMake(ym,ids){
+  const ims=[];
+  for(const id of ids){let d="";try{d=await arcPicture(id);}catch(e){}if(!d)continue;
+    try{ims.push(await pzLoadImg(d));}catch(e){}}
+  if(ims.length<PZ_WALL_MIN)return "";
+  const W=PZ_PIC_W,H=PZ_PIC_H,c=Math.min(6,Math.ceil(Math.sqrt(ims.length+1))),gap=Math.round(W/(c*14)),cw=(W-gap*(c+1))/c,ch=(H-gap*(c+1))/c;
+  const cv=document.createElement("canvas");cv.width=W;cv.height=H;
+  const g=cv.getContext("2d");if(!g)return "";
+  g.fillStyle="#2f2620";g.fillRect(0,0,W,H);
+  g.imageSmoothingQuality="high";
+  /* the month's tile sits in the middle row, a little left of centre */
+  const lab=Math.floor((c-1)/2)*c+Math.floor((c-1)/2);
+  let k=0;
+  for(let i=0;i<c*c;i++){
+    const x=gap+(i%c)*(cw+gap),y=gap+Math.floor(i/c)*(ch+gap);
+    if(i===lab){
+      g.fillStyle="#f6efe0";g.fillRect(x,y,cw,ch);
+      const [mon,yr]=[new Date(ym+"-15T12:00").toLocaleDateString(undefined,{month:"long"}),ym.slice(0,4)];
+      g.fillStyle="#3b2f26";g.textAlign="center";g.textBaseline="middle";
+      let fs=Math.round(cw/5.2);g.font=`italic 600 ${fs}px Georgia,serif`;
+      while(fs>10&&g.measureText(mon).width>cw*.86){fs-=2;g.font=`italic 600 ${fs}px Georgia,serif`;}
+      g.fillText(mon,x+cw/2,y+ch*.44);
+      g.font=`${Math.round(fs*.7)}px Georgia,serif`;g.fillStyle="#7a6650";g.fillText(yr,x+cw/2,y+ch*.62);
+      continue;
+    }
+    const im=ims[k%ims.length];k++;
+    const r=Math.max(cw/im.naturalWidth,ch/im.naturalHeight),sw=cw/r,sh=ch/r;
+    g.drawImage(im,(im.naturalWidth-sw)/2,(im.naturalHeight-sh)/2,sw,sh,x,y,cw,ch);
+  }
+  let d=cv.toDataURL("image/webp",0.86);
+  if(d.indexOf("data:image/webp")!==0)d=cv.toDataURL("image/jpeg",0.88);
+  return d;
+}
+let pzWallBusy=false;
+/* the last few months' walls, each made once, on whichever device gets there first */
+async function pzWallSoon(){
+  if(pzWallBusy||!pzPics||!slivKeys)return 0;
+  pzWallBusy=true;let made=0;
+  try{
+    const now=new Date(questToday()+"T12:00");
+    for(let b=1;b<=PZ_WALL_BACK;b++){
+      const ym=monthKeyOf(new Date(now.getFullYear(),now.getMonth()-b,15)),id=pzWallId(ym);
+      if(pzPics[id])continue;
+      const ids=pzWallPics(ym);if(ids.length<PZ_WALL_MIN)continue;
+      const data=await pzWallMake(ym,ids);if(!data)continue;
+      try{await dbPut("images",{key:pzPicKey(id),data});}catch(e){break;}
+      coverCache.set(pzPicKey(id),data);
+      if(SYNC.on)enqueue({kind:"img",key:pzPicKey(id)});
+      pzPics[id]={at:Date.now(),n:monthName(ym)+", on one wall",wall:ym,k:ids.length};made++;
+    }
+    if(made){pzPicsSave();if(view==="challenges"&&(chGameNow()==="pz"||chGameNow()==="pd"))renderChallenges();}
+  }catch(e){}finally{pzWallBusy=false;}
+  return made;
 }
 /* ┌─ A TABLE THE SHAPE OF THE ROOM ────────────────────────────────────────┐
    │ The table was PZ_VB everywhere, sized by the window's height (see      │
@@ -57318,7 +57419,7 @@ function pzFit(s,vb){
 function pzDeal(keep){
   /* your own pictures when they are chosen and there are any — see YOUR OWN
      PUZZLES — and the covers otherwise */
-  const [c,r]=pzGrid(),f=pzOwnOn()?pzOwnIds().map(id=>({id})):arcCovered(),cut=pzCut();
+  const [c,r]=pzGrid(),f=pzWallOn()?pzWallIds().map(id=>({id})):pzOwnOn()?pzOwnIds().map(id=>({id})):arcCovered(),cut=pzCut();
   if(!f.length)return null;
   const old=arcSlot("pz"),full=!!(old&&pzFull&&pzFull===old.at);
   let id=keep&&pzIdOk(keep)?keep:"";
@@ -57347,7 +57448,7 @@ function pzDeal(keep){
    `keep`: one of your own pictures pressed; otherwise one of the covers (or
    of your pictures, when they are chosen), none of the last ten */
 function pdDeal(keep){
-  const f=pzOwnOn()?pzOwnIds().map(id=>({id})):arcCovered();
+  const f=pzWallOn()?pzWallIds().map(id=>({id})):pzOwnOn()?pzOwnIds().map(id=>({id})):arcCovered();
   if(!f.length)return null;
   pdMove();
   const old=arcSlot("pd"),full=!!(old&&pzFull&&pzFull===old.at);
@@ -57465,7 +57566,7 @@ function pzHtml(){
   if(!s||!pzIdOk(s.id)||!pzWhole(s)){pzFull=0;
     const mine=pzOwnBought()&&settings.pzSrc==="own";
     if(mine&&!pzOwnIds().length)return size+cut;
-    return size+cut+`<div class="hint" style="margin:0 0 7px">${mine?"One of your own pictures":"One of your covers — a book's, a collection's or a story's —"} cut up and shuffled. As squares, tap two pieces to swap them; wavy or as a jigsaw, drag each piece onto its place and it clicks in. More pieces pay more.</div>${arcDealBtn("pz")}`;}
+    return size+cut+`<div class="hint" style="margin:0 0 7px">${pzWallOn()?"One of your month walls, every cover you finished that month on one picture,":mine?"One of your own pictures":"One of your covers — a book's, a collection's or a story's —"} cut up and shuffled. As squares, tap two pieces to swap them; wavy or as a jigsaw, drag each piece onto its place and it clicks in. More pieces pay more.</div>${arcDealBtn("pz")}`;}
   const [c,r]=pzCR(s),N=c*r,full=!!(pzFull&&pzFull===s.at);
   /* on a phone the puzzle is played over the whole window, and the page
      keeps the choices and the way in — see ON A PHONE, THE WHOLE WINDOW */
@@ -57524,7 +57625,7 @@ function pdHtml(){
   if(!s||!pzDia(s)||!pzIdOk(s.id)||!pzWhole(s)){pzFull=0;
     const mine=pzOwnBought()&&settings.pzSrc==="own";
     if(mine&&!pzOwnIds().length)return size;
-    return size+`<div class="hint" style="margin:0 0 7px">${mine?"One of your own pictures":"One of your covers — a book's, a collection's or a story's —"} as a diamond painting: ${pdSizeSay(pdSizeOf())} at this size. Tap a section, pick a colour, and tap or drag across the squares of its symbol; once half of a colour is in, 🪣 fills the rest of it. +${PZ_DIA_SEC_PAY} a section and +${PZ_DIA_PAY} for the whole picture; a picture stays on the table between sittings.</div>${arcDealBtn("pd")}`;}
+    return size+`<div class="hint" style="margin:0 0 7px">${pzWallOn()?"One of your month walls, every cover you finished that month on one picture,":mine?"One of your own pictures":"One of your covers — a book's, a collection's or a story's —"} as a diamond painting: ${pdSizeSay(pdSizeOf())} at this size. Tap a section, pick a colour, and tap or drag across the squares of its symbol; once half of a colour is in, 🪣 fills the rest of it. +${PZ_DIA_SEC_PAY} a section and +${PZ_DIA_PAY} for the whole picture; a picture stays on the table between sittings.</div>${arcDealBtn("pd")}`;}
   const full=!!(pzFull&&pzFull===s.at);
   /* on a phone it is played over the whole window — see ON A PHONE, THE WHOLE WINDOW */
   if(!full&&!s.over&&pzPhone())
