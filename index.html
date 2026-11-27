@@ -17501,6 +17501,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-27.6",go:["read"],lines:["<b>📻 Radio while you read.</b> In the reader, ☰ → 🎧 Listen → A sound for this book has 📻 Radio beside rain and fire: a live station from SomaFM, listener-supported radio with no ads. Choose the station (the quiet ones for reading come first) and its own volume; it starts when you open the book, and with ⏱ on its page, and it needs a connection."]},
   {v:"2026-11-27.5",go:["guide:map:care"],lines:["<b>🧰 The guide: Shelf care.</b> The last chapter behind <b>?</b>, with pictures for both screens: what's missing, Shelf health, ⌛ books that say you don't have them, a book that's already a story, one name spelled two ways, tags to tidy, corrections from a file, better covers, better blurbs, and pictures from your files. And 🤖 Claude chat to My Shelf joins the Adding books map, now that it adds."]},
   {v:"2026-11-27.4",go:["tab:care"],lines:["<b>🧰 Shelf care opens at once.</b> Its checks (copies, twins, series, Drive, the import list) all ran before the page could show, a couple of seconds with nothing answering. Now the page comes first and the checks fill their boxes just after, one at a time, top first.",
     "<b>⏱ The readout says what the busy spells were.</b> ⚙ Settings → ⏱ Where the time goes now lists the longest moments the app was too busy to answer in its first minute, and after which step of opening; on the computer in Firefox too, which counted none before."]},
@@ -31623,7 +31624,7 @@ const AMB_SEAM=2;
    down and brings the fire under them up, then after. Rendered offline: RMS 0.020 and
    peak 0.9, with the crackles still standing out. More pressing flattens it to a hiss. */
 const AMB_FILES={rain:{file:"art/sounds/rain.ogg?v=1",gain:1.3},fire:{file:"art/sounds/fire.ogg?v=1",gain:2,press:{threshold:-24,knee:6,ratio:6,attack:0,release:.1},after:1.52},forest:{file:"art/sounds/forest.ogg?v=1",gain:3}};
-const AMB_SOURCES={rain:["rain"],fire:["fire"],both:["rain","fire"],forest:["forest"]};
+const AMB_SOURCES={rain:["rain"],fire:["fire"],both:["rain","fire"],forest:["forest"],radio:[]};
 const ambLoaded=new Map();
 /* the tail folded over the head, by equal power, so a loop has no join */
 function ambSeam(c,buf){
@@ -31649,8 +31650,63 @@ async function ambPlay(c,out,kind,nodes,live){
     s.start();nodes.push(s);});
   return true;
 }
+/* ┌─ 📻 RADIO WHILE YOU READ ────────────────────────────────────────────────┐
+   │ A seventh sound for a book: a live station from SomaFM, listener-        │
+   │ supported radio with no ads. Its list (RADIO_LIST, from somafm.com/      │
+   │ channels.json, 51 stations) and each station's playlist (api.somafm.com/ │
+   │ <id>.pls, whose first File line is the stream) both answer the app's     │
+   │ page, measured 27 Nov; the list is kept on the device for a week         │
+   │ (RADIO_KEY). A stream is an <audio> of its own, not the sound engine's    │
+   │ buffers, so it is amb with amb.radio set: ambLevel turns its volume down  │
+   │ under the reader's voice, ambStop fades it out, ambCheck stops it when    │
+   │ nothing is timing, as for rain. Measured in a headless Firefox, muted:    │
+   │ three stations each playing 2.6 s after the press. It has its own volume  │
+   │ (settings.rdRadioVol, 40% to begin with), since a station is music at    │
+   │ full level where rain is a quiet recording. settings.rdRadio is the       │
+   │ station, the same for every book; RADIO_QUIET leads the picker. Online    │
+   │ only, and a browser won't start it without a press after a reload:       │
+   │ #rdSaid says which.                                                       │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const RADIO_KEY="myShelf.radioList",RADIO_DAYS=7,RADIO_DEF="groovesalad";
+const RADIO_QUIET=["groovesalad","dronezone","deepspaceone","synphaera","gsclassic","spacestation","darkzone","bossa","sonicuniverse","illstreet","secretagent","thistle"];
+let radioMem=null,radioErr="",radioBusy=null;const radioUrls={};
+const radioId=()=>String(settings.rdRadio||RADIO_DEF);
+const rdRadioVol=()=>Math.max(.05,Math.min(1,(settings.rdRadioVol==null?40:+settings.rdRadioVol)/100));
+function radioListNow(){
+  if(radioMem)return radioMem;
+  try{const v=JSON.parse(localStorage.getItem(RADIO_KEY)||"null");if(v&&Array.isArray(v.list)&&v.list.length){radioMem=v.list;
+    if(Date.now()-(v.at||0)>RADIO_DAYS*864e5)radioListLoad().catch(()=>{});return radioMem;}}catch(e){}
+  return null;
+}
+function radioListLoad(){
+  if(radioBusy)return radioBusy;
+  radioBusy=fetch("https://somafm.com/channels.json").then(r=>{if(!r.ok)throw new Error("SomaFM answered "+r.status);return r.json();}).then(j=>{
+    const list=(j.channels||[]).filter(c=>c&&c.id&&c.title).map(c=>({id:String(c.id),title:String(c.title),about:String(c.description||""),genre:String(c.genre||"")}));
+    if(!list.length)throw new Error("no stations in the list");
+    radioMem=list;radioErr="";try{localStorage.setItem(RADIO_KEY,JSON.stringify({at:Date.now(),list}));}catch(e){}
+    return list;}).catch(e=>{radioErr=navigator.onLine===false?"The list of stations needs a connection.":"The list of stations couldn't be fetched: "+(e.message||"no reason");throw e;})
+    .finally(()=>{radioBusy=null;});
+  return radioBusy;
+}
+/* the stream a playlist names first: a .pls is lines of key=value */
+const plsFirst=t=>{const m=String(t||"").match(/^File\d+=(\S+)/m);return m?m[1]:"";};
+async function radioUrl(id){
+  if(radioUrls[id])return radioUrls[id];
+  let u="";try{const r=await fetch("https://api.somafm.com/"+encodeURIComponent(id)+".pls");if(r.ok)u=plsFirst(await r.text());}catch(e){}
+  return radioUrls[id]=u||("https://ice1.somafm.com/"+encodeURIComponent(id)+"-128-mp3");
+}
+function radioSay(t){const s=rdState,n=s&&q("#rdSaid",s.el);if(!n)return;n.textContent=t;clearTimeout(s.saidT);s.saidT=setTimeout(()=>{if(n.isConnected)n.textContent="";},9000);}
+function radioStart(){
+  const a=new Audio();a.preload="none";
+  const me=amb={kind:"radio",radio:a,nodes:[],timers:[],vol:rdRadioVol(),check:setInterval(ambCheck,4000),out:null};
+  a.volume=rdState&&rdState.tts&&!rdState.tts.paused?me.vol*RD_VOICE_DUCK:me.vol;
+  radioUrl(radioId()).then(u=>{if(amb!==me)return;a.src=u;return a.play();}).catch(e=>{if(amb!==me)return;ambStop(true);
+    radioSay(e&&e.name==="NotAllowedError"?"📻 The browser waits for a press: choose 📻 Radio again to start the station."
+      :navigator.onLine===false?"📻 The radio needs a connection.":"📻 That station couldn't be reached. Choose it again to retry.");});
+}
 function ambStart(kind,vol){
   ambStop(true);
+  if(kind==="radio"){if(!TEST_RUN&&!mpLive())radioStart();return;}
   /* a song playing stands in their place — see 🎵 SONGS FOR A BOOK */
   if(!kind||TEST_RUN||!AMB_SOURCES[kind]||mpLive())return;
   const c=sfxCtxGet();if(!c)return;
@@ -31665,10 +31721,14 @@ function ambStart(kind,vol){
       if(n){n.textContent=navigator.onLine?"🎵 That sound couldn't be played. Press it again to retry.":"🎵 That sound hasn't reached this device yet. It needs a connection the first time.";clearTimeout(s.saidT);s.saidT=setTimeout(()=>{if(n.isConnected)n.textContent="";},6000);}});
 }
 /* quieter under the reader's voice, back afterwards */
-function ambLevel(k){if(!amb||!sfxCtx)return;try{const g=amb.out.gain,t=sfxCtx.currentTime;g.cancelScheduledValues(t);g.setTargetAtTime(Math.max(.0001,amb.vol*k),t,.25);}catch(e){}}
+function ambLevel(k){if(amb&&amb.radio){try{amb.radio.volume=Math.max(0,Math.min(1,amb.vol*k));}catch(e){}return;}if(!amb||!sfxCtx)return;try{const g=amb.out.gain,t=sfxCtx.currentTime;g.cancelScheduledValues(t);g.setTargetAtTime(Math.max(.0001,amb.vol*k),t,.25);}catch(e){}}
 function ambStop(now){
   if(!amb)return;const a=amb;amb=null;
   a.timers.forEach(clearInterval);clearInterval(a.check);
+  /* the radio fades by its own volume, in ten steps */
+  if(a.radio){const r=a.radio,v0=r.volume,n=now?1:10;let i=0;
+    const t=setInterval(()=>{i++;try{r.volume=Math.max(0,v0*(1-i/n));}catch(e){}
+      if(i>=n){clearInterval(t);try{r.pause();r.removeAttribute("src");r.load();}catch(e){}}},now?10:200);return;}
   const c=sfxCtx,t=c?c.currentTime:0,len=now?.08:2;
   try{a.out.gain.cancelScheduledValues(t);a.out.gain.setValueAtTime(Math.max(.0001,a.out.gain.value),t);a.out.gain.exponentialRampToValueAtTime(.0001,t+len);}catch(e){}
   setTimeout(()=>{a.nodes.forEach(n=>{try{n.stop();}catch(e){}});try{a.out.disconnect();}catch(e){}},len*1000+100);
@@ -41417,7 +41477,7 @@ function rdPosNow(){
    │ stops the voice and the sound together. Nothing here plays under TEST_RUN.│
    └──────────────────────────────────────────────────────────────────────────┘ */
 const RD_SENT_MAX=220,RD_SLEEP=[0,10,15,30,45,60],RD_VOICE_DUCK=.45;
-const AMB_ALL=[["","None"],["rain","🌧 Rain"],["fire","🔥 Fire"],["both","🌧🔥 Both"],["forest","🌲 Forest"]];
+const AMB_ALL=[["","None"],["rain","🌧 Rain"],["fire","🔥 Fire"],["both","🌧🔥 Both"],["forest","🌲 Forest"],["radio","📻 Radio"]];
 const rdSynth=()=>window.__rdSynth||(TEST_RUN?null:window.speechSynthesis)||null;
 const rdVoices=()=>{const y=rdSynth();if(!y)return [];const all=y.getVoices()||[],l=(navigator.language||"en").slice(0,2).toLowerCase();
   const rank=v=>String(v.lang||"").toLowerCase().startsWith(l)?0:String(v.lang||"").toLowerCase().startsWith("en")?1:2;
@@ -41780,6 +41840,19 @@ function rdSongsHtml(s){
     </div>
     <div class="hint" style="margin:0">Tick the songs for this book, or press a mood. They start when you open it here, and with ⏱ on its page, in place of rain or a fire. After the last one ${mood?`your ${esc(mood)} songs follow`:"all your songs follow"}, shuffled. They go on when you close the book: the ♪ in the corner stops them.</div>`;
 }
+/* 📻 the station, under the sound's buttons — see 📻 RADIO WHILE YOU READ */
+function rdRadioHtml(s){
+  const L=radioListNow(),id=radioId(),ch=L&&L.find(c=>c.id===id),v=Math.round(rdRadioVol()*100);
+  if(!L&&!radioErr)radioListLoad().then(()=>{if(rdState===s&&s.panelTab==="listen"&&q("#rdlRadioBox",s.el))s.panelDraw("listen");}).catch(()=>{if(rdState===s&&q("#rdlRadioBox",s.el))s.panelDraw("listen");});
+  const opt=c=>`<option value="${esc(c.id)}"${c.id===id?" selected":""}>${esc(c.title)}</option>`;
+  const quiet=L?RADIO_QUIET.map(k=>L.find(c=>c.id===k)).filter(Boolean):[],rest=L?L.filter(c=>!RADIO_QUIET.includes(c.id)).sort((a,b)=>a.title.localeCompare(b.title)):[];
+  return `<div id="rdlRadioBox" style="display:flex;flex-direction:column;gap:10px">
+    <label class="rdlf">Volume <b id="rdlRvN">${v}%</b><input type="range" id="rdlRv" min="5" max="100" step="5" value="${v}"></label>
+    ${L?`<label class="rdlf">Station<select class="field" id="rdlRadio"><optgroup label="Quiet, for reading">${quiet.map(opt).join("")}</optgroup><optgroup label="Every station">${rest.map(opt).join("")}</optgroup></select></label>
+      ${ch?`<div class="hint" style="margin:0"><b>${esc(ch.title)}</b>${ch.about?" · "+esc(ch.about):""}</div>`:""}`
+      :`<div class="hint" style="margin:0">${esc(radioErr||"Getting the list of stations…")}</div>${radioErr?`<div class="rdlr"><button class="btn smallbtn" id="rdlRadioAgain">↻ Try again</button></div>`:""}`}
+    <div class="hint" style="margin:0">Live, so it needs a connection. It starts when you open this book here, and with ⏱ on its page. 📻 <a href="https://somafm.com/" target="_blank" rel="noopener">SomaFM</a>: listener-supported radio from San Francisco, with no ads.</div></div>`;
+}
 function rdListenHtml(s){
   const P=s.pdf,can=!(P&&P.comic),snd=rdSoundOf(s),left=s.sleepAt?Math.ceil((s.sleepAt-Date.now())/60000):0;
   const rate=+settings.rdRate||1,vs=rdVoices(),kinds=s.loose?AMB_ALL:AMB_ALL.concat([["songs","🎵 Songs"]]);
@@ -41793,7 +41866,7 @@ function rdListenHtml(s){
     <div class="rdlr">${kinds.map(([k,n])=>`<button class="pill${k===snd?" on":""}" data-rdsnd="${k}" aria-pressed="${k===snd}">${n}</button>`).join("")}</div>
     <div id="rdlMp">${rdMpHtml()}</div>
     <div class="mplyr rdlyr" data-lyrbox hidden></div>
-    ${snd==="songs"?rdSongsHtml(s):`<label class="rdlf">Volume <b id="rdlVolN">${Math.round(rdSoundVol()*100)}%</b><input type="range" id="rdlVol" min="5" max="100" step="5" value="${Math.round(rdSoundVol()*100)}"></label>
+    ${snd==="songs"?rdSongsHtml(s):snd==="radio"?rdRadioHtml(s):`<label class="rdlf">Volume <b id="rdlVolN">${Math.round(rdSoundVol()*100)}%</b><input type="range" id="rdlVol" min="5" max="100" step="5" value="${Math.round(rdSoundVol()*100)}"></label>
     <div class="hint" style="margin:0">It starts when you open this book here, and with ⏱ on its page. Recordings by Joseph Sardin, BigSoundBank.</div>`}
     <div class="hint" style="margin:0">The eye-saving light has moved to Aa, and 🌙 at the foot of the page turns it on or off.</div>
   </div>`;
@@ -41812,6 +41885,10 @@ function rdListenWire(s,box){
     /* the songs stand under the buttons, which on a phone are the foot of the panel: brought up */
     const h=g("#rdlSoundH"),b2=q(".rdtocbody",box);if(k==="songs"&&h&&b2)b2.scrollTop+=h.getBoundingClientRect().top-b2.getBoundingClientRect().top;});
   {const r=g("#rdlVol");if(r)r.oninput=()=>{settings.rdSoundVol=+r.value;g("#rdlVolN").textContent=r.value+"%";saveSettings();if(amb&&s.snd){amb.vol=rdSoundVol();ambLevel(s.tts&&!s.tts.paused?RD_VOICE_DUCK:1);}};}
+  /* 📻 the station and its volume */
+  {const r=g("#rdlRv");if(r)r.oninput=()=>{settings.rdRadioVol=+r.value;g("#rdlRvN").textContent=r.value+"%";saveSettings();if(amb&&amb.radio){amb.vol=rdRadioVol();ambLevel(s.tts&&!s.tts.paused?RD_VOICE_DUCK:1);}};}
+  {const r=g("#rdlRadio");if(r)r.onchange=()=>{settings.rdRadio=r.value;saveSettings();rdSoundGo(s,true);redraw();};}
+  {const r=g("#rdlRadioAgain");if(r)r.onclick=()=>{radioErr="";redraw();};}
   /* the songs — see 🎵 SONGS FOR A BOOK */
   {const r=g("#rdlMv");if(r)r.oninput=()=>{settings.musicVol=+r.value;g("#rdlMvN").textContent=r.value+"%";saveSettings();mpLevel();};}
   const sg=g("#rdlSongs");if(!sg)return;
