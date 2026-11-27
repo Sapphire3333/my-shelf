@@ -12320,12 +12320,10 @@ function fileUnder(word,family,color){
   unmarkMetaDel("cat:"+f);
   if(!catColors[f])catColors[f]=color||genreColor(f);
 }
-/* keepAuto: two, and backups go on carrying every cover — that is settled.
-   A backup that leaves the pictures out cannot put them back, so it stays a
-   whole copy; at a few thousand covers that is well over a hundred
-   megabytes each, which makes the number kept the thing that decides whether
-   that is a cost or a problem. Two is one to restore from and one behind it,
-   in case the newest was taken after whatever went wrong. */
+/* keepAuto: two. Two is one to restore from and one behind it, in case the
+   newest was taken after whatever went wrong. The automatic copies hold the
+   words only now (see THE DAILY BACKUP IS THE WORDS), a few megabytes each,
+   so the number kept no longer decides whether the browser fills up. */
 let settings={autoBackup:true,keepAuto:2,bg:{id:"none",opacity:100},theme:"auto"};
 let settingsRead=false;   /* see A DEVICE'S SETTINGS ARE KEPT TWICE */
 let groupArt={};               /* "genre|Fantasy" -> {img:<id>,h:<px>}; picture at "__gart|<id>" */
@@ -12520,7 +12518,7 @@ let bkDir=null,lastDirBk=0,bkDirAsk=false;
 /* Firefox refuses the folder above on purpose, so there it saves a backup file
    to Downloads instead. Device-local like everything else here: whether this
    browser has ever saved one says nothing about any other. */
-let lastFileBk=0,lastFileSig="",fileBkCount=0;
+let lastFileBk=0,lastFileSig="",fileBkCount=0,lastFilePics=0,lastDirPics=0,lastDrvBk=null;
 
 /* =============== sync (Supabase — optional, offline-first) =============== */
 const CFG=window.SHELF_CONFIG||{};
@@ -14341,7 +14339,9 @@ async function bootSweep(){
   const bd=await dbGet("meta","bkDir");bkDir=bd&&bd.v?bd.v:null;
   const ldb=await dbGet("meta","lastDirBk");lastDirBk=ldb&&ldb.v?ldb.v:0;
   const lfb=await dbGet("meta","fileBk");
-  if(lfb&&lfb.v){lastFileBk=lfb.v.at||0;lastFileSig=lfb.v.sig||"";fileBkCount=lfb.v.n||0;}
+  if(lfb&&lfb.v){lastFileBk=lfb.v.at||0;lastFileSig=lfb.v.sig||"";fileBkCount=lfb.v.n||0;lastFilePics=lfb.v.pics||0;}
+  {const r=await dbGet("meta","lastDirPics");lastDirPics=r&&r.v?r.v:0;}
+  {const r=await dbGet("meta","lastDrvBk");lastDrvBk=r&&r.v?r.v:null;}
   metaSnap=JSON.stringify({genres,dnfCustom,audCustom});
   /* the scopes you last searched in — kept, but sieved through the list this
      version knows, so a name that has gone away can't leave you searching nowhere */
@@ -14381,6 +14381,7 @@ async function bootSweep(){
   maybeAutoBackup();
   maybeFolderBackup();
   maybeFileBackup();
+  maybeDriveBackup();
   purgeTrash();
   /* last, because it opens a screen and wants everything else awake first */
   takeSharedBackup();
@@ -14625,7 +14626,7 @@ document.addEventListener("visibilitychange",()=>{
   }
   /* the "daily" backup and the 30-day bin used to be checked only at launch — a
      tab or installed app left open for a week never did either */
-  if(Date.now()-lastMaint>3600000){lastMaint=Date.now();maybeAutoBackup();maybeFolderBackup();maybeFileBackup();purgeTrash();}
+  if(Date.now()-lastMaint>3600000){lastMaint=Date.now();maybeAutoBackup();maybeFolderBackup();maybeFileBackup();maybeDriveBackup();purgeTrash();}
 });
 window.addEventListener("pagehide",onHidden);
 /* a phone bringing the app back from its own memory fires this and often
@@ -17508,6 +17509,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-27.8",go:["tab:settings"],lines:["<b>☁ Backups go into your Drive, and they are small again.</b> The daily backup is now the words: every book, note, list, medal and setting, a few megabytes where a shelf full of covers made hundreds. The covers and pictures go once a week in a file of their own, my-shelf-auto-pictures. In ⚙ Settings → Backups and room, <b>☁ Put the backups into your Drive</b> sends both into the folder “Shelf backups” in your Drive, keeps the newest 14 daily files and 2 pictures files, and moves older ones to Drive's bin; files you put there yourself are never touched. A browser only lets the app into your Drive for an hour after a press, so when a copy is due and that hour isn't running, Today shows <b>☁ Put it in Drive</b>: one press. While they go to Drive, nothing is saved into Downloads. To rebuild a shelf, bring in the newest daily file and the newest pictures file, in either order; every older backup file still restores."]},
   {v:"2026-11-27.7",go:["el:overview:#secBig"],lines:["<b>🧩 More diamonds, two medals, and what gives what.</b> On 🧩 The big picture, the diamond way now gives a quarter more for each thing that earns XP: 20 diamonds instead of 16 on a 500-piece picture. ▸ What gives pieces and diamonds under the card's name says what earns them, and how many came today. And two new medals count big pictures finished, 🧩 The Big Picture in pieces and 💎 Every Last Diamond in diamonds; pictures you finished before count as pieces."]},
   {v:"2026-11-27.6",go:["read"],lines:["<b>📻 Radio while you read.</b> In the reader, ☰ → 🎧 Listen → A sound for this book has 📻 Radio beside rain and fire: a live station from SomaFM, listener-supported radio with no ads. Choose the station (the quiet ones for reading come first) and its own volume; it starts when you open the book, and with ⏱ on its page, and it needs a connection."]},
   {v:"2026-11-27.5",go:["guide:map:care"],lines:["<b>🧰 The guide: Shelf care.</b> The last chapter behind <b>?</b>, with pictures for both screens: what's missing, Shelf health, ⌛ books that say you don't have them, a book that's already a story, one name spelled two ways, tags to tidy, corrections from a file, better covers, better blurbs, and pictures from your files. And 🤖 Claude chat to My Shelf joins the Adding books map, now that it adds."]},
@@ -40748,7 +40750,8 @@ async function drvEditToken(){
     const c=google.accounts.oauth2.initTokenClient({client_id:CFG.googleClientId,scope:DRIVE_EDIT_SCOPE,
       callback:r=>{if(!r||r.error){rej(new Error((r&&(r.error_description||r.error))||"Google said no"));return;}
         drvEditTok=r.access_token;drvEditExp=Date.now()+(+r.expires_in||3600)*1000;
-        if(!settings.driveEditAsked){settings.driveEditAsked=true;saveSettings();}res(drvEditTok);},
+        if(!settings.driveEditAsked){settings.driveEditAsked=true;saveSettings();}res(drvEditTok);
+        setTimeout(()=>{maybeDriveBackup().catch(()=>{});},0);},   /* see THE DAILY BACKUP GOES INTO YOUR DRIVE */
       error_callback:e=>rej(new Error(e&&e.type==="popup_closed"?"the Google window was closed":e&&e.type==="popup_failed_to_open"?"the browser blocked Google's window — allow pop-ups for this page":"Google's sign-in failed"))});
     c.requestAccessToken({prompt:settings.driveEditAsked?"":"consent"});});
 }
@@ -64898,7 +64901,7 @@ function renderSettings(){
              whichever road wrote it: the daily folder backup and the daily
              file in Downloads count, not only this button — the amber "never"
              stood here while the card below said "last: today" */
-          const out=Math.max(lastExport||0,lastDirBk||0,lastFileBk||0);
+          const out=Math.max(lastExport||0,lastDirBk||0,lastFileBk||0,(lastDrvBk&&lastDrvBk.words&&lastDrvBk.words.at)||0);
           return `<div class="hint" id="expAge" style="margin:7px 0 0${out&&Date.now()-out<30*864e5?"":";color:var(--amber-ink)"}">${
           out?(()=>{const d=Math.floor((Date.now()-out)/864e5);
             return "Last backup file made outside this browser: "+(d===0?"today":d===1?"yesterday":d+" days ago")+(d>=30?" — worth making a fresh one":"");})()
@@ -64918,7 +64921,8 @@ function renderSettings(){
         </div>
         <div class="hint" style="margin:9px 0 0">Backups live inside this browser. Restoring merges one back in — books you've added since are kept. For a copy you can keep somewhere safe, use Export above.</div>
         <div class="hint" style="margin:5px 0 0">These copies, and the daily file in a folder or in Downloads, leave out the books you gave 📖 Read it here: the files stay on this device and a restore never removes them. ⭳ Export backup file carries them too.</div>
-        <div class="hint" style="margin:5px 0 0">Every backup holds the covers as well as the words, so one weighs about what all your pictures weigh — a shelf of four thousand covers makes a backup of a hundred and fifty megabytes or so, where the words on their own would be three or four. That is on purpose: a backup without the pictures can't put them back. It is also why the number kept is a small one.</div>
+        <div class="hint" style="margin:5px 0 0">The daily backups hold the words: every book, note, list, medal and setting, a few megabytes. The covers and pictures, which weigh a hundred times more, go once a week in a file of their own (<b>my-shelf-auto-pictures</b>, beside the daily <b>my-shelf-auto-backup</b>) into your Drive, a folder or Downloads. To rebuild a shelf, bring in the newest daily file and the newest pictures file, in either order. ＋ Back up now and ⭳ Export backup file still hold everything.</div>
+        <div id="bkDrvBox"></div>
         <div id="bkDirBox"></div>
         <div id="snapList"></div>
       </div>
@@ -65617,6 +65621,7 @@ async function renderHub(part){
   const todayHtml=`${doorHtml}${ttBar}
     <div id="nxToday">${nxTodayInner()}</div>
     <div id="drvNewLine">${today?drvNewLineInner():""}</div>
+    <div id="bkDrvLine">${today?bkDrvLineInner():""}</div>
     <div data-ttabpane="reading"${tt==="reading"?"":" hidden"}>
     ${readingNowHtml}
     ${upNextHtml}
@@ -66094,6 +66099,7 @@ async function renderHub(part){
 /* the folder-backup corner of the Backups card. Rendered on its own so
    connecting, reconnecting or stopping can redraw just this box */
 function renderDirUi(){
+  renderDrvBkUi();
   const box=q("#bkDirBox");if(!box)return;
   /* Firefox and phones can't be given a folder, so they're offered the nearest
      thing their browser does allow: a file saved into Downloads */
@@ -66110,7 +66116,7 @@ function renderDirUi(){
     ${bkDirAsk
       ?`<div class="hrow2" style="margin-top:12px"><button class="btn pri" id="bkDirFix">Reconnect the backup folder</button></div>
         <div class="hint" style="margin:7px 0 0;color:#b45309">The browser wants a click before letting the app write into “${esc(bkDir.name)}” again — one press and the daily backups continue.</div>`
-      :`<div class="hint" style="margin-top:12px">Daily backups also go to the folder “${esc(bkDir.name)}” on this PC — last: ${when}. The newest ${DIR_KEEP} are kept; older ones are tidied away.</div>`}
+      :`<div class="hint" style="margin-top:12px">Daily backups also go to the folder “${esc(bkDir.name)}” on this PC — last: ${when}. The newest ${DIR_KEEP} are kept, and the newest ${DIR_PICS_KEEP} weekly pictures files; older ones are tidied away.</div>`}
     <div class="hrow2" style="margin-top:7px">
       <button class="btn smallbtn" id="bkDirBtn">Change folder…</button>
       <button class="btn smallbtn" id="bkDirOff">Stop</button>
@@ -66142,18 +66148,18 @@ function renderFileBkUi(box){
     <div class="hrow2" style="margin-top:12px">
       <label class="hrow2" style="font-size:13px;gap:6px"><input type="checkbox" id="autoFile" ${settings.autoFile?"checked":""}> Also save a backup file automatically</label>
     </div>
-    <div class="hint" style="margin:7px 0 0">Once a day, and only on a day you've actually changed something, the app saves a backup into your <b>Downloads</b> folder by itself — a copy that outlives this browser. This browser won't let the app choose the folder or tidy up old files, so move them somewhere safe now and then.</div>
-    ${settings.autoFile?`<div class="hint" style="margin:7px 0 0">Last saved automatically: ${when}${fileBkCount?` · ${fileBkCount} saved so far`:""}.</div>${pile}`:""}`;
+    <div class="hint" style="margin:7px 0 0">Once a day, and only on a day you've actually changed something, the app saves a backup of the words into your <b>Downloads</b> folder by itself, and the pictures once a week — a copy that outlives this browser. This browser won't let the app choose the folder or tidy up old files, so move them somewhere safe now and then.</div>
+    ${bkDrvOn()?`<div class="hint" style="margin:7px 0 0">While the backups go into your Drive, none is saved into Downloads.</div>`:settings.autoFile?`<div class="hint" style="margin:7px 0 0">Last saved automatically: ${when}${fileBkCount?` · ${fileBkCount} saved so far`:""}.</div>${pile}`:""}`;
   q("#autoFile").onchange=async e=>{
     settings.autoFile=e.target.checked;saveSettings();
     /* saying yes should produce a file there and then — proof it works, and
        the first copy is made before anything can go wrong */
-    if(settings.autoFile){lastFileBk=0;lastFileSig="";await maybeFileBackup();}
+    if(settings.autoFile){lastFileBk=0;lastFileSig="";lastFilePics=0;await maybeFileBackup();}
     renderDirUi();
   };
   const filed=q("#bkFileFiled");
   if(filed)filed.onclick=()=>{
-    fileBkCount=0;dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:0}});
+    fileBkCount=0;dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:0,pics:lastFilePics}});
     renderDirUi();
   };
 }
@@ -71014,7 +71020,7 @@ async function refreshSnaps(){
   const n=q("#snapN");if(n)n.textContent=list.length?`(${list.length})`:"";
   q("#snapList").innerHTML=list.length?list.map(s=>`
     <div class="snap">
-      <div><div class="when">${fmtWhen(s.at)}</div><div class="meta">${s.nbooks} book${s.nbooks===1?"":"s"} · ${fmtBytes(s.size)}</div></div>
+      <div><div class="when">${fmtWhen(s.at)}</div><div class="meta">${s.nbooks} book${s.nbooks===1?"":"s"} · ${fmtBytes(s.size)}${s.part==="words"?" · the words":""}</div></div>
       <span class="tagx ${s.auto?"":"man"}">${s.why==="restore"?"BEFORE RESTORE":s.auto?"AUTO":"SAVED"}</span>
       <div class="sp">
         <button class="btn" data-sr="${s.id}">Restore</button>
@@ -71029,7 +71035,7 @@ async function refreshSnaps(){
     /* two different failures, said apart — the file restore's own rule: a
        safety copy refused by a full disk is not a broken backup, and a write
        stopped partway leaves some books in */
-    try{await makeSnapshot(false,"restore");}
+    try{await makeSnapshot(false,"restore",s.part==="words"?"words":"");}
     catch(e){if(!confirm("A safety copy of your shelf as it is now couldn't be saved — storage is probably full.\n\nThe backup itself is fine. Restore it without the safety copy?\n\nIf you'd rather not, cancel and free some room first."))
       {if(q("#busyMsg"))q("#busyMsg").textContent="";return;}}
     try{
@@ -71043,7 +71049,7 @@ async function refreshSnaps(){
   });
   qa("[data-sd]",box).forEach(b=>b.onclick=async()=>{
     const s=await dbGet("snapshots",b.dataset.sd);if(!s)return;
-    downloadJson(s.data,`my-shelf-backup-${shelfDayOf(s.at)}.json`);
+    downloadJson(s.data,`my-shelf-backup-${shelfDayOf(s.at)}${s.part==="words"?"-words":""}.json`);
   });
   qa("[data-sx]",box).forEach(b=>b.onclick=async()=>{
     const s=(await snapIndex()).find(x=>x.id===b.dataset.sx);if(!s)return;
@@ -85408,7 +85414,7 @@ const DEV_COPY_SKIP=new Set(["devCopyWait","prefsRescueAt","devFillDone","devFil
    sheet offers them, once and only where this phone has said nothing, and never what
    belongs to a size of screen. What was filled in is remembered so it can be taken back. */
 const DEV_FILL_MIN=5;
-const DEV_FILL_SKIP=new Set([...DEV_COPY_NOW,"petPos","petSize","petWhere","libWide","keepAuto","autoBackup"]);
+const DEV_FILL_SKIP=new Set([...DEV_COPY_NOW,"petPos","petSize","petWhere","libWide","keepAuto","autoBackup","bkDrive"]);
 function devFillKeys(){
   if(settings.devFillDone||devCopyKey()!=="devCopyPhone")return [];
   const c=settings.devCopyComputer;if(!c||typeof c!=="object")return [];
@@ -85709,22 +85715,42 @@ function saveSettings(){
    place, and the file can be given again. ⭳ Export backup file still carries
    everything, so the one copy made by hand is the one that can rebuild it all. */
 const leanSkip=k=>String(k).startsWith("__read|");
+/* ---- THE DAILY BACKUP IS THE WORDS; THE PICTURES GO ONCE A WEEK ----
+   Every automatic copy carried every cover, and once covers came in by file
+   that was hundreds of megabytes a copy (see A BACKUP TOO BIG TO BE ONE
+   STRING), added each day to the browser, to Downloads and to Drive, for
+   pictures that change a few a week. Now
+   `part` splits a backup in two. "words" is everything but the covers and
+   pictures, the two stores never even read: books, lists, meta, settings, the
+   picture lists' entries (their pictures are in the images store). "pictures"
+   is the covers and pictures alone, with no books, so bringing it in changes
+   no word on the shelf and the two files restore in either order: applyBackup
+   writes what a file holds and deletes nothing it leaves out. The automatic
+   copies in the browser are the words (the pictures are in the same browser
+   already); the daily file for a folder, Downloads or Drive is the words, and
+   the pictures file goes beside it every BK_PICS_EVERY. ＋ Back up now and
+   ⭳ Export backup file hold both, as every older file does. A copy taken
+   before a restore holds pictures only when the file being restored does. */
 async function buildBackup(opts){
-  const lean=!!(opts&&opts.lean);
-  const covers={};(await dbAll("covers")).forEach(c=>covers[c.id]=c.data);
-  const images={};
-  /* the store is ordered by key, so the reader's files are one run of it and
-     a lean copy reads the two stretches either side — never loading them */
-  const got=lean?[...await dbAllRange("images",IDBKeyRange.upperBound("__read|",true)),
-                  ...await dbAllRange("images",IDBKeyRange.lowerBound("__read|￿",true))]
-                :await dbAll("images");
-  /* a Drive file's copy (__drv|) is on Drive already: in no backup */
-  got.forEach(i=>{if(!String(i.key).startsWith("__drv|")&&!(lean&&leanSkip(i.key)))images[i.key]=i.data;});
-  return {app:"my-shelf",version:1,exported:new Date().toISOString(),
-    index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
+  const lean=!!(opts&&opts.lean),part=(opts&&opts.part)||"";
+  const covers={},images={};
+  if(part!=="words"){
+    (await dbAll("covers")).forEach(c=>covers[c.id]=c.data);
+    /* the store is ordered by key, so the reader's files are one run of it and
+       a lean copy reads the two stretches either side — never loading them */
+    const got=lean?[...await dbAllRange("images",IDBKeyRange.upperBound("__read|",true)),
+                    ...await dbAllRange("images",IDBKeyRange.lowerBound("__read|￿",true))]
+                  :await dbAll("images");
+    /* a Drive file's copy (__drv|) is on Drive already: in no backup */
+    got.forEach(i=>{if(!String(i.key).startsWith("__drv|")&&!(lean&&leanSkip(i.key)))images[i.key]=i.data;});
+  }
+  const head=Object.assign({app:"my-shelf",version:1,exported:new Date().toISOString()},part?{part}:{});
+  if(part==="pictures")return Object.assign(head,{index:[],books:[],covers,images});
+  return Object.assign(head,{index:books.map(b=>({id:b.id})),books,genres,dnfReasons:dnfCustom,audiences:audCustom,
     backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,kwCats,catColors,libArt,covers,images,
-    meta:backupMeta()};
+    meta:backupMeta()});
 }
+const bkHasPics=d=>!!d&&(Object.keys(d.covers||{}).length>0||Object.keys(d.images||{}).length>0);
 /* ---- A BACKUP TOO BIG TO BE ONE STRING ----
    Every backup was JSON.stringify'd whole and handed to new Blob([text]).
    Firefox turns a string into a file through one buffer of three bytes a
@@ -95604,7 +95630,7 @@ async function snapIndex(){
   if(snapIdx)return snapIdx;
   const rec=await dbGet("meta","snapIndex");
   if(rec&&Array.isArray(rec.v))return snapIdx=rec.v;
-  snapIdx=(await dbAll("snapshots")).map(s=>({id:s.id,at:s.at,auto:!!s.auto,size:s.size||0,nbooks:s.nbooks||0}));
+  snapIdx=(await dbAll("snapshots")).map(s=>Object.assign({id:s.id,at:s.at,auto:!!s.auto,size:s.size||0,nbooks:s.nbooks||0},s.part?{part:s.part}:{}));
   dbPut("meta",{k:"snapIndex",v:snapIdx});
   return snapIdx;
 }
@@ -95621,7 +95647,7 @@ async function snapIndexFresh(){
   let idx=(rec&&Array.isArray(rec.v))?rec.v.slice():(await snapIndex()).slice();
   const keys=(await dbAllKeys("snapshots")).map(String),there=new Set(keys),have=new Set(idx.map(x=>String(x.id)));
   for(const k of keys)if(!have.has(k)){const x=await dbGet("snapshots",k);
-    if(x)idx.push(Object.assign({id:x.id,at:x.at,auto:!!x.auto,size:x.size||0,nbooks:x.nbooks||0},x.why?{why:x.why}:{}));}
+    if(x)idx.push(Object.assign({id:x.id,at:x.at,auto:!!x.auto,size:x.size||0,nbooks:x.nbooks||0},x.why?{why:x.why}:{},x.part?{part:x.part}:{}));}
   return snapIdx=idx.filter(x=>there.has(String(x.id)));
 }
 async function dropSnapshot(id){
@@ -95637,16 +95663,18 @@ async function dropSnapshot(id){
    two newest of its kind are kept apart from the daily ones. */
 const SNAP_KEEP_RESTORE=2;
 const bkOfSnap=async s=>typeof s.data==="string"?JSON.parse(s.data):await bkRead(s.data);
-async function makeSnapshot(auto,why){
+async function makeSnapshot(auto,why,part){
   /* a Blob, not a string — see A BACKUP TOO BIG TO BE ONE STRING; an older
-     copy kept as a string still restores (bkOfSnap) */
-  const blob=await backupBlob({lean:true});
+     copy kept as a string still restores (bkOfSnap). `part` "words" leaves the
+     pictures out — see THE DAILY BACKUP IS THE WORDS */
+  const blob=await backupBlob({lean:true,part:part||""});
   const snap={id:uid(),at:Date.now(),auto:!!auto&&!why,size:blob.size,nbooks:books.length,data:blob};
   if(why)snap.why=why;
+  if(part)snap.part=part;
   /* read before the new one is stored, so it isn't taken for a lost one and read back whole */
   await snapIndexFresh();
   await dbPut("snapshots",snap);
-  snapIdx.push(Object.assign({id:snap.id,at:snap.at,auto:snap.auto,size:snap.size,nbooks:snap.nbooks},why?{why}:{}));
+  snapIdx.push(Object.assign({id:snap.id,at:snap.at,auto:snap.auto,size:snap.size,nbooks:snap.nbooks},why?{why}:{},part?{part}:{}));
   await saveSnapIndex();
   await pruneSnapshots();
   return snap;
@@ -95665,7 +95693,7 @@ async function maybeAutoBackup(){
      another, and the prune then dropped yesterday's to keep two */
   const last=(await snapIndexFresh()).filter(s=>s.auto).sort((a,b)=>b.at-a.at)[0];
   if(last&&Date.now()-last.at<24*3600*1000)return;
-  try{await makeSnapshot(true);window.__backupFail=0;}
+  try{await makeSnapshot(true,"","words");window.__backupFail=0;}
   catch(e){console.warn("[shelf] auto-backup skipped",e);window.__backupFail=Date.now();
     window.__backupFull=!!(e&&e.name==="QuotaExceededError");}
 }
@@ -95679,6 +95707,8 @@ async function maybeAutoBackup(){
    by anything that backs up folders, and readable by Import forever. */
 const DIR_KEEP=30;                             /* newest dated files kept; older ones tidied away */
 const DIR_PAT=/^my-shelf-auto-backup-\d{4}-\d{2}-\d{2}\.json$/;
+/* the weekly pictures file beside them — see THE DAILY BACKUP IS THE WORDS */
+const DIR_PICS_PAT=/^my-shelf-auto-pictures-\d{4}-\d{2}-\d{2}\.json$/,DIR_PICS_KEEP=2,BK_PICS_EVERY=6.5*864e5;
 async function dirPermission(ask){
   if(!bkDir)return "none";
   try{
@@ -95688,18 +95718,22 @@ async function dirPermission(ask){
   }catch(e){return "none";}
 }
 async function writeFolderBackup(){
-  const name=`my-shelf-auto-backup-${todayStr()}.json`;
-  const fh=await bkDir.getFileHandle(name,{create:true});
-  const w=await fh.createWritable();               /* writes land whole: a crash mid-write leaves the old file, not half a new one */
-  await w.write(await backupBlob({lean:true}));
-  await w.close();
+  const put=async(name,part)=>{
+    const fh=await bkDir.getFileHandle(name,{create:true});
+    const w=await fh.createWritable();               /* writes land whole: a crash mid-write leaves the old file, not half a new one */
+    await w.write(await backupBlob({lean:true,part}));
+    await w.close();};
+  await put(`my-shelf-auto-backup-${todayStr()}.json`,"words");
+  const pics=Date.now()-lastDirPics>=BK_PICS_EVERY;
+  if(pics)await put(`my-shelf-auto-pictures-${todayStr()}.json`,"pictures");
   /* tidy: only OUR dated files are ever touched — nothing else in the folder */
-  const mine=[];
-  for await(const h of bkDir.values())if(h.kind==="file"&&DIR_PAT.test(h.name))mine.push(h.name);
-  mine.sort();
-  for(const n of mine.slice(0,Math.max(0,mine.length-DIR_KEEP))){
+  const mine=[],minePics=[];
+  for await(const h of bkDir.values())if(h.kind==="file"){if(DIR_PAT.test(h.name))mine.push(h.name);else if(DIR_PICS_PAT.test(h.name))minePics.push(h.name);}
+  mine.sort();minePics.sort();
+  for(const n of [...mine.slice(0,Math.max(0,mine.length-DIR_KEEP)),...minePics.slice(0,Math.max(0,minePics.length-DIR_PICS_KEEP))]){
     try{await bkDir.removeEntry(n);}catch(e){}
   }
+  if(pics){lastDirPics=Date.now();dbPut("meta",{k:"lastDirPics",v:lastDirPics});}
   lastDirBk=Date.now();dbPut("meta",{k:"lastDirBk",v:lastDirBk});
   bkDirAsk=false;window.__dirBkFail=0;
 }
@@ -95737,6 +95771,7 @@ async function maybeFileBackup(){
      back the same way. */
   if(TEST_RUN||!settings.autoFile||!books.length)return;
   if(bkDir)return;                               /* a real folder is strictly better — don't do both */
+  if(bkDrvOn())return;                           /* nor while they go into Drive — see THE DAILY BACKUP GOES INTO YOUR DRIVE */
   /* ---- read the stamp again; do not trust the one from startup ----
      Two copies of this app can be running at once — the installed app and a
      browser tab, or two tabs. Each read this when it started and then kept its
@@ -95747,18 +95782,182 @@ async function maybeFileBackup(){
      The snapshot check has always asked the database for its index rather than
      remembering one; these two file-writing ones were the odd pair out. */
   {const rec=await dbGet("meta","fileBk");
-   if(rec&&rec.v&&(rec.v.at||0)>lastFileBk){lastFileBk=rec.v.at||0;lastFileSig=rec.v.sig||"";fileBkCount=rec.v.n||0;}}
-  if(Date.now()-lastFileBk<20*3600*1000)return;  /* “daily”, with slack so it doesn't drift later each day */
+   if(rec&&rec.v&&(rec.v.at||0)>lastFileBk){lastFileBk=rec.v.at||0;lastFileSig=rec.v.sig||"";fileBkCount=rec.v.n||0;}
+   if(rec&&rec.v&&(rec.v.pics||0)>lastFilePics)lastFilePics=rec.v.pics||0;}
   const sig=libSig();
-  if(sig===lastFileSig)return;                   /* nothing has changed since the last one — another copy of it is just clutter */
+  /* “daily”, with slack so it doesn't drift later each day; and nothing on a
+     day nothing changed — another copy of it is just clutter */
+  const words=Date.now()-lastFileBk>=20*3600*1000&&sig!==lastFileSig;
+  const pics=Date.now()-lastFilePics>=BK_PICS_EVERY;   /* see THE DAILY BACKUP IS THE WORDS */
+  if(!words&&!pics)return;
   try{
-    downloadJson(await backupBlob({lean:true}),`my-shelf-auto-backup-${todayStr()}.json`);
+    if(words){downloadJson(await backupBlob({lean:true,part:"words"}),`my-shelf-auto-backup-${todayStr()}.json`);
+      lastFileBk=Date.now();lastFileSig=sig;fileBkCount++;}
+    if(pics){downloadJson(await backupBlob({lean:true,part:"pictures"}),`my-shelf-auto-pictures-${todayStr()}.json`);
+      lastFilePics=Date.now();fileBkCount++;}
     window.__fileBkFail=0;
-    lastFileBk=Date.now();lastFileSig=sig;fileBkCount++;
-    dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:fileBkCount}});
+    dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:fileBkCount,pics:lastFilePics}});
     renderDirUi();
   }catch(e){console.warn("[shelf] file backup",e);window.__fileBkFail=Date.now();try{refreshStorage();}catch(x){}}
 }
+
+/* ┌─ ☁ THE DAILY BACKUP GOES INTO YOUR DRIVE ───────────────────────────────┐
+   │ Firefox saves a backup only into Downloads, and a page can never move   │
+   │ or delete a download, so every day's file had to be carried into Drive  │
+   │ by hand. With settings.bkDrive set (this device's own: DEV_FILL_SKIP,   │
+   │ so a phone never takes it up) the app writes the files into Drive       │
+   │ itself: the words every day, the pictures every BK_PICS_EVERY (see THE  │
+   │ DAILY BACKUP IS THE WORDS), under the names the other roads use, into   │
+   │ the folder drvBkFolder finds: the one kept, else "Shelf backups" at the │
+   │ top of My Drive, else one by that name anywhere, else a new one there.  │
+   │ Each file is marked appProperties shelfBk=words|pictures, and           │
+   │ drvBkTidy touches only files so marked: the newest DRV_BK_KEEP of the   │
+   │ words and DRV_BK_PICS_KEEP of the pictures stay, a file of the same     │
+   │ name as the new one goes, the rest go to Drive's bin (thirty days).     │
+   │ Files carried in by hand are never touched.                             │
+   │ Writing takes the drive scope (drvEditToken), and Google's window may   │
+   │ open only from a press. So with an hour of it alive a due copy goes by  │
+   │ itself (maybeDriveBackup, also run whenever a press gets the hour), and │
+   │ otherwise Today shows one line, #bkDrvLine, with ☁ Put it in Drive.     │
+   │ drvUpload sends a file in DRV_UP_STEP pieces through Drive's resumable  │
+   │ upload, so a pictures file of hundreds of megabytes goes up a piece at  │
+   │ a time and says how far it is. lastDrvBk (meta, read afresh: two        │
+   │ windows) keeps what each last did and the last thing that went wrong.   │
+   └──────────────────────────────────────────────────────────────────────────┘ */
+const DRV_BK_NAME="Shelf backups",DRV_BK_KEEP=14,DRV_BK_PICS_KEEP=2,DRV_UP_STEP=8<<20;
+const DRV_UP="https://www.googleapis.com/upload/drive/v3/files";
+let DRV_BK=null;   /* the one going now: {say,pct} */
+const bkDrvOn=()=>driveReady()&&!!(settings.bkDrive&&settings.bkDrive.on);
+const drvEditAlive=()=>!!drvEditTok&&Date.now()<drvEditExp-60000;
+const bkDrvWordsDue=()=>{const L=lastDrvBk||{};return !L.words||Date.now()-L.words.at>=20*3600*1000;};
+const bkDrvPicsDue=()=>{const L=lastDrvBk||{};return !L.pics||Date.now()-L.pics.at>=BK_PICS_EVERY;};
+/* one call to Drive with the drive scope: a stale hour asked again once, and
+   "too many, too fast" waited out twice — drvFetch's rules. `resume` lets the
+   upload's 308 (a piece taken, more wanted) through as an answer */
+async function drvEditCall(url,init,resume){
+  for(let tries=0,auth=0;;tries++){
+    const r=await fetch(url,Object.assign({},init,{headers:Object.assign({Authorization:"Bearer "+await drvEditToken()},(init&&init.headers)||{})}));
+    if(r.status===401&&auth++<1){drvEditTok="";continue;}
+    if(r.ok||(resume&&r.status===308))return r;
+    let m="";try{m=(await r.clone().json()).error.message;}catch(e){}
+    if(tries<2&&(r.status===429||r.status>=500||(r.status===403&&/rate|quota/i.test(m)))){await new Promise(res=>setTimeout(res,1000*(tries+1)));continue;}
+    throw new Error(m||("Drive answered "+r.status));
+  }
+}
+async function drvBkFolder(){
+  const kept=settings.bkDrive&&settings.bkDrive.folder;
+  if(kept&&kept.id){
+    try{const j=await (await drvEditCall(DRV_API+"files/"+encodeURIComponent(kept.id)+"?supportsAllDrives=true&fields=id,name,trashed")).json();
+      if(j&&j.id&&!j.trashed)return {id:j.id,name:j.name||DRV_BK_NAME};}
+    catch(e){if(!/not found|404/i.test(String(e&&e.message)))throw e;}
+  }
+  const qy=`name='${drvQ(DRV_BK_NAME)}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const fs=((await (await drvEditCall(DRV_API+"files?pageSize=50&q="+encodeURIComponent(qy)+"&fields="+encodeURIComponent("files(id,name,parents)"))).json()).files)||[];
+  let root="";if(fs.length>1){try{root=(await (await drvEditCall(DRV_API+"files/root?fields=id")).json()).id||"";}catch(e){}}
+  const got=fs.find(x=>root&&(x.parents||[]).includes(root))||fs[0]
+    ||await (await drvEditCall(DRV_API+"files?fields=id,name",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:DRV_BK_NAME,mimeType:"application/vnd.google-apps.folder"})})).json();
+  return {id:got.id,name:got.name||DRV_BK_NAME};
+}
+/* a file into a folder through the resumable upload: one call says what is
+   coming and gets back where to send it, then a piece at a time; Drive says
+   308 and how much it holds until the last piece, then the file */
+async function drvUpload(blob,name,folderId,kind,onProg,step){
+  step=step||DRV_UP_STEP;
+  const r0=await drvEditCall(DRV_UP+"?uploadType=resumable&supportsAllDrives=true&fields=id,name,size",{method:"POST",
+    headers:{"Content-Type":"application/json; charset=UTF-8","X-Upload-Content-Type":"application/json","X-Upload-Content-Length":String(blob.size)},
+    body:JSON.stringify({name,parents:[folderId],mimeType:"application/json",appProperties:{shelfBk:kind}})});
+  const at=r0.headers.get("Location");if(!at)throw new Error("Drive didn't say where to send the file");
+  let from=0;
+  for(;;){
+    const to=Math.min(blob.size,from+step);
+    const r=await drvEditCall(at,{method:"PUT",headers:{"Content-Range":`bytes ${from}-${to-1}/${blob.size}`},body:blob.slice(from,to)},true);
+    if(r.status===308){const rg=/-(\d+)/.exec(r.headers.get("Range")||"");from=rg?+rg[1]+1:to;if(onProg)onProg(from,blob.size);continue;}
+    if(onProg)onProg(blob.size,blob.size);
+    return await r.json();
+  }
+}
+/* only the app's own files of one kind: the newest `keep` stay, and an older one of the new file's name */
+async function drvBkTidy(folderId,kind,keep,name,newId){
+  const qy=`'${drvQ(folderId)}' in parents and trashed=false and appProperties has { key='shelfBk' and value='${kind}' }`;
+  const fs=((await (await drvEditCall(DRV_API+"files?pageSize=200&orderBy="+encodeURIComponent("createdTime desc")+"&q="+encodeURIComponent(qy)+"&fields="+encodeURIComponent("files(id,name,createdTime)"))).json()).files)||[];
+  const stay=fs.filter(f=>f.id===newId||f.name!==name);
+  const out=[...fs.filter(f=>f.id!==newId&&f.name===name),...stay.slice(keep)];
+  let n=0;for(const f of out){try{await drvSetTrashed(f.id,true);n++;}catch(e){}}
+  return n;
+}
+async function drvBkRun(now){
+  if(DRV_BK)return;
+  DRV_BK={say:"Finding your Drive's “"+DRV_BK_NAME+"” folder…",pct:null};bkDrvPaint();
+  const out=Object.assign({},lastDrvBk||{});
+  try{
+    const fo=await drvBkFolder();
+    if(!(settings.bkDrive&&settings.bkDrive.folder&&settings.bkDrive.folder.id===fo.id)){settings.bkDrive=Object.assign({},settings.bkDrive,{on:true,folder:fo});saveSettings();}
+    const todo=[];if(now||bkDrvWordsDue())todo.push("words");if(bkDrvPicsDue())todo.push("pictures");
+    for(const kind of todo){
+      const what=kind==="words"?"today's backup":"the pictures";
+      DRV_BK.say="Putting "+what+" together…";DRV_BK.pct=null;bkDrvPaint();
+      const t0=Date.now(),blob=await backupBlob({lean:true,part:kind});
+      const name=`my-shelf-auto-${kind==="words"?"backup":"pictures"}-${todayStr()}.json`,all=fmtBytes(blob.size);
+      const f=await drvUpload(blob,name,fo.id,kind,got=>{DRV_BK.say=`Putting ${what} into “${fo.name}”: ${fmtBytes(got)} of ${all}`;DRV_BK.pct=blob.size?got/blob.size*100:null;bkDrvPaint();});
+      const gone=await drvBkTidy(fo.id,kind,kind==="words"?DRV_BK_KEEP:DRV_BK_PICS_KEEP,name,f.id);
+      out[kind==="words"?"words":"pics"]={at:Date.now(),name,size:blob.size,ms:Date.now()-t0,gone};
+      out.err=null;lastDrvBk=Object.assign({},out);await dbPut("meta",{k:"lastDrvBk",v:lastDrvBk});
+    }
+  }catch(e){
+    console.warn("[shelf] Drive backup",e);
+    out.err={at:Date.now(),msg:String((e&&e.message)||e)};lastDrvBk=out;dbPut("meta",{k:"lastDrvBk",v:out});
+  }finally{DRV_BK=null;bkDrvPaint();try{refreshStorage();}catch(e){}}
+}
+async function maybeDriveBackup(){
+  if(TEST_RUN||!bkDrvOn()||!books.length||DRV_BK)return;
+  {const r=await dbGet("meta","lastDrvBk");if(r&&r.v)lastDrvBk=r.v;}
+  if(!bkDrvWordsDue()&&!bkDrvPicsDue())return bkDrvPaint();
+  if(!drvEditAlive())return bkDrvPaint();      /* Google's window wants a press: Today asks for it */
+  await drvBkRun(false);
+}
+function bkDrvPaint(){
+  const el=q("#bkDrvLine");if(el)el.innerHTML=bkDrvLineInner();
+  renderDrvBkUi();
+}
+function bkDrvLineInner(){
+  if(!bkDrvOn()||!books.length)return "";
+  const box=`<div class="snap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;padding:6px 10px">`;
+  if(DRV_BK)return box+`<div style="flex:1 1 200px;min-width:0">${drvBarHtml(esc(DRV_BK.say),DRV_BK.pct)}</div></div>`;
+  if(!bkDrvWordsDue()&&!bkDrvPicsDue())return "";
+  drvLoadGis().catch(()=>{});   /* fetched ahead, so the press opens Google's window at once */
+  const L=lastDrvBk||{},err=L.err&&L.err.msg?` <span style="color:var(--rose)">Last time: ${esc(L.err.msg)}.</span>`:"";
+  return box+`<span style="flex:1 1 160px;min-width:0">☁ <b>${bkDrvWordsDue()?"Today's backup":"This week's pictures"}</b> can go into your Drive.${err}</span><button class="btn smallbtn" data-bkdrvgo>☁ Put it in Drive</button></div>`;
+}
+function renderDrvBkUi(){
+  const box=q("#bkDrvBox");if(!box)return;
+  if(!driveReady()){box.innerHTML="";return;}
+  if(!bkDrvOn()){
+    box.innerHTML=`<div class="hrow2" style="margin-top:12px"><button class="btn pri" data-bkdrvon>☁ Put the backups into your Drive</button></div>
+      <div class="hint" style="margin:7px 0 0">The daily backup goes into the folder “${esc(DRV_BK_NAME)}” in your Drive (made there if there is none), and the pictures once a week. The newest ${DRV_BK_KEEP} daily files and the newest ${DRV_BK_PICS_KEEP} pictures files are kept; older ones go to Drive's bin, which keeps them 30 days, and files you put there yourself are never touched. Google asks once for permission to change your Drive, as 🔎 Find identical copies does. Only this device does it.</div>`;
+    return;}
+  const L=lastDrvBk||{},fo=(settings.bkDrive&&settings.bkDrive.folder)||{name:DRV_BK_NAME};
+  const one=(x,what)=>x?`${what} ${esc(drvAgo(x.at))}, ${fmtBytes(x.size)}${x.gone?`, ${x.gone} older to Drive's bin`:""}`:`${what} not yet`;
+  box.innerHTML=`<div class="hint" style="margin-top:12px">☁ Backups go into your Drive's “${esc(fo.name)}”: ${one(L.words,"the words")} · ${one(L.pics,"the pictures")}.${L.err&&L.err.msg?` <span style="color:var(--rose)">${esc(drvAgo(L.err.at))} it stopped: ${esc(L.err.msg)}.</span>`:""}</div>
+    ${DRV_BK?drvBarHtml(esc(DRV_BK.say),DRV_BK.pct):""}
+    <div class="hint" style="margin:5px 0 0">A browser lets the app into your Drive only for an hour after a press. When a copy is due and that hour isn't running, Today shows <b>☁ Put it in Drive</b>: one press, and Google's window opens and closes by itself. The newest ${DRV_BK_KEEP} daily files and ${DRV_BK_PICS_KEEP} pictures files are kept.</div>
+    <div class="hrow2" style="margin-top:7px"><button class="btn smallbtn" data-bkdrvgo="now"${DRV_BK?" disabled":""}>☁ Put today's in now</button><button class="btn smallbtn" data-bkdrvoff>Stop</button></div>`;
+}
+document.addEventListener("click",async e=>{
+  const t=e.target.closest&&e.target.closest("[data-bkdrvgo],[data-bkdrvon],[data-bkdrvoff]");if(!t)return;
+  e.preventDefault();
+  if(t.hasAttribute("data-bkdrvoff")){
+    if(!confirm("Stop putting backups into your Drive?\n\nThe files already there stay."))return;
+    settings.bkDrive=null;saveSettings();bkDrvPaint();renderDirUi();return;}
+  if(DRV_BK)return;
+  t.disabled=true;
+  /* first thing in the press, so the browser lets Google's window open */
+  try{await drvEditToken();}
+  catch(er){t.disabled=false;alert("Your Drive couldn't be reached: "+er.message+".");return;}
+  if(t.hasAttribute("data-bkdrvon")){settings.bkDrive={on:true};saveSettings();renderDirUi();}
+  await drvBkRun(t.dataset.bkdrvgo==="now"||t.hasAttribute("data-bkdrvon"));
+  renderDirUi();
+});
 
 q("#importFile").addEventListener("change",async e=>{
   const f=e.target.files[0];e.target.value="";if(!f)return;
@@ -95776,15 +95975,17 @@ q("#importFile").addEventListener("change",async e=>{
   /* the snapshot-restore button warns and takes a safety copy first; opening a
      file is the same rewind and deserves the same care — an old export opened
      "just to look" would otherwise turn back every matching book, everywhere */
-  const inFile=data.books.length;
-  if(books.length&&!confirm(`Bring in “${f.name}”? It holds ${inFile} book${inFile===1?"":"s"}.\n\nBooks only in the file are added. A book that is both on your shelf and in the file goes back to the file's version — on every device.\n\nA backup of your shelf as it is now is taken first; ⚙ Settings → Backups can put it back.`))return;
+  const inFile=data.books.length,pics=data.part==="pictures",nPics=Object.keys(data.covers||{}).length+Object.keys(data.images||{}).length;
+  if(books.length&&!confirm(pics
+    ?`Bring in the pictures from “${f.name}”? It holds ${nPics.toLocaleString()} cover${nPics===1?"":"s"} and picture${nPics===1?"":"s"}, and no books.\n\nA cover or picture that is also on this device goes back to the file's version. No book changes.\n\nA backup of your shelf as it is now is taken first; ⚙ Settings → Backups can put it back.`
+    :`Bring in “${f.name}”? It holds ${inFile} book${inFile===1?"":"s"}.\n\nBooks only in the file are added. A book that is both on your shelf and in the file goes back to the file's version — on every device.\n\nA backup of your shelf as it is now is taken first; ⚙ Settings → Backups can put it back.`))return;
   const msg=q("#busyMsg");if(msg)msg.textContent="Restoring from backup…";
   /* Two things can still go wrong, and each says what it was doing: the
      safety copy failing because storage is full (the file is fine and the
      restore has not started), and the writing itself running out of room. */
   try{
     if(books.length){
-      try{await makeSnapshot(false,"restore");}
+      try{await makeSnapshot(false,"restore",bkHasPics(data)?"":"words");}
       catch(err){
         if(!confirm("A safety copy of your shelf as it is now couldn't be saved — storage is probably full.\n\nThe file itself is fine. Carry on without the safety copy?\n\nIf you'd rather not, cancel and free some room first — Recently deleted and old backups are the usual culprits."))
           {if(q("#busyMsg"))q("#busyMsg").textContent="";return;}
@@ -95792,7 +95993,9 @@ q("#importFile").addEventListener("change",async e=>{
     }
     const {n,failedPics}=await applyBackup(data);
     render();
-    alert(`Restored ${n} book${n===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`
+    alert((pics?`Put back ${(nPics-failedPics).toLocaleString()} cover${nPics-failedPics===1?"":"s"} and picture${nPics-failedPics===1?"":"s"} from the file.${SYNC.on?" Uploading to your cloud now…":""}`
+      :`Restored ${n} book${n===1?"":"s"} from the backup. Existing books were kept; matching ones were updated.${SYNC.on?" Uploading to your cloud now…":""}`
+        +(data.part==="words"?"\n\nThis file holds the words only. The covers and pictures are in the my-shelf-auto-pictures file beside it: bring in the newest of those too, if they aren't on this device.":""))
       +(failedPics?`\n\n${failedPics} picture${failedPics===1?" didn't":"s didn't"} fit — storage may be full. Free some room and restore again; the books themselves are in.`:""));
   }catch(err){
     /* got past the reading, so the file was fine and the writing is what broke */

@@ -537,6 +537,66 @@ const SMOKE=`
       must(cut&&/partway/.test(cut.message),"a file cut short was read as whole");
       return Math.round(blob.size/1024)+" KB in "+text.split("\\n").length+" lines, read back the same both ways";
     }finally{await dbDel("images","smoke|bk1");await dbDel("images","smoke|bk2");}});
+  await check("the daily backup is the words and the pictures a file of their own, the two bring a wiped book back in either order, and a Drive copy goes up in pieces and tidies only its own",async()=>{
+    const pic="data:image/jpeg;base64,QUJDRA==",coverWas=await dbGet("covers",id);
+    await dbPut("covers",{id,data:pic});await dbPut("images",{key:"smoke|bkw",data:pic});
+    const fetchWas=window.fetch,tokWas=drvEditTok,expWas=drvEditExp,bkWas=settings.bkDrive,lastWas=lastDrvBk,gWas=window.google;
+    try{
+      const w=await bkRead(await backupBlob({lean:true,part:"words"})),p=await bkRead(await backupBlob({lean:true,part:"pictures"}));
+      must(w.part==="words"&&!Object.keys(w.covers).length&&!Object.keys(w.images).length,"the words file holds pictures");
+      must(w.books.length===books.length&&w.meta&&w.genres,"the words file is missing books, meta or lists");
+      must(p.part==="pictures"&&p.books.length===0&&p.covers[id]===pic&&p.images["smoke|bkw"]===pic&&!p.meta,"the pictures file is wrong");
+      /* pictures first: the cover comes back, no book moves */
+      await dbDel("covers",id);await dbDel("images","smoke|bkw");
+      const before=books.length;
+      await applyBackup(JSON.parse(JSON.stringify(p)));
+      must(((await dbGet("covers",id))||{}).data===pic&&((await dbGet("images","smoke|bkw"))||{}).data===pic,"the pictures file did not put the pictures back");
+      must(books.length===before,"the pictures file changed the books: "+books.length+" of "+before);
+      /* then the words: the book comes back and its cover stays */
+      await dbDel("books",id);{const i=books.findIndex(x=>x.id===id);if(i>=0)books.splice(i,1);}
+      await applyBackup(JSON.parse(JSON.stringify(w)));
+      const back=await dbGet("books",id);
+      must(back&&back.rating===7,"the words file did not bring the book back");
+      must(((await dbGet("covers",id))||{}).data===pic,"the words file took the cover away");
+      if(!books.some(x=>x.id===id))books.unshift(back);
+      /* Drive, answered by a stand-in */
+      const bodies={},trashed=[];let up=null,got=0,pieces=0;
+      const J=(o,st,h)=>new Response(JSON.stringify(o),{status:st||200,headers:Object.assign({"Content-Type":"application/json"},h||{})});
+      const today="my-shelf-auto-backup-"+todayStr()+".json";
+      const lists={words:[{id:"dup",name:today}].concat(Array.from({length:14},(x,i)=>({id:"w"+(i+1),name:"my-shelf-auto-backup-2020-01-"+String(i+10)+".json"}))),
+        pictures:[{id:"p1",name:"my-shelf-auto-pictures-2020-01-08.json"},{id:"p2",name:"my-shelf-auto-pictures-2020-01-01.json"}]};
+      window.fetch=async(url,init)=>{url=String(url);const m=(init&&init.method)||"GET";
+        if(url.indexOf("/upload/drive/v3/files?uploadType=resumable")>=0){up={size:+init.headers["X-Upload-Content-Length"],meta:JSON.parse(init.body)};got=0;bodies[up.meta.name]=[];
+          return new Response("",{status:200,headers:{Location:"https://up.example/s1"}});}
+        if(url.indexOf("https://up.example/s1")===0){const r=/bytes (\\d+)-(\\d+)\\/(\\d+)/.exec(init.headers["Content-Range"]);
+          if(+r[1]!==got)throw new Error("a piece began at "+r[1]+", not "+got);got=+r[2]+1;pieces++;bodies[up.meta.name].push(init.body);
+          if(got<up.size)return new Response("",{status:308,headers:{Range:"bytes=0-"+(got-1)}});
+          const nid=up.meta.appProperties.shelfBk==="words"?"new1":"newp";lists[up.meta.appProperties.shelfBk].unshift({id:nid,name:up.meta.name});
+          return J({id:nid,name:up.meta.name,size:String(up.size)});}
+        if(m==="PATCH"&&/drive\\/v3\\/files\\/[^?]+\\?supportsAllDrives=true&fields=id,trashed$/.test(url)){trashed.push(decodeURIComponent(url.split("/files/")[1].split("?")[0]));return J({id:"x",trashed:true});}
+        if(url.indexOf("/drive/v3/files?pageSize=50&q=")>=0)return J({files:[{id:"fold1",name:"Shelf backups",parents:["root1"]}]});
+        if(url.indexOf("/drive/v3/files?pageSize=200&orderBy=")>=0){const k=/value='(\\w+)'/.exec(decodeURIComponent(url))[1];
+          if(decodeURIComponent(url).indexOf("'fold1' in parents")<0)throw new Error("the tidy looked outside the folder");return J({files:lists[k]});}
+        throw new Error("the stand-in Drive was asked "+m+" "+url);};
+      drvEditTok="smoke-token";drvEditExp=Date.now()+3600e3;settings.bkDrive={on:true};lastDrvBk=null;
+      if(!(window.google&&google.accounts&&google.accounts.oauth2))window.google={accounts:{oauth2:{}}};
+      must(/data-bkdrvgo/.test(bkDrvLineInner())&&/Today's backup/.test(bkDrvLineInner()),"Today does not offer the copy that is due");
+      await drvBkRun(true);
+      must(!(lastDrvBk&&lastDrvBk.err),"the Drive copy stopped: "+(lastDrvBk&&lastDrvBk.err&&lastDrvBk.err.msg));
+      must(lastDrvBk.words&&lastDrvBk.words.name===today&&lastDrvBk.pics&&/^my-shelf-auto-pictures-/.test(lastDrvBk.pics.name),"the two files were not both sent: "+JSON.stringify(lastDrvBk));
+      must(settings.bkDrive.folder&&settings.bkDrive.folder.id==="fold1","the folder was not kept");
+      const sent=await bkRead(new Blob(bodies[today]));
+      must(sent.part==="words"&&!Object.keys(sent.covers).length&&sent.books.length===books.length,"what went to Drive as the words is wrong");
+      must(trashed.sort().join()==="dup,p2,w14","the tidy put "+trashed.join()+" in the bin, not dup, p2, w14");
+      must(bkDrvLineInner()==="","Today still offers a copy just made");
+      got=0;pieces=0;const t=await drvUpload(new Blob(["x".repeat(20)]),"t.json","fold1","words",null,7);
+      must(pieces===3&&got===20&&t.id,"twenty bytes in pieces of seven went as "+pieces+" pieces, "+got+" bytes");
+      return "words "+Math.round(lastDrvBk.words.size/1024)+" KB, pictures "+Math.round(lastDrvBk.pics.size/1024)+" KB; tidied "+trashed.join(", ");
+    }finally{
+      window.fetch=fetchWas;drvEditTok=tokWas;drvEditExp=expWas;settings.bkDrive=bkWas;lastDrvBk=lastWas;
+      if(gWas===undefined)delete window.google;else window.google=gWas;
+      await dbDel("meta","lastDrvBk");await dbDel("images","smoke|bkw");
+      if(coverWas)await dbPut("covers",coverWas);else await dbDel("covers",id);}});
   await check("📻 radio while you read: a sound like rain, its stations listed quiet ones first, the stream read off a playlist, silent in a test",async()=>{
     must(plsFirst("[playlist]\\nnumberofentries=2\\nFile1=https://ice9.example/one-128-mp3\\nTitle1=One\\nFile2=https://ice8.example/two")==="https://ice9.example/one-128-mp3","the playlist's first stream was not read");
     must(plsFirst("nothing here")==="","a page with no File line gave a stream");
