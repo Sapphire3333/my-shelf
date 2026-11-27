@@ -17388,6 +17388,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-27.1",go:["tab:settings"],lines:["<b>💾 Backups are made again, at any size.</b> Once covers were brought in by file, a backup grew past what the browser can hand over as a single piece of text, so the daily copy, the daily file for your Downloads and ⭳ Export backup file all stopped. A backup is now put together from small pieces, with each cover and picture on a line of its own, so it can be any size; bringing one in reads it a slice at a time, and older backup files read as they always did. The Storage card now also says when the daily file for your Downloads couldn't be made."]},
   {v:"2026-11-26.9",lines:["<b>★ A tenth in the finish window.</b> The window that opens when you finish a book offered whole numbers and + ½; under the numbers there is now a row of tenths, .0 to .9, so 7.4 is two presses. A whole number pressed afterwards keeps the tenth."]},
   {v:"2026-11-26.8",go:["el:challenges:.qweek2"],lines:["<b>🎯 A series' next book counts a collection's next story.</b> The week's and the month's goal counted only books with a series name of their own; a series kept as a collection gave it nothing. Now a story finished after an earlier story of its collection counts too, and 🎯 on a waiting story says so. A tale of a split volume is a piece of one book and still doesn't."]},
   {v:"2026-11-26.7",go:["guide:map:drv"],lines:["<b>☁ The guide: your Drive.</b> A ninth chapter behind <b>?</b>, with pictures: choosing the folder, the ☁ tab and its find box, a file's row and a file on no shelf, 🔗 connecting files to books by name, ✍️ fics from a folder, 📌 kept on this device, and tidying — identical copies, one book as several files, 🗂 Sort your Drive. Nine ways, each with ▶ Show me."]},
@@ -70301,7 +70302,7 @@ async function refreshStorage(){
   if(!q("#stoCard"))return;
   /* a failed automatic backup used to whisper to the console and nowhere else —
      the one person who needed to know was the one who would never see it */
-  const bkWarn=window.__backupFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The automatic backup could not be made — storage may be full. Export a backup file now to be safe.</div>':"";
+  const bkWarn=window.__backupFail||window.__fileBkFail?`<div class="hint" style="color:var(--rose);margin-top:7px">${window.__fileBkFail&&!window.__backupFail?"The daily backup file for your Downloads could not be made":"The automatic backup could not be made"}${window.__backupFull?" — storage may be full":""}. Export a backup file now to be safe.</div>`:"";
   /* which build this device is actually running — so a "nothing changed" report
      can carry the build's name, instead of a guess about caches */
   const dirWarn=window.__dirBkFail?'<div class="hint" style="color:var(--rose);margin-top:7px">The daily backup could not be written into your backup folder — it may have been moved or deleted. Open Backups below to reconnect it.</div>':"";
@@ -70675,7 +70676,7 @@ async function refreshSnaps(){
     catch(e){if(!confirm("A safety copy of your shelf as it is now couldn't be saved — storage is probably full.\n\nThe backup itself is fine. Restore it without the safety copy?\n\nIf you'd rather not, cancel and free some room first."))
       {if(q("#busyMsg"))q("#busyMsg").textContent="";return;}}
     try{
-      const {n,failedPics}=await applyBackup(JSON.parse(s.data));
+      const {n,failedPics}=await applyBackup(await bkOfSnap(s));
       render();refreshSnaps();
       alert(`Restored ${n} book${n===1?"":"s"} from ${fmtWhen(s.at)}.`
         +(failedPics?`\n\n${failedPics} picture${failedPics===1?" didn't":"s didn't"} fit — storage may be full. Free some room and restore again; the books themselves are in.`:""));
@@ -85119,7 +85120,7 @@ async function prefsRescue(){
   settings.prefsRescueAt=wipe;saveSettings();
   const snaps=(await snapIndexFresh()).filter(s=>s.at<wipe).sort((a,b)=>b.at-a.at);
   for(const s of snaps){
-    const x=await dbGet("snapshots",s.id),p=x&&snapPrefsOf(x.data);if(!p)continue;
+    const x=await dbGet("snapshots",s.id),p=x&&(typeof x.data==="string"?snapPrefsOf(x.data):await snapPrefsBlob(x.data));if(!p)continue;
     const back=bad.filter(k=>p[k]&&p[k].v!=null&&settings[k]==null);if(!back.length)continue;
     const now=Date.now();
     back.forEach(k=>{settings[k]=prefClone(p[k].v);sharedPrefs[k]={v:prefClone(p[k].v),at:now};});
@@ -85366,6 +85367,75 @@ async function buildBackup(opts){
     backgrounds:bgList,padskins:padList,fandoms,groupArt,kwColors,kwCats,catColors,libArt,covers,images,
     meta:backupMeta()};
 }
+/* ---- A BACKUP TOO BIG TO BE ONE STRING ----
+   Every backup was JSON.stringify'd whole and handed to new Blob([text]).
+   Firefox turns a string into a file through one buffer of three bytes a
+   character, and that buffer stops at 2 GB: a backup over 715,827,882
+   characters (2^31 / 3) could still be written as text but never became a
+   file. Measured in a headless Firefox: 715 million characters made a file,
+   765 million threw. The daily copy stood at 221 MB until a covers file added
+   about 4,100 covers at around 100 KB each; it reached 711.7 million
+   characters, and the next day's went over, so the daily copy in the browser,
+   the file in Downloads and ⭳ Export backup file all stopped together.
+   backupBlob builds the same backup as a Blob of many small pieces, never one
+   string: a picture's data URL goes in as it is, between quotes. The covers
+   and pictures stand one to a line after a first line holding everything
+   else, so bkRead takes a file of any size back a slice at a time. The file
+   is still one valid JSON text, so an older copy of the app or any JSON reader
+   opens it whole while it is small enough to. Measured in the same Firefox: a
+   1.3 GB backup built this way was made and stored in the browser. */
+const BK_LINES='"lines":1',BK_COVERS=',"covers":{',BK_IMAGES='},"images":{',BK_END="}}",BK_STEP=8<<20;
+/* a value JSON would write as itself between quotes: printable ASCII with no quote or backslash */
+const bkPlain=v=>typeof v==="string"&&!/[^\x20-\x21\x23-\x5b\x5d-\x7e]/.test(v);
+async function backupBlob(opts){
+  const {app,version,covers,images,...rest}=await buildBackup(opts);
+  const parts=[JSON.stringify(Object.assign({app,version,lines:1},rest)).slice(0,-1)+BK_COVERS+"\n"];
+  const run=o=>{let first=true;
+    for(const k in o){const v=o[k];if(v===undefined)continue;
+      parts.push((first?"":",\n")+JSON.stringify(k)+":");first=false;
+      if(bkPlain(v))parts.push('"',v,'"');else parts.push(JSON.stringify(v));}};
+  run(covers||{});parts.push("\n"+BK_IMAGES+"\n");
+  run(images||{});parts.push("\n"+BK_END+"\n");
+  return new Blob(parts,{type:"application/json"});
+}
+async function bkFirstLine(blob){
+  const dec=new TextDecoder();let s="";
+  for(let at=0;at<blob.size;at+=BK_STEP){
+    s+=dec.decode(await blob.slice(at,at+BK_STEP).arrayBuffer(),{stream:true});
+    const i=s.indexOf("\n");if(i>=0)return s.slice(0,i);}
+  return s+dec.decode();
+}
+/* any backup, old or new, from a File or a Blob: an old one (one line, no
+   "lines") is parsed whole as it always was */
+async function bkRead(blob){
+  if((await blob.slice(0,512).text()).indexOf(BK_LINES)<0)return JSON.parse(await blob.text());
+  const dec=new TextDecoder();let carry="",data=null,into=null,end=false;
+  const take=ln=>{
+    if(end||!ln)return;
+    if(!data){if(!ln.endsWith(BK_COVERS))throw new Error("not a backup in lines");
+      data=JSON.parse(ln.slice(0,-BK_COVERS.length)+"}");delete data.lines;
+      data.covers={};data.images={};into=data.covers;return;}
+    if(ln===BK_IMAGES){into=data.images;return;}
+    if(ln===BK_END){end=true;return;}
+    const o=JSON.parse("{"+(ln.endsWith(",")?ln.slice(0,-1):ln)+"}");
+    for(const k in o)into[k]=o[k];
+  };
+  for(let at=0;at<blob.size;at+=BK_STEP){
+    const got=(carry+dec.decode(await blob.slice(at,at+BK_STEP).arrayBuffer(),{stream:true})).split("\n");
+    carry=got.pop();got.forEach(take);
+  }
+  /* a file cut short ends inside a picture: that last line is half a line */
+  try{take(carry+dec.decode());}catch(e){if(data&&!end)throw new Error("the backup stops partway");throw e;}
+  if(!end)throw new Error("the backup stops partway");
+  return data;
+}
+/* the settings out of a daily copy kept as a Blob: they are on its first line */
+async function snapPrefsBlob(blob){
+  try{if(!(blob instanceof Blob))return null;
+    const ln=await bkFirstLine(blob);if(!ln.endsWith(BK_COVERS))return null;
+    const h=JSON.parse(ln.slice(0,-BK_COVERS.length)+"}");return (h.meta&&h.meta.prefs)||null;}
+  catch(e){return null;}
+}
 /* ---- WHAT A BACKUP CARRIES BESIDES THE BOOKS ----
    The file held the books, their words, covers and pictures — and none of
    the records the shelf keeps beside them: the XP and level, the day's and
@@ -85423,10 +85493,10 @@ async function copyLoad(data){
 async function exportBackup(){
   const msg=q("#busyMsg");if(msg)msg.textContent="Packing your shelf…";
   try{
-    downloadJson(JSON.stringify(await buildBackup()),`my-shelf-backup-${todayStr()}.json`);
+    downloadJson(await backupBlob(),`my-shelf-backup-${todayStr()}.json`);
     lastExport=Date.now();dbPut("meta",{k:"lastExport",v:lastExport});
     const n=q("#expAge");if(n){n.textContent="Last exported backup: just now";n.style.color="";}
-  }catch(e){alert("Export ran into a problem — try again.");}
+  }catch(e){console.warn("[shelf] export",e);alert("Export ran into a problem — try again.\n\n("+String((e&&(e.message||e.name))||e)+")");}
   if(q("#busyMsg"))q("#busyMsg").textContent="";
 }
 /* ---- the shelf as a spreadsheet ----
@@ -95149,9 +95219,12 @@ async function dropSnapshot(id){
    It is its own kind now (`why:"restore"`), labelled so in the list, and the
    two newest of its kind are kept apart from the daily ones. */
 const SNAP_KEEP_RESTORE=2;
+const bkOfSnap=async s=>typeof s.data==="string"?JSON.parse(s.data):await bkRead(s.data);
 async function makeSnapshot(auto,why){
-  const json=JSON.stringify(await buildBackup({lean:true}));
-  const snap={id:uid(),at:Date.now(),auto:!!auto&&!why,size:json.length,nbooks:books.length,data:json};
+  /* a Blob, not a string — see A BACKUP TOO BIG TO BE ONE STRING; an older
+     copy kept as a string still restores (bkOfSnap) */
+  const blob=await backupBlob({lean:true});
+  const snap={id:uid(),at:Date.now(),auto:!!auto&&!why,size:blob.size,nbooks:books.length,data:blob};
   if(why)snap.why=why;
   /* read before the new one is stored, so it isn't taken for a lost one and read back whole */
   await snapIndexFresh();
@@ -95176,7 +95249,8 @@ async function maybeAutoBackup(){
   const last=(await snapIndexFresh()).filter(s=>s.auto).sort((a,b)=>b.at-a.at)[0];
   if(last&&Date.now()-last.at<24*3600*1000)return;
   try{await makeSnapshot(true);window.__backupFail=0;}
-  catch(e){console.warn("[shelf] auto-backup skipped",e);window.__backupFail=Date.now();}
+  catch(e){console.warn("[shelf] auto-backup skipped",e);window.__backupFail=Date.now();
+    window.__backupFull=!!(e&&e.name==="QuotaExceededError");}
 }
 
 /* =============== backups into a real folder (PC) =============== */
@@ -95200,7 +95274,7 @@ async function writeFolderBackup(){
   const name=`my-shelf-auto-backup-${todayStr()}.json`;
   const fh=await bkDir.getFileHandle(name,{create:true});
   const w=await fh.createWritable();               /* writes land whole: a crash mid-write leaves the old file, not half a new one */
-  await w.write(JSON.stringify(await buildBackup({lean:true})));
+  await w.write(await backupBlob({lean:true}));
   await w.close();
   /* tidy: only OUR dated files are ever touched — nothing else in the folder */
   const mine=[];
@@ -95261,11 +95335,12 @@ async function maybeFileBackup(){
   const sig=libSig();
   if(sig===lastFileSig)return;                   /* nothing has changed since the last one — another copy of it is just clutter */
   try{
-    downloadJson(JSON.stringify(await buildBackup({lean:true})),`my-shelf-auto-backup-${todayStr()}.json`);
+    downloadJson(await backupBlob({lean:true}),`my-shelf-auto-backup-${todayStr()}.json`);
+    window.__fileBkFail=0;
     lastFileBk=Date.now();lastFileSig=sig;fileBkCount++;
     dbPut("meta",{k:"fileBk",v:{at:lastFileBk,sig:lastFileSig,n:fileBkCount}});
     renderDirUi();
-  }catch(e){console.warn("[shelf] file backup",e);}
+  }catch(e){console.warn("[shelf] file backup",e);window.__fileBkFail=Date.now();try{refreshStorage();}catch(x){}}
 }
 
 q("#importFile").addEventListener("change",async e=>{
@@ -95278,8 +95353,8 @@ q("#importFile").addEventListener("change",async e=>{
      backup is told so, and nothing is written. */
   const notOurs="That file isn't a My Shelf backup — it isn't the kind of file ⭳ Export backup file makes, so nothing was changed.";
   let data;
-  try{data=JSON.parse(await f.text());}
-  catch(err){alert(notOurs);return;}
+  try{data=await bkRead(f);}
+  catch(err){alert(/partway/.test(String(err&&err.message))?"That backup file is cut short — it ends before its last picture — so nothing was changed.":notOurs);return;}
   if(!backupShapeOk(data)){alert(notOurs);return;}
   /* the snapshot-restore button warns and takes a safety copy first; opening a
      file is the same rewind and deserves the same care — an old export opened

@@ -516,6 +516,27 @@ const SMOKE=`
     must(await dbGet("books",id2),"the imported book did not come back");
     if(!books.some(x=>x.id===id))books.unshift(back);
     return "both books back with their fields";});
+  await check("a backup is a file of many pieces, one picture a line, read back whole; an old one-line file still reads",async()=>{
+    const odd='a "quoted"\\nvalue — with a backslash \\\\ in it',plain="data:image/jpeg;base64,QUJDRA==";
+    await dbPut("images",{key:"smoke|bk1",data:odd});await dbPut("images",{key:"smoke|bk2",data:plain});
+    try{
+      const blob=await backupBlob();
+      const head=await bkFirstLine(blob);
+      must(head.indexOf(BK_LINES)>0&&head.indexOf(BK_LINES)<60&&head.endsWith(BK_COVERS),"the first line is not the head: "+head.slice(0,80));
+      const text=await blob.text();
+      must(text.split("\\n").some(l=>l.indexOf('"smoke|bk2":')===0),"a picture does not stand on a line of its own");
+      const whole=JSON.parse(text);
+      must(whole.images["smoke|bk1"]===odd,"the whole file, read as JSON, changed a picture");
+      const d=await bkRead(blob);
+      must(d.images["smoke|bk1"]===odd&&d.images["smoke|bk2"]===plain,"read back in lines, a picture changed");
+      must(d.books.length===books.length&&!("lines" in d),"read back: "+d.books.length+" books of "+books.length);
+      must(JSON.stringify(d.books)===JSON.stringify(whole.books),"the books read in lines differ from the whole file's");
+      const old=await bkRead(new Blob([JSON.stringify(await buildBackup())]));
+      must(old.images["smoke|bk1"]===odd&&old.books.length===books.length,"an old one-line backup no longer reads");
+      let cut=null;try{await bkRead(blob.slice(0,blob.size-8));}catch(e){cut=e;}
+      must(cut&&/partway/.test(cut.message),"a file cut short was read as whole");
+      return Math.round(blob.size/1024)+" KB in "+text.split("\\n").length+" lines, read back the same both ways";
+    }finally{await dbDel("images","smoke|bk1");await dbDel("images","smoke|bk2");}});
   await check("delete to the bin, and restore",async()=>{
     const b=books.find(x=>x.id===id)||await dbGet("books",id);
     await removeBook(b);
