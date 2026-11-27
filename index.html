@@ -936,6 +936,9 @@ try{var __th=localStorage.getItem("shelfTheme");if(__th)document.documentElement
   @keyframes pipfill{to{stroke-dashoffset:0}}
   @keyframes pipfade{to{opacity:1}}
   .pipblot{fill:var(--pip-edge);opacity:.88}
+  .pipbook{position:absolute;left:3px;top:3px;width:24%;height:34%;border-radius:2px;border:2px solid var(--pip-edge);background:var(--card);pointer-events:none;z-index:2}
+  .pipt.inked .pipbook{background:var(--pip-ink)}
+  .pipbook.pipbookkey{position:static;display:inline-block;width:11px;height:15px}
   .pipkey{display:flex;flex-wrap:wrap;gap:6px 14px;justify-content:center;margin-top:10px;font-size:13px;color:var(--mut)}
   .pipkey span{display:inline-flex;align-items:center;gap:5px}
   .pipkey svg{width:16px;height:16px;flex:0 0 auto}
@@ -17748,6 +17751,7 @@ function showHelpSheet(){
    shows the lines this device hasn't seen yet. Seen is kept per device, like
    the text size — each device catches up at its own pace. */
 const WHATS_NEW=[
+  {v:"2026-11-27.32",go:["tab:challenges"],lines:["<b>🚰 Pipes: levels, today's board, books, valves and crossings.</b> Over the board, choose <b>🎯 Levels</b>, <b>🗓 Today's board</b> or <b>🎲 Any board</b>. Levels start at a plain 7 × 11 and add, one at a time, books the ink must print on its way (the press won't take it until every one is), one-way valves whose arrow turns with them, and crossings where the ink goes straight over; win a level and the next one opens. Today's board is the same on every device and pays +50 the first time through."]},
   {v:"2026-11-27.31",go:["tab:library"],lines:["<b>📋 A narration's words, pasted in.</b> A story you added from a YouTube link has <b>📋 Paste the words</b> on its ▶ On YouTube row. On the computer, under the video press …more, then Show transcript, copy it all and paste it: the times are taken out, the words go into the reader with their count, and a story with no length gets one from them. Then <b>✨ A blurb from the words</b> has Claude write its blurb from the story itself, for a cent or two."]},
   {v:"2026-11-27.30",lines:["<b>📜 What's new, from the owl.</b> Press the owl, and its card has <b>📜 What's new</b> beside <b>? Help</b>: every update to the app, newest first, a day at a time. The help's Ask box finds it too, as the changelog, updates or release notes."]},
   {v:"2026-11-27.29",go:["tab:library"],lines:["<b>▶ A story from a YouTube link.</b> ＋ Add book has <b>▶ From a YouTube link</b>: paste the link of a story read aloud on YouTube, put its title right and type who wrote it if you know, and it comes onto your shelf as Want to read, an audiobook, with the video's picture as its cover and its link kept. Its page has a ▶ On YouTube row in Where to read it. The narration's own words can't be fetched, since YouTube asks a program to sign in first; pasting them in comes next."]},
@@ -60770,66 +60774,117 @@ function rmWire(m){
    │ pieces' turns live in PIP on this device: a board whose window is closed │
    │ mid-pour (piAlive) goes back to how it was dealt, not lost.             │
    └──────────────────────────────────────────────────────────────────────────┘ */
+/* ┌─ 🚰 PIPES, LEVELS AND TODAY'S BOARD ─────────────────────────────────────┐
+   │ Three ways to deal (settings.piMode, the row of pills over the board):  │
+   │ 🎯 Levels, PIP_LEVELS from a plain 7 × 11 up, the next one opening when │
+   │ a level is won (quests.piLv); 🗓 Today's board, PIP_DAY dealt under     │
+   │ seededRnd from the day alone so every device has the same one, paying  │
+   │ PIP_DAY_XP the first time through that day (quests.piDay); 🎲 Any board │
+   │ at the size chosen. piPlan says what the next deal is.                  │
+   │ Books (c.bk) stand along the made route: the press takes the ink only  │
+   │ once it has printed every one ("early" otherwise), and the race only    │
+   │ starts once the way joins through all of them. A one-way valve (c.vl,  │
+   │ on a straight of the route) lets ink in at one side only, its arrow     │
+   │ turning with it: piValveIn, and piNext refuses the wrong end before the │
+   │ ink goes in. A crossing (c.x, m 15, on route straights and as many off  │
+   │ the route) sends ink straight over and can't be turned; ink may cross   │
+   │ the same crossing twice, once each way (PIP.ax), and piTrace counts a   │
+   │ square once per side it is entered from, so a way that crosses itself   │
+   │ still traces.                                                           │
+   └──────────────────────────────────────────────────────────────────────────┘ */
 const PIP_SIZES=[[5,7],[7,11],[9,14]],PIP_SIZE_SAY=["5 × 7","7 × 11","9 × 14"],PIP_XP=[20,35,50];
+const PIP_LEVELS=[{size:1},{size:1,books:2},{size:1,books:3,valves:2},{size:1,books:3,valves:2,cross:2},{size:2,books:3,valves:3,cross:3},{size:2,books:4,valves:4,cross:4}];
+const PIP_DAY={size:1,books:2,valves:2,cross:1},PIP_DAY_XP=50,PIP_MODES=[["lv","🎯 Levels"],["day","🗓 Today's board"],["free","🎲 Any board"]];
+const piMode=()=>{const m=typeof settings!=="undefined"&&settings&&settings.piMode;return PIP_MODES.some(x=>x[0]===m)?m:"lv";};
+const piLevel=()=>Math.max(1,parseInt(typeof quests!=="undefined"&&quests&&quests.piLv)||1);
+function piPlan(){const m=piMode();
+  if(m==="day")return Object.assign({mode:"day",day:questToday()},PIP_DAY);
+  if(m==="lv"){const L=piLevel();return Object.assign({mode:"lv",lv:L},PIP_LEVELS[Math.min(L,PIP_LEVELS.length)-1]);}
+  return {mode:"free",size:piSize()};}
+const piPlanSay=p=>[PIP_SIZE_SAY[p.size],p.books?p.books+" books":"",p.valves?p.valves+" one-way valves":"",p.cross?"crossings":""].filter(Boolean).join(", ");
+const piValveIn=c=>((c.vin||0)+c.rot)%4;
 const PIP_STEP=3,PIP_HEAD=8,PIP_FAST=10;
 const PIP_END=[[50,-2],[102,50],[50,102],[-2,50]];
-let PIP={at:0,state:"ready",timer:0,ink:new Set(),n:0,fast:false,turns:0,turn:{},t0:0,tf:0};
+let PIP={at:0,state:"ready",timer:0,ink:new Set(),n:0,fast:false,turns:0,turn:{},t0:0,tf:0,bk:new Set(),ax:{}};
 const piRot=(m,r)=>((m<<r)|(m>>(4-r)))&15;
 function piNbr(s,i,d){let c=i%s.c,r=Math.floor(i/s.c);if(d===0)r--;else if(d===1)c++;else if(d===2)r++;else c--;return c<0||c>=s.c||r<0||r>=s.r?-1:r*s.c+c;}
 const piArms=(s,i)=>{const c=s.cells[i];return c.k==="b"?0:piRot(c.m,c.rot);};
 /* where ink in square i, come in from side `from`, goes next: {out, nx}, nx -1 for a spill */
 function piNext(s,i,from){
-  const a=piArms(s,i);let out=-1;
-  for(let d=0;d<4;d++)if((a>>d&1)&&d!==from){out=d;break;}
-  const nx=out<0?-1:piNbr(s,i,out);
-  return {out,nx:nx<0||!(piArms(s,nx)>>((out+2)%4)&1)?-1:nx};
+  const c=s.cells[i];let out=-1;
+  /* a crossing sends the ink straight over */
+  if(c.x&&from>=0)out=(from+2)%4;
+  else{const a=piArms(s,i);for(let d=0;d<4;d++)if((a>>d&1)&&d!==from){out=d;break;}}
+  const nx=out<0?-1:piNbr(s,i,out),nc=nx<0?null:s.cells[nx];
+  /* a valve takes ink only at its own end */
+  if(!nc||!(piArms(s,nx)>>((out+2)%4)&1)||(nc.vl&&piValveIn(nc)!==(out+2)%4))return {out,nx:-1};
+  return {out,nx};
 }
 /* where the ink would end up as the pieces lie now, with no clock */
 function piTrace(s){
-  let i=s.start,from=-1;const seen=new Set();
-  for(;;){if(s.cells[i].k==="e")return "won";seen.add(i);
-    const {out,nx}=piNext(s,i,from);if(nx<0||seen.has(nx))return "spill";
-    i=nx;from=(out+2)%4;}
+  let i=s.start,from=-1;const seen=new Set(),bk=new Set();
+  for(;;){const c=s.cells[i];if(c.bk)bk.add(i);
+    if(c.k==="e")return bk.size>=(s.books||0)?"won":"early";
+    seen.add(i*4+(from<0?0:from));
+    const {out,nx}=piNext(s,i,from);if(nx<0)return "spill";
+    const f=(out+2)%4;if(seen.has(nx*4+f))return "spill";
+    i=nx;from=f;}
 }
 const piSize=()=>{const i=parseInt(settings&&settings.piSize);return i>=0&&i<PIP_SIZES.length?i:1;};
 function piCan(){return true;}
-function piStop(){clearTimeout(PIP.timer);PIP={at:0,state:"ready",timer:0,ink:new Set(),n:0,fast:false,turns:0,turn:{},t0:0,tf:0};}
+function piStop(){clearTimeout(PIP.timer);PIP={at:0,state:"ready",timer:0,ink:new Set(),n:0,fast:false,turns:0,turn:{},t0:0,tf:0,bk:new Set(),ax:{}};}
 function piDeal(same){
   const old=arcSlot("pi");piStop();
   if(same&&old&&old.cells){
     old.cells.forEach(c=>{c.rot=c.rot0;});
-    return arcPut("pi",Object.assign({},old,{over:false,won:false,at:Math.max(Date.now(),(old.at||0)+1)}));
+    return arcPut("pi",Object.assign({},old,{over:false,won:false,why:"",at:Math.max(Date.now(),(old.at||0)+1)}));
   }
-  const si=piSize(),[cols,rows]=PIP_SIZES[si],n=cols*rows,S={c:cols,r:rows},rnd=k=>Math.floor(Math.random()*k);
-  let best=null;
-  for(let t=0;t<60;t++){
-    const adj=Array.from({length:n},()=>[]),seen=new Uint8Array(n),s0=rnd(n),front=[];
-    seen[s0]=1;for(let d=0;d<4;d++)front.push([s0,d]);
-    while(front.length){const j=Math.random()<.72?front.length-1-rnd(Math.min(3,front.length)):rnd(front.length);
-      const [a,d]=front.splice(j,1)[0],b=piNbr(S,a,d);if(b<0||seen[b])continue;
-      seen[b]=1;adj[a].push(b);adj[b].push(a);for(let e=0;e<4;e++)front.push([b,e]);}
-    const far=st=>{const dist=new Int16Array(n).fill(-1),par=new Int16Array(n).fill(-1),qq=[st];dist[st]=0;
-      for(let h=0;h<qq.length;h++)for(const b of adj[qq[h]])if(dist[b]<0){dist[b]=dist[qq[h]]+1;par[b]=qq[h];qq.push(b);}
-      return {last:qq[qq.length-1],par};};
-    const A=far(s0).last,fb=far(A),path=[];for(let x=fb.last;x!==-1;x=fb.par[x])path.push(x);
-    const score=Math.abs(path.length-n*.46);
-    if(!best||score<best.score)best={path,score};
-    if(path.length>=n*.38&&path.length<=n*.56){best={path,score};break;}
-  }
-  const path=best.path,onP=new Map(path.map((c,k)=>[c,k])),dirTo=(a,b)=>[0,1,2,3].find(d=>piNbr(S,a,d)===b);
-  const cells=Array.from({length:n},(_,i)=>{
-    if(!onP.has(i))return {m:Math.random()<.5?5:3,k:"p"};
-    const k=onP.get(i);let m=0;
-    if(k>0)m|=1<<dirTo(i,path[k-1]);if(k<path.length-1)m|=1<<dirTo(i,path[k+1]);
-    return {m,k:k===0?"s":k===path.length-1?"e":"p",on:1,q:k};});
-  cells.forEach(c=>{if(c.k!=="p")return;
-    if(!c.on&&Math.random()<.16){c.k="b";c.m=0;return;}
-    if(!(c.on&&c.q<3)&&Math.random()<(c.on?.12:.08))c.lock=1;});
-  shuffled(path.slice(3,-1)).slice(0,2).forEach(i=>{cells[i].tank=1;});
-  cells.forEach(c=>{c.rot=c.k!=="p"||(c.lock&&c.on)?0:rnd(4);c.rot0=c.rot;delete c.q;});
+  const P=piPlan(),si=P.size,[cols,rows]=PIP_SIZES[si],n=cols*rows,S={c:cols,r:rows},rnd=k=>Math.floor(Math.random()*k);
+  /* today's board is dealt from the day alone, so both devices get the same one */
+  const real=Math.random;if(P.day)Math.random=seededRnd(strHash("pipes|"+P.day));
+  let cells,path;
+  try{
+    let best=null;
+    for(let t=0;t<60;t++){
+      const adj=Array.from({length:n},()=>[]),seen=new Uint8Array(n),s0=rnd(n),front=[];
+      seen[s0]=1;for(let d=0;d<4;d++)front.push([s0,d]);
+      while(front.length){const j=Math.random()<.72?front.length-1-rnd(Math.min(3,front.length)):rnd(front.length);
+        const [a,d]=front.splice(j,1)[0],b=piNbr(S,a,d);if(b<0||seen[b])continue;
+        seen[b]=1;adj[a].push(b);adj[b].push(a);for(let e=0;e<4;e++)front.push([b,e]);}
+      const far=st=>{const dist=new Int16Array(n).fill(-1),par=new Int16Array(n).fill(-1),qq=[st];dist[st]=0;
+        for(let h=0;h<qq.length;h++)for(const b of adj[qq[h]])if(dist[b]<0){dist[b]=dist[qq[h]]+1;par[b]=qq[h];qq.push(b);}
+        return {last:qq[qq.length-1],par};};
+      const A=far(s0).last,fb=far(A),pa=[];for(let x=fb.last;x!==-1;x=fb.par[x])pa.push(x);
+      const score=Math.abs(pa.length-n*.46);
+      if(!best||score<best.score)best={path:pa,score};
+      if(pa.length>=n*.38&&pa.length<=n*.56){best={path:pa,score};break;}
+    }
+    path=best.path;
+    const onP=new Map(path.map((c,k)=>[c,k])),dirTo=(a,b)=>[0,1,2,3].find(d=>piNbr(S,a,d)===b);
+    cells=Array.from({length:n},(_,i)=>{
+      if(!onP.has(i))return {m:Math.random()<.5?5:3,k:"p"};
+      const k=onP.get(i);let m=0;
+      if(k>0)m|=1<<dirTo(i,path[k-1]);if(k<path.length-1)m|=1<<dirTo(i,path[k+1]);
+      return {m,k:k===0?"s":k===path.length-1?"e":"p",on:1,q:k};});
+    cells.forEach(c=>{if(c.k!=="p")return;
+      if(!c.on&&Math.random()<.16){c.k="b";c.m=0;return;}
+      if(!(c.on&&c.q<3)&&Math.random()<(c.on?.12:.08))c.lock=1;});
+    shuffled(path.slice(3,-1)).slice(0,2).forEach(i=>{cells[i].tank=1;});
+    /* books spread along the route; valves and crossings on its straight pieces — see 🚰 PIPES, LEVELS AND TODAY'S BOARD */
+    const free=k=>{const c=cells[path[k]];return !!c&&c.k==="p"&&!c.tank&&!c.bk&&!c.vl&&!c.x;};
+    const nb=P.books||0;
+    for(let j=1;j<=nb;j++){let k=Math.round((path.length-1)*j/(nb+1));for(let t=0;t<6&&!free(k);t++)k++;if(k<path.length-1&&free(k))cells[path[k]].bk=1;}
+    const straights=()=>shuffled([...Array(path.length).keys()].slice(3,-2)).filter(k=>free(k)&&!cells[path[k]].lock&&(cells[path[k]].m===5||cells[path[k]].m===10));
+    straights().slice(0,P.valves||0).forEach(k=>{const c=cells[path[k]];c.vl=1;c.vin=dirTo(path[k],path[k-1]);});
+    straights().slice(0,P.cross||0).forEach(k=>{const c=cells[path[k]];c.x=1;c.m=15;});
+    /* and as many off the route, so a crossing isn't a sign of the way */
+    if(P.cross)shuffled(cells.filter(c=>!c.on&&c.k==="p"&&!c.lock)).slice(0,P.cross).forEach(c=>{c.x=1;c.m=15;});
+    cells.forEach(c=>{c.rot=c.k!=="p"||(c.lock&&c.on)||c.x?0:rnd(4);c.rot0=c.rot;delete c.q;});
+  }finally{Math.random=real;}
   const f=arcCovered(),cov=f.length?pick1(freshFrom("pi",f,b=>b.id,null,(old||{}).cov)).id:"";
   if(cov)freshNote("pi",[cov]);
-  return arcPut("pi",{c:cols,r:rows,size:si,cells,start:path[0],end:path[path.length-1],route:path.length,cov,over:false,won:false,at:Math.max(Date.now(),((old||{}).at||0)+1)});
+  return arcPut("pi",{c:cols,r:rows,size:si,mode:P.mode,lv:P.lv||0,day:P.day||"",books:cells.filter(c=>c.bk).length,valves:cells.filter(c=>c.vl).length,cross:P.cross||0,
+    cells,start:path[0],end:path[path.length-1],route:path.length,cov,over:false,won:false,why:"",at:Math.max(Date.now(),((old||{}).at||0)+1)});
 }
 /* one piece, drawn in a square of 100 */
 function piPieceSvg(c){
@@ -60842,6 +60897,8 @@ function piPieceSvg(c){
   let top=`<circle cx="50" cy="50" r="7.5" style="fill:${tone}"/>`,under=`<circle cx="50" cy="50" r="13" style="fill:var(--pip-edge)"/>`;
   if(c.tank){under=`<circle cx="50" cy="50" r="26" style="fill:var(--pip-edge)"/>`;top=`<circle cx="50" cy="50" r="20" style="fill:${tone}"/>`;}
   if(c.lock)top+=`<circle cx="50" cy="50" r="4" style="fill:var(--pip-edge)"/>`;
+  if(c.vl)top+=`<g transform="rotate(${[180,270,0,90][((c.vin||0)+2)%4]} 50 50)"><polygon points="36,38 64,38 50,62" style="fill:var(--pip-edge)"/></g>`;
+  if(c.x)top=`<circle cx="50" cy="50" r="13" style="fill:${tone};stroke:var(--pip-edge)" stroke-width="5"/>`;
   if(c.k==="s")top=`<circle cx="50" cy="50" r="30" style="fill:var(--pip-ink);stroke:var(--pip-edge)" stroke-width="5"/><circle cx="50" cy="50" r="11" fill="#fff" opacity=".9"/>`;
   if(c.k==="e")top=`<rect x="20" y="20" width="60" height="60" rx="8" style="fill:var(--card);stroke:var(--pip-edge)" stroke-width="6"/><rect x="34" y="34" width="32" height="32" rx="3" style="fill:none;stroke:var(--pip-ink)" stroke-width="5"/>`;
   return `<svg viewBox="0 0 100 100" aria-hidden="true">${edge}${under}${fill}${top}</svg>`;
@@ -60859,34 +60916,41 @@ const piLive=s=>!!(s&&PIP.at===s.at);
 function piSay(s){
   const live=piLive(s),st=live?PIP.state:"ready",secs=PIP.tf?Math.round((Date.now()-PIP.tf)/1000):0;
   if(s.won)return `<b class="pipok">Through: the ink reached the press.</b>`;
-  if(s.over)return `<b class="pipno">Spilled${live&&PIP.n?` after ${PIP.n} square${PIP.n===1?"":"s"}`:""}.</b> Try the same board again, or a new one.`;
+  if(s.over)return s.why==="early"?`<b class="pipno">The ink reached the press with a book it hadn't printed.</b> Try the same board again, or a new one.`
+    :`<b class="pipno">Spilled${live&&PIP.n?` after ${PIP.n} square${PIP.n===1?"":"s"}`:""}.</b> Try the same board again, or a new one.`;
   if(st==="count")return `<b class="pipcount">Pours in ${Math.max(1,Math.ceil(PIP_HEAD-(Date.now()-PIP.t0)/1000))}</b> · turn the pieces now`;
-  if(st==="flow")return (PIP.fast?`<b class="pipok">The way is joined: the ink is racing.</b> `:"")+`${PIP.n} square${PIP.n===1?"":"s"} printed · ${secs} s`;
-  return `Press ▶ Pour: ${PIP_HEAD} s to turn the pieces, then the ink runs a square every ${PIP_STEP} s. Lead it from the well to the press.`;
+  if(st==="flow")return (PIP.fast?`<b class="pipok">The way is joined: the ink is racing.</b> `:"")+`${PIP.n} square${PIP.n===1?"":"s"} printed${s.books?` · books ${PIP.bk.size} of ${s.books}`:""} · ${secs} s`;
+  return `Press ▶ Pour: ${PIP_HEAD} s to turn the pieces, then the ink runs a square every ${PIP_STEP} s. Lead it from the well to the press${s.books?`, through all ${s.books} books`:""}.`;
 }
 function piHtml(){
   const s=arcSlot("pi");
-  const sizes=arcSizeRow("piSize",[0,1,2],1,"Board",n=>PIP_SIZE_SAY[n]);
-  if(!s||!s.cells)return `<div class="hint" style="margin:0 0 7px">A board of pipes. Turn the pieces to lead the ink from the well to the press before it catches you up: ${PIP_HEAD} s' head start, then a square every ${PIP_STEP} s, and it races once the whole way is joined. Blots let nothing through, rusted pieces won't turn, tanks fill slowly and buy you time.${arcCovered().length?" One of your covers lies under the pipes, and the ink prints it in colour as it runs.":""}</div>${sizes}${arcDealBtn("pi","🚰 Lay a board")}`;
+  const sizes=arcSizeRow("piSize",[0,1,2],1,"Board",n=>PIP_SIZE_SAY[n]),md=piMode(),pl=piPlan();
+  const modes=`<div class="pills pipmodes" style="margin:0 0 7px">${PIP_MODES.map(([k,t])=>`<button class="pill ${md===k?"on":""}" data-pimode="${k}">${esc(t)}</button>`).join("")}</div>`
+    +(md==="free"?sizes:md==="lv"?`<div class="hint" style="margin:0 0 7px">Level ${pl.lv}: ${esc(piPlanSay(pl))}. Win it and the next one opens.</div>`
+      :`<div class="hint" style="margin:0 0 7px">Today's board, the same on every device: ${esc(piPlanSay(pl))}${quests&&quests.piDay===questToday()?" · through today ✓":` · +${PIP_DAY_XP} the first time through`}.</div>`);
+  if(!s||!s.cells)return `<div class="hint" style="margin:0 0 7px">A board of pipes. Turn the pieces to lead the ink from the well to the press before it catches you up: ${PIP_HEAD} s' head start, then a square every ${PIP_STEP} s, and it races once the whole way is joined. Blots let nothing through, rusted pieces won't turn, tanks fill slowly and buy you time. Levels bring books the ink must print on its way, one-way valves and crossings.${arcCovered().length?" One of your covers lies under the pipes, and the ink prints it in colour as it runs.":""}</div>${modes}${arcDealBtn("pi","🚰 Lay a board")}`;
   const live=piLive(s),st=live?PIP.state:"ready",ink=live?PIP.ink:new Set(),done=s.won||s.over;
   const tiles=s.cells.map((c,i)=>{const col=i%s.c,row=Math.floor(i/s.c),inked=s.won||ink.has(i),turn=live&&PIP.turn[i]!=null?PIP.turn[i]:c.rot;
-    const what=c.k==="b"?"A blot":c.k==="s"?"The well":c.k==="e"?"The press":c.lock?"A rusted piece":"Turn the piece";
+    const what=c.k==="b"?"A blot":c.k==="s"?"The well":c.k==="e"?"The press":c.x?"A crossing":c.lock?"A rusted piece":c.vl?"Turn the valve":"Turn the piece";
     const pic=s.cov?`<span class="pippic" style="background-position:${(s.c>1?col/(s.c-1)*100:50).toFixed(2)}% ${(s.r>1?row/(s.r-1)*100:50).toFixed(2)}%"></span>`:"";
-    return `<button type="button" class="pipt${c.k==="b"?" blot":""}${c.lock||c.k!=="p"?" lock":""}${inked?" inked":""}" data-pip="${i}" aria-label="${what}, row ${row+1}, column ${col+1}">${pic}<span class="piprot" style="transform:rotate(${turn*90}deg)">${piPieceSvg(c)}</span>${inked&&!s.won?piFlowSvg(c,-1,-1,0).replace('class="pipflow"','class="pipflow pipfull"'):""}</button>`;}).join("");
-  const btns=done?(s.won?`${arcAgainBtn("pi","🚰 Another board")}${s.cov?arcOpenBtn(s.cov):""}`:`<button class="btn pri" data-pipsame>↺ Try this board again</button><button class="btn" data-pipnew>🚰 A new board</button>`)
+    return `<button type="button" class="pipt${c.k==="b"?" blot":""}${c.lock||c.x||c.k!=="p"?" lock":""}${inked?" inked":""}" data-pip="${i}" aria-label="${what}${c.bk?", with a book":""}, row ${row+1}, column ${col+1}">${pic}<span class="piprot" style="transform:rotate(${turn*90}deg)">${piPieceSvg(c)}</span>${inked&&!s.won?piFlowSvg(c,-1,-1,0).replace('class="pipflow"','class="pipflow pipfull"'):""}${c.bk?'<i class="pipbook"></i>':""}</button>`;}).join("");
+  const btns=done?(s.won?`${arcAgainBtn("pi",s.mode==="lv"&&piMode()==="lv"?`🚰 On to level ${piLevel()}`:"🚰 Another board")}${s.cov?arcOpenBtn(s.cov):""}`:`<button class="btn pri" data-pipsame>↺ Try this board again</button><button class="btn" data-pipnew>🚰 A new board</button>`)
     :st==="ready"?`<button class="btn pri" data-pipgo>▶ Pour</button><button class="btn" data-pipnew>🚰 A new board</button>`
     :`<button class="btn" data-pipstop>■ Stop</button>`;
   return `<div class="pipwrap">
     <div class="hint gq pipstat" id="pipStat">${piSay(s)}</div>
     <div class="pipboard${s.cov?"":" plain"}${done?" over":""}" id="pipBoard" data-piplen="${s.c}" ${s.cov?`data-arcbg="${esc(s.cov)}"`:""} style="--pipc:${s.c};--pipr:${s.r};background-size:0 0">${tiles}</div>
     <div class="hrow2 pipbtns" style="gap:8px;margin-top:10px;justify-content:center;flex-wrap:wrap">${btns}</div>
-    ${s.won?arcSaid(true,`Through, on a ${PIP_SIZE_SAY[s.size||1]} board${s.cov?`: you printed “${esc(arcTitle(s.cov))}”`:""}.`+arcXp("x:pi:"+s.at)):""}
-    ${st==="ready"&&!done?`<div class="pipsizes">${sizes}</div>`:""}
+    ${s.won?arcSaid(true,`Through${s.mode==="lv"?` level ${s.lv}`:s.mode==="day"?" today's board":`, on a ${PIP_SIZE_SAY[s.size||1]} board`}${s.cov?`: you printed “${esc(arcTitle(s.cov))}”`:""}.`+arcXp("x:pi:"+s.at)):""}
+    ${(st==="ready"&&!done)||done?`<div class="pipsizes">${modes}</div>`:""}
     <div class="pipkey"><span><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="34" style="fill:var(--pip-ink);stroke:var(--pip-edge)" stroke-width="8"/></svg>the well</span>
       <span><svg viewBox="0 0 100 100"><rect x="14" y="14" width="72" height="72" rx="10" style="fill:var(--card);stroke:var(--pip-edge)" stroke-width="9"/><rect x="34" y="34" width="32" height="32" style="fill:none;stroke:var(--pip-ink)" stroke-width="8"/></svg>the press: lead the ink here</span>
       <span><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="36" class="pipblot"/></svg>a blot: nothing passes</span>
       <span><svg viewBox="0 0 100 100"><rect x="6" y="32" width="88" height="36" style="fill:var(--pip-rust);stroke:var(--pip-edge)" stroke-width="8"/></svg>rusted: won't turn</span>
-      <span><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="36" style="fill:var(--pip-pipe);stroke:var(--pip-edge)" stroke-width="9"/></svg>a tank: fills slowly, buys you time</span></div></div>`;
+      <span><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="36" style="fill:var(--pip-pipe);stroke:var(--pip-edge)" stroke-width="9"/></svg>a tank: fills slowly, buys you time</span>
+      ${s.books?`<span><i class="pipbook pipbookkey"></i>a book: the ink must print it first</span>`:""}
+      ${s.valves?`<span><svg viewBox="0 0 100 100"><polygon points="20,28 80,28 50,80" style="fill:var(--pip-edge)"/></svg>a valve: the ink goes the arrow's way only</span>`:""}
+      ${s.cross?`<span><svg viewBox="0 0 100 100"><line x1="50" y1="4" x2="50" y2="96" style="stroke:var(--pip-edge)" stroke-width="18"/><line x1="4" y1="50" x2="96" y2="50" style="stroke:var(--pip-edge)" stroke-width="18"/></svg>a crossing: straight over, won't turn</span>`:""}</div></div>`;
 }
 /* the squares as big as the window allows */
 function piFit(m){
@@ -60908,7 +60972,8 @@ function piTick(s){
 }
 function piEnter(s,i,from){
   if(!piAlive(s)){if(PIP.at===s.at)piStop();return;}
-  const c=s.cells[i];PIP.ink.add(i);PIP.n++;
+  const c=s.cells[i];PIP.ink.add(i);PIP.n++;if(c.bk)PIP.bk.add(i);
+  if(c.x&&from>=0)PIP.ax[i]=PIP.ax[i]!=null&&PIP.ax[i]!==from%2?2:from%2;
   const {out,nx}=c.k==="e"?{out:-1,nx:-1}:piNext(s,i,from);
   PIP.fast=piTrace(s)==="won";
   const dur=PIP_STEP*1000*(c.tank?3:1)/(PIP.fast?PIP_FAST:1);
@@ -60917,23 +60982,31 @@ function piEnter(s,i,from){
   piPaint();
   PIP.timer=setTimeout(()=>{
     if(!piAlive(s)){if(PIP.at===s.at)piStop();return;}
-    if(c.k==="e")return piEnd(s,true);
-    if(nx<0||PIP.ink.has(nx)){
+    if(c.k==="e"){const all=PIP.bk.size>=(s.books||0);return piEnd(s,all,all?"":"early");}
+    const f2=(out+2)%4,cx=nx>=0&&s.cells[nx].x&&PIP.ax[nx]!=null&&PIP.ax[nx]!==2&&PIP.ax[nx]!==f2%2;
+    if(nx<0||(PIP.ink.has(nx)&&!cx)){
       const f=q(`#pipBoard [data-pip="${i}"] .pipflow:last-child`);
       if(f&&out>=0)f.insertAdjacentHTML("beforeend",`<circle cx="${PIP_END[out][0]}" cy="${PIP_END[out][1]}" r="20" style="fill:var(--pip-ink)"/>`);
       return piEnd(s,false);}
     piEnter(s,nx,(out+2)%4);
   },dur);
 }
-function piEnd(s,won){
+function piEnd(s,won,why){
   clearTimeout(PIP.timer);PIP.state="over";
-  s.over=true;s.won=won;questSave();
-  if(won){gameSfx("win");arcWin("pi",s.at,PIP_XP[s.size||1],"Pipes: the ink through on a "+PIP_SIZE_SAY[s.size||1]+" board");}
+  s.over=true;s.won=won;s.why=why||"";
+  /* a level won opens the next; today's board pays its own the first time through */
+  if(won&&s.mode==="lv")quests.piLv=Math.max(piLevel(),(s.lv||1)+1);
+  let xp=PIP_XP[s.size||1]+5*((s.books||0)+(s.valves||0)+(s.cross?1:0));
+  if(won&&s.mode==="day"&&quests.piDay!==s.day){xp=PIP_DAY_XP;quests.piDay=s.day;}
+  questSave();
+  if(won){gameSfx("win");arcWin("pi",s.at,xp,"Pipes: the ink through"+(s.mode==="lv"?" on level "+s.lv:s.mode==="day"?" on the day's board":" on a "+PIP_SIZE_SAY[s.size||1]+" board"));}
   else gameSfx("no");
   renderChallenges();
 }
 function piWire(m){
   piFit(m);
+  qa("[data-pimode]",m).forEach(x=>x.onclick=()=>{settings.piMode=x.dataset.pimode;saveSettings();
+    const s0=arcSlot("pi");if(s0&&s0.cells&&(s0.over||PIP.state==="ready"))piDeal();renderChallenges();});
   const s=arcSlot("pi");if(!s||!s.cells)return;
   /* the clock and the turns belong to this deal: another deal on another device starts clean here */
   if(PIP.at!==s.at){piStop();PIP.at=s.at;s.cells.forEach((c,i)=>{c.rot=c.rot0;PIP.turn[i]=c.rot0;});}
@@ -60942,7 +61015,7 @@ function piWire(m){
     const i=+t.dataset.pip,c=s.cells[i];
     if(s.over)return;
     if(PIP.state==="ready"){const st=q("#pipStat");if(st)st.innerHTML="<b>Press ▶ Pour first.</b> The pieces turn once the clock is running.";return;}
-    if(c.k!=="p"||c.lock||PIP.ink.has(i))return;
+    if(c.k!=="p"||c.lock||c.x||PIP.ink.has(i))return;
     c.rot=(c.rot+1)%4;PIP.turn[i]=(PIP.turn[i]!=null?PIP.turn[i]:c.rot0)+1;PIP.turns++;
     const r=t.querySelector(".piprot");if(r)r.style.transform=`rotate(${PIP.turn[i]*90}deg)`;
     try{gameSfx("tap");}catch(er){}
